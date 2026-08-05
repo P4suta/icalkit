@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "ical-itip"
+description = "RFC 5546 iTIP scheduling semantics as described transitions, with authorization included"
+keywords = ["itip", "imip", "rfc5546", "scheduling", "icalendar"]
+categories = ["date-and-time", "email", "no-std"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true

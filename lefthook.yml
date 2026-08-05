@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Install with `mise run hooks`.
+
+min_version: 2.1.9
+assert_lefthook_installed: true
+no_tty: false
+colors: true
+
+commit-msg:
+  commands:
+    conventional:
+      run: mise exec -- committed --commit-file {1}
+
+pre-commit:
+  parallel: false
+  follow: true
+  commands:
+    cargo-fmt:
+      tags: format
+      glob: "*.rs"
+      run: mise exec -- just fmt
+      stage_fixed: true
+
+    taplo-fmt:
+      tags: format
+      glob: "*.toml"
+      run: mise exec -- taplo fmt
+      stage_fixed: true
+
+    typos:
+      tags: spell
+      run: mise exec -- typos --write-changes {staged_files}
+      stage_fixed: true
+
+    clippy:
+      tags: lint
+      glob: "*.rs"
+      run: mise exec -- just lint
+      fail_text: "Clippy failed; fix every warning before committing."
+
+    purity:
+      tags: lint
+      glob: "{**/Cargo.toml,**/*.rs}"
+      run: mise exec -- just purity
+      fail_text: "The core gained a std, clock, network, or tzdb dependency (docs/adr/0004)."
+
+    reuse:
+      tags: license
+      glob: "{**/*.rs,**/*.toml,**/*.md,**/*.yml,Justfile,REUSE.toml,LICENSES/*}"
+      run: mise exec -- just reuse
+
+pre-push:
+  parallel: false
+  follow: true
+  commands:
+    local-ci:
+      tags: ci
+      run: mise exec -- just ci
+      fail_text: "Local CI failed; fix the reported gate before pushing."
+
+# Explicit manual entry point: `lefthook run local-ci`.
+local-ci:
+  parallel: false
+  follow: true
+  commands:
+    all:
+      tags: ci
+      run: mise exec -- just ci

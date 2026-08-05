@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Interoperability disagreement
+description: This reads, expands, or resolves a calendar differently from another implementation
+labels: ["conformance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the answer is wrong or debatable, rather than the bug report.
+
+        Disagreements are the substance of this project. A well-formed one becomes a case in
+        `ical-conform` whether or not this library turns out to be the one at fault —
+        including cases where Google, Microsoft 365, or Apple is doing something the RFC
+        forbids and we intend to keep accepting it. See
+        [ADR 0006](../../docs/adr/0006-conformance-corpus-as-artifact.md).
+
+        **Reduce the calendar before pasting it.** A real export is somebody's schedule:
+        strip names, addresses, and locations, and cut it down to the smallest thing that
+        still shows the behavior. A case that cannot be anonymized cannot be accepted.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What disagrees
+      options:
+        - Round trip (something was dropped, reordered, or rewritten)
+        - Occurrences (a rule expanded to a different set of instances)
+        - Time zone (the same event resolved to a different instant)
+        - Scheduling (an iTIP message applied differently, or was accepted or refused)
+        - CalDAV (a request or response interpreted differently)
+        - Parsing (accepted or rejected where another implementation did the opposite)
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: Input
+      description: The calendar or message, reduced and with personal data removed.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: window
+    attributes:
+      label: Window and limits
+      description: >-
+        For an occurrence disagreement, the range you expanded over and the candidate budget
+        if you changed it from the default. Both are part of the answer here
+        ([ADR 0002](../../docs/adr/0002-bounded-lazy-recurrence.md)).
+      placeholder: "2026-01-01T00:00:00Z to 2026-02-01T00:00:00Z, default budget"
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What this library produced
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: basis
+    attributes:
+      label: Specification basis
+      description: The RFC and section your expectation comes from.
+      placeholder: "RFC 5545 section 3.8.5.3"
+    validations:
+      required: true
+
+  - type: input
+    id: other
+    attributes:
+      label: Other implementations
+      description: >-
+        Optional. What Google Calendar, Microsoft 365, Apple Calendar, or libical do with
+        the same input, if you checked. A disagreement between them is useful information
+        even when it does not settle anything.
+
+  - type: input
+    id: source
+    attributes:
+      label: Where the calendar came from
+      description: >-
+        Which client and version exported it. A case records this, because "Microsoft 365
+        emits this" is the claim the corpus is making.
+      placeholder: "Exported from Microsoft 365 web, February 2026"
+
+  - type: checkboxes
+    id: before
+    attributes:
+      label: Before submitting
+      options:
+        - label: >-
+            I removed personal data from everything pasted above.
+          required: true
+        - label: >-
+            I checked whether the RFC permits both outcomes. If it does, this is a request
+            to record the divergence rather than to change what this library does.

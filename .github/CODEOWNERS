@@ -1,0 +1,30 @@
+# Default owner for everything.
+* @P4suta
+
+# Architecture-affecting files require extra scrutiny.
+/Cargo.toml @P4suta
+/Cargo.lock @P4suta
+/rust-toolchain.toml @P4suta
+/.github/ @P4suta
+
+# The frozen decisions. A change here changes what the library is allowed to be.
+/docs/adr/ @P4suta
+/ARCHITECTURE.md @P4suta
+
+# Preservation lives here, and every layer above assumes it. A model change is where a
+# round trip quietly stops being byte-identical.
+/crates/ical-core/ @P4suta
+
+# The candidate budget is the only thing standing between a hostile rule and a hang.
+/crates/ical-recur/ @P4suta
+
+# Scheduling is a security boundary, not just semantics: this is where an attendee either
+# can or cannot move somebody else's meeting.
+/crates/ical-itip/ @P4suta
+
+# A published corpus of real exports carries a privacy obligation that a normal test
+# directory does not.
+/crates/ical-conform/ @P4suta
+
+# The gate that keeps std, a clock, a socket, and a bundled tzdb out of the core.
+/xtask/ @P4suta

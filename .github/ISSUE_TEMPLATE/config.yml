@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+blank_issues_enabled: false
+contact_links:
+  - name: RFC 5545 (iCalendar)
+    url: https://www.rfc-editor.org/rfc/rfc5545.html
+    about: The specification this library implements; iTIP and CalDAV are layered on it.
+  - name: Security vulnerability
+    url: https://github.com/P4suta/icalkit/security/advisories/new
+    about: Report privately instead of opening an issue. See SECURITY.md for what counts.

@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# CodeQL security analysis (Advanced Setup). Scans the Rust source and the repository's own
+# GitHub Actions workflows, uploading results to Security > Code scanning. Advanced (not
+# Default) setup keeps the language set, query suite, and SHA-pinned action versions in-repo
+# under the same review as the code, matching this repo's "pin every action" convention.
+#
+# The untrusted input here arrives by design: an `.ics` attachment sent by a stranger, a
+# CalDAV response from a server the user does not control, an iTIP message asking to change
+# a meeting (see SECURITY.md). The interesting findings are therefore about unbounded work
+# on a hostile recurrence rule, XML entity handling, and what a message is allowed to
+# change — not about I/O the core does not perform.
+#
+# Languages:
+#   - rust    the calendaring crates (build-mode: none — the only mode the Rust analysis
+#             supports; it resolves the cargo workspace without a traced build).
+#   - actions the workflows under .github/workflows (catches injection, unsafe checkout,
+#             and token-scope issues in the CI YAML).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly re-scan (Mon 03:27 UTC) so newly-published CodeQL queries run against unchanged
+    # code, not only on new commits.
+    - cron: "27 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write # upload the SARIF results to code scanning
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Broader security rule set than the default suite.
+          queries: security-extended
+      - name: analyze
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v3
+        with:
+          category: "/language:${{ matrix.language }}"

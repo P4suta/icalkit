@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# TOML formatting, checked by `just toml-check`.
+
+include = ["**/*.toml"]
+exclude = ["target/**", "fuzz/target/**"]
+
+[formatting]
+align_entries = false
+reorder_keys = false

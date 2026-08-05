@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Force LF in the working tree on every platform. The toolchain expects LF
+# everywhere — rustfmt (`newline_style = "Unix"`), taplo, and `.editorconfig`.
+# Without this, Git's `core.autocrlf=true` (the Windows default) checks files out
+# as CRLF, so formatting checks and Lefthook can fail on a native Windows host
+# even though the repository blobs are LF.
+# `text=auto` still lets Git auto-detect and leave binaries alone.
+#
+# Existing Windows clones: after pulling this file, run once to refresh the working
+# tree to LF:  git add --renormalize . && git checkout .
+* text=auto eol=lf
+
+# The committed corpus is `.ics` files exported from real clients, and parse then
+# serialize has to reproduce them byte for byte (docs/adr/0001, docs/adr/0006).
+# Rewriting LF <-> CRLF inside one would rewrite the thing under test.
+**/tests/fixtures/** -text
+**/tests/corpus/** -text
+fuzz/corpus/** -text

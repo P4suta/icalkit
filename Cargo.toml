@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[workspace]
+resolver = "3"
+members = [
+  "crates/ical-core",
+  "crates/ical-recur",
+  "crates/ical-tz",
+  "crates/ical-itip",
+  "crates/ical-dav",
+  "crates/ical-conform",
+  "xtask",
+]
+# cargo-fuzz requires nightly and a sanitizer runtime.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# Floor imposed by edition 2024.
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Yasunobu Sakashita <crates.tank733@slmails.com>"]
+repository = "https://github.com/P4suta/icalkit"
+homepage = "https://github.com/P4suta/icalkit"
+
+# Inter-crate dependencies are declared as each crate's code starts needing them, so
+# `cargo shear` stays meaningful. The intended graph is in ARCHITECTURE.md.
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Production code must not use unwrap, expect, panic, or unreachable fallbacks.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+unreachable = "warn"
+# Calendar arithmetic crosses DST boundaries, leap days, and year bounds. Every site
+# must state what it does when the result does not exist.
+arithmetic_side_effects = "warn"
+missing_errors_doc = "allow"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

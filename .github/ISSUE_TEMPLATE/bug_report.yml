@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Bug report
+description: A compile failure, a broken API, or something that does not do what it documents
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        For a calendar that round-trips differently, an occurrence set you disagree with, or
+        a time this resolves differently from another client, use **Interoperability
+        disagreement** instead. For a panic, a hang, an unbounded allocation, or a
+        scheduling message that was accepted when it should not have been, see
+        [SECURITY.md](../../SECURITY.md) first — that is a security report, not an issue.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: The smallest program or `just` command that shows it.
+      render: rust
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "ical-core 0.1.0, rustc 1.85.0, x86_64-unknown-linux-gnu"
+    validations:
+      required: true

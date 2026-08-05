@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "ical-conform"
+description = "A conformance and interoperability corpus for iCalendar and CalDAV, runnable against any implementation"
+keywords = ["conformance", "interop", "icalendar", "caldav", "testing"]
+categories = [
+  "development-tools::testing",
+  "date-and-time",
+  "parser-implementations",
+]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true

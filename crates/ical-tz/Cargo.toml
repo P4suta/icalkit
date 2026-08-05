@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "ical-tz"
+description = "RFC 5545 VTIMEZONE against a caller-supplied time zone source: no bundled tzdb, no clock"
+keywords = ["vtimezone", "timezone", "icalendar", "calendar", "no-std"]
+categories = ["date-and-time", "internationalization", "no-std"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Install tools with `mise install`. Rust configuration is in rust-toolchain.toml.
+
+[tools]
+rust = "stable"
+
+lefthook = "2.1.9"
+committed = "1.1.11"
+just = "1.50.0"
+
+typos = "1.48.0"
+taplo = "0.10.0"
+actionlint = "1.7.12"
+zizmor = "1.28.0"
+
+# REUSE runs through uvx.
+uv = "0.11.32"
+
+cargo-binstall = "1.21.1"
+
+"cargo:cargo-msrv" = "0.19.3"
+"cargo:cargo-deny" = "0.20.2"
+"cargo:cargo-hack" = "0.6.45"
+"cargo:cargo-nextest" = "0.9.140"
+"cargo:cargo-shear" = "1.13.3"
+
+[settings.cargo]
+binstall = true
+
+[tasks.hooks]
+description = "Install the git hooks (see lefthook.yml)"
+run = "lefthook install"

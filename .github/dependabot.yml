@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Dependabot version updates. Weekly PRs for the GitHub Actions the workflows use, and for
+# Cargo crates once any exist. Every commit is prefixed `build(deps)` so the Conventional
+# Commits gate accepts a Dependabot-authored commit. Patch and minor Cargo updates group
+# together; unrelated majors land on their own so each breaking change is weighed
+# separately.
+#
+# Note that the sans-I/O core is designed to have no external dependencies at all — no HTTP
+# client and no bundled time zone database, which is the whole point of docs/adr/0003 and
+# docs/adr/0004 and is enforced by `just purity`. The Cargo entry therefore exists for the
+# conformance suite, xtask, and dev-dependencies rather than for the library crates.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      cargo-minor:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      github-actions:
+        patterns: ["*"]
