@@ -50,10 +50,60 @@
 //!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M0). The public surface is
-//! designed, compiled and reviewed rather than merely intended — `docs/design/ical-core-api.md`
-//! carries it, including what the first whole-workspace compile changed.
+//! Every item `docs/design/ical-core-api.md` commits to exists and is tested. The foundation —
+//! the octet storage and its one decode point, the property identity, the civil-time and value
+//! types, the tree nodes with the recorded line syntax, the change vocabulary, the typed view
+//! shape and its mutation guard, the output sink — now carries the behavior built on it:
+//! [`Document::parse`] and [`Document::from_tokens`] read a tree out of the public token path,
+//! [`Document::serialize`] writes one back, the civil arithmetic is checked in every direction,
+//! every value type of sections 3.3.4 through 3.3.14 decodes and all but `GEO` encode, the
+//! typed accessors read through [`View`], and [`PropertyMut`] is the only way to write.
+//!
+//! The round trip is asserted end to end rather than per unit: `crates/ical-core/tests` parses
+//! and serializes folds in every position, all three terminators, a value that is not UTF-8, a
+//! fold that splits a codepoint, an unterminated quoted parameter, and a file whose every
+//! structural rule is broken, and compares octets. What milestone M0 still owes is the corpus
+//! that makes the claim about calendars real clients exported rather than about inputs written
+//! here — that is `ical-conform`'s, and `ROADMAP.md` lists it with the gates that read it.
+//!
+//! `RRULE` is the deliberate hole. [`PropertyId::RRULE`] exists, its value stays preserved
+//! text, and [`ValueType::Recur`] names it; the section 3.3.10 grammar is `ical-recur`'s.
 
 #![no_std]
 
 extern crate alloc;
+
+mod access;
+mod arith;
+mod change;
+mod codec;
+mod emit;
+mod gregorian;
+mod ident;
+mod mutate;
+mod octets;
+mod output;
+mod parse;
+mod tree;
+mod view;
+
+// Every item of the grammar crate is re-exported unchanged, so that `ical_core::Token` and
+// `ical_grammar::Token` name one type and a caller never has to know which side of the seam
+// a name came from. A glob rather than a list, because the seam is meant to be invisible and
+// a list is a second place to forget an item.
+pub use ical_grammar::*;
+
+pub use crate::change::{ParameterEdit, ProposedChange};
+pub use crate::gregorian::{
+    CivilDate, CivilDateTime, CivilTime, DateTimeValue, Duration, MonthAddOutcome, UtcOffset,
+    Weekday,
+};
+pub use crate::ident::PropertyId;
+pub use crate::octets::{RawText, TextError};
+pub use crate::output::Writer;
+pub use crate::tree::{
+    Boundary, Component, Document, Item, Parameter, ParametersNamed, PropertiesNamed, Property,
+};
+pub use crate::view::{
+    DecodeValue, EncodeValue, Geo, MutationError, PropertyMut, TextValue, ValueBuf, ValueType, View,
+};

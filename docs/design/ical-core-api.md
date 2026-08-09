@@ -407,7 +407,8 @@ DP-06 splits the two, and this crate holds both for the whole family.
 ```rust
 pub enum ParseError {           // no boundary left to recover to
     InputTooLarge { limit: u64 },  ValueTooLarge { limit: u32 },
-    HeaderTooLarge { limit: u32 }, TooManyItems { limit: u32 }, TooDeep { limit: u16 },
+    HeaderTooLarge { limit: u32 }, TooManyParameters { limit: u32 },
+    TooManyItems { limit: u32 },   TooDeep { limit: u16 },
 }
 pub enum Severity { Note, Violation, LimitReached }
 pub enum DiagnosticCode { /* #[non_exhaustive], semver-stable, golden-listed */ }
@@ -699,9 +700,17 @@ fn parse_within(bytes: &[u8]) -> (Option<Document>, Meter) {
 ```
 
 ```rust
-let (_, tight) = parse_within(&vec![b'X'; 9000]);
+let calendar: Vec<u8> = b"X-FILLER:0123456789\r\n".repeat(900);
+let (_, tight) = parse_within(&calendar);
 assert!(tight.is_exhausted());   // a budget that binds, binds
 ```
+
+The oversized input has to be *content lines* for this to be the bound it demonstrates. Nine
+thousand octets with no `:` and no terminator are one content line header, and `max_header_bytes`
+refuses them at octet 4097 — before the meter is charged once, so the parse fails with
+`HeaderTooLarge` and leaves `is_exhausted()` false. The two bounds guard different things and
+neither stands in for the other: the header ceiling bounds what the reader must buffer to lex one
+line, the budget bounds what the tree may hold in total.
 
 A fifth thing worth showing, because it is the one place the crate refuses caller input rather
 than diagnosing it:

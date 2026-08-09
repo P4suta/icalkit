@@ -16,5 +16,11 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[dependencies]
+# The content line grammar and the vocabulary that sits below it. A path plus a version so
+# that `just purity` sees a dependency resolved from inside this workspace rather than from a
+# registry, and so that a published release still resolves.
+ical-grammar = { path = "../ical-grammar", version = "0.0.0" }
+
 [lints]
 workspace = true

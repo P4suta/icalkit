@@ -9,6 +9,9 @@ version = "0.0.0"
 [[package]]
 name = "ical-core"
 version = "0.0.0"
+dependencies = [
+ "ical-grammar",
+]
 
 [[package]]
 name = "ical-dav"
