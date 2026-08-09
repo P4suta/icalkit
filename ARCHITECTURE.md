@@ -10,17 +10,27 @@ This document states the invariants. The reasoning behind each one lives in
                               ▲
    ical-dav ── ical-itip ── ical-recur ── ical-tz          ← semantics
                               ▲
-                          ical-core                        ← model, parse, serialize
+                          ical-core                        ← model, typed views, serialize
+                              ▲
+                         ical-grammar                      ← content lines, diagnostics
 ```
 
 Nothing here opens a connection, reads a clock, or bundles time zone data. Everything
 above `ical-core` is a separate crate so that a caller who only reads `.ics` files never
-compiles scheduling or CalDAV.
+compiles scheduling or CalDAV, and `ical-grammar` sits below it so that a linter, a differ,
+or a fuzz harness never compiles the typed model
+([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)).
+
+`ical-recur` and `ical-tz` are siblings: neither depends on the other. Recurrence needs a
+zone answer, and the caller obtains it from `ical-tz` and passes in the instant, which is why
+recurrence expansion and zone resolution can be compiled apart.
 
 ## Invariants
 
-Enforced by `just purity`, `just no-std`, and `just wasm` — not by convention. A change
-that violates one fails CI.
+Numbers 1 through 6 date from the bootstrap; 7 through 11 come from the design bake-off that
+followed it. `just purity`, `just no-std` and `just wasm` enforce the structural ones today —
+a change that violates one fails CI. The rest are testable rather than structural, and their
+gates arrive with the code they constrain; `ROADMAP.md` says which milestone owes which gate.
 
 1. **Nothing is lost on a round trip**
    ([ADR 0001](docs/adr/0001-lossless-round-trip.md)). Unknown properties, parameters, and
@@ -49,27 +59,77 @@ that violates one fails CI.
    ([ADR 0006](docs/adr/0006-conformance-corpus-as-artifact.md)). Real client exports,
    reduced and anonymized, runnable against any implementation.
 
+7. **The core is `no_std` *and* `alloc`, and every allocated byte is charged**
+   ([ADR 0007](docs/adr/0007-allocation-policy.md)). There is no allocation-free build of
+   these crates and no feature flag pretending otherwise. A parsed document owns its memory
+   and carries no lifetime parameter, unfolding runs into a fresh buffer, and nothing is
+   sliced out of pre-unfold bytes.
+
+8. **The token layer is the parser; the document tree is one consumer**
+   ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). `Document::parse` goes
+   through the same public token path a streaming caller uses, so the two cannot fork into
+   separately maintained grammars. Every token payload is `&[u8]`; UTF-8 is demanded only in
+   the typed view.
+
+9. **Two failure channels, and a diagnostic code frozen in meaning**
+   ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)). An error is "no item can be
+   built"; everything else is a diagnostic pushed to a sink that may refuse, with the
+   refusals counted outside it. `DiagnosticCode` is one workspace-wide vocabulary defined at
+   the bottom of the stack.
+
+10. **One limits policy, one running meter**
+    ([ADR 0010](docs/adr/0010-shared-resource-limits.md)). `Limits` is the caller's immutable
+    policy and `Meter` its mutable ledger, passed as `&mut` so that five thousand individually
+    bounded calls are bounded in aggregate. `Meter` is neither `Copy` nor `Default`.
+
+11. **Civil arithmetic is checked, and invalid instances are filtered**
+    ([ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md)). Every operation
+    is `checked_*`, `div_euclid` or `rem_euclid`; no `Duration` carries years or months; a
+    recurrence instance whose date or whose local time does not exist is dropped per RFC 5545
+    section 3.3.10, never coerced to a nearby one.
+
 ## Crate boundaries
 
-| Crate | Depends on | std | Reads a clock |
-| --- | --- | --- | --- |
-| `ical-core` | — | no | no |
-| `ical-recur` | `ical-core` | no | no |
-| `ical-tz` | `ical-core` | no | no |
-| `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | no |
-| `ical-dav` | `ical-core` | no | no |
-| `ical-conform` | all of the above | yes | no |
+| Crate | Depends on | std | alloc | Reads a clock |
+| --- | --- | --- | --- | --- |
+| `ical-grammar` | — | no | yes | no |
+| `ical-core` | `ical-grammar` | no | yes | no |
+| `ical-recur` | `ical-core` | no | yes | no |
+| `ical-tz` | `ical-core` | no | yes | no |
+| `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no |
+| `ical-dav` | `ical-core` | no | yes | no |
+| `ical-conform` | all of the above | yes | yes | no |
 
 "Reads a clock" is a column because a calendar library that quietly asks the OS for the
 current time is untestable: the answer to "is this event in the past" must come from an
 instant the caller passed in.
 
+"alloc" is a column because `no_std` alone did not capture the wiring that actually broke.
+A panel proposal's `Vec<Response>: Slots<Response>` failed to compile at the
+`ical-core`/`ical-dav` seam under an allocation-free reading of these crates, and no
+dependency diff can see that. Every crate therefore carries a compiled minimal-usage example
+built at its declared setting.
+
 ## What lives where
 
+- **Syntax lives in `ical-grammar`.** Unfolding, content-line lexing, escaping, parameter
+  structure — and the diagnostic vocabulary, which did not stay above the seam because a
+  violation of the grammar is detected by the grammar.
 - **Preservation lives in `ical-core`.** Every layer above it operates on the preserved
   model and must not require reserializing through a lossy typed form.
+- **The shared vocabulary lives at or below `ical-core`.** `Limits`, `Meter`, the civil-time
+  primitives and `Instant` are named by crates that do not depend on each other, so they sit
+  at the common root rather than in whichever crate uses them most. `ical-tz` owns
+  resolution, not the types it resolves into.
 - **Ambiguity is represented, not resolved.** Non-existent and repeated local times at DST
   transitions, disagreeing time zone sources, and specification violations are all values
   a caller can inspect, not errors that discard the input.
 - **Diagnostics travel with the item they concern,** so a caller can accept a
   specification-violating calendar and still know what was wrong with it.
+
+## Where the details are
+
+Each crate has a design document in [`docs/design/`](docs/design/) carrying its committed
+public surface, the reasoning behind each signature, and a closing section recording what the
+first whole-workspace compile changed. Those sections are the only place the seams between
+crates are described from both sides at once.

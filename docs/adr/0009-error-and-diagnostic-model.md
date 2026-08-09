@@ -1,0 +1,71 @@
+# ADR-0009: two failure channels, and a diagnostic code whose meaning is frozen by CI
+
+- Status: accepted
+- Date: 2026-08-10
+
+## Context
+
+[ADR 0001](0001-lossless-round-trip.md) promises that a violation is "a diagnostic attached to the
+item rather than an error that discards the file", and then says nothing about what a diagnostic
+is, what is left over that still counts as an error, or how either survives with no allocator.
+
+One enum for both merges "this stream has no parseable item boundary" with "this `DESCRIPTION` is
+40 KB", and all a caller can do with the merged value is return it — the file-discarding parser
+ADR 0001 exists to prevent. A string or `u16` code gives
+[ADR 0006](0006-conformance-corpus-as-artifact.md) nothing durable to anchor a case to. An
+unconditional `Vec<Diagnostic>` assumes an allocator the `thumbv7em` gate of
+[ADR 0004](0004-sans-io-protocol-layer.md) does not guarantee, and on a file with thousands of
+repeated violations it turns "never discard the file" into an unbounded allocation.
+
+## Decision
+
+Failure has two channels. `ParseError` hand-implements `core::fmt::Display` and
+`core::error::Error` — no derive crate, the core crates carry no dependencies — and covers only
+conditions under which no item can be constructed at all: no locatable boundary to resume from, a
+reassembly that is genuinely ambiguous. A limit breach is not one of them.
+
+`Diagnostic { code: DiagnosticCode, .. }` carries the rest, every limit breach on an otherwise
+parseable value included: an oversized `DESCRIPTION` is truncated, flagged, and kept while the
+calendar around it parses. Limits stay injected ([ADR 0002](0002-bounded-lazy-recurrence.md)); what
+this decision fixes is which channel a breach travels on, per limit kind rather than per type.
+
+`DiagnosticCode` is public, `#[non_exhaustive]`, and stable in meaning as well as in name —
+enforced, not documented. A committed golden list carries code, one-line meaning, and channel; a CI
+diff gate fails when a row's meaning or channel changes without a rename or deprecation, and passes
+trivially on additions. The channel column exists because a severity retune would otherwise flip
+behavior for one input while every variant and doc comment sat still, breaking ADR 0006's "input X
+produces code Y"; `ical-conform` carries a case per code and per channel.
+
+Diagnostics reach the caller through `DiagnosticSink`, push-only, implemented for
+`&mut Vec<Diagnostic>`, a fixed-capacity buffer, and a sink that keeps nothing. A sink may refuse:
+`push` returns acceptance or refusal, every sink is permitted to refuse, and no parser may treat
+refusal as a reason to stop parsing or to fail. Refusal is never silent — the result carries a
+saturating `diagnostics_dropped` count living outside the sink, so "no violation was found" stays
+distinguishable from "violations were found and could not be delivered". A nonzero count is not a
+clean parse, and any API summarizing a parse as successful must surface it. That is how ADR 0001's
+promise survives the no-alloc tier: a caller without an allocator may lose which violations
+occurred, never that they did.
+
+## Consequences
+
+Round-trip behavior now needs two documents held together, and callers pass a sink instead of
+receiving a collection — more type surface than a returned `Vec` for everyone who has an allocator.
+
+A diagnostic-free parse still does not mean the text is correct. CP1252 bytes that decode as valid
+UTF-8 — `0xC3` followed by a byte in `0x80`-`0xBF`, the classic accented-word mojibake — are
+structurally undetectable, so neither channel fires. No heuristic is committed: one would misfire
+on legitimately accented text, and ADR 0001 forbids repairing bytes, so even a future suspicion
+code could only annotate. All this adds is a ban on documenting silence as correctness — a
+documented limit in place of an undocumented lie.
+
+The dropped count says information was lost, not which. On the 64 KB device that made a
+fixed-capacity sink necessary, "17 diagnostics dropped" is not actionable, and nothing here says
+whether a filtered second pass is affordable on a 400 MB stream. The no-alloc tier keeps the weaker
+promise; that asymmetry is recorded, not closed.
+
+The golden list is hand-maintained: CI proves the table did not change, nothing yet proves the
+emission sites agree with it, and a new limit kind added without a row passes every gate. Deriving
+one from the other is the real fix and is not here. `DiagnosticSink`, meanwhile, was nobody's
+proposal, has since acquired the refusal protocol and the out-of-band counter, and is what
+ADR 0001's promise rests on with no allocator linked — the least-reviewed part of this decision and
+now the most load-bearing.

@@ -33,8 +33,17 @@
 //! compiles it. iMIP is a thin layer over this state machine: the MIME envelope and the
 //! trust placed in the sending address change, the semantics do not.
 //!
+//! The transition is described in `ical-core`'s own change vocabulary rather than in a
+//! private one, so applying it is the caller handing that description back to the model, and
+//! the dependency runs one way and cannot invert (see `docs/adr/0005`). A change addresses a
+//! property *occurrence* — the second `ATTENDEE`, not `ATTENDEE` — because a scheduling
+//! message routinely changes one participant among many.
+//!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M3).
+//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M3). The public surface is
+//! designed and compiled; `docs/design/ical-itip-api.md` carries it.
 
 #![no_std]
+
+extern crate alloc;

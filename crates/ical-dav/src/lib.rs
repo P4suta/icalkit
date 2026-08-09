@@ -30,8 +30,25 @@
 //! instances of a recurring event fall inside it is recurrence work, which is why this
 //! crate depends on the model alone and a server combines it with `ical-recur`.
 //!
+//! The XML inside those requests and responses is this crate's own, not an outside
+//! dependency's: a tokenizer over the closed `DAV:` and CalDAV element vocabulary, resolving
+//! namespaces rather than matching prefixes, with no DTD, no external entities, and bounds
+//! checked on every event (see `docs/adr/0004`). `calendar-data` stays opaque and is parsed
+//! by `ical-core`.
+//!
+//! Reading a multi-status is incremental and holds one response at a time; writing one is
+//! incremental too. A `calendar-multiget` over forty thousand `href`s is a real request from
+//! both sides, so materializing the whole thing is one optional consumer of the decoder
+//! rather than the only way to read one, and the cap on that belongs to the caller's buffer
+//! and not to the wire format.
+//!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M4).
+//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M4). The public surface is
+//! designed and compiled; `docs/design/ical-dav-api.md` carries it, including the one part
+//! that has never been proved — whether the incremental codec pair is expressible under
+//! `no_std` with no allocator on `thumbv7em-none-eabi`.
 
 #![no_std]
+
+extern crate alloc;

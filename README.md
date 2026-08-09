@@ -38,6 +38,7 @@ reasonable thing to attempt today.
 
 | Crate | Responsibility |
 | --- | --- |
+| `ical-grammar` | RFC 5545 content lines and the diagnostic vocabulary, no model |
 | `ical-core` | RFC 5545 model, parser, serializer — lossless by construction |
 | `ical-recur` | `RRULE` / `RDATE` / `EXDATE` expansion, bounded and lazy |
 | `ical-tz` | `VTIMEZONE` against a caller-supplied time zone source |

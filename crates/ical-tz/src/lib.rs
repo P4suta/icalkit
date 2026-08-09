@@ -34,8 +34,18 @@
 //! spring-forward morning, and picking one interpretation silently is how a meeting appears
 //! to move by an hour for one participant and not another.
 //!
+//! What this crate owns is resolution, not the types it resolves into. `CivilDate`,
+//! `CivilDateTime`, `UtcOffset` and `Instant` belong to `ical-core` and below, because
+//! `ical-recur` is a sibling of this crate and `ical-dav` names an instant without depending
+//! on it at all; they are re-exported here so a caller still names one crate for one concept
+//! (see `docs/adr/0011`). Every operation on them is checked, and no `Duration` carries years
+//! or months, because RFC 5545's `DURATION` grammar has no designator for either.
+//!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M2).
+//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M2). The public surface is
+//! designed and compiled; `docs/design/ical-tz-api.md` carries it.
 
 #![no_std]
+
+extern crate alloc;

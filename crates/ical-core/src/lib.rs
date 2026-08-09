@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! iCalendar (RFC 5545): the content line grammar, the object model, and serialization.
+//! iCalendar (RFC 5545): the object model, the typed views over it, and serialization.
 //!
 //! Specification: RFC 5545, "Internet Calendaring and Scheduling Core Object Specification
 //! (iCalendar)" <https://www.rfc-editor.org/rfc/rfc5545>.
@@ -10,9 +10,17 @@
 //! An `.ics` file is a tree of components — `VCALENDAR` wrapping `VEVENT`, `VTODO`,
 //! `VJOURNAL`, `VFREEBUSY`, `VTIMEZONE` — built out of content lines, each a property name,
 //! its parameters, and a value, folded at octet boundaries and escaped by rules that are
-//! close enough to other formats to invite mistakes. This crate turns those bytes into a
-//! model and writes the model back out. It expands no recurrence, resolves no `TZID`, and
-//! attaches no meaning to `METHOD`; those live in the crates above it.
+//! close enough to other formats to invite mistakes. Reading those content lines is
+//! `ical-grammar`'s job, and this crate re-exports every item of it unchanged, so
+//! `ical_core::Token` and `ical_grammar::Token` name one type. What this crate adds is the
+//! tree, the typed views, scoped mutation, and serialization. It expands no recurrence,
+//! resolves no `TZID`, and attaches no meaning to `METHOD`; those live in the crates above
+//! it.
+//!
+//! It also owns the vocabulary the crates around it share, because they do not all depend on
+//! each other and a type two siblings speak has to sit at their common root: the `Limits`
+//! policy and its `Meter`, the civil-time primitives, and the change vocabulary `ical-itip`
+//! reuses (see `docs/adr/0010` and `docs/adr/0011`).
 //!
 //! The model preserves everything it read (see `docs/adr/0001`). Vendor properties,
 //! parameters on properties that are otherwise understood, components with no type here,
@@ -32,10 +40,20 @@
 //! Input is hostile in the ordinary case, not the exotic one — an `.ics` arrives as a mail
 //! attachment or over CalDAV from a server the user does not control. Nothing here is sized
 //! from a length found in the input without checking it against the caller's limits and the
-//! bytes actually present.
+//! bytes actually present, and octets are charged against the caller's budget as they are
+//! appended rather than counted once at the end (see `docs/adr/0007`).
+//!
+//! Parsing is staged, and every stage is public. The token layer is the parser and the
+//! document tree is one consumer of the same path, so a caller with 64 KB of RAM reads a
+//! calendar it can never hold, and the two cannot drift into separate grammars (see
+//! `docs/adr/0008`).
 //!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M0).
+//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M0). The public surface is
+//! designed, compiled and reviewed rather than merely intended — `docs/design/ical-core-api.md`
+//! carries it, including what the first whole-workspace compile changed.
 
 #![no_std]
+
+extern crate alloc;

@@ -35,6 +35,13 @@
 //! not a harness. Nothing about the implementations under test changes as a result — they
 //! are still handed bytes.
 //!
+//! A case states the `Limits` policy it ran under and asserts a `DiagnosticCode` rather than
+//! a message, because an outcome that depends on a budget is not reproducible without the
+//! budget, and a code whose meaning is frozen is the only thing an assertion can outlive
+//! (see `docs/adr/0009` and `docs/adr/0010`).
+//!
 //! # Status
 //!
-//! Bootstrap. No cases are written yet; see `ROADMAP.md` (M5).
+//! Bootstrap. No cases are written yet; see `ROADMAP.md` (M5). The case vocabulary, the
+//! subject contract and the two runners are designed and compiled;
+//! `docs/design/ical-conform-api.md` carries them.

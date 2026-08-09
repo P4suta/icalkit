@@ -15,6 +15,10 @@ name = "ical-dav"
 version = "0.0.0"
 
 [[package]]
+name = "ical-grammar"
+version = "0.0.0"
+
+[[package]]
 name = "ical-itip"
 version = "0.0.0"
 

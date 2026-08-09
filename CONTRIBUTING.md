@@ -23,12 +23,42 @@ fix the cause rather than narrowing the gate.
 - **No `allow` and no `ignore`.** Every gate is strict on purpose. Make the code pass
   instead of suppressing the finding. If a lint is genuinely wrong for this codebase,
   change the shared configuration and say why in the commit message.
-- **The core stays `no_std` and sans-I/O.** `ical-core`, `ical-recur`, `ical-tz`,
-  `ical-itip`, and `ical-dav` must not gain `std`, a bundled time zone database, a clock, or
-  a transport. `just purity`, `just no-std`, and `just wasm` enforce it. A zone answer comes
-  from a caller-supplied source and names that source
+- **The core stays `no_std` and sans-I/O.** `ical-grammar`, `ical-core`, `ical-recur`,
+  `ical-tz`, `ical-itip`, and `ical-dav` must not gain `std`, a bundled time zone database, a
+  clock, or a transport. `just purity`, `just no-std`, and `just wasm` enforce it. A zone
+  answer comes from a caller-supplied source and names that source
   ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md)); "now" is an instant the caller
-  passed in ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)).
+  passed in ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)). A dependency's key is a
+  nickname; `just purity` reads the package it links, so a `package = "..."` rename is itself
+  a violation, and so is a dependency that comes from a registry rather than from this
+  workspace.
+- **The core is `alloc`, and every allocated byte is charged.** Each core crate declares
+  `extern crate alloc;` and `just purity` checks for the line. There is no allocation-free
+  build and no feature flag pretending otherwise; a genuinely alloc-free tier would be a new
+  crate with its own lint profile ([ADR 0007](docs/adr/0007-allocation-policy.md)). Bytes are
+  charged as they are appended, so a value that crosses the budget is refused at the octet
+  that crosses it rather than after it is resident, and a refusal is never a truncation.
+- **One limits policy, one meter.** Every entry point that reads attacker-controlled input
+  takes the shared `Limits` and `&mut Meter`
+  ([ADR 0010](docs/adr/0010-shared-resource-limits.md)). Minting a fresh `Meter` inside a
+  fan-out loop is how five thousand individually bounded calls become unbounded in aggregate;
+  the type is neither `Copy` nor `Default` so that doing it is at least visible. Accepting a
+  meter and never charging it still compiles, which is why this is a rule and not only a
+  signature.
+- **A violation is a diagnostic, and an error means nothing could be built.** Those are the
+  two channels, and which one a condition travels on is frozen per code
+  ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)). `DiagnosticCode` is one
+  workspace-wide vocabulary: a variant may be added, its meaning may not be edited without a
+  rename or a deprecation, and a sink is always allowed to refuse — no reader may treat
+  refusal as a reason to stop reading.
+- **The token layer is the parser.** `Document::parse` goes through the same public token
+  path a streaming caller uses; a private fast path is how one name acquires two grammars
+  ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). Token payloads are `&[u8]`,
+  and UTF-8 is demanded only in the typed view, where failure is a diagnostic.
+- **Time arithmetic is checked and never coerces.** `checked_*`, `div_euclid`, `rem_euclid`;
+  no `Duration` carries years or months; a recurrence instance whose date or local time does
+  not exist is filtered per RFC 5545 section 3.3.10, never moved to a nearby one
+  ([ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md)).
 - **Nothing is lost on a round trip.** A property is not supported until `parse → serialize`
   is byte-identical for it, including the parameters, casing, and ordering nobody
   interprets. Typed access is a view over preserved text, never the storage

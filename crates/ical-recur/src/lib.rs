@@ -31,12 +31,23 @@
 //! and a caller asked to reconcile them will get them wrong.
 //!
 //! Comparing an `UNTIL` in UTC against a `DTSTART` that is floating or zoned needs a time
-//! zone, and the zone comes from the caller through `ical-tz`. Nothing here bundles a time
-//! zone database or reads a clock, which is also why "is this occurrence in the past" is a
+//! zone, and the caller supplies the answer rather than this crate obtaining it: expansion
+//! takes instants that have already been resolved, which is why this crate does not depend on
+//! `ical-tz` even though it cannot work without one. Nothing here bundles a time zone
+//! database or reads a clock, which is also why "is this occurrence in the past" is a
 //! question the caller answers by passing in the instant it means.
+//!
+//! The budget is not this crate's own. It is a field of the workspace's shared `Limits`,
+//! charged against a `Meter` the caller owns, so a fan-out over five thousand rules is
+//! bounded in aggregate and not only per rule (see `docs/adr/0010`). A candidate is charged
+//! when it is generated, including one filtered for naming a date that does not exist, since
+//! the work was done either way (see `docs/adr/0011`).
 //!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M1).
+//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M1). The public surface is
+//! designed and compiled; `docs/design/ical-recur-api.md` carries it.
 
 #![no_std]
+
+extern crate alloc;

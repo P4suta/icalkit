@@ -5,6 +5,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/ical-grammar",
   "crates/ical-core",
   "crates/ical-recur",
   "crates/ical-tz",
