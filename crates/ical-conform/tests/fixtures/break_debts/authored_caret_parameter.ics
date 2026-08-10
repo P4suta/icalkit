@@ -1,0 +1,4 @@
+BEGIN:VEVENT
+UID:1@example.test
+ORGANIZER;CN=Ann ^n Marie:mailto:ann@example.test
+END:VEVENT

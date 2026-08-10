@@ -132,6 +132,12 @@ pub enum DiagnosticCode {
     /// Never reported for an `X-` name or for one from a later RFC: section 3.8.8 allows both
     /// anywhere, and a component this crate has no definition for allows everything.
     PropertyNotAllowedHere,
+    /// A component carried two properties RFC 5545 section 3.6 does not allow together.
+    ///
+    /// An entailment between two names rather than a count of one, which is why it is a code
+    /// of its own: `DTEND` and `DURATION` are each permitted once in a `VEVENT` and forbidden
+    /// as a pair, so a reading stated per name has nothing to report about the pair.
+    MutuallyExclusiveProperties,
     /// A recurrence search stopped at the candidate budget rather than at the rule's end.
     ///
     /// Reported so that "cut short at the limit" and "the rule ended at `UNTIL`" are
@@ -192,6 +198,7 @@ impl DiagnosticCode {
             Self::UnknownValueType => "unknown-value-type",
             Self::MissingRequiredProperty => "missing-required-property",
             Self::PropertyNotAllowedHere => "property-not-allowed-here",
+            Self::MutuallyExclusiveProperties => "mutually-exclusive-properties",
             Self::RecurrenceBudgetExhausted => "recurrence-budget-exhausted",
             Self::NonexistentRecurrenceInstance => "nonexistent-recurrence-instance",
             Self::UnknownTimeZone => "unknown-time-zone",

@@ -130,10 +130,21 @@ fn terminator_code(ending: LineEnding) -> Option<DiagnosticCode> {
     }
 }
 
-/// Which boundary keyword a property name is, for the two that are keywords.
+/// Whether a content line with this name opens or closes a component rather than holding a
+/// value.
 ///
 /// Compared case-insensitively because RFC 5545 section 3.1 compares names that way, and the
 /// spelling that arrived is kept on the [`Boundary`] rather than corrected.
+///
+/// The reader's own question, and also the write side's: a line the tree stores as a property
+/// and writes back as `END:VEVENT` is read as a component boundary by the next reader, whoever
+/// it is, so the doors that author a line consult this before authoring one. One predicate,
+/// because two readings of what a boundary is are two trees for one file.
+pub(crate) fn names_a_component_boundary(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(b"BEGIN") || name.eq_ignore_ascii_case(b"END")
+}
+
+/// Which boundary keyword a property name is, for the two that are keywords.
 fn boundary_kind(name: &[u8]) -> Option<LineKind> {
     if name.eq_ignore_ascii_case(b"BEGIN") {
         Some(LineKind::Begin)

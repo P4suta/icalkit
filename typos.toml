@@ -30,6 +30,11 @@ caldav = "caldav"
 carddav = "carddav"
 tzid = "tzid"           # time zone identifier parameter
 
+# RFC 4648 section 10 names its base 64 test vectors after the octets they encode, and two
+# of them are prefixes of "foobar" rather than words. Renaming a published vector would
+# make the case stop being that vector.
+fo = "fo"
+
 [files]
 extend-exclude = [
   "target/**",

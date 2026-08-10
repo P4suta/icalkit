@@ -48,6 +48,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delimits a parameter value, and what an undefined caret pair means — and `sweep.rs`, the
   adversarial evidence M0-alpha reported and never committed, as a seeded, deterministic,
   time-bounded sweep that accepts a refusal only where the input itself confirms the bound.
+- `DiagnosticCode::MutuallyExclusiveProperties`, and the entailment half of the section 3.6
+  reading that ADR 0001 describes: `Component::audit` now reports `DTEND` against `DURATION` in
+  a `VEVENT` and `DUE` against `DURATION` in a `VTODO`. `schema.rs` used to defer that pair onto
+  an audit that did not make the claim; the two entailments that turn on a value rather than on
+  a pair of names are recorded in that ADR as deferred rather than deferred onto anything.
+- Four adversarial passes against this milestone, landed as conformance cases addressed to the
+  sections they come from: `break_debts.rs`, `break_values.rs`, `break_components.rs` and
+  `break_sweeps.rs`, the last of which attacks `sweep.rs` as an artifact rather than using it
+  as one.
 
 ### Changed
 
@@ -74,3 +83,40 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   inline `ATTACH` the default policy admits is retained across 14,170 continuations folded at
   75 octets and 14,564 at 73, both under the bound, which is now documented as what the
   headroom buys — a producer folding tighter than section 3.1 asks, not a longer value.
+- No write authors a component boundary. `BEGIN` and `END` read back whole, which is all the
+  grammar's own predicate asks, and read back as a line that opens or closes a component — so
+  `Property::create`, `set_raw`, `set` and three of `Component::apply`'s four variants refuse
+  them as `MutationError::ComponentBoundary`. One addition used to move six of twelve lines
+  into a component nobody added; the reader still keeps such a line, because a file holds one.
+- The serializer writes the terminator a stored line owes once something is written after it.
+  A property read out of a truncated export carries a layout with no terminator and is
+  `Clone`: placed above another line it stored two content lines and wrote one, with the
+  second line's octets glued to the first one's value and nothing reported. A line that is
+  still last is still written without one.
+- A line whose name begins with `SP` or `HTAB` — which only a fold at octet zero can produce —
+  is refolded below a fold of its own, instead of rejoining the line above it and taking its
+  property out of the file.
+- `Parameter::create` and `ParameterEdit` write the value they are given in the spelling RFC
+  6868 gives it: `^'` for a `DQUOTE`, `^n` for a newline, and `^^` for a caret, without which
+  a value a caller spelled `Ann ^n Marie` came back a newline from this crate's own codec.
+  These doors take a value rather than a spelling, so a caller moving a parameter from one
+  line to another resolves it with `decode_caret` first. What neither grammar spells — a `CR`,
+  and every other control octet — is still refused.
+- `Component::apply` addresses the identity a change names rather than its first occurrence.
+  `Replace` and `SetParameters` used to write one of two `DTSTART`s and report success, which
+  left the identity the caller addressed carrying two different values; `Remove` already took
+  every occurrence, and now all four agree. `Component::get_mut` still names the first, and
+  still documents that it does.
+- The `DURATION` encoder refuses a day or second count with no positive counterpart, which it
+  used to write as twenty digits its own decoder rejects, and a `DateTimeValue::Zoned` whose
+  `TZID` is empty is refused rather than written — the read side had already ruled that an
+  empty `TZID` names no zone. A `FLOAT` whose decimal expansion is past the largest `f64` is
+  `MalformedFloat` rather than infinity, which the guard written to keep infinity out did not
+  keep out.
+- `sweep.rs` covers the evidence it was landed to hold: 6,514,872 exhaustive examinations,
+  2,200,000 randomized documents and 156,180 generative mutations, against the 1,900,000,
+  2,200,000 and 135,000 M0-alpha reported. Its refusal predicate counts `BEGIN` after the
+  folds are taken out, so a folded boundary no longer makes a sound refusal look like a defect
+  in the reader; a fixture it cannot examine now fails it rather than being counted and
+  skipped; and a fourth leg puts every committed fixture through one scoped write of each kind
+  the change vocabulary has, which is the first time anything in that file reached P3 or P4.

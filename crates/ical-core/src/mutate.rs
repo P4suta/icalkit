@@ -36,7 +36,7 @@
 use alloc::vec::Vec;
 
 use ical_grammar::{
-    ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token,
+    ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token, encode_caret,
     parameter_is_representable, parameter_name_is_representable, property_name_is_representable,
     quote_parameter_into,
 };
@@ -45,6 +45,7 @@ use crate::change::{ParameterEdit, ProposedChange};
 use crate::gregorian::DateTimeValue;
 use crate::ident::PropertyId;
 use crate::octets::RawText;
+use crate::parse::names_a_component_boundary;
 use crate::tree::{Boundary, Component, Item, Parameter, Property};
 use crate::view::{EncodeValue, MutationError, PropertyMut, ValueBuf};
 
@@ -58,6 +59,27 @@ use crate::view::{EncodeValue, MutationError, PropertyMut, ValueBuf};
 fn refuse_control_characters(bytes: &[u8]) -> Result<(), MutationError> {
     if bytes.iter().any(u8::is_ascii_control) {
         return Err(MutationError::IllegalControlCharacter);
+    }
+    Ok(())
+}
+
+/// Refuse a line this crate would write as a component boundary rather than as a property.
+///
+/// The one rule the write side owes the component model, and it is stated over the name alone
+/// so that a reviewer can check it in a line. `BEGIN` and `END` are ordinary names to the
+/// grammar underneath — `property_name_is_representable` accepts both, and correctly, since
+/// each reads back as the name that was written — and it is the layer with a component model
+/// that knows a line named either of them is not a property to whoever reads it next. Writing
+/// one would take every line after it into a component nobody added, or close the component it
+/// was written inside, which is one write reaching the whole file.
+///
+/// The refusal covers a name carrying parameters as well, which is the shape section 3.6
+/// forbids and the reader keeps as a property. Nothing is lost by the extra strictness: a
+/// caller wanting a component calls [`Component::create`], and a caller holding a degraded
+/// boundary read out of a file still has every octet of it.
+fn refuse_component_boundary(name: &[u8]) -> Result<(), MutationError> {
+    if names_a_component_boundary(name) {
+        return Err(MutationError::ComponentBoundary);
     }
     Ok(())
 }
@@ -83,22 +105,29 @@ fn refuse_oversized_value(
     Ok(())
 }
 
+/// Whether a value handed to a write door has a spelling that reads back as itself.
+///
+/// Asked of the *spelling*, not of the octets that were handed over, because the two doors
+/// below write a spelling and RFC 6868 gives one to two octets section 3.2 cannot write. What
+/// is left with no spelling at all is a control character other than `LF`: it ends the physical
+/// line outright, which is how a parameter assignment becomes a second `ATTENDEE` — the same
+/// injection [`PropertyMut::set_raw`] exists to refuse, arriving through the channel
+/// `ical-itip` applies an off-the-wire transition through.
+fn parameter_value_is_writable(value: &[u8]) -> bool {
+    parameter_is_representable(encode_caret(value).as_ref())
+}
+
 /// Refuse an edit RFC 5545 section 3.2 has no way to write back as the edit that was made.
 ///
 /// A [`ParameterEdit`] carries a *value*, not the octets of a line, so writing one means
-/// choosing its section 3.2 spelling — and three shapes have no spelling at all. A `DQUOTE`
-/// is excluded from `QSAFE-CHAR` and section 3.2 defines no escape that would return it, so a
-/// quoted value carrying one reads back as something shorter with the rest of the line
-/// attached. A control character ends the physical line outright, which is how a parameter
-/// assignment becomes a second `ATTENDEE` — the same injection
-/// [`PropertyMut::set_raw`] exists to refuse, arriving through the channel `ical-itip` applies
-/// an off-the-wire transition through. And a name carrying a delimiter is a name the reader
-/// hands back in pieces.
+/// choosing its spelling — and one shape has none. A control character ends the physical line,
+/// and a name carrying a delimiter is a name the reader hands back in pieces.
 ///
-/// The other shapes are written rather than refused: `:` `;` and `,` are excluded from
+/// The other shapes are spelled rather than refused. `:` `;` and `,` are excluded from
 /// `SAFE-CHAR` and included in `QSAFE-CHAR`, so [`quote_parameter_into`] puts them inside a
-/// `DQUOTE` pair and the value survives. Refusing those would refuse
-/// `CN="Doe, John"`, which every client in the corpus writes.
+/// `DQUOTE` pair; a `DQUOTE` and a newline are excluded from both and RFC 6868 section 2
+/// supplies the pair each is written as. Refusing the first would refuse `CN="Doe, John"`,
+/// which every client in the corpus writes.
 fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError> {
     for entry in edits {
         if !parameter_name_is_representable(entry.name()) {
@@ -106,7 +135,7 @@ fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError>
         }
         if entry
             .value()
-            .is_some_and(|held| !parameter_is_representable(held))
+            .is_some_and(|held| !parameter_value_is_writable(held))
         {
             return Err(MutationError::NotRepresentable);
         }
@@ -114,29 +143,41 @@ fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError>
     Ok(())
 }
 
-/// One parameter in the section 3.2 spelling its value requires, the refusals already made.
+/// One parameter in the spelling its value requires, the refusals already made.
 ///
-/// The value is stored quoted where `SAFE-CHAR` excludes what it carries, because that is the
-/// form the tree stores for a value that was read: a parameter keeps the quotes its producer
-/// wrote, so a parameter this crate writes has to carry the quotes its value needs. Storing the
-/// bare octets instead would put a `:` on the wire unquoted and the next read would end the
-/// header at it.
+/// Two transformations, in the order a reader undoes them. RFC 6868's encoding first, because
+/// it is stated over the value's own octets and a caret it writes must not then be read as one
+/// the caller supplied: leave a literal `^` alone and the `^n` a caller handed over comes back
+/// a newline, which is `caret.rs`'s own sentence with the roles swapped. Section 3.2's quoting
+/// second, over what that produced, because the `DQUOTE`s it adds delimit the value rather than
+/// belong to it.
+///
+/// The result is stored, quotes and all, because that is the form the tree holds for a value
+/// that was read: a parameter keeps the spelling its producer wrote, so a parameter this crate
+/// writes has to carry the spelling its value needs. Which is also the contract this door
+/// states — it takes a value and not a spelling, so a caller moving a parameter from one line
+/// to another resolves it with [`decode_caret`](ical_grammar::decode_caret) first.
 fn spelled_parameter(name: &[u8], value: &[u8]) -> Parameter {
     let mut spelled = Vec::new();
-    quote_parameter_into(value, &mut spelled);
+    quote_parameter_into(encode_caret(value).as_ref(), &mut spelled);
     Parameter::new(RawText::from_bytes(name), RawText::from_vec(spelled))
 }
 
 impl Parameter {
-    /// A parameter a caller is assembling, refused where section 3.2 has no way to write it.
+    /// A parameter a caller is assembling, refused where nothing can write it.
+    ///
+    /// The value is what it means rather than how it is spelled: `Doe, John` is written
+    /// `"Doe, John"` and `Ann ^n Marie` is written `Ann ^^n Marie`, which is what
+    /// [`decode_caret`](ical_grammar::decode_caret) reads back as the value that was handed
+    /// over.
     ///
     /// # Errors
     ///
     /// [`MutationError::NotRepresentable`] for a name the reader would hand back in pieces, and
-    /// for a value carrying a `DQUOTE` or a control character — the two shapes `QSAFE-CHAR`
-    /// excludes and section 3.2 defines no escape for.
+    /// for a value carrying a control character that neither section 3.2 nor RFC 6868 has a
+    /// spelling for.
     pub fn create(name: &[u8], value: &[u8]) -> Result<Self, MutationError> {
-        if !parameter_name_is_representable(name) || !parameter_is_representable(value) {
+        if !parameter_name_is_representable(name) || !parameter_value_is_writable(value) {
             return Err(MutationError::NotRepresentable);
         }
         Ok(spelled_parameter(name, value))
@@ -160,9 +201,11 @@ impl Property {
     /// # Errors
     ///
     /// [`MutationError::NotRepresentable`] for a name that would not read back whole — the
-    /// empty one included — and [`MutationError::IllegalControlCharacter`] for a value carrying
-    /// one, which is refused rather than escaped because escaping would silently store
-    /// something other than what the caller asked to store.
+    /// empty one included — [`MutationError::ComponentBoundary`] for `BEGIN` and `END`, which
+    /// read back whole and read back as something other than a property, and
+    /// [`MutationError::IllegalControlCharacter`] for a value carrying one, which is refused
+    /// rather than escaped because escaping would silently store something other than what the
+    /// caller asked to store.
     pub fn create(
         name: &[u8],
         parameters: Vec<Parameter>,
@@ -171,6 +214,7 @@ impl Property {
         if !property_name_is_representable(name) {
             return Err(MutationError::NotRepresentable);
         }
+        refuse_component_boundary(name)?;
         refuse_control_characters(value)?;
         Ok(Self::new(
             RawText::from_bytes(name),
@@ -370,7 +414,14 @@ impl<T> PropertyMut<'_, T> {
     /// The value's text and this line's recorded fold layout go; the property's name, its
     /// parameters, its terminator, and every other line in the component stay exactly as they
     /// were. A refused write changes nothing at all, because the refusal comes first.
+    ///
+    /// A property named `BEGIN` or `END` is refused rather than written. The reader keeps one
+    /// of those — an `END` that named the wrong component is a property, and section 3.6
+    /// recovery says so — and what that property's value says is exactly what decides whether
+    /// the next reader closes a component on it. A write there is a write to the file's
+    /// nesting, which is not something the value of one property is allowed to be.
     pub fn set_raw(&mut self, bytes: &[u8]) -> Result<(), MutationError> {
+        refuse_component_boundary(self.property().name().as_bytes())?;
         refuse_control_characters(bytes)?;
         self.property_mut()
             .set_value_text(RawText::from_bytes(bytes));
@@ -385,6 +436,7 @@ impl<T: EncodeValue> PropertyMut<'_, T> {
     /// observable in a state where the two disagree, and both come after the encoding and the
     /// refusal, so that a value which cannot be written leaves the property as it was.
     pub fn set(&mut self, value: &T) -> Result<(), MutationError> {
+        refuse_component_boundary(self.property().name().as_bytes())?;
         let mut encoded = ValueBuf::new();
         value.encode_value(&mut encoded)?;
         refuse_control_characters(encoded.as_bytes())?;
@@ -437,8 +489,20 @@ impl Component {
     /// it is read through the same content-line reader a file is. A replacement that is empty,
     /// that this crate cannot read, that names another property, or that is more than one line
     /// is [`MutationError::MalformedReplacement`]; a change to a property that is not in this
-    /// component is [`MutationError::Absent`]; and a value past the caller's per-value bound is
+    /// component is [`MutationError::Absent`]; a change addressed to `BEGIN` or `END` is
+    /// [`MutationError::ComponentBoundary`], since none of these four variants is a way to
+    /// restructure a document; and a value past the caller's per-value bound is
     /// [`MutationError::ValueTooLarge`], refused rather than truncated.
+    ///
+    /// Every variant addresses the *identity* `id` names rather than one occurrence of it.
+    /// A component carrying two `DTSTART`s is a component this crate reports
+    /// [`DiagnosticCode::DuplicateProperty`](ical_grammar::DiagnosticCode::DuplicateProperty)
+    /// about and refuses to pick a winner in; a change that wrote one of the two and said
+    /// nothing would leave the identity the caller addressed carrying two different values,
+    /// with no way to see that it half happened. So a replacement writes every occurrence, a
+    /// parameter edit reaches every occurrence, and a removal takes every occurrence — one
+    /// vocabulary, one rule. The narrower door is [`Component::get_mut`], which names one
+    /// property and documents that it is the first.
     pub fn apply(
         &mut self,
         id: &PropertyId,
@@ -447,35 +511,65 @@ impl Component {
     ) -> Result<(), MutationError> {
         match change {
             ProposedChange::Replace(replacement) => {
+                refuse_component_boundary(id.as_bytes())?;
                 let line = read_named_line(id, replacement.as_bytes(), limits)?;
-                self.overwrite(id, line)
+                self.overwrite(id, &line)
             },
             ProposedChange::Add(addition) => {
+                refuse_component_boundary(id.as_bytes())?;
                 let line = read_named_line(id, addition.as_bytes(), limits)?;
                 self.insert_after_properties(line);
                 Ok(())
             },
             ProposedChange::SetParameters(edits) => {
+                refuse_component_boundary(id.as_bytes())?;
                 // Refused before the property is reached, so a refused change leaves the
                 // component exactly as it was — layout included, since asking a property for
                 // its parameters is itself what discards the recorded folds.
                 refuse_unwritable_edits(edits)?;
-                let property = self.property_with_id_mut(id).ok_or(MutationError::Absent)?;
                 // The value's text is untouched, which is the whole reason this variant
                 // exists. The line's layout goes anyway, because the parameters were part of
                 // the line the folds were positions into.
-                apply_parameter_edits(property.edit_parameters(), edits);
-                Ok(())
+                let reached = self.for_each_property_with_id(id, |property| {
+                    apply_parameter_edits(property.edit_parameters(), edits);
+                });
+                if reached {
+                    Ok(())
+                } else {
+                    Err(MutationError::Absent)
+                }
             },
             ProposedChange::Remove => self.remove_named(id),
         }
     }
 
-    /// The first property directly inside this component with the identity `id`, mutably.
+    /// Run `act` over every property directly inside this component with the identity `id`,
+    /// answering whether there was one.
     ///
     /// Nested components are skipped, as they are on the reading side: a `DTSTART` inside a
     /// `VALARM` belongs to the alarm, and writing through it would edit a component the caller
     /// did not name.
+    fn for_each_property_with_id<F: FnMut(&mut Property)>(
+        &mut self,
+        id: &PropertyId,
+        mut act: F,
+    ) -> bool {
+        let mut reached = false;
+        for property in self
+            .items_mut()
+            .iter_mut()
+            .filter_map(Item::as_property_mut)
+        {
+            if !property.has_id(id) {
+                continue;
+            }
+            act(property);
+            reached = true;
+        }
+        reached
+    }
+
+    /// The first property directly inside this component with the identity `id`, mutably.
     fn property_with_id_mut(&mut self, id: &PropertyId) -> Option<&mut Property> {
         self.items_mut()
             .iter_mut()
@@ -483,18 +577,23 @@ impl Component {
             .find(|property| property.has_id(id))
     }
 
-    /// Write `line` over the property `id` names — name, parameters and value together.
-    fn overwrite(&mut self, id: &PropertyId, line: ParsedLine) -> Result<(), MutationError> {
-        let property = self.property_with_id_mut(id).ok_or(MutationError::Absent)?;
-        property.set_name(RawText::from_vec(line.name));
-        let parameters = property.edit_parameters();
-        // Every parameter goes, including ones the replacement did not mention: a replacement
-        // states a whole content line, so a parameter it left out is one it does not have.
-        // The narrower edit that keeps them is `SetParameters`.
-        parameters.clear();
-        parameters.extend(line.parameters);
-        property.set_value_text(RawText::from_vec(line.value));
-        Ok(())
+    /// Write `line` over every property `id` names — name, parameters and value together.
+    fn overwrite(&mut self, id: &PropertyId, line: &ParsedLine) -> Result<(), MutationError> {
+        let reached = self.for_each_property_with_id(id, |property| {
+            property.set_name(RawText::from_bytes(&line.name));
+            let parameters = property.edit_parameters();
+            // Every parameter goes, including ones the replacement did not mention: a
+            // replacement states a whole content line, so a parameter it left out is one it
+            // does not have. The narrower edit that keeps them is `SetParameters`.
+            parameters.clear();
+            parameters.extend(line.parameters.iter().cloned());
+            property.set_value_text(RawText::from_bytes(&line.value));
+        });
+        if reached {
+            Ok(())
+        } else {
+            Err(MutationError::Absent)
+        }
     }
 
     /// Insert `line` as a new property, after the last property already in this component.
@@ -1005,10 +1104,10 @@ mod tests {
     #[test]
     fn a_parameter_edit_the_grammar_cannot_write_at_all_is_refused_and_writes_nothing() {
         let refused: [ParameterEdit; 6] = [
-            // The injection `set_raw` refuses, arriving on the parameter channel instead.
+            // The injection `set_raw` refuses, arriving on the parameter channel instead. RFC
+            // 6868 spells the `LF` and has no pair for the `CR`, so the value still has none.
             ParameterEdit::set(b"X-STATE", b"busy\r\nATTENDEE:mailto:eve@example.test"),
-            // `QSAFE-CHAR` excludes `DQUOTE` and section 3.2 defines no escape for it.
-            ParameterEdit::set(b"X-STATE", b"say \"hi\""),
+            ParameterEdit::set(b"X-STATE", b"carriage\rreturn"),
             ParameterEdit::set(b"X-STATE", b"bell\x07"),
             ParameterEdit::set(b"X-A:B", b"busy"),
             ParameterEdit::set(b"", b"busy"),
@@ -1277,9 +1376,70 @@ mod tests {
             Err(MutationError::NotRepresentable)
         );
         assert_eq!(
-            Parameter::create(b"CN", b"say \"hi\""),
+            Parameter::create(b"CN", b"bell\x07"),
             Err(MutationError::NotRepresentable),
-            "a DQUOTE has no section 3.2 spelling, so a parameter carrying one is refused"
+            "a control character has no spelling under either grammar"
+        );
+    }
+
+    /// The two names that read back whole and read back as something else.
+    ///
+    /// `property_name_is_representable` accepts both, and correctly: `END` is a name the reader
+    /// hands back as `END`. What it hands the line to is a component model, and that is the
+    /// layer this refusal is stated at.
+    #[test]
+    fn construction_refuses_the_two_names_that_are_component_boundaries() {
+        for name in [&b"BEGIN"[..], b"END", b"begin", b"EnD"] {
+            assert_eq!(
+                Property::create(name, Vec::new(), b"VEVENT"),
+                Err(MutationError::ComponentBoundary),
+                "{name:?}"
+            );
+        }
+        assert!(
+            Property::create(b"X-BEGIN", Vec::new(), b"VEVENT").is_ok(),
+            "the refusal is the name and not a prefix of it"
+        );
+    }
+
+    /// The same refusal on the two write doors, and on the change vocabulary.
+    ///
+    /// A property named `END` is a thing the reader produces — section 3.6 recovery keeps a
+    /// mismatched `END` as one — so a caller really can hold a guard over it. What that guard
+    /// may not do is write the value that turns the line back into a boundary.
+    #[test]
+    fn a_write_to_a_property_that_is_a_component_boundary_is_refused() {
+        let mut property = Property::new(
+            RawText::from_bytes(b"END"),
+            Vec::new(),
+            RawText::from_bytes(b"VTODO"),
+            LineLayout::preserved(Vec::new(), Some(LineEnding::CrLf), true),
+        );
+        let mut guard: PropertyMut<'_, TextValue<'_>> = PropertyMut::new(&mut property);
+        assert_eq!(
+            guard.set_raw(b"VEVENT"),
+            Err(MutationError::ComponentBoundary)
+        );
+        assert_eq!(property.value_text().as_bytes(), b"VTODO");
+
+        let mut component = event(vec![Item::Property(property)]);
+        let identity = PropertyId::from_name(b"END");
+        let changes = [
+            ProposedChange::Replace(RawText::from_bytes(b"END:VEVENT\r\n")),
+            ProposedChange::Add(RawText::from_bytes(b"END:VEVENT\r\n")),
+            ProposedChange::SetParameters(vec![ParameterEdit::set(b"X-A", b"1")]),
+        ];
+        for change in changes {
+            assert_eq!(
+                component.apply(&identity, &change, Limits::DEFAULT),
+                Err(MutationError::ComponentBoundary),
+                "{change:?}"
+            );
+        }
+        assert_eq!(
+            component.apply(&identity, &ProposedChange::Remove, Limits::DEFAULT),
+            Ok(()),
+            "removing the line is not authoring one, so a removal is not refused"
         );
     }
 

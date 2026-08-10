@@ -182,3 +182,57 @@ reviewer would have decided two of these differently — uniform `Result` access
 parameter-granular dirty flag answering the invalidation-scope question deferred to ADR-0004 — and
 both remain live. None of it has been compiled: `ical-core` is doc comments and `#![no_std]`, so
 every mechanism above is a promise about a repository that does not yet exist.
+
+## Amendments
+
+Four sentences above were written before the code was, and each is amended here rather than
+quietly reinterpreted. Every one of them was found by an adversarial pass against M0, and each
+has a conformance case in `ical-conform` addressed to the RFC section it comes from.
+
+**1. The serializer writes one octet no line stored, and it is not only an insertion that
+needs it.** The paragraph above scopes the terminator a line owes to `Component::apply`'s
+insertion path, which is where a caller most often creates the need for one. It is not the only
+path there. A property read out of a truncated export carries a layout with no terminator, is
+`Clone`, and is reachable through `Document::items()`; pushed above another line through
+`Component::items_mut`, it stores two content lines and writes one, with the second line's
+octets glued to the first one's value and nothing reported. So the rule is stated at the
+serializer instead: a stored line that carried no terminator and is not the last thing written
+is written with the one section 3.1 requires. A line that is still last is still written without
+one, so a file that ended mid-line still does, and for every document that was parsed the flag
+is never set — a parse can only produce an unterminated line as the last line of its input.
+
+**2. The write side refuses a line that is a component boundary.** "Refusal on the way out, of
+octets that were never read from anywhere, costs nothing" was stated over the grammar's own
+predicate, which asks whether a name reads back whole. `BEGIN` and `END` read back whole and
+read back as something that is not a property: a line named either of them opens or closes a
+component for whoever reads the file next, so a write that authored one would restructure the
+document through a door that names one property. `Property::create`, `PropertyMut::set_raw`,
+`PropertyMut::set` and three of `Component::apply`'s four variants refuse it as
+`MutationError::ComponentBoundary`; `ProposedChange::Remove` does not, because removing a line
+is not authoring one. The reader still stores such a line — section 3.6 recovery keeps a
+mismatched `END` as a property — so this costs the round trip nothing and costs the caller the
+ability to edit that one property's value, which is the honest price. A caller wanting a
+component calls `Component::create`, which writes both of its lines.
+
+**3. A parameter value is written in the spelling RFC 6868 gives it, not only the one section
+3.2 does.** "Refused where `QSAFE-CHAR` has no spelling at all" was true of section 3.2 read
+alone and is not true of the crate, which reads and writes RFC 6868's caret encoding in both
+directions. A door that takes a value and picks its spelling — which quoting already made it —
+owes the whole spelling: a `DQUOTE` is written `^'`, a newline `^n`, and a `^` is written `^^`,
+without which a value the caller spelled `^n` comes back a newline from this crate's own codec.
+What has no spelling under either grammar is still refused, which is every control character
+RFC 6868 gives no pair, `CR` included — so the injection refusal is unchanged. The consequence
+worth stating: these doors take a *value* rather than a spelling, so a caller moving a parameter
+from one line to another resolves it with `decode_caret` first.
+
+**4. The entailment audit is what M0 built, and it is one of the three this document names.**
+`Component::audit` reports `DTEND` against `DURATION` in a `VEVENT` and `DUE` against `DURATION`
+in a `VTODO`, as `DiagnosticCode::MutuallyExclusiveProperties`. The other two named above are
+not built. Both turn on a *value* rather than on a pair of names — the all-day CDO pair against
+`DTSTART`'s value type, and `RRULE`'s `UNTIL` against `DTSTART`'s form and zone — and the second
+needs the section 3.3.10 grammar `ical-recur` owns, so it belongs to M1. Section 3.6.6's
+`DURATION` and `REPEAT`, which must appear together or not at all, and section 3.6.2's
+`DURATION` needing a `DTSTART` to measure from, are the same kind of claim and are also unbuilt.
+The audit was already advisory and already "a finite list against an infinite problem"; what
+this amendment adds is which finite list, so that a reader of `schema.rs` is not deferred onto
+an audit that does not make the claim.

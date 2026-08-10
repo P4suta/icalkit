@@ -232,6 +232,14 @@ pub enum MutationError {
     MalformedReplacement,
     /// The value cannot be written in any form RFC 5545 defines.
     NotRepresentable,
+    /// The line the write would author is a component boundary rather than a property.
+    ///
+    /// A property named `BEGIN` or `END` is written as a line the next reader opens or closes
+    /// a component on, so a write that produced one would move every line after it into a
+    /// component nobody added. The reader stores such a line — it has to, since the file holds
+    /// one — and this crate declines to author one: a component is built with
+    /// [`Component::create`](crate::Component::create), which writes both of its boundaries.
+    ComponentBoundary,
     /// The written value exceeded the caller's per-value bound.
     ValueTooLarge {
         /// The per-value bound in octets.
@@ -250,6 +258,9 @@ impl Display for MutationError {
                 formatter.write_str("a replacement must be exactly one content line")
             },
             Self::NotRepresentable => formatter.write_str("the value has no RFC 5545 form"),
+            Self::ComponentBoundary => {
+                formatter.write_str("a property named BEGIN or END is a component boundary")
+            },
             Self::ValueTooLarge { limit } => {
                 write!(formatter, "the value exceeds {limit} octets")
             },

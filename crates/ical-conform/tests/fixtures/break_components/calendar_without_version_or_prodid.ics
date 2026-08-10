@@ -1,0 +1,7 @@
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:headerless@example.test
+DTSTAMP:20260810T090000Z
+SUMMARY:A calendar with no header at all
+END:VEVENT
+END:VCALENDAR

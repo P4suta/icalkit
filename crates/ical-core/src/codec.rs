@@ -308,6 +308,12 @@ impl<'a> DecodeValue<'a> for DateTimeValue<'a> {
 
 impl EncodeValue for DateTimeValue<'_> {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
+        // The zone is refused here rather than where the parameter is written, so a value whose
+        // zone no line could name leaves the property exactly as it was: `set` encodes before
+        // it touches anything (`docs/adr/0001`).
+        if !names_a_writable_zone(*self) {
+            return Err(MutationError::NotRepresentable);
+        }
         match *self {
             Self::Date(date) => encode_date(out, date),
             // A zoned date-time is written as the floating octets it is: section 3.3.5 gives
@@ -453,6 +459,15 @@ impl DecodeValue<'_> for Duration {
 impl EncodeValue for Duration {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
         let (days, seconds) = single_signed(*self).ok_or(MutationError::NotRepresentable)?;
+        // A magnitude with no positive counterpart is a span section 3.3.6 cannot write: the
+        // grammar carries the sign outside the number, so the text would state a count this
+        // crate's own reader refuses at the `i64` it reads terms into. `single_signed` makes
+        // the same refusal one branch earlier for a span whose two halves cannot be reconciled,
+        // and this is the other end of it — an encoder exists only where the value determines
+        // its own text, and no text determines this one.
+        if days == i64::MIN || seconds == i64::MIN {
+            return Err(MutationError::NotRepresentable);
+        }
         if days < 0 || seconds < 0 {
             out.push_octet(b'-');
         }
@@ -510,7 +525,22 @@ fn is_positive(span: Duration) -> bool {
 
 /// Whether `bound` is one section 3.3.9 can write: a date-time, and never a date.
 const fn is_period_bound(bound: DateTimeValue<'_>) -> bool {
-    bound.time().is_some()
+    bound.time().is_some() && names_a_writable_zone(bound)
+}
+
+/// Whether the zone this value states is one a `TZID` parameter could name it by.
+///
+/// The read side has already ruled on the empty one: `zone_of` says "an empty `TZID` names no
+/// zone, so it is not one: `TZID=:` reads as a floating date-time". A write that emitted
+/// `TZID=` for a zoned value would therefore state a zone the very next read answers `Local`
+/// to — the zone the caller named, gone, with nothing returned and nothing reported. The two
+/// sides get one rule, so what the reader will not read back as a zone is not a zone this
+/// crate writes.
+const fn names_a_writable_zone(value: DateTimeValue<'_>) -> bool {
+    match value {
+        DateTimeValue::Zoned { tzid, .. } => !tzid.is_empty(),
+        DateTimeValue::Date(_) | DateTimeValue::Local(_) | DateTimeValue::Utc(_) => true,
+    }
 }
 
 /// Whether the two bounds of an explicit period name two different zones.
@@ -739,13 +769,21 @@ fn all_digits(bytes: &[u8]) -> bool {
 }
 
 /// Read one section 3.3.7 `FLOAT`.
+///
+/// The syntax check is not the whole of the refusal. `1` followed by three hundred and nine
+/// zeros is section 3.3.7's `FLOAT` exactly — every octet a digit — and the nearest `f64` to it
+/// is infinity, so a guard written to keep `inf` out by refusing the spellings that name it
+/// lets `inf` in through a spelling that names a number. A magnitude the target type cannot
+/// hold is a malformed value and not the largest representable one, which is the answer
+/// [`decimal`] already gives a `SEQUENCE` of two hundred digits rather than saturating it.
 fn decode_float(bytes: &[u8]) -> Option<f64> {
     if !is_float_text(bytes) {
         return None;
     }
     // Every octet was checked to be a sign, a digit or a dot, so the text conversion cannot
     // fail; it is asked rather than assumed because this module has no unchecked step.
-    str::from_utf8(bytes).ok()?.parse::<f64>().ok()
+    let value = str::from_utf8(bytes).ok()?.parse::<f64>().ok()?;
+    value.is_finite().then_some(value)
 }
 
 impl DecodeValue<'_> for f64 {
@@ -762,17 +800,35 @@ impl DecodeValue<'_> for f64 {
 ///
 /// The range of the pair is not checked. A latitude past the pole is a claim about the world
 /// rather than about the grammar, the diagnostic this decoder reports is about the grammar,
-/// and the text is written back either way.
-fn decode_geo(bytes: &[u8]) -> Option<Geo> {
-    let separator = bytes.iter().position(|&octet| octet == b';')?;
-    let latitude = decode_float(bytes.get(..separator)?)?;
-    let longitude = decode_float(after(bytes.get(separator..)?, b';')?)?;
-    Some(Geo::new(latitude, longitude))
+/// and the text is written back either way. A magnitude past what an `f64` holds is the other
+/// thing, and it is reported as the code the half that failed earns:
+/// [`DiagnosticCode::MalformedFloat`] where both halves are section 3.3.7's syntax and one of
+/// them names no number this crate can hold, and [`DiagnosticCode::MalformedGeo`] where the
+/// pair is not a pair at all.
+fn decode_geo(bytes: &[u8]) -> Result<Geo, DiagnosticCode> {
+    let separator = bytes
+        .iter()
+        .position(|&octet| octet == b';')
+        .ok_or(DiagnosticCode::MalformedGeo)?;
+    let written = (
+        bytes.get(..separator).ok_or(DiagnosticCode::MalformedGeo)?,
+        after(
+            bytes.get(separator..).ok_or(DiagnosticCode::MalformedGeo)?,
+            b';',
+        )
+        .ok_or(DiagnosticCode::MalformedGeo)?,
+    );
+    if !is_float_text(written.0) || !is_float_text(written.1) {
+        return Err(DiagnosticCode::MalformedGeo);
+    }
+    let latitude = decode_float(written.0).ok_or(DiagnosticCode::MalformedFloat)?;
+    let longitude = decode_float(written.1).ok_or(DiagnosticCode::MalformedFloat)?;
+    Ok(Geo::new(latitude, longitude))
 }
 
 impl DecodeValue<'_> for Geo {
     fn decode_value(bytes: &[u8]) -> Result<Self, DiagnosticCode> {
-        decode_geo(bytes).ok_or(DiagnosticCode::MalformedGeo)
+        decode_geo(bytes)
     }
 }
 
@@ -1567,10 +1623,10 @@ mod tests {
     fn a_geographic_pair_takes_the_float_grammar_and_not_the_language_one() {
         assert_eq!(
             decode_geo(b"37.386013;-122.082932"),
-            Some(Geo::new(37.386_013, -122.082_932))
+            Ok(Geo::new(37.386_013, -122.082_932))
         );
-        assert_eq!(decode_geo(b"37;-122"), Some(Geo::new(37.0, -122.0)));
-        assert_eq!(decode_geo(b"+0.0;-0.5"), Some(Geo::new(0.0, -0.5)));
+        assert_eq!(decode_geo(b"37;-122"), Ok(Geo::new(37.0, -122.0)));
+        assert_eq!(decode_geo(b"+0.0;-0.5"), Ok(Geo::new(0.0, -0.5)));
 
         // Every spelling below parses as a number in this language and is not one in this
         // format, which is the whole reason the grammar is checked before anything reads it.
@@ -1584,8 +1640,22 @@ mod tests {
             b"37.386013;-122.0;0",
         ];
         for input in rejected {
-            assert_eq!(decode_geo(input), None, "{input:?}");
+            assert_eq!(
+                decode_geo(input),
+                Err(DiagnosticCode::MalformedGeo),
+                "{input:?}"
+            );
         }
+
+        // Section 3.3.7's syntax exactly, and no `f64` holds it. The pair is well formed and
+        // the number is not, so the code names the half that failed.
+        let mut past_the_range = b"1".to_vec();
+        past_the_range.extend(core::iter::repeat_n(b'0', 309));
+        past_the_range.extend_from_slice(b";-122.0");
+        assert_eq!(
+            decode_geo(&past_the_range),
+            Err(DiagnosticCode::MalformedFloat)
+        );
     }
 
     /// The text a `GEO` arrived as is the text that is written back, which is why this type

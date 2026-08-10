@@ -1,0 +1,5 @@
+BEGIN:VEVENT
+UID:1@example.test
+BEGIN:VALARM
+SUMMARY:swallowed by an alarm
+END:VEVENT

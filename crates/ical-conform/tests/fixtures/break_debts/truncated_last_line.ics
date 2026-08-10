@@ -1,0 +1,4 @@
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:1@example.test
+SUMMARY:cut off in transit

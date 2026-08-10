@@ -276,8 +276,8 @@ const EVENT_SCHEMA: ComponentSchema = ComponentSchema {
         // `Component::get` already refuses to pick a winner between them.
         b"RRULE",
         // Section 3.6.1 admits either of these and forbids both together. That "and" is an
-        // entailment between two properties rather than a count of one, so it belongs to the
-        // audit `docs/adr/0001` describes and not to this table.
+        // entailment between two properties rather than a count of one, so the count is here
+        // and the exclusion is in `EXCLUSIVE_PAIRS`, which `Component::audit` reads.
         b"DTEND",
         b"DURATION",
     ],
@@ -316,9 +316,10 @@ const TODO_SCHEMA: ComponentSchema = ComponentSchema {
         b"SUMMARY",
         b"URL",
         b"RRULE",
-        // As in section 3.6.1, the pair is exclusive and the exclusion is an entailment. The
-        // extra condition section 3.6.2 states — that a `DURATION` here needs a `DTSTART` to
-        // measure from — is the same kind of claim and lives in the same place.
+        // As in section 3.6.1, the pair is exclusive and the exclusion is in `EXCLUSIVE_PAIRS`.
+        // The extra condition section 3.6.2 states — that a `DURATION` here needs a `DTSTART`
+        // to measure from — is a third name against a pair rather than a pair, and it is
+        // recorded as deferred in `docs/adr/0001` rather than deferred onto anything here.
         b"DUE",
         b"DURATION",
     ],
@@ -417,6 +418,23 @@ const ALARM_SCHEMA: ComponentSchema = ComponentSchema {
     repeatable: &[b"ATTACH", b"ATTENDEE", b"RELATED-TO", b"UID"],
 };
 
+/// The property pairs section 3.6 admits either of and forbids the two of together.
+///
+/// A table of its own rather than a fourth group inside [`ComponentSchema`], because this is a
+/// relation between two names and that structure is a count of one: every entry there answers
+/// "how often may this name occur", and neither `DTEND` nor `DURATION` has an answer to that
+/// which says anything about the other. Section 3.6.1 writes the pair as an "and" — "either
+/// `DTEND` or `DURATION` may appear, but not both" — and section 3.6.2 writes `DUE` against
+/// `DURATION` the same way.
+///
+/// This is the entailment half of the reading `docs/adr/0001` describes, and it is the whole of
+/// what M0 implements; the two entailments that need a value rather than a name are recorded as
+/// deferred in that ADR's amendments rather than deferred onto this table.
+const EXCLUSIVE_PAIRS: &[(ComponentKind, &[u8], &[u8])] = &[
+    (ComponentKind::Event, b"DTEND", b"DURATION"),
+    (ComponentKind::Todo, b"DUE", b"DURATION"),
+];
+
 /// Whether RFC 5545 defines `name` as a property of anything at all.
 ///
 /// This is the answer that decides silence, and it is derived from the tables rather than kept
@@ -471,12 +489,14 @@ impl Component {
 
     /// Report what RFC 5545 section 3.6 has to say about the properties this component carries.
     ///
-    /// Four codes, and each of them is a claim this crate can defend:
+    /// Five codes, and each of them is a claim this crate can defend:
     /// [`DiagnosticCode::MissingRequiredProperty`] for a name section 3.6 requires and this
     /// component has none of, [`DiagnosticCode::DuplicateProperty`] for a name it allows once
     /// and this component has two of, [`DiagnosticCode::PropertyNotAllowedHere`] for a name
-    /// RFC 5545 defines somewhere and not here, and [`DiagnosticCode::UnknownValueType`] for a
-    /// `VALUE` parameter naming a type this crate cannot read.
+    /// RFC 5545 defines somewhere and not here, [`DiagnosticCode::UnknownValueType`] for a
+    /// `VALUE` parameter naming a type this crate cannot read, and
+    /// [`DiagnosticCode::MutuallyExclusiveProperties`] for a pair section 3.6 admits singly and
+    /// forbids together.
     ///
     /// Nothing is reported about a component with no [`Component::kind`], and nothing is
     /// reported about a property whose name RFC 5545 does not define. Both silences are the
@@ -499,6 +519,38 @@ impl Component {
         };
         self.audit_each_property(kind, meter, sink);
         self.audit_each_name(kind, meter, sink);
+        self.audit_each_pair(kind, meter, sink);
+    }
+
+    /// The pass over the pairs section 3.6 forbids together, in the order the table lists them.
+    ///
+    /// Reported once per pair rather than once per line, for the reason the count pass reports
+    /// once per name: what section 3.6 forbids is the combination, and a `VEVENT` carrying two
+    /// `DTEND`s beside a `DURATION` has one exclusion broken and not two.
+    fn audit_each_pair<S: DiagnosticSink + ?Sized>(
+        &self,
+        kind: ComponentKind,
+        meter: &mut Meter,
+        sink: &mut S,
+    ) {
+        for (owner, first, second) in EXCLUSIVE_PAIRS {
+            if *owner != kind {
+                continue;
+            }
+            if self.carries(first) && self.carries(second) {
+                report_here(
+                    sink,
+                    meter,
+                    DiagnosticCode::MutuallyExclusiveProperties,
+                    Severity::Violation,
+                );
+            }
+        }
+    }
+
+    /// Whether this component directly carries a property named `name`.
+    fn carries(&self, name: &[u8]) -> bool {
+        self.properties().any(|property| property.is_named(name))
     }
 
     /// The pass over the properties as they arrived, in the order a producer wrote them.

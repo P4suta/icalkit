@@ -76,10 +76,16 @@ fn rfc5545_3_1_construction_refuses_every_control_character_rather_than_escaping
 
 /// The same injection through the name and through a parameter, which are lines too.
 ///
-/// A name carrying a `:` ends the header where the caller did not, and a parameter value
-/// carrying a `DQUOTE` closes a quote section 3.2 opened; both write octets back as something
-/// other than what was handed over, so both are refused at the door rather than escaped past
-/// it. The empty name is here because it is the one shape that reads back as nothing at all.
+/// A name carrying a `:` ends the header where the caller did not, so it is refused at the door
+/// rather than escaped past it. The empty name is here because it is the one shape that reads
+/// back as nothing at all, and `BEGIN` and `END` are here because they read back whole and read
+/// back as a component boundary — the one refusal on this door that is about the component
+/// model rather than about the grammar underneath it.
+///
+/// A parameter value is the case where a spelling exists. What has none is a control character
+/// RFC 6868 gives no pair, and that is what this door refuses; a `DQUOTE` and a newline are
+/// written as the pairs section 2 of that RFC defines, which
+/// `write_side_grammar.rs` records with the alternatives it was chosen over.
 ///
 /// **What this crate does not refuse, and why.** Section 3.1's `name` is `iana-token / x-name`
 /// and admits `ALPHA`, `DIGIT` and `-` only, so `SUM MARY` and `SUM.MARY` are names the
@@ -103,7 +109,22 @@ fn rfc5545_3_1_a_constructed_name_and_parameter_are_refused_on_the_same_terms() 
         );
     }
 
-    let values: &[&[u8]] = &[b"say \"hi\"", INJECTION, b"bell\x07"];
+    // Refused on the name and not on the component: `Component::create(b"VEVENT", ..)` writes
+    // both boundary lines itself, which is the door a caller wanting one is pointed at.
+    let boundaries: &[&[u8]] = &[b"BEGIN", b"END", b"begin", b"EnD"];
+    for name in boundaries {
+        assert_eq!(
+            Property::create(name, Vec::new(), b"VEVENT").err(),
+            Some(MutationError::ComponentBoundary),
+            "property name {name:?} was accepted"
+        );
+        assert!(
+            Component::create(name, Vec::new()).is_ok(),
+            "component name {name:?} was refused, and a component named BEGIN round-trips"
+        );
+    }
+
+    let values: &[&[u8]] = &[INJECTION, b"bell\x07", b"a\rb", b"delete\x7f"];
     for value in values {
         assert_eq!(
             Parameter::create(b"CN", value).err(),

@@ -1,0 +1,8 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Corp//Corpus//EN
+BEGIN:VTIMEZONE
+TZID:Example/Nowhere
+TZURL:http://example.test/zones/Nowhere
+END:VTIMEZONE
+END:VCALENDAR

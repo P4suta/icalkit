@@ -26,6 +26,16 @@
 //! only error it returns is the sink's. A calendar that violated the specification on the way
 //! in violates it identically on the way out, because the violation was reported when it was
 //! read and rewriting it here would turn a diagnostic into a repair (`docs/adr/0009`).
+//!
+//! Two octets are written that no line stored, and both exist because a line has to come back
+//! as the line it was. A line whose producer left it unterminated is written unterminated for
+//! as long as it is last, and gains a terminator the moment something is written after it: two
+//! content lines with nothing between them are one content line, so keeping the octets a tree
+//! holds means writing the delimiter that separates them (`docs/adr/0001`, amendment 1). And a
+//! line whose first octet is `SP` or `HTAB` is a line RFC 5545 section 3.1 would read as a
+//! continuation of the one above, so a line this crate refolds is opened with a fold of its
+//! own where its name begins with whitespace — which is how it arrived, since only a fold at
+//! octet zero can put whitespace there.
 
 use alloc::vec::Vec;
 use core::{mem, slice};
@@ -94,6 +104,7 @@ struct OpenComponent<'a> {
 fn write_items<W: Writer + ?Sized>(items: &[Item], sink: &mut W) -> Result<(), W::Error> {
     let mut open: Vec<OpenComponent<'_>> = Vec::new();
     let mut cursor = items.iter();
+    let mut owed = false;
     loop {
         let Some(entry) = cursor.next() else {
             // This component's entries are done: close it and carry on where its parent was.
@@ -101,21 +112,67 @@ fn write_items<W: Writer + ?Sized>(items: &[Item], sink: &mut W) -> Result<(), W
                 return Ok(());
             };
             if let Some(closing) = finished.end {
-                write_boundary(closing, sink)?;
+                write_line(Line::Boundary(closing), sink, &mut owed)?;
             }
             cursor = finished.rest;
             continue;
         };
         match entry {
-            Item::Property(property) => write_property(property, sink)?,
+            Item::Property(property) => write_line(Line::Property(property), sink, &mut owed)?,
             Item::Component(component) => {
-                write_boundary(component.begin(), sink)?;
+                write_line(Line::Boundary(component.begin()), sink, &mut owed)?;
                 open.push(OpenComponent {
                     rest: mem::replace(&mut cursor, component.items().iter()),
                     end: component.end(),
                 });
             },
         }
+    }
+}
+
+/// One line of the file, whichever of the two kinds of node states it.
+#[derive(Clone, Copy)]
+enum Line<'a> {
+    /// A content line stored as a property.
+    Property(&'a Property),
+    /// A `BEGIN` or an `END`.
+    Boundary(&'a Boundary),
+}
+
+impl Line<'_> {
+    /// The syntax recorded for this line.
+    fn layout(&self) -> &LineLayout {
+        match *self {
+            Self::Property(property) => property.layout(),
+            Self::Boundary(boundary) => boundary.layout(),
+        }
+    }
+}
+
+/// Write one line, giving the line above it the terminator it turned out to owe.
+///
+/// `owed` carries the one fact a line needs about the line before it: that it carried no
+/// terminator. A parse produces such a line only as the last of the input, so for every
+/// document that was read this flag is false at every write and the octets are the octets that
+/// arrived. It is a tree assembled another way — a property taken out of a truncated export and
+/// pushed above another through [`Component::items_mut`](crate::Component::items_mut) — where
+/// the line stops being last, and writing those two lines with nothing between them would store
+/// two and read back one, with the second line's octets glued to the first one's value.
+///
+/// The terminator is the one RFC 5545 section 3.1 requires. Which terminator a producer wrote
+/// is preserved wherever a producer wrote one; there is none to preserve here, because the
+/// separation between these two lines is not something any producer ever expressed.
+fn write_line<W: Writer + ?Sized>(
+    line: Line<'_>,
+    sink: &mut W,
+    owed: &mut bool,
+) -> Result<(), W::Error> {
+    if mem::replace(owed, line.layout().ending().is_none()) {
+        sink.write_bytes(LineEnding::CANONICAL.as_bytes())?;
+    }
+    match line {
+        Line::Property(property) => write_property(property, sink),
+        Line::Boundary(boundary) => write_boundary(boundary, sink),
     }
 }
 
@@ -229,7 +286,17 @@ impl<'a, W: Writer + ?Sized> LineWriter<'a, W> {
     }
 
     /// Append a span, breaking the line at the canonical width as often as the span needs.
+    ///
+    /// A line whose very first octet is `SP` or `HTAB` is opened with a fold, because
+    /// section 3.1 reads whitespace after a terminator as a continuation of the line above:
+    /// written flat, such a line would not be a line at all, and the property it holds would
+    /// disappear into its neighbor on the next read. Only a fold at octet zero can have put
+    /// whitespace there, so this writes back the shape the property arrived in — the one thing
+    /// discarding the recorded layout would otherwise cost it.
     fn push_refolded(&mut self, bytes: &[u8]) -> Result<(), W::Error> {
+        if self.position == 0 && matches!(bytes.first(), Some(&(b' ' | b'\t'))) {
+            self.break_line(LineEnding::CANONICAL, b' ')?;
+        }
         let mut rest = bytes;
         while !rest.is_empty() {
             let room = REFOLD_WIDTH.saturating_sub(self.column);

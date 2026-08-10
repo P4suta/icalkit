@@ -14,11 +14,12 @@
 //! Three rules, each with an RFC section behind it, each added because a scoped write reached
 //! past the property it named:
 //!
-//! - **Section 3.2, `SAFE-CHAR` and `QSAFE-CHAR`.** A parameter value carrying `:` `;` or `,`
-//!   is written inside a `DQUOTE` pair, because those three are excluded from an unquoted
-//!   value and each of them ends something. One carrying a `DQUOTE` or a control character is
-//!   refused, because `QSAFE-CHAR` excludes both and section 3.2 defines no escape that would
-//!   return them: there is no spelling to pick.
+//! - **Section 3.2, `SAFE-CHAR` and `QSAFE-CHAR`, and RFC 6868 section 2.** A parameter value
+//!   carrying `:` `;` or `,` is written inside a `DQUOTE` pair, because those three are
+//!   excluded from an unquoted value and each of them ends something. One carrying a `DQUOTE`
+//!   or a newline is written in the caret pair RFC 6868 gives it, and a `^` is written `^^` so
+//!   that those pairs stay unambiguous. One carrying a control character neither of them
+//!   spells is refused: there is no spelling to pick.
 //! - **Section 3.2, `param-name`.** A parameter name carrying a delimiter is refused for the
 //!   same reason, one level up.
 //! - **Section 3.1, content lines.** A line written after another line is a second content
@@ -31,7 +32,7 @@
 
 use ical_core::{
     Component, Diagnostic, Document, Item, Limits, MutationError, ParameterEdit, ParseError,
-    Property, PropertyId, ProposedChange, RawText,
+    Property, PropertyId, ProposedChange, RawText, TextValue, decode_caret,
 };
 
 /// A calendar with one decorated `SUMMARY`, terminated as section 3.1 asks.
@@ -101,6 +102,19 @@ fn parameters_of(component: &Component, name: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> 
         .collect()
 }
 
+/// The value one parameter of one property stands for: the quotes off and the carets resolved.
+///
+/// Both steps, in the order a reader undoes them, because that is what "the value this crate
+/// wrote" means once the write door spells one.
+fn decoded_parameter(component: &Component, property: &[u8], parameter: &[u8]) -> Option<Vec<u8>> {
+    component
+        .properties()
+        .find(|held| held.is_named(property))?
+        .parameters_named(parameter)
+        .next()
+        .map(|held| decode_caret(held.unquoted()).into_owned())
+}
+
 /// RFC 5545 section 3.2: `SAFE-CHAR` excludes `:` `;` and `,` from an unquoted parameter
 /// value, and `QSAFE-CHAR` admits all three.
 ///
@@ -147,29 +161,63 @@ fn rfc5545_3_2_a_written_parameter_value_is_quoted_where_the_grammar_forces_it()
     }
 }
 
-/// RFC 5545 section 3.2: `QSAFE-CHAR` excludes `DQUOTE` and every `CONTROL` octet, and section
-/// 3.2 defines no escape that would bring either back.
+/// RFC 6868 section 2: the caret encoding supplies the two spellings section 3.2 lacks, and
+/// requires a `^` to be written `^^` so that the first two stay unambiguous.
 ///
-/// **Where implementations differ.** RFC 6868 defines a caret encoding — `^n` for a newline,
-/// `^^` for a caret, `^'` for a `DQUOTE` — which is exactly the missing spelling, and clients
-/// that implement it write these values rather than refusing them. `ical-grammar` now reads
-/// and writes that encoding in both directions (`decode_caret`/`encode_caret`), but it is a
-/// codec a caller opts into rather than a storage rule: a `^'` read out of a file stays the
-/// two octets it arrived as, and the mutation door still refuses a `DQUOTE` or a control
-/// octet, because `parameter_is_representable` has not been taught to consult `encode_caret`.
-/// Both outcomes are permitted, and the two are recorded here:
+/// A write door takes a *value* and picks its spelling — that is what quoting already is — so
+/// the encoding belongs to the same step. `say "hi"` is written `say ^'hi^'` and `Ann ^n Marie`
+/// is written `Ann ^^n Marie`, and `decode_caret` reads each back as the octets that were
+/// handed over. Leaving the caret alone was the defect this case now records the closing of:
+/// the door wrote `Ann ^n Marie` verbatim and this crate's own codec read those octets as a
+/// value carrying a newline, which is `caret.rs`'s "both directions or neither" failing against
+/// itself.
 ///
-/// - an RFC 6868 implementation writes `X-STATE=^'hi^'` and reads back `"hi"`;
-/// - this crate refuses, with `MutationError::NotRepresentable`, and writes nothing.
+/// **Where implementations differ.** RFC 6868 is an extension, and a consumer that has not
+/// implemented it reads `^'` as two literal octets. Three outcomes are permitted for a value
+/// carrying a `DQUOTE` and all three are in the wild:
 ///
-/// Adopting the first is a decision about what `Component::apply` emits — the reading half no
-/// longer stands in the way — and it is the write path's own unit to make, not this case's.
+/// - encode it, which is what this crate does and what RFC 6868 asks for;
+/// - refuse it, since section 3.2 alone has no spelling — this crate's own earlier answer, and
+///   the one that never emits an octet a non-6868 consumer misreads;
+/// - write the `DQUOTE` bare, which produces a line whose value ends early on the next read.
+///   That one is a defect rather than a choice, and no case here permits it.
+///
+/// What has no spelling under either reading is still refused: a `CR`, and every `CONTROL`
+/// octet RFC 6868 gives no pair. That is the injection refusal, and it is unchanged — a
+/// terminator inside a parameter value is how an assignment becomes a second `ATTENDEE`.
 #[test]
-fn rfc5545_3_2_a_parameter_value_with_no_spelling_is_refused_rather_than_written() {
+fn rfc6868_2_a_parameter_value_is_written_in_the_spelling_the_encoding_gives_it() {
+    // The value assigned, and the octets the two encodings together spell it as.
+    let spelled: &[(&[u8], &[u8])] = &[
+        (b"say \"hi\"", b"say ^'hi^'"),
+        (b"Ann ^n Marie", b"Ann ^^n Marie"),
+        (b"100^", b"100^^"),
+        (b"busy\nmore", b"busy^nmore"),
+        // Both encodings at once, and the quoting is decided after the carets are spelled.
+        (b"Doe, \"Jack\"", b"\"Doe, ^'Jack^'\""),
+    ];
+    for (assigned, written_as) in spelled {
+        let change = ProposedChange::SetParameters(vec![ParameterEdit::set(b"X-STATE", assigned)]);
+        let (outcome, written) = write_summary(CALENDAR, &change);
+        assert_eq!(outcome, Ok(()), "{assigned:?}");
+
+        let mut reread = tree_of(&written);
+        let event = subject(&mut reread).expect("the written calendar still carries one VEVENT");
+        assert_eq!(
+            parameters_of(event, b"SUMMARY"),
+            vec![(b"X-STATE".to_vec(), written_as.to_vec())],
+            "{assigned:?}"
+        );
+        assert_eq!(
+            decoded_parameter(event, b"SUMMARY", b"X-STATE").as_deref(),
+            Some(*assigned),
+            "{assigned:?} is not what this crate's own codec reads back"
+        );
+    }
+
     let refused: &[&[u8]] = &[
-        b"say \"hi\"",
         b"busy\r\nATTENDEE:mailto:eve@example.test",
-        b"busy\nmore",
+        b"busy\rmore",
         b"bell\x07",
         b"delete\x7f",
     ];
@@ -378,5 +426,173 @@ fn rfc5545_3_1_an_addition_with_no_property_above_it_terminates_the_begin_line()
             .iter()
             .filter_map(Item::as_property)
             .any(|held| held.is_named(b"COMMENT"))
+    );
+}
+
+/// RFC 5545 section 3.6: `BEGIN` and `END` delimit a component, so no write may author one.
+///
+/// The rule the two doors below apply is the same one section 3.1 gives every other name — "a
+/// line the reader would not hand back as the thing that was stored" — read at the layer that
+/// has a component model. `END` reads back as `END`, which is why the section 3.1 predicate
+/// takes it and why the refusal has to be stated here instead: what the *line* reads back as is
+/// a component boundary, and a caller that wrote one would be restructuring the file through a
+/// door that names one property.
+///
+/// The reader keeps such a line — a mismatched `END` is section 3.6 recovery's own answer, and
+/// the last case below is one — so this is a write-side refusal only, and it costs the
+/// round-trip claim nothing.
+///
+/// **The alternative, and why not.** A door could accept the write and let the file restructure
+/// itself, which is what this crate did until the case below was written: one addition moved
+/// six of the twelve lines in `valarm_misplaced.ics` into a component nobody added, and the
+/// reload reported `MismatchedEndName` and two `UnclosedComponent`s against a file the caller
+/// had just saved. No specification forbids emitting those octets. What forbids it is that the
+/// change vocabulary is addressed to one property, and this one is not a property.
+#[test]
+fn rfc5545_3_6_a_write_may_not_author_a_component_boundary() {
+    let boundary = PropertyId::from_name(b"BEGIN");
+    let changes = [
+        ProposedChange::Add(RawText::from_bytes(b"BEGIN:VALARM\r\n")),
+        ProposedChange::Replace(RawText::from_bytes(b"BEGIN:VALARM\r\n")),
+        ProposedChange::SetParameters(vec![ParameterEdit::set(b"X-STATE", b"busy")]),
+    ];
+    for change in &changes {
+        let mut document = tree_of(CALENDAR);
+        let outcome = subject(&mut document).map_or(Err(MutationError::Absent), |event| {
+            event.apply(&boundary, change, Limits::DEFAULT)
+        });
+        assert_eq!(
+            outcome,
+            Err(MutationError::ComponentBoundary),
+            "{change:?} was written rather than refused"
+        );
+        assert_eq!(
+            document.to_bytes(),
+            CALENDAR,
+            "a refused change wrote octets"
+        );
+    }
+
+    // The same refusal through the value guard, over the property section 3.6 recovery keeps
+    // for an `END` that named the wrong component.
+    let recovered: &[u8] = b"BEGIN:VEVENT\r\nSUMMARY:Lunch\r\nEND:VTODO\r\n";
+    let mut document = tree_of(recovered);
+    let event = document
+        .components_mut()
+        .next()
+        .expect("the recovery kept one component");
+    assert_eq!(
+        event
+            .get_mut::<TextValue<'_>>(&PropertyId::from_name(b"END"))
+            .expect("and kept the mismatched END as a property")
+            .set_raw(b"VEVENT"),
+        Err(MutationError::ComponentBoundary)
+    );
+    assert_eq!(document.to_bytes(), recovered);
+
+    // What a caller wanting a component uses instead, which writes both lines itself.
+    let built = Component::create(b"VALARM", Vec::new()).expect("a well-formed component");
+    assert_eq!(
+        Document::new(vec![Item::Component(built)]).to_bytes(),
+        b"BEGIN:VALARM\r\nEND:VALARM\r\n"
+    );
+}
+
+/// RFC 5545 section 3.1: a line whose first octet is `SP` or `HTAB` is a continuation, so a
+/// property whose name begins with one is written below a fold of its own.
+///
+/// Section 3.1 folds at octets and says nothing about what they spell, so a fold at octet zero
+/// followed by whitespace unfolds to a content line whose name starts with whitespace. That is
+/// a property the reader really builds, and a write to it discards the recorded layout — which
+/// is where the fold at octet zero was. Written flat, the line would rejoin the line above it
+/// and the property would cease to exist; written below a fold, it is the same property it was.
+#[test]
+fn rfc5545_3_1_a_written_line_whose_name_begins_with_whitespace_keeps_its_own_line() {
+    let folded: &[u8] = b"BEGIN:VCALENDAR\r\n\r\n \tSUMMARY:Lunch\r\nEND:VCALENDAR\r\n";
+    let mut document = tree_of(folded);
+    assert_eq!(document.to_bytes(), folded, "the fixture holds on its own");
+
+    let calendar = document
+        .components_mut()
+        .next()
+        .expect("the file opens one component");
+    let identity = PropertyId::from_name(b"\tSUMMARY");
+    assert_eq!(
+        calendar
+            .get_mut::<TextValue<'_>>(&identity)
+            .expect("the property the fold at octet zero produced")
+            .set_raw(b"written"),
+        Ok(())
+    );
+
+    let written = document.to_bytes();
+    assert_eq!(
+        written, b"BEGIN:VCALENDAR\r\n\r\n \tSUMMARY:written\r\nEND:VCALENDAR\r\n",
+        "the canonical refold opened the line with the fold its name needs"
+    );
+
+    // And the property is still one property, in the component it was in.
+    let reread = tree_of(&written);
+    assert_eq!(
+        reread.to_bytes(),
+        written,
+        "what was written is a fixed point"
+    );
+    let held: Vec<Vec<u8>> = reread
+        .components()
+        .flat_map(Component::properties)
+        .map(|property| property.name().as_bytes().to_vec())
+        .collect();
+    assert_eq!(held, vec![b"\tSUMMARY".to_vec()]);
+}
+
+/// RFC 5545 section 3.1: two content lines with nothing between them are one content line.
+///
+/// The mutation door writes the terminator a line owes when an addition lands after it, and the
+/// case above records that. The serializer owes the same octet for a tree nobody added to
+/// through that door: a property read out of a truncated export carries a layout with no
+/// terminator, `Component::items_mut` will put it anywhere, and two lines stored with nothing
+/// between them would be one line read back — the second line's octets glued to the first
+/// one's value, with nothing reported.
+///
+/// The terminator is written between the two and not after the last, so a file that ended
+/// without one still does.
+#[test]
+fn rfc5545_3_1_a_stored_line_that_stopped_being_last_is_written_as_a_line() {
+    let mut document = tree_of(UNTERMINATED);
+    let event = subject(&mut document).expect("the export ends inside a VEVENT");
+    // A copy of the line the export was cut off in the middle of, which is the only way to get
+    // a second property whose layout carries no terminator: `Property::create` writes one.
+    let copied = event
+        .properties()
+        .last()
+        .cloned()
+        .expect("the event holds the truncated line");
+    event.items_mut().push(Item::Property(copied));
+
+    let written = document.to_bytes();
+    assert_eq!(
+        written,
+        b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1@example.test\r\nSUMMARY:Lunch\r\n\
+          SUMMARY:Lunch"
+            .to_vec(),
+        "the line above gained the terminator and the line that is last did not"
+    );
+
+    let reread = tree_of(&written);
+    assert_eq!(
+        reread.to_bytes(),
+        written,
+        "what was written is a fixed point"
+    );
+    let event = reread
+        .components()
+        .flat_map(Component::components)
+        .find(|nested| nested.is_named(b"VEVENT"))
+        .expect("the event survived");
+    assert_eq!(
+        event.properties().count(),
+        3,
+        "three lines were stored and the file has to hold three"
     );
 }
