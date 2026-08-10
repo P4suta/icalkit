@@ -20,5 +20,10 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[dev-dependencies]
+# The implementation this workspace supplies for the corpus to run against. A path plus a
+# version so the dependency resolves from inside this workspace rather than from a registry.
+ical-core = { path = "../ical-core", version = "0.0.0" }
+
 [lints]
 workspace = true

@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:1@example.test
+SUMMARY:Lunch with the
+ team
+DESCRIPTION:tabbed
+	continuation
+END:VEVENT
+END:VCALENDAR

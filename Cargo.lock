@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "ical-conform"
 version = "0.0.0"
+dependencies = [
+ "ical-core",
+]
 
 [[package]]
 name = "ical-core"

@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+PRODID:-//Legacy Exporter//CP1252//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:cp1252@example.test
+DTSTAMP:20260714T101500Z
+SUMMARY:Réunion d’équipe “urgent”
+LOCATION:BÃ¼ro ZÃ¼rich Ã‚Â® ÃƒÂ©
+X-ALT-DESC;FMTTYPE=text/html;X-CHARSET=“windows-1252”:<p>Zürich</p>
+END:VEVENT
+END:VCALENDAR

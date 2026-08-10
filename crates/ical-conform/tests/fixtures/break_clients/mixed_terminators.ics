@@ -1,0 +1,13 @@
+BEGIN:VCALENDAR
+PRODID:-//Mixed Terminators//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:mixed@example.test
+DTSTAMP:20260714T101500Z
+DESCRIPTION:first part 
+	second part 
+ third part
+END:VEVENT
+
+X-TRAILING-JUNK
+END:VCALENDAR

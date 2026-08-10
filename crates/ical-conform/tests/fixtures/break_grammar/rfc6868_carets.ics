@@ -1,0 +1,9 @@
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+ATTENDEE;CN=Ann ^n Marie:mailto:a@example.test
+ATTENDEE;CN=^'quoted^':mailto:b@example.test
+ATTENDEE;CN=100^^:mailto:c@example.test
+ATTENDEE;CN=^x undefined:mailto:d@example.test
+ATTENDEE;CN="^n^^^'^x":mailto:e@example.test
+END:VEVENT
+END:VCALENDAR

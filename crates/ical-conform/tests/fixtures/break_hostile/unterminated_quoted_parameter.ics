@@ -1,0 +1,5 @@
+BEGIN:VCALENDAR
+ATTENDEE;CN="Doe, John;ROLE=CHAIR:mailto:j@example.test
+X;A="oops
+X;B="a:b","c:d":kept
+END:VCALENDAR

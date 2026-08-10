@@ -1,0 +1,13 @@
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+SUMMARY:one √
+ © two
+DESCRIPTION:grin ü
+ ò
+ Ä end
+LOCATION:Êù±
+	‰∫¨
+X-GARBLED;X-P=√
+ ©:value
+END:VEVENT
+END:VCALENDAR

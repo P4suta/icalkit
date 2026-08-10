@@ -1,0 +1,5 @@
+BEGIN:VCALENDAR
+junk with no colon at all
+
+:value with an empty name
+END:VCALENDAR

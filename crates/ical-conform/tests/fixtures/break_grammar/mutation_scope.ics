@@ -1,0 +1,8 @@
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:4@example.test
+	-continued
+SUMMARY;X-STATE=old:Lunch
+X-VENDOR;X-Q="a:b;c,d":kept
+END:VEVENT
+END:VCALENDAR

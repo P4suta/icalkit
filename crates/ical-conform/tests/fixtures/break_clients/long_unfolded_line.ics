@@ -1,0 +1,9 @@
+BEGIN:VCALENDAR
+PRODID:-//Hand Rolled Exporter//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:long-unfolded@example.test
+DTSTAMP:20260714T101500Z
+DESCRIPTION:This is a single unfolded physical line of roughly seven hundred octets, of the kind a hand-rolled exporter emits when it never learned that RFC 5545 section 3.1 bounds a physical line at seventy-five octets; it keeps going and going past every width a naive consumer expects, past the point at which a folding writer would have broken it four times over, and it carries no fold at all so that the recorded layout for this line is empty and the serializer has nothing to reinsert. It also carries escaped text: a comma\, a semicolon\; and a literal backslash\\ plus a line break\n rendered as the two-character escape rather than as an octet.
+END:VEVENT
+END:VCALENDAR

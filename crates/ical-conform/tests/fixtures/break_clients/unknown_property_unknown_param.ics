@@ -1,0 +1,13 @@
+BEGIN:VCALENDAR
+PRODID:-//Unknown Vendor//Extensions//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:unknown-property@example.test
+DTSTAMP:20260714T101500Z
+SUMMARY:Unknown extension
+X-FUTURE-RFC-PROPERTY;X-FUTURE-PARAM=whatever;VALUE=TEXT:payload
+CONFERENCE;VALUE=URI;FEATURE=AUDIO,VIDEO;LABEL="Attendee dial-in":https:
+ //conference.example.test/1234
+X-NO-EQUALS-PARAM;FLAG:present
+END:VEVENT
+END:VCALENDAR

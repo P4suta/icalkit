@@ -38,8 +38,13 @@ extend-exclude = [
   # subtokens and get flagged. The source is reviewed at commit time.
   "CHANGELOG.md",
   # Calendars exported from real clients: vendor property names and human text in many
-  # languages, preserved byte-exact on purpose.
+  # languages, preserved byte-exact on purpose. A spell checker cannot say anything true
+  # about them — a fixture for a fold that splits a codepoint holds `caf` followed by half
+  # of an `é`, and every suggestion it earns is a suggestion to break the case. Both paths
+  # are listed because `.gitattributes` marks both `-text` and `REUSE.toml` bulk-annotates
+  # both: where the corpus lives is a question the milestone that collects it answers.
   "**/tests/corpus/**",
+  "**/tests/fixtures/**",
 ]
 
 [type.toml]

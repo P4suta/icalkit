@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+PRODID:-//Octet Folder//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:split-codepoint@example.test
+DTSTAMP:20260714T101500Z
+SUMMARY:RÃ
+ ©union â‚
+ ¬offsite
+END:VEVENT
+END:VCALENDAR

@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+BEGIN:VEVENT
+ATTENDEE;CN="Ann";ROLE=REQ-PARTICIPANT:mailto:a@example.test
+ATTENDEE;DELEGATED-TO="mailto:b@example.test","mailto:c@example.test";CN="Doe, John; the third: esq.":mailto:d@example.test
+X-REPEATED;P=1;P=2;p=3:value
+X-SHAPES;NOVALUE;EMPTY=;=ORPHAN:value
+X-UNTERMINATED;CN="never closed:still the header
+X-FOLDED-QUOTE;CN="Ann
+  Marie":mailto:e@example.test
+END:VEVENT
+END:VCALENDAR

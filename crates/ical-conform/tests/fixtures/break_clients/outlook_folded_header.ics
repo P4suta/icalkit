@@ -1,0 +1,13 @@
+BEGIN:VCALENDAR
+PRODID:Microsoft Exchange Server 2010
+VERSION:2.0
+BEGIN:VEVENT
+UID:outlook-folds@example.test
+DTSTAMP:20260714T101500Z
+ORGANIZER;CN="Weekly Programme Board, Facilities";SENT-BY="mailto:assist
+ ant@example.test":mailto:board@example.test
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RS
+ VP=TRUE;CN=Jordan Rivers;X-NUM-GUESTS=0:mailto:jordan@example.test
+SUMMARY;LANGUAGE=en-GB:Programme board
+END:VEVENT
+END:VCALENDAR
