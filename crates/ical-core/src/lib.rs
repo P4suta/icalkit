@@ -59,6 +59,13 @@
 //! every value type of RFC 5545 section 3.3 decodes and all but `GEO` and `FLOAT` encode, the
 //! typed accessors read through [`View`], and [`PropertyMut`] is the only way to write.
 //!
+//! Section 3.6 is read as well as stored. [`ComponentKind::cardinality`] states how often each
+//! of the nine components may carry a name, [`Component::audit`] reports what section 3.6 says
+//! about one component's own properties, and the seventeen accessors beside it reach the
+//! properties that reading names. The audit is advisory and never a stage of parsing or
+//! writing: a component this crate has no definition for allows everything, because "no
+//! schema" and "the schema forbids it" are different answers and only the second is reported.
+//!
 //! Construction is a door rather than an opening. `Property::new`, `Parameter::new` and
 //! `Boundary::new` are crate-private; the public [`Property::create`], [`Parameter::create`]
 //! and [`Component::create`] refuse the octets section 3.1 cannot write back, so a `SUMMARY`
@@ -90,6 +97,7 @@ mod mutate;
 mod octets;
 mod output;
 mod parse;
+mod schema;
 mod tree;
 mod view;
 
@@ -107,6 +115,10 @@ pub use crate::gregorian::{
 pub use crate::ident::PropertyId;
 pub use crate::octets::{RawText, TextError};
 pub use crate::output::Writer;
+// `schema` is re-exported wholesale rather than item by item, for the reason `ical-grammar`
+// globs two of its own: the component readings arrive with the milestone that writes them, and
+// a glob keeps this file from becoming a place two separate pieces of work both have to edit.
+pub use crate::schema::*;
 pub use crate::tree::{
     Boundary, Component, Document, Item, Parameter, ParametersNamed, PropertiesNamed, Property,
 };
