@@ -43,11 +43,85 @@
 //! when it is generated, including one filtered for naming a date that does not exist, since
 //! the work was done either way (see `docs/adr/0011`).
 //!
+//! The terminal state of a search is an enum this crate owns and never
+//! `Result<Occurrence, BudgetExhausted>`. std's `impl IntoIterator for Result` makes
+//! `search.flatten()` compile against that item type and silently discard every terminal
+//! marker, and `.filter_map(Result::ok)` and `.take_while(Result::is_ok)` are
+//! indistinguishable — three one-line idioms that convert budget exhaustion back into the
+//! truncated-but-plausible answer the budget exists to prevent. [`SearchStep`] rejects all
+//! three at compile time, and its own documentation says what that does and does not buy.
+//!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M1). The public surface is
-//! designed and compiled; `docs/design/ical-recur-api.md` carries it.
+//! The engine expands. `RRULE` reads in two ways — [`parse_recur`], which drops the part it
+//! cannot use and reports it, and the strict `DecodeValue` the value layer offers — and
+//! [`RecurrenceInput::search`] walks periods, applies every `BYxxx` part, selects with
+//! `BYSETPOS`, merges `RDATE`, `EXDATE` and `RECURRENCE-ID` overrides in one pass that
+//! materializes nothing, and stops at the window, at the rule's own end, or at the budget.
+//! Every one of the forty-two worked examples in RFC 5545 section 3.8.5.3 is a test in
+//! `ical-conform`, with the expected column transcribed from the RFC rather than read off this
+//! implementation.
+//!
+//! Three things are known and named rather than hidden. Emission is ordered by cadence key and
+//! not by effective start, because reordering needs a buffer no `Limits` field bounds
+//! (`docs/adr/0002`, amendment 3). A window admits by cadence key **or** by effective start,
+//! which is two questions where a caller expects one. And the period walk, the candidate set
+//! and the selection over it are public today only because the modules holding them are
+//! private and `unreachable_pub` is denied — `Period` here is not `ical_core::Period`, and that
+//! surface is expected to narrow.
+//!
+//! Not here: a time zone. `UNTIL` is compared on the timeline the caller resolved, which is
+//! what makes M2 a separate crate rather than a dependency.
 
 #![no_std]
 
 extern crate alloc;
+
+mod accounting;
+mod byparts;
+mod engine;
+mod grammar;
+mod input;
+mod merge;
+mod period;
+mod rule;
+mod search;
+mod setpos;
+mod table;
+
+pub use crate::accounting::{Charges, admit, generation_window, max_absolute_shift};
+pub use crate::byparts::{CandidateSet, expand_period};
+pub use crate::engine::{RecurrenceSearch, RuleCursorState, SearchCursor};
+pub use crate::grammar::{RulePartText, parse_recur, parts};
+pub use crate::input::{
+    AppliedDiffs, InputError, InputList, Override, OverrideRange, OverrideSet, PropertyChange,
+    PropertyDiff, RecurrenceInput,
+};
+pub use crate::merge::{Merge, keep_first_rule};
+pub use crate::period::{Period, PeriodWalk};
+pub use crate::rule::{
+    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart,
+    UntilClock, ValueKind, WeekdayNum,
+};
+pub use crate::search::{
+    BudgetExhausted, Occurrence, OverrideProvenance, SearchOutcome, SearchStep, Window,
+};
+pub use crate::setpos::{SelectedCandidates, select};
+pub use crate::table::{Cell, PartEffect, PartsPresent, WeekdayScope, cell, effect};
+
+/// The candidate budget a caller gets by saying nothing, in candidates generated.
+///
+/// A `Meter` budget rather than a `Limits` field, because `Limits::candidates_per_period`
+/// bounds one period and this bounds a whole search — and every other search sharing the
+/// meter, which is the aggregate bound `docs/adr/0010` exists for.
+///
+/// Calibrated by this milestone, which `docs/adr/0010` names as the one that owes it. The
+/// number has to be a multiple of `Limits::DEFAULT.candidates_per_period()` or the two are one
+/// bound wearing two names: at 65,536 — the value this constant held while nothing expanded —
+/// a search that filled a single maximal period had already spent everything, so the per-period
+/// ceiling could never refuse a runaway period before the shared ledger refused the whole
+/// search. Four times the ceiling clears every workload a caller that stated no policy
+/// plausibly means, and refuses a year of `FREQ=MINUTELY` and a week of `FREQ=SECONDLY`, which
+/// are policies rather than defaults. The workload table the number was read off is in
+/// `accounting`'s documentation and is asserted in its tests.
+pub const DEFAULT_CANDIDATE_BUDGET: u64 = 262_144;

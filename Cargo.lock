@@ -7,6 +7,7 @@ name = "ical-conform"
 version = "0.0.0"
 dependencies = [
  "ical-core",
+ "ical-recur",
 ]
 
 [[package]]
@@ -31,6 +32,9 @@ version = "0.0.0"
 [[package]]
 name = "ical-recur"
 version = "0.0.0"
+dependencies = [
+ "ical-core",
+]
 
 [[package]]
 name = "ical-tz"
