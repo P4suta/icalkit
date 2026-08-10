@@ -141,6 +141,10 @@ pub enum LimitExceeded {
     ExdateEntries,
     /// The number of `RECURRENCE-ID` overrides offered for one series.
     OverrideEntries,
+    /// The number of observances declared by one `VTIMEZONE`.
+    VtimezoneObservances,
+    /// The number of `VTIMEZONE` components declared by one calendar.
+    VtimezoneComponents,
 }
 
 impl Display for LimitExceeded {
@@ -156,6 +160,8 @@ impl Display for LimitExceeded {
             Self::RdateEntries => "RDATE entry count",
             Self::ExdateEntries => "EXDATE entry count",
             Self::OverrideEntries => "override entry count",
+            Self::VtimezoneObservances => "VTIMEZONE observance count",
+            Self::VtimezoneComponents => "VTIMEZONE component count",
         };
         write!(formatter, "the {dimension} limit was exceeded")
     }

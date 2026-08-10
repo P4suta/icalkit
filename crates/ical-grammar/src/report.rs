@@ -235,6 +235,60 @@ pub enum DiagnosticCode {
     NonexistentLocalTime,
     /// An embedded `VTIMEZONE` and the caller's other zone source disagreed about an offset.
     TimeZoneSourceDisagreement,
+    /// A `VTIMEZONE` carried neither a `STANDARD` nor a `DAYLIGHT` subcomponent, which RFC 5545 section 3.6.5 requires at least one of.
+    ///
+    /// The component is kept, because `docs/adr/0001` forbids discarding it, and the zone it
+    /// declares answers nothing: a table with no observance has no offset to report and says
+    /// so through the absence of an answer rather than through a default of UTC.
+    VtimezoneWithoutObservance,
+    /// An observance carried an `RRULE` outside the yearly form this crate evaluates in closed form, so no transition was derived from it.
+    ///
+    /// A note rather than a violation: RFC 5545 section 3.6.5 permits any `RECUR` value on an
+    /// observance and the file is legal. What is missing is here, not there. The closed form
+    /// covers every rule the tz database and the major producers generate; anything else would
+    /// need a search, and a search inside a zone lookup is the unbounded work `docs/adr/0010`
+    /// refuses. The observance's own `DTSTART` still stands as one transition.
+    VtimezoneRuleUnsupported,
+    /// A `VTIMEZONE` declared more observances than the caller's policy admits, and the ones past the bound were dropped.
+    ///
+    /// Reported so that a zone answered from a truncated table is distinguishable from one
+    /// answered from a whole one. A million `RDATE` transitions is a file somebody can write.
+    VtimezoneObservancesTruncated,
+    /// A calendar declared two `VTIMEZONE` components under one `TZID`, and the second was not admitted.
+    ///
+    /// The definition is handed back rather than dropped, so a caller that wants the later one
+    /// can decide that for itself. Silently preferring either is how a file with two readings
+    /// acquires one nobody chose.
+    DuplicateTimeZoneIdentifier,
+    /// A zone was asked about a time later than the last transition it actually knows, so the answer continues its final observance.
+    ///
+    /// A note rather than a violation: an embedded `VTIMEZONE` whose transitions are explicit
+    /// `RDATE` lines through 2029 is a legal file, and an event in 2035 is a legal event.
+    /// Continuing the last observance is the defensible thing for such a source to do and a
+    /// dishonest thing to do quietly, which is what this code and the answer's own basis field
+    /// exist to prevent between them.
+    TimeZoneCoverageExhausted,
+    /// An `UNTIL` was written as a local time where RFC 5545 section 3.3.10 requires UTC, and it was read in `DTSTART`'s own zone.
+    ///
+    /// Distinct from [`DiagnosticCode::RecurrenceUntilValueTypeMismatch`], which is about
+    /// `DATE` against `DATE-TIME`: this one is about the clock. Google emits it, the reading
+    /// that recovers the producer's intent is `DTSTART`'s own zone, and a series whose end was
+    /// guessed rather than read is a fact the caller is owed.
+    RecurrenceUntilNotUtc,
+    /// An `EXDATE` and its `DTSTART` disagreed about `DATE` versus `DATE-TIME`, which RFC 5545 section 3.8.5.1 requires to agree.
+    ///
+    /// The sibling of [`DiagnosticCode::RecurrenceUntilValueTypeMismatch`] on the exclusion
+    /// list, and the more damaging of the two: a `DATE` exclusion read at midnight names an
+    /// instant a date-timed series does not have, so it removes nothing at all and the
+    /// exception the producer wrote disappears without a word.
+    ExdateValueTypeMismatch,
+    /// A `RECURRENCE-ID` named an instant the series does not generate, so the override modified nothing.
+    ///
+    /// Clients emit these routinely: an instance is edited, then the rule beneath it is
+    /// rewritten, and the override is left addressing a cadence key that no longer exists. The
+    /// file then carries a meeting the user sees in the client that wrote it and the expanded
+    /// series does not have.
+    OverrideMatchesNoInstance,
 }
 
 impl DiagnosticCode {
@@ -297,6 +351,14 @@ impl DiagnosticCode {
             Self::AmbiguousLocalTime => "ambiguous-local-time",
             Self::NonexistentLocalTime => "nonexistent-local-time",
             Self::TimeZoneSourceDisagreement => "time-zone-source-disagreement",
+            Self::VtimezoneWithoutObservance => "vtimezone-without-observance",
+            Self::VtimezoneRuleUnsupported => "vtimezone-rule-unsupported",
+            Self::VtimezoneObservancesTruncated => "vtimezone-observances-truncated",
+            Self::DuplicateTimeZoneIdentifier => "duplicate-time-zone-identifier",
+            Self::TimeZoneCoverageExhausted => "time-zone-coverage-exhausted",
+            Self::RecurrenceUntilNotUtc => "recurrence-until-not-utc",
+            Self::ExdateValueTypeMismatch => "exdate-value-type-mismatch",
+            Self::OverrideMatchesNoInstance => "override-matches-no-instance",
         }
     }
 }

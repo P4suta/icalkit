@@ -30,7 +30,7 @@ has no outside dependencies" may not acquire one.
 
 ## Notes rather than violations
 
-Nine codes travel on `Severity::Note`, and each is a case where the input is legal and the
+Eleven codes travel on `Severity::Note`, and each is a case where the input is legal and the
 caller still needs telling. RFC 6868 section 2 requires an undefined caret pair to be left
 exactly as it is. RFC 5545 section 3.2.20 permits a `VALUE` type this workspace has no decoder
 for, so not knowing one is a gap here rather than a fault in the file. Section 3.3.10 requires
@@ -42,9 +42,11 @@ precedence rather than anyone's violation. A rule with neither `COUNT` nor `UNTI
 calendar at the end of 9999 because section 3.3.4 writes four digits, which is a complete answer
 the rule does not explain and the caller cannot get more of. A local time that occurs twice does occur, and
 choosing between the two is a caller's policy rather than a repair. Two zone sources that
-disagree are each internally consistent, and neither is the one that violated something. A
-caller enforcing strictness rejects on `Severity::Violation`, and would reject half the
-calendars in the world if it also rejected on `Severity::Note`.
+disagree are each internally consistent, and neither is the one that violated something. An
+observance rule this workspace does not evaluate in closed form is a gap here rather than a
+fault in the file, and a zone asked about a year past the last transition it knows is a legal
+question put to a legal file. A caller enforcing strictness rejects on `Severity::Violation`,
+and would reject half the calendars in the world if it also rejected on `Severity::Note`.
 
 ## Codes with no M0 emitter
 
@@ -52,8 +54,9 @@ Every row whose milestone is not `M0` is a code this workspace declares today an
 emit yet. Two of those absences are worth naming, because both look like dead API to anyone
 reading `ical-grammar` alone and neither is:
 
-- `Severity::LimitReached` is carried by exactly one code, `recurrence-budget-exhausted`, and
-  that code belongs to M1. Nothing in M0 emits it, and nothing in M0 is supposed to: ADR 0009
+- `Severity::LimitReached` is carried by two codes, `recurrence-budget-exhausted` and
+  `vtimezone-observances-truncated`, which belong to M1 and M2. Nothing in M0 emits either,
+  and nothing in M0 is supposed to: ADR 0009
   routes M0's limit breaches to `ParseError`, because the alternative is a truncated value,
   which writes back fewer bytes than it read and contradicts
   [ADR 0001](adr/0001-lossless-round-trip.md). The severity is unbuilt, not unused.
@@ -126,3 +129,11 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | ambiguous-local-time | A local time occurs twice under its zone, at the end of a daylight saving period. | Note | M2 |
 | nonexistent-local-time | A local time does not occur under its zone, at the start of a daylight saving period. | Violation | M2 |
 | time-zone-source-disagreement | An embedded `VTIMEZONE` and the caller's other zone source disagreed about an offset. | Note | M2 |
+| vtimezone-without-observance | A `VTIMEZONE` carried neither a `STANDARD` nor a `DAYLIGHT` subcomponent, which RFC 5545 section 3.6.5 requires at least one of. | Violation | M2 |
+| vtimezone-rule-unsupported | An observance carried an `RRULE` outside the yearly form this crate evaluates in closed form, so no transition was derived from it. | Note | M2 |
+| vtimezone-observances-truncated | A `VTIMEZONE` declared more observances than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M2 |
+| duplicate-time-zone-identifier | A calendar declared two `VTIMEZONE` components under one `TZID`, and the second was not admitted. | Violation | M2 |
+| time-zone-coverage-exhausted | A zone was asked about a time later than the last transition it actually knows, so the answer continues its final observance. | Note | M2 |
+| recurrence-until-not-utc | An `UNTIL` was written as a local time where RFC 5545 section 3.3.10 requires UTC, and it was read in `DTSTART`'s own zone. | Violation | M2 |
+| exdate-value-type-mismatch | An `EXDATE` and its `DTSTART` disagreed about `DATE` versus `DATE-TIME`, which RFC 5545 section 3.8.5.1 requires to agree. | Violation | M2 |
+| override-matches-no-instance | A `RECURRENCE-ID` named an instant the series does not generate, so the override modified nothing. | Violation | M2 |

@@ -589,6 +589,10 @@ pub struct Meter {
     exdates: u32,
     /// `RECURRENCE-ID` overrides admitted so far.
     overrides: u32,
+    /// `VTIMEZONE` observances admitted so far.
+    observances: u32,
+    /// `VTIMEZONE` components admitted so far.
+    zones: u32,
     /// Diagnostics a sink refused, saturating.
     dropped: u32,
     /// Whether the octet budget has been crossed.
@@ -622,6 +626,8 @@ impl Meter {
             rdates: 0,
             exdates: 0,
             overrides: 0,
+            observances: 0,
+            zones: 0,
             dropped: 0,
             exhausted: false,
         }
@@ -802,6 +808,47 @@ impl Meter {
         }
         self.overrides = next;
         Ok(())
+    }
+
+    /// Charge `count` `VTIMEZONE` observances.
+    ///
+    /// Charged where the observances are admitted into a transition table rather than on the
+    /// lookup path: after construction the table is finite and its rules are evaluated in
+    /// closed form, so the only unbounded quantity a zone has is how many transitions a file
+    /// declares. A `VTIMEZONE` carrying a million `RDATE` lines is a file somebody can write.
+    pub fn try_charge_vtimezone_observances(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        let next = self.observances.saturating_add(count);
+        if next > self.limits.max_vtimezone_observances {
+            return Err(LimitExceeded::VtimezoneObservances);
+        }
+        self.observances = next;
+        Ok(())
+    }
+
+    /// Charge one `VTIMEZONE` component.
+    ///
+    /// Counted apart from the observances inside it because the two bound different costs: a
+    /// calendar declaring ten thousand zones of one observance each crosses no observance
+    /// bound at all.
+    pub fn try_charge_vtimezone_component(&mut self) -> Result<(), LimitExceeded> {
+        let next = self.zones.saturating_add(1);
+        if next > self.limits.max_vtimezone_components {
+            return Err(LimitExceeded::VtimezoneComponents);
+        }
+        self.zones = next;
+        Ok(())
+    }
+
+    /// `VTIMEZONE` observances admitted so far.
+    #[must_use]
+    pub const fn vtimezone_observances(&self) -> u32 {
+        self.observances
+    }
+
+    /// `VTIMEZONE` components admitted so far.
+    #[must_use]
+    pub const fn vtimezone_components(&self) -> u32 {
+        self.zones
     }
 
     /// Recurrence candidates generated inside the period currently open.
