@@ -499,18 +499,18 @@ struct Expansion {
     clocks: Vec<CivilDateTime>,
 }
 
-/// The cadence keys one daily series emits over `window`, and nothing resolved yet.
+/// The cadence keys and effective starts one daily series emits over `window`, unresolved.
 ///
-/// The keys are collected before anything is resolved because the search borrows the meter and
-/// the sink for its whole life, which is the shape of the seam rather than an inconvenience:
-/// `ical-recur` is finished with an occurrence before `ical-tz` is asked about it.
-fn daily_keys(
+/// The occurrences are collected before anything is resolved because the search borrows the
+/// meter and the sink for its whole life, which is the shape of the seam rather than an
+/// inconvenience: `ical-recur` is finished with an occurrence before `ical-tz` is asked about it.
+fn daily_occurrences(
     anchor: Instant,
     rule: &RecurrenceRule,
     window: Window,
     meter: &mut Meter,
     sink: &mut Vec<Diagnostic>,
-) -> Option<Vec<Instant>> {
+) -> Option<Vec<(Instant, Instant)>> {
     let input = RecurrenceInput::new(
         anchor,
         ValueKind::DateTime,
@@ -521,24 +521,31 @@ fn daily_keys(
         meter,
     )
     .ok()?;
-    let mut keys = Vec::new();
+    let mut emitted = Vec::new();
     for step in input.search(window, meter, sink) {
         if let SearchStep::Occurrence(occurrence) = step {
-            keys.push(occurrence.key());
+            emitted.push((occurrence.key(), occurrence.start()));
         }
     }
-    Some(keys)
+    Some(emitted)
 }
 
-/// Resolve every cadence key through the zone, one at a time, which is the whole mechanism.
+/// Resolve every occurrence through the zone, one at a time, which is the whole mechanism.
+///
+/// The wall clock resolved is the occurrence's *effective start*, which is its cadence key for
+/// every occurrence no override moved and the moved value for the rest. `ZonedSeries::actual`
+/// resolves the wall clock it is handed and has no way to ask which of the two it was given, so
+/// which one a caller passes is the caller's discipline; this is the workspace's own example of
+/// it.
 fn resolved_starts(
     series: &ZonedSeries<'_, TransitionTable>,
-    keys: &[Instant],
+    emitted: &[(Instant, Instant)],
     meter: &mut Meter,
     sink: &mut Vec<Diagnostic>,
 ) -> Option<Vec<Instant>> {
-    keys.iter()
-        .map(|key| series.actual(*key, meter, sink))
+    emitted
+        .iter()
+        .map(|(_key, start)| series.actual(*start, meter, sink))
         .collect()
 }
 
@@ -552,8 +559,9 @@ fn berlin_expansion(from: Stamp, until: Stamp) -> Option<Expansion> {
     let anchor = series.anchor(dtstart_of(&document)?)?;
     let rule = rrule_of(&document, &mut meter, &mut sink)?;
     let window = Window::new(cadence(from)?, cadence(until)?)?;
-    let keys = daily_keys(anchor, &rule, window, &mut meter, &mut sink)?;
-    let starts = resolved_starts(&series, &keys, &mut meter, &mut sink)?;
+    let emitted = daily_occurrences(anchor, &rule, window, &mut meter, &mut sink)?;
+    let starts = resolved_starts(&series, &emitted, &mut meter, &mut sink)?;
+    let keys = emitted.iter().map(|(key, _start)| *key).collect();
     let clocks = starts
         .iter()
         .map(|moment| {
@@ -585,7 +593,12 @@ fn keys_until(bound: Instant, kind: ValueKind, clock: UntilClock) -> Option<Vec<
         .build()
         .ok()?;
     let window = Window::new(cadence((2026, 3, 26, 0, 0))?, cadence((2026, 4, 4, 0, 0))?)?;
-    daily_keys(anchor, &rule, window, &mut meter, &mut sink)
+    Some(
+        daily_occurrences(anchor, &rule, window, &mut meter, &mut sink)?
+            .into_iter()
+            .map(|(key, _start)| key)
+            .collect(),
+    )
 }
 
 /// The day the last cadence key in `keys` falls on, read back off the nominal timeline.
