@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:byweekno_setpos_first_day@icalkit.invalid
+SUMMARY:The first day of week one, every year
+DTSTART:20181231T090000Z
+RRULE:FREQ=YEARLY;BYWEEKNO=1;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYSETPOS=1
+END:VEVENT
+END:VCALENDAR

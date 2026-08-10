@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:daily_count_with_exdate@icalkit.invalid
+SUMMARY:Five occurrences, one of them excluded
+DTSTART:19970902T090000Z
+RRULE:FREQ=DAILY;COUNT=5
+EXDATE:19970904T090000Z
+END:VEVENT
+END:VCALENDAR

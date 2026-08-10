@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:byweekno_first_week_wkst_su@icalkit.invalid
+SUMMARY:Monday of week one, weeks starting Sunday
+DTSTART:20150101T090000Z
+RRULE:FREQ=YEARLY;BYWEEKNO=1;BYDAY=MO;WKST=SU
+END:VEVENT
+END:VCALENDAR

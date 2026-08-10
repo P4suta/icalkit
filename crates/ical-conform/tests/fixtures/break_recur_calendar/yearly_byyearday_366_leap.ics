@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:yearly_byyearday_366_leap@icalkit.invalid
+SUMMARY:The 366th day, from a leap year
+DTSTART:20240101T090000Z
+RRULE:FREQ=YEARLY;BYYEARDAY=366;COUNT=3
+END:VEVENT
+END:VCALENDAR

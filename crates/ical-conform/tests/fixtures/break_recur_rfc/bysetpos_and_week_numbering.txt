@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# RFC 5545 section 3.3.10: "The BYSETPOS rule part specifies a COMMA-separated list of values
+# that corresponds to the nth occurrence within the set of recurrence instances specified by the
+# rule.  BYSETPOS operates on a set of recurrence instances in one interval of the recurrence
+# rule."
+#
+# The first two lines are the section 3.8.5.3 example "Every 20th Monday of the year, forever"
+# rewritten with BYSETPOS instead of a BYDAY ordinal. The RFC prints the answer for one
+# spelling; "the nth occurrence within the set" makes the other spelling the same question, so
+# the printed answer is the expected column for both.
+#
+# The last group is section 3.3.10's week numbering, which decides which calendar year holds the
+# Monday of week one. That Monday is in the previous December five years out of seven, so a
+# window over nine years must hold exactly one per week-numbering year — no calendar year may
+# swallow two and none may lose one.
+#
+# name | dtstart | rrule | exdates | window start | window end | expected
+
+the 20th Monday of the year, written with BYSETPOS | 19970519T090000 | FREQ=YEARLY;BYDAY=MO;BYSETPOS=20 |  | 19970101T000000 | 20000101T000000 | 19970519T090000,19980518T090000,19990517T090000
+the last Monday of the year | 19971229T090000 | FREQ=YEARLY;BYDAY=MO;BYSETPOS=-1 |  | 19970101T000000 | 20000101T000000 | 19971229T090000,19981228T090000,19991227T090000
+
+# "-1,1" is written in that order and names a set, so the answer is chronological.
+the first and the last work day of the month | 19970901T090000 | FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1,1 |  | 19970901T000000 | 19980301T000000 | 19970901T090000,19970930T090000,19971001T090000,19971031T090000,19971103T090000,19971128T090000,19971201T090000,19971231T090000,19980101T090000,19980130T090000,19980202T090000,19980227T090000
+
+# A position the interval's set does not reach selects nothing from that interval, which is the
+# same series a BYDAY ordinal of 5 names.
+a BYSETPOS past the end of an interval selects nothing from it | 19970330T090000 | FREQ=MONTHLY;BYDAY=SU;BYSETPOS=5 |  | 19970101T000000 | 19980101T000000 | 19970330T090000,19970629T090000,19970831T090000,19971130T090000
+
+# One interval of a YEARLY rule is the year, so BYSETPOS counts across every month the rule
+# expanded the year into and not within each month separately.
+BYSETPOS counts across the whole yearly interval | 19970301T090000 | FREQ=YEARLY;BYMONTH=1,2,3;BYMONTHDAY=1;BYSETPOS=-1 |  | 19970101T000000 | 20000101T000000 | 19970301T090000,19980301T090000,19990301T090000
+BYSETPOS=2 of the same yearly interval | 19970201T090000 | FREQ=YEARLY;BYMONTH=1,2,3;BYMONTHDAY=1;BYSETPOS=2 |  | 19970101T000000 | 20000101T000000 | 19970201T090000,19980201T090000,19990201T090000
+
+# Week one of a calendar year is the first week holding four days of it, so its Monday is in
+# the previous December for 1997, 1998, 2002, 2003 and 2004 and in January for 1999, 2000 and
+# 2001. Calendar 1998 therefore holds no Monday of a week one and calendar 2001 holds two.
+Monday of week one, once per week-numbering year | 19961230T090000 | FREQ=YEARLY;BYWEEKNO=1;BYDAY=MO |  | 19961201T000000 | 20050101T000000 | 19961230T090000,19971229T090000,19990104T090000,20000103T090000,20010101T090000,20011231T090000,20021230T090000,20031229T090000
+
+# 1998, 2004 and 2009 are the fifty-three week years of that stretch; every other year has no
+# week 53 and so no instance.
+BYWEEKNO=53 names only a fifty-three week year | 19981228T090000 | FREQ=YEARLY;BYWEEKNO=53;BYDAY=MO |  | 19980101T000000 | 20110101T000000 | 19981228T090000,20041227T090000,20091228T090000

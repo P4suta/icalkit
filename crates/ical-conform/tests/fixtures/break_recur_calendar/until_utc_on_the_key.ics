@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:until_utc_on_the_key@icalkit.invalid
+SUMMARY:An UNTIL landing exactly on an instance
+DTSTART:19970902T090000Z
+RRULE:FREQ=DAILY;UNTIL=19970905T090000Z
+END:VEVENT
+END:VCALENDAR

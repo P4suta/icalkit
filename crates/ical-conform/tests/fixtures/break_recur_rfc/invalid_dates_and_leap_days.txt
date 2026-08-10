@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# RFC 5545 section 3.3.10: "Recurrence rules may generate recurrence instances with an invalid
+# date (e.g., February 30) or nonexistent local time (e.g., 1:30 AM on a day where the local
+# time is moved forward by an hour at 1:00 AM).  Such recurrence instances MUST be ignored and
+# MUST NOT be counted as part of the recurrence set."
+#
+# Section 3.8.5.3 works exactly one of those — February 30 under BYMONTHDAY=15,30. The rest of
+# the shapes the sentence covers are below: a DTSTART the rule inherits a day-of-month from, a
+# leap-day DTSTART, and the two BYYEARDAY values whose meaning moves with the length of a year.
+# The last clause is what makes the COUNT cases answers rather than guesses: an ignored instance
+# is not counted, so a COUNT-bounded rule keeps looking.
+#
+# name | dtstart | rrule | exdates | window start | window end | expected
+
+# The day of the month is not in the rule, so it is derived from DTSTART, and the months that
+# have no 31st have no instance.
+a monthly rule started on the 31st skips the months without one | 19970131T090000 | FREQ=MONTHLY |  | 19970101T000000 | 19980101T000000 | 19970131T090000,19970331T090000,19970531T090000,19970731T090000,19970831T090000,19971031T090000,19971231T090000
+BYMONTHDAY=31 skips the months without a 31st | 19970131T090000 | FREQ=MONTHLY;BYMONTHDAY=31 |  | 19970101T000000 | 19980101T000000 | 19970131T090000,19970331T090000,19970531T090000,19970731T090000,19970831T090000,19971031T090000,19971231T090000
+BYMONTHDAY=30 skips February | 19970130T090000 | FREQ=MONTHLY;BYMONTHDAY=30;COUNT=5 |  | 19970101T000000 | 19980101T000000 | 19970130T090000,19970330T090000,19970430T090000,19970530T090000,19970630T090000
+
+# An ignored instance is not counted, so three counted occurrences reach May and not March.
+an ignored instance is not counted against COUNT | 19970131T090000 | FREQ=MONTHLY;COUNT=3 |  | 19970101T000000 | 19980101T000000 | 19970131T090000,19970331T090000,19970531T090000
+
+# February 29 exists in one year in four, and the instance is skipped rather than moved to the
+# 28th in the other three.
+a yearly rule started on a leap day recurs only on leap days | 20000229T090000 | FREQ=YEARLY |  | 20000101T000000 | 20130101T000000 | 20000229T090000,20040229T090000,20080229T090000,20120229T090000
+BYMONTH=2 with BYMONTHDAY=29 names only leap years | 20000229T090000 | FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29 |  | 20000101T000000 | 20130101T000000 | 20000229T090000,20040229T090000,20080229T090000,20120229T090000
+
+# The sixtieth day of a year is March 1st in a common year and February 29th in a leap one, and
+# the three-hundred-and-sixty-sixth day exists only in a leap year.
+BYYEARDAY=60 moves with the length of the year | 19970301T090000 | FREQ=YEARLY;BYYEARDAY=60 |  | 19970101T000000 | 20020101T000000 | 19970301T090000,19980301T090000,19990301T090000,20000229T090000,20010301T090000
+BYYEARDAY=366 names only a leap year | 19961231T090000 | FREQ=YEARLY;BYYEARDAY=366 |  | 19960101T000000 | 20090101T000000 | 19961231T090000,20001231T090000,20041231T090000,20081231T090000
+
+# "within a MONTHLY rule, +5SU" names a fifth Sunday, and a month with four Sundays has none.
+BYDAY=5SU names only the months that have a fifth Sunday | 19970330T090000 | FREQ=MONTHLY;BYDAY=5SU |  | 19970101T000000 | 19980101T000000 | 19970330T090000,19970629T090000,19970831T090000,19971130T090000

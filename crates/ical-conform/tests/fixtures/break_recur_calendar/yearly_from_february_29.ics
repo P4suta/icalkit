@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:yearly_from_february_29@icalkit.invalid
+SUMMARY:Every year on a leap day
+DTSTART:20240229T090000Z
+RRULE:FREQ=YEARLY
+END:VEVENT
+END:VCALENDAR

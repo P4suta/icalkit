@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The five examples RFC 5545 section 3.8.5.3 answers with clock readings, asked about a window
+# that opens partway through the day rather than around the whole of the printed answer.
+#
+# Same argument as the whole-day file beside this one: the recurrence set is one set, a COUNT
+# is counted from DTSTART and an UNTIL ends where it ends, so the expected column is the RFC's
+# own printed reading list intersected with the window. What these five add is that the seek
+# has to land inside a day rather than on one, which is where a frequency below DAILY and a
+# BYHOUR expansion have different work to do.
+#
+# name | dtstart | rrule | exdates | window start | window end | expected
+
+# "==> (September 2, 1997 EDT) 09:00,12:00,15:00"
+Every 3 hours from 9:00 AM to 5:00 PM, asked from noon | 19970902T090000 | FREQ=HOURLY;INTERVAL=3;UNTIL=19970902T170000Z |  | 19970902T120000 | 19970903T000000 | 19970902T120000,19970902T150000
+# "==> (September 2, 1997 EDT) 09:00,09:15,09:30,09:45,10:00,10:15"
+Every 15 minutes for 6 occurrences, asked from 09:30 | 19970902T090000 | FREQ=MINUTELY;INTERVAL=15;COUNT=6 |  | 19970902T093000 | 19970903T000000 | 19970902T093000,19970902T094500,19970902T100000,19970902T101500
+# "==> (September 2, 1997 EDT) 09:00,10:30,12:00,13:30"
+Every hour and a half for 4 occurrences, asked from 11:00 | 19970902T090000 | FREQ=MINUTELY;INTERVAL=90;COUNT=4 |  | 19970902T110000 | 19970903T000000 | 19970902T120000,19970902T133000
+# "==> (September 2, 1997 EDT) 9:00,9:20,9:40,10:00,10:20, ... 16:00,16:20,16:40"
+Every 20 minutes from 9:00 AM to 4:40 PM, the DAILY spelling, asked from noon on the second day | 19970902T090000 | FREQ=DAILY;BYHOUR=9,10,11,12,13,14,15,16;BYMINUTE=0,20,40 |  | 19970903T120000 | 19970903T140000 | 19970903T120000,19970903T122000,19970903T124000,19970903T130000,19970903T132000,19970903T134000
+Every 20 minutes from 9:00 AM to 4:40 PM, the MINUTELY spelling, asked from noon on the second day | 19970902T090000 | FREQ=MINUTELY;INTERVAL=20;BYHOUR=9,10,11,12,13,14,15,16 |  | 19970903T120000 | 19970903T140000 | 19970903T120000,19970903T122000,19970903T124000,19970903T130000,19970903T132000,19970903T134000

@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:yearly_february_30_never_matches@icalkit.invalid
+SUMMARY:A date no Gregorian year has
+DTSTART:20240101T090000Z
+RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30
+END:VEVENT
+END:VCALENDAR

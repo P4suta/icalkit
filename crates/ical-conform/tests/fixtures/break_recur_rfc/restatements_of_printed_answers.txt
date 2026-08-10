@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Rules that RFC 5545 says must give an answer it has already printed somewhere else. Each one
+# restates a section 3.8.5.3 example through a sentence of section 3.3.10, so the expected
+# column is a quotation twice over and the case can only fail by the two disagreeing.
+#
+# name | dtstart | rrule | exdates | window start | window end | expected
+
+# "The default value is MO."  Section 3.8.5.3 prints the answer for the same rule with WKST=MO
+# written out; dropping the part must not move a single day of it.
+the default WKST is MO | 19970805T090000 | FREQ=WEEKLY;INTERVAL=2;COUNT=4;BYDAY=TU,SU |  | 19970801T000000 | 19970901T000000 | 19970805T090000,19970810T090000,19970819T090000,19970824T090000
+
+# "If multiple BYxxx rule parts are specified, then after evaluating the specified FREQ and
+# INTERVAL rule parts, the BYxxx rule parts are applied to the current set of evaluated
+# occurrences in the following order: BYMONTH, BYWEEKNO, BYYEARDAY, BYMONTHDAY, BYDAY, ..."
+# The order is the RFC's, not the file's, so writing BYMONTHDAY before BYDAY must give section
+# 3.8.5.3's own "Every Friday the 13th, forever".
+the order the parts are written in does not change the answer | 19970902T090000 | FREQ=MONTHLY;BYMONTHDAY=13;BYDAY=FR | 19970902T090000 | 19970901T000000 | 20010101T000000 | 19980213T090000,19980313T090000,19981113T090000,19990813T090000,20001013T090000
+
+# Note 2: "Limit if BYYEARDAY or BYMONTHDAY is present".  Section 3.8.5.3 prints the days
+# BYYEARDAY=1,100,200 names; adding BYDAY=TH may only remove the ones that are not Thursdays.
+# 1997 keeps April 10, 1998 keeps January 1, 2001 keeps July 19, and 1999 and 2000 keep none.
+note 2 limits when BYYEARDAY is present | 19970410T090000 | FREQ=YEARLY;BYYEARDAY=1,100,200;BYDAY=TH |  | 19970101T000000 | 20020101T000000 | 19970410T090000,19980101T090000,20010719T090000
+
+# "the recurrence set" is a set, so a value listed twice names one instance and not two.
+a value listed twice names one instance | 19970902T090000 | FREQ=MONTHLY;BYMONTHDAY=2,2,15 |  | 19970901T000000 | 19980101T000000 | 19970902T090000,19970915T090000,19971002T090000,19971015T090000,19971102T090000,19971115T090000,19971202T090000,19971215T090000
+
+# Two BYDAY ordinals and a BYSETPOS over what they produced: the last of the last Monday and
+# the last Friday of each month, which is October's Friday and September's Monday.
+BYSETPOS over two BYDAY ordinals picks the later of the two | 19970929T090000 | FREQ=MONTHLY;BYDAY=-1MO,-1FR;BYSETPOS=-1 |  | 19970901T000000 | 19980301T000000 | 19970929T090000,19971031T090000,19971128T090000,19971229T090000,19980130T090000,19980227T090000

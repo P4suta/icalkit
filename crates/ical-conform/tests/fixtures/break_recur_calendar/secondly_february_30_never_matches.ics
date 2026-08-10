@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:secondly_february_30_never_matches@icalkit.invalid
+SUMMARY:A per-second walk toward a date that does not exist
+DTSTART:20230101T090000Z
+RRULE:FREQ=SECONDLY;BYMONTH=2;BYMONTHDAY=30
+END:VEVENT
+END:VCALENDAR

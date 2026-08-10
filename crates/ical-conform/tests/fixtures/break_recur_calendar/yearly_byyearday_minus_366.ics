@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:yearly_byyearday_minus_366@icalkit.invalid
+SUMMARY:The 366th day counted backwards
+DTSTART:20230101T090000Z
+RRULE:FREQ=YEARLY;BYYEARDAY=-366
+END:VEVENT
+END:VCALENDAR

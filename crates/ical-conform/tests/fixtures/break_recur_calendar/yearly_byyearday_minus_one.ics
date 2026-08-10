@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:yearly_byyearday_minus_one@icalkit.invalid
+SUMMARY:The last day of the year, leap or not
+DTSTART:20230101T090000Z
+RRULE:FREQ=YEARLY;BYYEARDAY=-1
+END:VEVENT
+END:VCALENDAR

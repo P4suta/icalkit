@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:until_floating_against_utc@icalkit.invalid
+SUMMARY:A floating UNTIL, as Google has emitted
+DTSTART:19970902T090000Z
+RRULE:FREQ=DAILY;UNTIL=19970905T090000
+END:VEVENT
+END:VCALENDAR

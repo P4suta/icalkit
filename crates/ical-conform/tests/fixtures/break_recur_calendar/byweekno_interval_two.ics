@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:byweekno_interval_two@icalkit.invalid
+SUMMARY:Monday of week one, every other year
+DTSTART:20180101T090000Z
+RRULE:FREQ=YEARLY;INTERVAL=2;BYWEEKNO=1;BYDAY=MO
+END:VEVENT
+END:VCALENDAR

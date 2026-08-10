@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:weekly_byday_monday_from_tuesday@icalkit.invalid
+SUMMARY:A DTSTART the rule does not name
+DTSTART:19970902T090000Z
+RRULE:FREQ=WEEKLY;BYDAY=MO
+END:VEVENT
+END:VCALENDAR

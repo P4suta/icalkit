@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:byweekno_week_53_wkst_su_absent@icalkit.invalid
+SUMMARY:Week fifty-three of a year that has none
+DTSTART:20150101T000000Z
+RRULE:FREQ=YEARLY;BYWEEKNO=53;BYDAY=MO,TH;WKST=SU
+END:VEVENT
+END:VCALENDAR

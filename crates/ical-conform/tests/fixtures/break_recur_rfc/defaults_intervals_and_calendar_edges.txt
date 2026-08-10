@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Three more places RFC 5545 fixes the answer without printing a worked example.
+#
+# "Information, not contained in the rule, necessary to determine the various recurrence
+# instance start time and dates are derived from the Start Time ('DTSTART') component
+# attribute."  Every example in section 3.8.5.3 starts on a whole minute, so the second is
+# never the field being derived there. It is here.
+#
+# "The INTERVAL rule part contains a positive integer representing at which intervals the
+# recurrence rule repeats.  The default value is '1', meaning every second for a SECONDLY rule,
+# every minute for a MINUTELY rule, every hour for an HOURLY rule, every day for a DAILY rule,
+# every week for a WEEKLY rule, every month for a MONTHLY rule, and every year for a YEARLY
+# rule."  The intervals below are large enough that each step crosses something — a midnight, a
+# year end, a leap day, a century that is not a leap year.
+#
+# Section 3.3.4 writes a four-digit year, so 9999 is the last year a recurrence set can name and
+# a rule that walks past it has ended rather than wrapped.
+#
+# name | dtstart | rrule | exdates | window start | window end | expected
+
+# --- The second comes from DTSTART wherever the rule does not name one.
+a daily rule keeps DTSTART's second | 19970902T090030 | FREQ=DAILY |  | 19970902T000000 | 19970905T000000 | 19970902T090030,19970903T090030,19970904T090030
+a minutely rule keeps DTSTART's second | 19970902T090030 | FREQ=MINUTELY |  | 19970902T090000 | 19970902T090300 | 19970902T090030,19970902T090130,19970902T090230
+an hourly rule keeps DTSTART's minute and second | 19970902T091530 | FREQ=HOURLY |  | 19970902T090000 | 19970902T120000 | 19970902T091530,19970902T101530,19970902T111530
+
+# --- INTERVAL arithmetic that crosses something on every step.
+an hourly interval of 25 walks one hour later each day | 19970902T090000 | FREQ=HOURLY;INTERVAL=25 |  | 19970902T000000 | 19970907T000000 | 19970902T090000,19970903T100000,19970904T110000,19970905T120000,19970906T130000
+a daily interval of 1000 crosses two leap years | 19970902T090000 | FREQ=DAILY;INTERVAL=1000 |  | 19970101T000000 | 20060101T000000 | 19970902T090000,20000529T090000,20030223T090000,20051119T090000
+a weekly interval of 7 crosses the year end | 19970902T090000 | FREQ=WEEKLY;INTERVAL=7 |  | 19970101T000000 | 19980301T000000 | 19970902T090000,19971021T090000,19971209T090000,19980127T090000
+a monthly interval of 7 crosses the year end | 19970902T090000 | FREQ=MONTHLY;INTERVAL=7 |  | 19970101T000000 | 20000301T000000 | 19970902T090000,19980402T090000,19981102T090000,19990602T090000,20000102T090000
+# 2000 and 2400 are leap years and 2100, 2200 and 2300 are not, so a century-long interval
+# started on a leap day skips three of its five steps.
+a yearly interval of 100 from a leap day lands only where February has a 29th | 20000229T090000 | FREQ=YEARLY;INTERVAL=100 |  | 20000101T000000 | 25000101T000000 | 20000229T090000,24000229T090000
+# The same series written so that BYMONTH limits a monthly walk instead.
+a monthly rule limited to February 29 recurs on leap days | 20000229T090000 | FREQ=MONTHLY;BYMONTH=2;BYMONTHDAY=29 |  | 20000101T000000 | 20090101T000000 | 20000229T090000,20040229T090000,20080229T090000
+
+# --- The last year a four-digit year can name.
+a yearly rule reaching the end of the calendar keeps 9999 | 99981231T090000 | FREQ=YEARLY |  | 99980101T000000 | 99991231T235959 | 99981231T090000,99991231T090000
+a monthly rule reaching the end of the calendar keeps December | 99991101T090000 | FREQ=MONTHLY |  | 99991101T000000 | 99991231T235959 | 99991101T090000,99991201T090000
+a weekly rule reaching the end of the calendar keeps its last week | 99991218T090000 | FREQ=WEEKLY |  | 99991218T000000 | 99991231T235959 | 99991218T090000,99991225T090000
+a daily rule reaching the end of the calendar keeps its last days | 99991228T090000 | FREQ=DAILY |  | 99991228T000000 | 99991231T235959 | 99991228T090000,99991229T090000,99991230T090000,99991231T090000
+an hourly rule reaching the end of the calendar keeps its last hours | 99991231T210000 | FREQ=HOURLY |  | 99991231T200000 | 99991231T235959 | 99991231T210000,99991231T220000,99991231T230000
+a minutely rule reaching the end of the calendar keeps its last minutes | 99991231T235700 | FREQ=MINUTELY |  | 99991231T235700 | 99991231T235959 | 99991231T235700,99991231T235800,99991231T235900

@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:byweekno_week_53_interval_two@icalkit.invalid
+SUMMARY:Week fifty-three every other year, weeks starting Sunday
+DTSTART:20141229T090000Z
+RRULE:FREQ=YEARLY;INTERVAL=2;BYWEEKNO=53;BYDAY=MO,TH;WKST=SU
+END:VEVENT
+END:VCALENDAR

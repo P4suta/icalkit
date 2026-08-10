@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:monthly_bymonthday_31@icalkit.invalid
+SUMMARY:The thirty-first of every month
+DTSTART:20240131T090000Z
+RRULE:FREQ=MONTHLY;BYMONTHDAY=31
+END:VEVENT
+END:VCALENDAR

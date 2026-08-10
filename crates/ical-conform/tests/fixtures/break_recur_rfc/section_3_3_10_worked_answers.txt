@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# RFC 5545 section 3.3.10 answers several of its own questions in prose rather than in section
+# 3.8.5.3's worked table. Each line below is one of those sentences turned into a rule, with
+# the expected column being what the sentence says and never what this implementation returns.
+# The quoted sentence sits above each line.
+#
+# name | dtstart | rrule | exdates | window start | window end | expected
+
+# "For example, within a MONTHLY rule, +1MO (or simply 1MO) represents the first Monday within
+#  the month, whereas -1MO represents the last Monday of the month."
+-1MO is the last Monday of the month | 19970929T090000 | FREQ=MONTHLY;BYDAY=-1MO |  | 19970901T000000 | 19980301T000000 | 19970929T090000,19971027T090000,19971124T090000,19971229T090000,19980126T090000,19980223T090000
+1MO is the first Monday within the month | 19970901T090000 | FREQ=MONTHLY;BYDAY=1MO |  | 19970901T000000 | 19980301T000000 | 19970901T090000,19971006T090000,19971103T090000,19971201T090000,19980105T090000,19980202T090000
+
+# "For example, -10 represents the tenth to the last day of the month."
+BYMONTHDAY=-10 is the tenth to the last day of the month | 19970921T090000 | FREQ=MONTHLY;BYMONTHDAY=-10 |  | 19970901T000000 | 19980301T000000 | 19970921T090000,19971022T090000,19971121T090000,19971222T090000,19980122T090000,19980219T090000
+
+# "For example, -1 represents the last day of the year (December 31st) and -306 represents the
+#  306th to the last day of the year (March 1st)."
+BYYEARDAY=-306 is March 1st | 19970301T090000 | FREQ=YEARLY;BYYEARDAY=-306 |  | 19970101T000000 | 20020101T000000 | 19970301T090000,19980301T090000,19990301T090000,20000301T090000,20010301T090000
+BYYEARDAY=-1 is December 31st | 19971231T090000 | FREQ=YEARLY;BYYEARDAY=-1 |  | 19970101T000000 | 20010101T000000 | 19971231T090000,19981231T090000,19991231T090000,20001231T090000
+
+# "For example, 'the last work day of the month' could be represented as:
+#   FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"
+the last work day of the month | 19970930T090000 | FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1 |  | 19970901T000000 | 19980401T000000 | 19970930T090000,19971031T090000,19971128T090000,19971231T090000,19980130T090000,19980227T090000,19980331T090000
+
+# "A week is defined as a seven day period, starting on the day of the week defined to be the
+#  workweek start (see WKST). Week number one of the calendar year is the first week that
+#  contains at least four (4) days in that calendar year."
+#
+# Under WKST=MO section 3.8.5.3 prints 1997-05-12, 1998-05-11 and 1999-05-17 for week 20.
+# Under WKST=SU the week that holds four days of 1998 begins Sunday 1998-01-04, which puts
+# week 20 a week later than the default does and leaves 1997 and 1999 where they were.
+Monday of week 20 counted from Sunday | 19970512T090000 | FREQ=YEARLY;BYWEEKNO=20;BYDAY=MO;WKST=SU |  | 19970101T000000 | 20000101T000000 | 19970512T090000,19980518T090000,19990517T090000
+
+# "The BYWEEKNO rule part specifies a COMMA-separated list of ordinals specifying weeks of the
+#  year. Valid values are 1 to 53 or -53 to -1."  1998 is a fifty-three week year under WKST=MO
+#  and 1997 and 1999 are fifty-two week years, so -1 is week 53 once and week 52 twice.
+Monday of the last week of the year | 19971222T090000 | FREQ=YEARLY;BYWEEKNO=-1;BYDAY=MO |  | 19970101T000000 | 20000101T000000 | 19971222T090000,19981228T090000,19991227T090000

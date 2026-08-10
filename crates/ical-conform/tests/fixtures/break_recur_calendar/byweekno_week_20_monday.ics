@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//icalkit//conformance corpus//EN
+BEGIN:VEVENT
+UID:byweekno_week_20_monday@icalkit.invalid
+SUMMARY:Monday of week number 20, RFC 5545 section 3.8.5.3
+DTSTART:19970512T090000Z
+RRULE:FREQ=YEARLY;BYWEEKNO=20;BYDAY=MO
+END:VEVENT
+END:VCALENDAR
