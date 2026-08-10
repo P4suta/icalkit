@@ -375,11 +375,34 @@ pub fn parameter_name_is_representable(bytes: &[u8]) -> bool {
             .any(|octet| PARAMETER_NAME_DELIMITERS.contains(octet) || is_control_octet(*octet))
 }
 
+/// Whether RFC 5545 section 3.1 can write `bytes` as a property or a component name.
+///
+/// Narrower than section 3.1's `name`, which is `iana-token / x-name` and admits only `ALPHA`,
+/// `DIGIT` and `-`. Producers write `_` and `.` in vendor names and this crate reads them back
+/// unchanged, so refusing them on the write side would refuse a name that survives a round
+/// trip. What is refused instead is the mechanical claim: a name the reader would not give back
+/// whole. `;` opens a parameter and `:` ends the header, so a name carrying either comes back
+/// shorter with the rest of the line attached; a control character ends the physical line
+/// outright, which is how one fabricated property becomes two. The empty name is refused as
+/// well, because it reads back as the blank line it looks like.
+///
+/// A component name is held to the same rule although it is written as a `BEGIN` line's
+/// *value*, where `;` and `:` would survive. One predicate is worth more than the two octets it
+/// costs, and neither is a name anybody means to author.
+#[must_use]
+pub fn property_name_is_representable(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && !bytes
+            .iter()
+            .any(|octet| matches!(*octet, b';' | b':') || is_control_octet(*octet))
+}
+
 /// Whether `octet` is one of section 3.1's `CONTROL` octets.
 ///
 /// `HTAB` is deliberately outside the set: section 3.1 counts it as whitespace, and a
 /// parameter value carrying one is legal however unusual it looks.
-const fn is_control_octet(octet: u8) -> bool {
+#[must_use]
+pub const fn is_control_octet(octet: u8) -> bool {
     matches!(octet, 0x00..=0x08 | 0x0A..=0x1F | 0x7F)
 }
 
@@ -419,9 +442,10 @@ mod tests {
     use super::{
         PARAMETER_MUST_QUOTE, PARAMETER_NAME_DELIMITERS, ParameterQuoting, TEXT_ESCAPES,
         TEXT_MUST_ESCAPE, escape_text, escape_text_into, parameter_is_representable,
-        parameter_name_is_representable, parameter_needs_quoting, quote_parameter,
-        quote_parameter_into, text_escape_meaning, text_escape_spelling, text_needs_escaping,
-        text_needs_unescaping, unescape_text, unescape_text_into, unquote_parameter,
+        parameter_name_is_representable, parameter_needs_quoting, property_name_is_representable,
+        quote_parameter, quote_parameter_into, text_escape_meaning, text_escape_spelling,
+        text_needs_escaping, text_needs_unescaping, unescape_text, unescape_text_into,
+        unquote_parameter,
     };
     use crate::report::DiagnosticCode;
 
@@ -648,5 +672,26 @@ mod tests {
         }
         assert!(!parameter_name_is_representable(b"X\r\nATTENDEE"));
         assert!(!parameter_name_is_representable(b"X\x07"));
+    }
+
+    /// The same claim one level up: a name the reader would hand back in pieces is a name this
+    /// crate declines to author, and the empty one reads back as a blank line rather than as a
+    /// property nobody named.
+    #[test]
+    fn a_property_name_that_would_not_read_back_whole_is_named_as_unwritable() {
+        assert!(property_name_is_representable(b"SUMMARY"));
+        assert!(property_name_is_representable(
+            b"X-MICROSOFT-CDO-BUSYSTATUS"
+        ));
+        assert!(property_name_is_representable(b"VEVENT"));
+        assert!(!property_name_is_representable(b""));
+        assert!(!property_name_is_representable(b"SUMMARY:x"));
+        assert!(!property_name_is_representable(b"SUMMARY;X-A=1"));
+        assert!(!property_name_is_representable(b"SUM\r\nATTENDEE"));
+        assert!(!property_name_is_representable(b"SUM\x07"));
+        assert!(
+            property_name_is_representable(b"X-VENDOR_FLAG.2"),
+            "a spelling producers write and this crate reads back is one it may write"
+        );
     }
 }

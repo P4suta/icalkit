@@ -73,10 +73,22 @@ pub enum DiagnosticCode {
     BareCarriageReturn,
     /// The last line of the input carried no terminator at all.
     MissingFinalLineBreak,
+    /// A physical line ran past the 75 octets RFC 5545 section 3.1 allows one.
+    ///
+    /// Counted over the octets of one physical line, terminator excluded, which is what
+    /// section 3.1 bounds — a folded content line is as long as its producer wanted and each
+    /// of its continuations is a separate physical line with its own answer.
+    LineTooLong,
     /// A value or parameter held a control character RFC 5545 section 3.1 excludes.
     ControlCharacterInText,
     /// A `DQUOTE`-delimited parameter value was never closed.
     UnterminatedQuotedParameter,
+    /// A `^` was followed by an octet RFC 6868 gives no meaning.
+    ///
+    /// A note rather than a violation: RFC 6868 section 2 requires such a pair to be left as
+    /// it is, so the octets are what they were and the caller is told that a producer may have
+    /// meant something by them.
+    UndefinedCaretEscape,
     /// A parameter arrived with a name and no `=`.
     ParameterWithoutValue,
     /// A property the specification declares at most once occurred more than once.
@@ -104,8 +116,22 @@ pub enum DiagnosticCode {
     MalformedFloat,
     /// A `BOOLEAN` value was neither `TRUE` nor `FALSE` in any casing.
     MalformedBoolean,
+    /// A `BINARY` value was not the base 64 RFC 5545 section 3.3.1 requires.
+    MalformedBinary,
+    /// A `URI` value did not match RFC 5545 section 3.3.13, or section 3.3.3's `CAL-ADDRESS`.
+    ///
+    /// One code for both, because section 3.3.3 defines a calendar address as a URI and adds
+    /// no syntax of its own; what distinguishes them is the property, which the caller holds.
+    MalformedUri,
     /// A `VALUE` parameter named a value type this workspace does not know.
     UnknownValueType,
+    /// A component did not carry a property RFC 5545 section 3.6 requires of it.
+    MissingRequiredProperty,
+    /// A component carried a property RFC 5545 section 3.6 does not define for it.
+    ///
+    /// Never reported for an `X-` name or for one from a later RFC: section 3.8.8 allows both
+    /// anywhere, and a component this crate has no definition for allows everything.
+    PropertyNotAllowedHere,
     /// A recurrence search stopped at the candidate budget rather than at the rule's end.
     ///
     /// Reported so that "cut short at the limit" and "the rule ended at `UNTIL`" are
@@ -145,8 +171,10 @@ impl DiagnosticCode {
             Self::BareLineFeed => "bare-line-feed",
             Self::BareCarriageReturn => "bare-carriage-return",
             Self::MissingFinalLineBreak => "missing-final-line-break",
+            Self::LineTooLong => "line-too-long",
             Self::ControlCharacterInText => "control-character-in-text",
             Self::UnterminatedQuotedParameter => "unterminated-quoted-parameter",
+            Self::UndefinedCaretEscape => "undefined-caret-escape",
             Self::ParameterWithoutValue => "parameter-without-value",
             Self::DuplicateProperty => "duplicate-property",
             Self::MalformedDate => "malformed-date",
@@ -159,7 +187,11 @@ impl DiagnosticCode {
             Self::MalformedInteger => "malformed-integer",
             Self::MalformedFloat => "malformed-float",
             Self::MalformedBoolean => "malformed-boolean",
+            Self::MalformedBinary => "malformed-binary",
+            Self::MalformedUri => "malformed-uri",
             Self::UnknownValueType => "unknown-value-type",
+            Self::MissingRequiredProperty => "missing-required-property",
+            Self::PropertyNotAllowedHere => "property-not-allowed-here",
             Self::RecurrenceBudgetExhausted => "recurrence-budget-exhausted",
             Self::NonexistentRecurrenceInstance => "nonexistent-recurrence-instance",
             Self::UnknownTimeZone => "unknown-time-zone",
