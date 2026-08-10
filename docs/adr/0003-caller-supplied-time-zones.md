@@ -297,7 +297,13 @@ asked about every query, and a rule that fires rarely is probed back sixty-four 
 than three, which is the widest gap `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` can produce.
 
 A lookup is therefore logarithmic in the dated transitions and linear in the *rules*, of which a
-definition carries a handful. Two further costs are named rather than hidden. The candidate
+real definition carries a handful and a hostile one carries as many as
+`Limits::max_vtimezone_observances` admits. That second number is measured rather than assumed:
+a definition with 2,000 rule-bearing observances answers one query in about 35 ms in a debug
+build, so the work stays bounded and terminating and is no longer cheap. Nothing in this
+milestone narrows it, and a caller expanding a long series against such a file pays it per
+occurrence; the shape that would close it is an index over the rules by side and by year, which
+is work rather than a decision and is recorded here as owed. Two further costs are named rather than hidden. The candidate
 offsets are taken from every era inside one day either side of the query rather than from its
 two ends, because a definition with two transitions in one day has a middle offset that governs
 seventeen hours and was never considered — which reported an ordinary lunchtime as a local time

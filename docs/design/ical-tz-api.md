@@ -873,4 +873,7 @@ sixty-four years rather than three, the candidate offsets come from every era in
 either side of the query rather than from its two ends, and the table is ordered by the instant
 each observance begins rather than by the wall clock its `DTSTART` spells. A lookup is
 logarithmic in the dated transitions, linear in the rules, and allocates a small vector only on
-the days a zone actually moves.
+the days a zone actually moves. Linear in the rules is measured: 2,000 rule-bearing observances
+— a file an attacker writes, not one a producer emits — cost about 35 ms per query in a debug
+build, which is bounded and terminating and not cheap. An index over the rules is what would
+close it and is not in this milestone.
