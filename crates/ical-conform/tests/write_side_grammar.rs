@@ -152,16 +152,18 @@ fn rfc5545_3_2_a_written_parameter_value_is_quoted_where_the_grammar_forces_it()
 ///
 /// **Where implementations differ.** RFC 6868 defines a caret encoding — `^n` for a newline,
 /// `^^` for a caret, `^'` for a `DQUOTE` — which is exactly the missing spelling, and clients
-/// that implement it write these values rather than refusing them. This crate implements no
-/// RFC 6868 decoding at all: a `^'` read out of a file stays the two octets it arrived as, so
-/// emitting one would write a value this crate would not read back as the value it was handed.
+/// that implement it write these values rather than refusing them. `ical-grammar` now reads
+/// and writes that encoding in both directions (`decode_caret`/`encode_caret`), but it is a
+/// codec a caller opts into rather than a storage rule: a `^'` read out of a file stays the
+/// two octets it arrived as, and the mutation door still refuses a `DQUOTE` or a control
+/// octet, because `parameter_is_representable` has not been taught to consult `encode_caret`.
 /// Both outcomes are permitted, and the two are recorded here:
 ///
 /// - an RFC 6868 implementation writes `X-STATE=^'hi^'` and reads back `"hi"`;
 /// - this crate refuses, with `MutationError::NotRepresentable`, and writes nothing.
 ///
-/// Adopting the first is a change to what this crate *reads*, not only to what it writes, and
-/// belongs with the milestone that implements RFC 6868 in both directions.
+/// Adopting the first is a decision about what `Component::apply` emits — the reading half no
+/// longer stands in the way — and it is the write path's own unit to make, not this case's.
 #[test]
 fn rfc5545_3_2_a_parameter_value_with_no_spelling_is_refused_rather_than_written() {
     let refused: &[&[u8]] = &[

@@ -1,0 +1,16 @@
+BEGIN:VCALENDAR
+PRODID:-//Example Corp.//RFC 6868 sampler//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:6868-1@example.test
+DTSTAMP:20260810T090000Z
+SUMMARY:Handover ^n not an encoding
+ATTENDEE;CN=Ann^nMarie:mailto:a@ex.test
+ATTENDEE;CN=100^^ tested:mailto:b@ex.test
+ATTENDEE;CN=^'Ann^':mailto:c@ex.test
+ATTENDEE;CN=^x undefined:mailto:d@ex.test
+ATTENDEE;CN="^n^^^'^x":mailto:e@ex.test
+ATTENDEE;CN=ends with a caret^:mailto:f@ex.test
+ATTENDEE;CN="^'Doe, John^'":mailto:g@ex.test
+END:VEVENT
+END:VCALENDAR

@@ -1,0 +1,15 @@
+BEGIN:VCALENDAR
+PRODID:-//Example Corp.//quoted parameter sampler//EN
+VERSION:2.0
+BEGIN:VEVENT
+UID:quoted-1@example.test
+DTSTAMP:20260810T090000Z
+ATTENDEE;CN=Doe"John;ROLE=CHAIR:mailto:a@ex.test
+ATTENDEE;DELEGATED-TO="mailto:b@ex.test","mailto:c@ex.test":mailto:
+ d@ex.test
+ATTENDEE;CN="Ann
+  Marie":mailto:e@ex.test
+X-SHAPES;C"N=v:value
+X-VENDOR;CN="never closed:still the header
+END:VEVENT
+END:VCALENDAR
