@@ -83,11 +83,17 @@ impl GrammarLimits {
     /// `LF SP` is one item, one octet of value, and no header at all, so no other bound here
     /// sees it.
     ///
-    /// The default is the width the specification asks for divided into the octets a value is
-    /// allowed to carry, with headroom: a one mebibyte value folded at section 3.1's
-    /// seventy-five octets needs about fourteen thousand continuations, so sixteen thousand
-    /// three hundred and eighty-four accepts every legitimate line and refuses a line whose
-    /// continuations outnumber its content.
+    /// The default is measured rather than divided. A three-quarter mebibyte file is the
+    /// largest an inline `ATTACH;ENCODING=BASE64` can carry under the default
+    /// `max_value_bytes`, base64 spending four octets on every three; folded at section 3.1's
+    /// 75 octets, this crate's own reader retains 14,170 continuations for it, and 14,564 for
+    /// the same file folded at the 73 octets some producers use instead. The bound of 16,384
+    /// stands above both, and that is where its headroom goes: not to a longer value, which
+    /// the layer that stores one refuses on `max_value_bytes` first, but to a producer folding
+    /// tighter than any this corpus has seen. Under `GENEROUS`, whose value ceiling is
+    /// sixty-four times larger, the same shape reaches 906,877 continuations against a bound
+    /// of 1,048,576. The tests in this file build those lines and read them back, so these
+    /// numbers are observations of this reader and not a division.
     #[must_use]
     pub const fn max_folds_per_line(self) -> u32 {
         self.folds_per_line
@@ -175,8 +181,10 @@ impl Limits {
     /// The policy a caller gets by saying nothing.
     pub const DEFAULT: Self = Self {
         grammar: GrammarLimits::DEFAULT,
-        max_input_bytes: 16 * 1024 * 1024,
-        max_value_bytes: 1024 * 1024,
+        // 16 MiB.
+        max_input_bytes: 16_777_216,
+        // 1 MiB.
+        max_value_bytes: 1_048_576,
         max_component_depth: 32,
         max_items: 100_000,
         candidates_per_period: 65_536,
@@ -187,7 +195,8 @@ impl Limits {
         max_attendees: 4096,
         max_xml_depth: 64,
         max_xml_elements: 100_000,
-        max_response_bytes: 64 * 1024 * 1024,
+        // 64 MiB.
+        max_response_bytes: 67_108_864,
         max_href_bytes: 4096,
     };
 
@@ -197,8 +206,10 @@ impl Limits {
     /// one separately and a name they can share is worth more than the flexibility.
     pub const GENEROUS: Self = Self {
         grammar: GrammarLimits::GENEROUS,
-        max_input_bytes: 512 * 1024 * 1024,
-        max_value_bytes: 64 * 1024 * 1024,
+        // 512 MiB.
+        max_input_bytes: 536_870_912,
+        // 64 MiB.
+        max_value_bytes: 67_108_864,
         max_component_depth: 64,
         max_items: 5_000_000,
         candidates_per_period: 1_048_576,
@@ -209,7 +220,8 @@ impl Limits {
         max_attendees: 65_536,
         max_xml_depth: 128,
         max_xml_elements: 5_000_000,
-        max_response_bytes: 1024 * 1024 * 1024,
+        // 1 GiB.
+        max_response_bytes: 1_073_741_824,
         max_href_bytes: 65_536,
     };
 
@@ -659,8 +671,216 @@ impl Meter {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::{GrammarLimits, Limits, Meter};
     use crate::failure::{LimitExceeded, ParseError};
+    use crate::lexer::ContentLineReader;
+    use crate::token::{ContentLineSource, Token};
+
+    /// RFC 5545 section 3.1's ceiling on one physical line, terminator excluded.
+    const SPEC_FOLD_WIDTH: usize = 75;
+
+    /// A width the corpus records producers folding at instead. Not a violation: section 3.1
+    /// states a ceiling, so anything at or under it is a file that has to be read.
+    const TIGHTER_FOLD_WIDTH: usize = 73;
+
+    /// The header RFC 5545 section 3.8.1.1 requires of an attachment carried inline.
+    const ATTACH_HEADER: &[u8] = b"ATTACH;ENCODING=BASE64;VALUE=BINARY:";
+
+    /// RFC 4648's alphabet, which is what an encoder writing such a value emits.
+    const BASE64_ALPHABET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    /// Continuations this reader retained for that attachment folded at 75 octets.
+    ///
+    /// Written here and in `max_folds_per_line`'s documentation and nowhere else, because it
+    /// is an observation: the only thing entitled to change it is measuring again.
+    const FOLDS_AT_THE_SPECIFIED_WIDTH: u32 = 14_170;
+
+    /// The same attachment folded at 73 octets, which costs 394 continuations more.
+    const FOLDS_AT_A_TIGHTER_WIDTH: u32 = 14_564;
+
+    /// Continuations the largest value `Limits::GENEROUS` admits needs at 75 octets.
+    const GENEROUS_CEILING_FOLDS: usize = 906_877;
+
+    /// The largest a single property value may be under `limits`, as a length.
+    fn value_ceiling(limits: Limits) -> usize {
+        let bytes = limits.max_value_bytes();
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+
+    /// One `ATTACH;ENCODING=BASE64` content line whose value is `octets` of base64 text.
+    ///
+    /// Real base64 rather than filler, because the thing being measured is a line a client
+    /// emits: an image reaches a calendar as an inline attachment written exactly like this,
+    /// and a value of one repeated octet would fold the same way only by accident.
+    fn inline_attachment(octets: usize) -> Vec<u8> {
+        let end = ATTACH_HEADER.len().saturating_add(octets);
+        let mut line = Vec::from(ATTACH_HEADER);
+        while line.len() < end {
+            line.extend_from_slice(BASE64_ALPHABET);
+        }
+        line.truncate(end);
+        line
+    }
+
+    /// Fold `line` the way a producer does: no physical line longer than `width` octets.
+    ///
+    /// A continuation spends one of its `width` octets on the whitespace that introduces it,
+    /// so a fold buys `width - 1` octets of content and not `width`. That single octet is the
+    /// difference between the count below and the one a division produces.
+    fn fold_at(line: &[u8], width: usize) -> Vec<u8> {
+        let (first, rest) = line.split_at(line.len().min(width));
+        let mut out = Vec::from(first);
+        for chunk in rest.chunks(width.saturating_sub(1).max(1)) {
+            out.extend_from_slice(b"\r\n ");
+            out.extend_from_slice(chunk);
+        }
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    /// How many continuations a logical line of `octets` takes at `width`.
+    ///
+    /// The shape of the fold, stated once so it can be held against an observation before it
+    /// is believed about a file nobody is going to build.
+    fn continuations_for(octets: usize, width: usize) -> usize {
+        let carried = width.saturating_sub(1).max(1);
+        octets.saturating_sub(width).div_ceil(carried)
+    }
+
+    /// A line of nothing but continuations: no name, `count` folds, one octet of value.
+    ///
+    /// The shape this bound exists for. It is one item, its header is empty, its value is one
+    /// octet and the whole thing sits far inside the octet budget, so every other bound in
+    /// this file looks straight past it.
+    fn continuation_bomb(count: usize) -> Vec<u8> {
+        let mut bomb = Vec::from(&b":"[..]);
+        for _ in 0..count {
+            bomb.extend_from_slice(b"\r\n ");
+        }
+        bomb.extend_from_slice(b"v\r\n");
+        bomb
+    }
+
+    /// Every fold the reader retained while reading `input` to its end.
+    fn folds_retained(input: &[u8], limits: GrammarLimits) -> Result<u32, ParseError> {
+        let mut reader = ContentLineReader::new(input, limits);
+        let mut retained = 0_u32;
+        while let Some(token) = reader.next_token() {
+            if let Token::EndOfLine { folds, .. } = token? {
+                let held = u32::try_from(folds.len()).unwrap_or(u32::MAX);
+                retained = retained.saturating_add(held);
+            }
+        }
+        Ok(retained)
+    }
+
+    /// The bound comes from a file rather than from a division, and it still refuses the
+    /// shape it was added for.
+    ///
+    /// One attachment, read under both policies, because a number justified against one of
+    /// them is not justified. The last two rows are the attack: a line whose continuations
+    /// are its entire content, refused at the fold that crosses the bound rather than after
+    /// the line is resident.
+    #[test]
+    fn the_fold_bound_admits_a_real_inline_attachment_and_refuses_a_line_of_continuations() {
+        let attachment = inline_attachment(value_ceiling(Limits::DEFAULT));
+        let ceiling = Limits::DEFAULT.grammar().max_folds_per_line();
+        let at_the_bound = usize::try_from(ceiling).unwrap();
+        let past_the_bound = continuation_bomb(at_the_bound.saturating_add(1));
+        let bomb_octets = u64::try_from(past_the_bound.len()).unwrap();
+        assert!(
+            bomb_octets < Limits::DEFAULT.max_input_bytes(),
+            "the bomb stays inside every other bound, so its refusal is about this one"
+        );
+
+        // What the line is, the octets it arrives as, the policy reading it, and the folds
+        // the reader is left holding — or the bound it refused at.
+        let cases = [
+            (
+                "an empty input is folded nowhere",
+                Vec::new(),
+                Limits::DEFAULT,
+                Ok(0),
+            ),
+            (
+                "a three-quarter mebibyte inline attachment folded at 75 octets, under DEFAULT",
+                fold_at(&attachment, SPEC_FOLD_WIDTH),
+                Limits::DEFAULT,
+                Ok(FOLDS_AT_THE_SPECIFIED_WIDTH),
+            ),
+            (
+                "the same octets under GENEROUS, which reads them the same way",
+                fold_at(&attachment, SPEC_FOLD_WIDTH),
+                Limits::GENEROUS,
+                Ok(FOLDS_AT_THE_SPECIFIED_WIDTH),
+            ),
+            (
+                "the same attachment folded at the 73 octets some producers use",
+                fold_at(&attachment, TIGHTER_FOLD_WIDTH),
+                Limits::DEFAULT,
+                Ok(FOLDS_AT_A_TIGHTER_WIDTH),
+            ),
+            (
+                "unfolded: a physical line past 75 octets is a LineTooLong diagnostic for \
+                 the consumer, and no bound of this reader's",
+                fold_at(&attachment, attachment.len()),
+                Limits::DEFAULT,
+                Ok(0),
+            ),
+            (
+                "a line of nothing but continuations, exactly at the bound",
+                continuation_bomb(at_the_bound),
+                Limits::DEFAULT,
+                Ok(ceiling),
+            ),
+            (
+                "one continuation past the bound",
+                past_the_bound,
+                Limits::DEFAULT,
+                Err(ParseError::TooManyFolds { limit: ceiling }),
+            ),
+        ];
+
+        for (shape, input, limits, expected) in cases {
+            let observed = folds_retained(&input, limits.grammar());
+            assert_eq!(observed, expected, "{shape}");
+        }
+    }
+
+    /// What that measurement says about the policy no test can build a file for.
+    ///
+    /// The largest value `GENEROUS` admits is sixty-four mebibytes, which is sixty-eight
+    /// million octets once folded and not a thing to allocate here. So the shape of a fold is
+    /// pinned to the two observations above first and only then applied to a ceiling nobody
+    /// materialized — which is still not a division nobody checked, because the divisor is
+    /// the one the reader was just watched using.
+    #[test]
+    fn the_bound_generous_states_covers_the_largest_value_generous_admits() {
+        let header = ATTACH_HEADER.len();
+        let measured = header.saturating_add(value_ceiling(Limits::DEFAULT));
+        assert_eq!(
+            continuations_for(measured, SPEC_FOLD_WIDTH),
+            usize::try_from(FOLDS_AT_THE_SPECIFIED_WIDTH).unwrap()
+        );
+        assert_eq!(
+            continuations_for(measured, TIGHTER_FOLD_WIDTH),
+            usize::try_from(FOLDS_AT_A_TIGHTER_WIDTH).unwrap()
+        );
+
+        let widest = header.saturating_add(value_ceiling(Limits::GENEROUS));
+        assert_eq!(
+            continuations_for(widest, SPEC_FOLD_WIDTH),
+            GENEROUS_CEILING_FOLDS
+        );
+        let stated = Limits::GENEROUS.grammar().max_folds_per_line();
+        assert!(
+            GENEROUS_CEILING_FOLDS < usize::try_from(stated).unwrap(),
+            "a policy that admits a sixty-four mebibyte value admits the folds it arrives in"
+        );
+    }
 
     #[test]
     fn a_builder_changes_one_bound_and_leaves_the_rest() {
