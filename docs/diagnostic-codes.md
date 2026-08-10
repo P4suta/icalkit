@@ -30,15 +30,19 @@ has no outside dependencies" may not acquire one.
 
 ## Notes rather than violations
 
-Five codes travel on `Severity::Note`, and each is a case where the input is legal and the
+Eight codes travel on `Severity::Note`, and each is a case where the input is legal and the
 caller still needs telling. RFC 6868 section 2 requires an undefined caret pair to be left
 exactly as it is. RFC 5545 section 3.2.20 permits a `VALUE` type this workspace has no decoder
 for, so not knowing one is a gap here rather than a fault in the file. Section 3.3.10 requires
-a recurrence instance whose date does not exist to be ignored rather than moved. A local time
-that occurs twice does occur, and choosing between the two is a caller's policy rather than a
-repair. Two zone sources that disagree are each internally consistent, and neither is the one
-that violated something. A caller enforcing strictness rejects on `Severity::Violation`, and
-would reject half the calendars in the world if it also rejected on `Severity::Note`.
+a recurrence instance whose date does not exist to be ignored rather than moved. A rule part
+section 3.3.10 does not define is indistinguishable from one a later specification adds, and
+the rest of the rule still expands. An `EXDATE` colliding with a `RECURRENCE-ID` and an
+override moving a start out of the window it was generated in are both this project's stated
+precedence rather than anyone's violation. A local time that occurs twice does occur, and
+choosing between the two is a caller's policy rather than a repair. Two zone sources that
+disagree are each internally consistent, and neither is the one that violated something. A
+caller enforcing strictness rejects on `Severity::Violation`, and would reject half the
+calendars in the world if it also rejected on `Severity::Note`.
 
 ## Codes with no M0 emitter
 
@@ -103,6 +107,17 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | mutually-exclusive-properties | A component carried two properties RFC 5545 section 3.6 does not allow together. | Violation | M0 |
 | recurrence-budget-exhausted | A recurrence search stopped at the candidate budget rather than at the rule's end. | LimitReached | M1 |
 | nonexistent-recurrence-instance | A recurrence rule generated an instance whose date does not exist, so it was filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one. | Note | M1 |
+| malformed-recurrence-rule | A `RECUR` value did not match the grammar of RFC 5545 section 3.3.10. | Violation | M1 |
+| duplicate-recurrence-rule-part | A `RECUR` value named one rule part more than once, which RFC 5545 section 3.3.10 allows at most once. | Violation | M1 |
+| unknown-recurrence-rule-part | A `RECUR` value named a rule part RFC 5545 section 3.3.10 does not define. | Note | M1 |
+| recurrence-rule-part-out-of-range | A `RECUR` rule part carried a value outside the range RFC 5545 section 3.3.10 gives it, and the rest of the rule was kept. | Violation | M1 |
+| recurrence-until-value-type-mismatch | An `UNTIL` and its `DTSTART` disagreed about `DATE` versus `DATE-TIME`, which RFC 5545 section 3.3.10 requires to agree. | Violation | M1 |
+| by-set-pos-without-by-rule | A `RECUR` value carried `BYSETPOS` with no other `BYxxx` rule part to select from, which RFC 5545 section 3.3.10 forbids. | Violation | M1 |
+| mutually-exclusive-rule-parts | A `RECUR` value carried both `UNTIL` and `COUNT`, which RFC 5545 section 3.3.10 forbids in one recur. | Violation | M1 |
+| extra-recurrence-rule-ignored | A component offered more than one `RRULE` and only the first was expanded. | Violation | M1 |
+| exdate-shadows-override | An `EXDATE` and a `RECURRENCE-ID` named the same instant, and the exclusion won. | Note | M1 |
+| override-left-window | An override moved an occurrence's start outside the window its cadence key fell in. | Note | M1 |
+| override-shift-not-representable | An override moved an occurrence's start off the representable timeline, so the occurrence was filtered rather than moved to a nearby instant. | Violation | M1 |
 | unknown-time-zone | A `TZID` named a zone no supplied source could resolve. | Violation | M2 |
 | missing-time-zone-definition | A `TZID` parameter named a zone with no `VTIMEZONE` in the same calendar. | Violation | M2 |
 | ambiguous-local-time | A local time occurs twice under its zone, at the end of a daylight saving period. | Note | M2 |

@@ -146,6 +146,76 @@ pub enum DiagnosticCode {
     /// A recurrence rule generated an instance whose date does not exist, so it was
     /// filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one.
     NonexistentRecurrenceInstance,
+    /// A `RECUR` value did not match the grammar of RFC 5545 section 3.3.10.
+    ///
+    /// Raised where nothing usable could be read at all — a missing `FREQ`, a `FREQ` naming
+    /// no frequency. A part that is merely out of range keeps the rule and travels on
+    /// [`DiagnosticCode::RecurrenceRulePartOutOfRange`] instead.
+    MalformedRecurrenceRule,
+    /// A `RECUR` value named one rule part more than once, which RFC 5545 section 3.3.10
+    /// allows at most once.
+    ///
+    /// The last occurrence wins, because a producer that repeats a part is more plausibly
+    /// appending a correction than restating a value it already wrote.
+    DuplicateRecurrenceRulePart,
+    /// A `RECUR` value named a rule part RFC 5545 section 3.3.10 does not define.
+    ///
+    /// A note rather than a violation: section 3.3.10's grammar is closed, but an
+    /// unrecognized part is indistinguishable from one a later specification added, and
+    /// discarding the rest of a rule over it would lose a series this crate can still expand.
+    UnknownRecurrenceRulePart,
+    /// A `RECUR` rule part carried a value outside the range RFC 5545 section 3.3.10 gives
+    /// it, and the rest of the rule was kept.
+    ///
+    /// `BYMONTHDAY=32` names no day of any month. The part is dropped rather than clamped, for
+    /// the reason `docs/adr/0011` gives about instances: a nearby answer is not the answer.
+    RecurrenceRulePartOutOfRange,
+    /// An `UNTIL` and its `DTSTART` disagreed about `DATE` versus `DATE-TIME`, which RFC 5545
+    /// section 3.3.10 requires to agree.
+    ///
+    /// Reported rather than refused because half the clients in the corpus emit it, and
+    /// because the comparison still has to happen in some named clock. Which clock that is
+    /// belongs to the caller, who resolved both instants before offering them.
+    RecurrenceUntilValueTypeMismatch,
+    /// A `RECUR` value carried `BYSETPOS` with no other `BYxxx` rule part to select from,
+    /// which RFC 5545 section 3.3.10 forbids.
+    BySetPosWithoutByRule,
+    /// A `RECUR` value carried both `UNTIL` and `COUNT`, which RFC 5545 section 3.3.10 forbids
+    /// in one recur.
+    ///
+    /// The two name one bound and a rule holds one, so the part written later in the value
+    /// wins. That is what a reader applying each pair as it arrives does anyway, and stating it
+    /// here makes it a decision rather than an artifact of the walk — but a decision resolved
+    /// silently is still a series the caller may not have asked for, which is why it travels.
+    MutuallyExclusiveRuleParts,
+    /// A component offered more than one `RRULE` and only the first was expanded.
+    ///
+    /// RFC 5545 section 3.8.5.3 says `SHOULD NOT`, RFC 2445 permitted it, and files with two
+    /// exist. Merging them would make `COUNT` ambiguous across the union, so the extras are
+    /// dropped loudly rather than silently unioned.
+    ExtraRecurrenceRuleIgnored,
+    /// An `EXDATE` and a `RECURRENCE-ID` named the same instant, and the exclusion won.
+    ///
+    /// A note rather than a violation, and scoped to the instant rather than to the override
+    /// object: a redundant `EXDATE` landing on a `RANGE=THISANDFUTURE` anchor removes that one
+    /// occurrence and leaves the anchor's diff in force for every later candidate.
+    ExdateShadowsOverride,
+    /// An override moved an occurrence's start outside the window its cadence key fell in.
+    ///
+    /// Not a defect in the search. A window admits an occurrence whose cadence key falls in it
+    /// **or** whose effective start does, so a `THISANDFUTURE` time shift never loses an
+    /// occurrence it moved *into* the window and never hides one it moved out: the occurrence is
+    /// still emitted, and this says its start is somewhere the caller did not ask about.
+    OverrideLeftWindow,
+    /// An override moved an occurrence's start off the representable timeline, so the
+    /// occurrence was filtered rather than moved to a nearby instant.
+    ///
+    /// The shift is a number a file supplies and it may name half the timeline, so the sum is
+    /// checked. Its own code rather than
+    /// [`DiagnosticCode::NonexistentRecurrenceInstance`]: that one names a date RFC 5545
+    /// section 3.3.10 defines away, which is a legal file describing fewer instances than it
+    /// looks like, and this one names an override asking for an instant no calendar can hold.
+    OverrideShiftNotRepresentable,
     /// A `TZID` named a zone no supplied source could resolve.
     UnknownTimeZone,
     /// A `TZID` parameter named a zone with no `VTIMEZONE` in the same calendar.
@@ -201,6 +271,17 @@ impl DiagnosticCode {
             Self::MutuallyExclusiveProperties => "mutually-exclusive-properties",
             Self::RecurrenceBudgetExhausted => "recurrence-budget-exhausted",
             Self::NonexistentRecurrenceInstance => "nonexistent-recurrence-instance",
+            Self::MalformedRecurrenceRule => "malformed-recurrence-rule",
+            Self::DuplicateRecurrenceRulePart => "duplicate-recurrence-rule-part",
+            Self::UnknownRecurrenceRulePart => "unknown-recurrence-rule-part",
+            Self::RecurrenceRulePartOutOfRange => "recurrence-rule-part-out-of-range",
+            Self::RecurrenceUntilValueTypeMismatch => "recurrence-until-value-type-mismatch",
+            Self::BySetPosWithoutByRule => "by-set-pos-without-by-rule",
+            Self::MutuallyExclusiveRuleParts => "mutually-exclusive-rule-parts",
+            Self::ExtraRecurrenceRuleIgnored => "extra-recurrence-rule-ignored",
+            Self::ExdateShadowsOverride => "exdate-shadows-override",
+            Self::OverrideLeftWindow => "override-left-window",
+            Self::OverrideShiftNotRepresentable => "override-shift-not-representable",
             Self::UnknownTimeZone => "unknown-time-zone",
             Self::MissingTimeZoneDefinition => "missing-time-zone-definition",
             Self::AmbiguousLocalTime => "ambiguous-local-time",

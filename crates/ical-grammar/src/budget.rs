@@ -157,6 +157,12 @@ pub struct Limits {
     max_items: u32,
     /// The most recurrence candidates that may be generated per period.
     candidates_per_period: u32,
+    /// The most occurrences one recurrence search may emit.
+    occurrences_per_search: u32,
+    /// The most `RDATE` instants one series may carry.
+    rdate_entries: u32,
+    /// The most `EXDATE` instants one series may carry.
+    exdate_entries: u32,
     /// The most `RECURRENCE-ID` overrides one series may carry.
     override_entries: u32,
     /// The most observances one `VTIMEZONE` may define.
@@ -188,6 +194,9 @@ impl Limits {
         max_component_depth: 32,
         max_items: 100_000,
         candidates_per_period: 65_536,
+        occurrences_per_search: 65_536,
+        rdate_entries: 4096,
+        exdate_entries: 4096,
         override_entries: 4096,
         max_vtimezone_observances: 4096,
         max_vtimezone_components: 256,
@@ -213,6 +222,9 @@ impl Limits {
         max_component_depth: 64,
         max_items: 5_000_000,
         candidates_per_period: 1_048_576,
+        occurrences_per_search: 1_048_576,
+        rdate_entries: 65_536,
+        exdate_entries: 65_536,
         override_entries: 65_536,
         max_vtimezone_observances: 65_536,
         max_vtimezone_components: 4096,
@@ -263,6 +275,35 @@ impl Limits {
     #[must_use]
     pub const fn candidates_per_period(self) -> u32 {
         self.candidates_per_period
+    }
+
+    /// The most occurrences one recurrence search may emit.
+    ///
+    /// A separate dimension from the candidate budget because the two bound different costs.
+    /// Candidates bound the work a search does; emitted occurrences bound what a caller
+    /// collecting them *retains*, and a rule that matches on every candidate spends the first
+    /// bound at exactly the rate it spends this one while a rule that matches rarely does not.
+    /// A caller rendering one month wants both, and neither implies the other.
+    #[must_use]
+    pub const fn occurrences_per_search(self) -> u32 {
+        self.occurrences_per_search
+    }
+
+    /// The most `RDATE` instants one series may carry.
+    #[must_use]
+    pub const fn rdate_entries(self) -> u32 {
+        self.rdate_entries
+    }
+
+    /// The most `EXDATE` instants one series may carry.
+    ///
+    /// Counted apart from [`Limits::rdate_entries`] because the two lists cost different
+    /// things: an `RDATE` adds an instant the merge must order, an `EXDATE` only removes one,
+    /// and a caller that wants to admit a long deletion list without also admitting a long
+    /// addition list has no way to say so from one shared number.
+    #[must_use]
+    pub const fn exdate_entries(self) -> u32 {
+        self.exdate_entries
     }
 
     /// The most `RECURRENCE-ID` overrides one series may carry.
@@ -366,6 +407,33 @@ impl Limits {
     pub const fn with_candidates_per_period(self, candidates: u32) -> Self {
         Self {
             candidates_per_period: candidates,
+            ..self
+        }
+    }
+
+    /// The same policy with a different per-search occurrence bound.
+    #[must_use]
+    pub const fn with_occurrences_per_search(self, occurrences: u32) -> Self {
+        Self {
+            occurrences_per_search: occurrences,
+            ..self
+        }
+    }
+
+    /// The same policy with a different `RDATE`-entry bound.
+    #[must_use]
+    pub const fn with_rdate_entries(self, entries: u32) -> Self {
+        Self {
+            rdate_entries: entries,
+            ..self
+        }
+    }
+
+    /// The same policy with a different `EXDATE`-entry bound.
+    #[must_use]
+    pub const fn with_exdate_entries(self, entries: u32) -> Self {
+        Self {
+            exdate_entries: entries,
             ..self
         }
     }
@@ -485,6 +553,16 @@ pub struct Meter {
     element_depth: u16,
     /// XML elements charged so far.
     elements: u32,
+    /// Recurrence candidates generated inside the period currently open.
+    candidates: u32,
+    /// Occurrences emitted so far by every search this ledger has served.
+    occurrences: u32,
+    /// `RDATE` instants admitted so far.
+    rdates: u32,
+    /// `EXDATE` instants admitted so far.
+    exdates: u32,
+    /// `RECURRENCE-ID` overrides admitted so far.
+    overrides: u32,
     /// Diagnostics a sink refused, saturating.
     dropped: u32,
     /// Whether the octet budget has been crossed.
@@ -512,6 +590,11 @@ impl Meter {
             depth: 0,
             element_depth: 0,
             elements: 0,
+            candidates: 0,
+            occurrences: 0,
+            rdates: 0,
+            exdates: 0,
+            overrides: 0,
             dropped: 0,
             exhausted: false,
         }
@@ -614,6 +697,85 @@ impl Meter {
     /// Close one XML element.
     pub fn leave_element(&mut self) {
         self.element_depth = self.element_depth.saturating_sub(1);
+    }
+
+    /// Begin a recurrence period, clearing the per-period candidate count.
+    ///
+    /// The per-period bound is per period, so something has to say where one ends. Naming
+    /// that boundary here rather than letting an expander keep a counter of its own is what
+    /// keeps the aggregate ledger below and the per-period ceiling one accounting: a period
+    /// opened here still spends the shared budget it never resets.
+    pub const fn open_period(&mut self) {
+        self.candidates = 0;
+    }
+
+    /// Charge one recurrence candidate, generated rather than emitted.
+    ///
+    /// Two bounds cross here. The per-period ceiling refuses a single period that expands
+    /// without end — a `BYSETPOS` rule filling its period before selecting from it, which is
+    /// where a negative position forces the whole set to exist. The shared ledger below it is
+    /// never reset, so a rule that matches rarely and walks years between hits spends the
+    /// caller's whole budget rather than one period's, which is the case a bound charged per
+    /// *emitted* occurrence never sees at all.
+    pub fn try_charge_candidate(&mut self) -> Result<(), LimitExceeded> {
+        let next = self.candidates.saturating_add(1);
+        if next > self.limits.candidates_per_period {
+            return Err(LimitExceeded::Candidates);
+        }
+        self.candidates = next;
+        self.try_charge(1)
+    }
+
+    /// Charge one emitted occurrence.
+    pub fn try_charge_occurrence(&mut self) -> Result<(), LimitExceeded> {
+        let next = self.occurrences.saturating_add(1);
+        if next > self.limits.occurrences_per_search {
+            return Err(LimitExceeded::Occurrences);
+        }
+        self.occurrences = next;
+        Ok(())
+    }
+
+    /// Charge `count` `RDATE` instants.
+    pub fn try_charge_rdate_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        let next = self.rdates.saturating_add(count);
+        if next > self.limits.rdate_entries {
+            return Err(LimitExceeded::RdateEntries);
+        }
+        self.rdates = next;
+        Ok(())
+    }
+
+    /// Charge `count` `EXDATE` instants.
+    pub fn try_charge_exdate_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        let next = self.exdates.saturating_add(count);
+        if next > self.limits.exdate_entries {
+            return Err(LimitExceeded::ExdateEntries);
+        }
+        self.exdates = next;
+        Ok(())
+    }
+
+    /// Charge `count` `RECURRENCE-ID` overrides.
+    pub fn try_charge_override_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        let next = self.overrides.saturating_add(count);
+        if next > self.limits.override_entries {
+            return Err(LimitExceeded::OverrideEntries);
+        }
+        self.overrides = next;
+        Ok(())
+    }
+
+    /// Recurrence candidates generated inside the period currently open.
+    #[must_use]
+    pub const fn candidates_in_period(&self) -> u32 {
+        self.candidates
+    }
+
+    /// Occurrences emitted so far under this ledger.
+    #[must_use]
+    pub const fn occurrences(&self) -> u32 {
+        self.occurrences
     }
 
     /// Record that a sink refused a diagnostic.
@@ -920,6 +1082,66 @@ mod tests {
         meter.leave();
         meter.leave();
         assert_eq!(meter.depth(), 0, "closing more than was opened saturates");
+    }
+
+    /// The per-period ceiling resets and the ledger under it does not.
+    ///
+    /// Both halves in one test because the bug this guards is believing one is the other: a
+    /// rule that matches rarely walks period after period, each of them individually inside
+    /// `candidates_per_period`, and only the ledger that never resets ever refuses it.
+    #[test]
+    fn a_period_bound_resets_and_the_shared_ledger_it_charges_does_not() {
+        let limits = Limits::DEFAULT.with_candidates_per_period(2);
+        let mut meter = Meter::with_budget(limits, 3);
+        meter.open_period();
+        assert_eq!(meter.try_charge_candidate(), Ok(()));
+        assert_eq!(meter.try_charge_candidate(), Ok(()));
+        assert_eq!(
+            meter.try_charge_candidate(),
+            Err(LimitExceeded::Candidates),
+            "the third candidate in one period crosses that period's ceiling"
+        );
+
+        meter.open_period();
+        assert_eq!(meter.candidates_in_period(), 0);
+        assert_eq!(meter.try_charge_candidate(), Ok(()));
+        assert_eq!(
+            meter.try_charge_candidate(),
+            Err(LimitExceeded::Budget),
+            "a new period buys a new ceiling and no new budget"
+        );
+        assert!(meter.is_exhausted());
+    }
+
+    /// Each recurrence list is refused under its own name.
+    #[test]
+    fn the_three_recurrence_lists_are_bounded_separately() {
+        let limits = Limits::DEFAULT
+            .with_rdate_entries(1)
+            .with_exdate_entries(1)
+            .with_override_entries(1)
+            .with_occurrences_per_search(1);
+        let mut meter = Meter::new(limits);
+        assert_eq!(meter.try_charge_rdate_entries(1), Ok(()));
+        assert_eq!(
+            meter.try_charge_rdate_entries(1),
+            Err(LimitExceeded::RdateEntries)
+        );
+        assert_eq!(
+            meter.try_charge_exdate_entries(2),
+            Err(LimitExceeded::ExdateEntries),
+            "a list is refused as a whole rather than admitted up to the bound"
+        );
+        assert_eq!(
+            meter.try_charge_override_entries(9),
+            Err(LimitExceeded::OverrideEntries)
+        );
+        assert_eq!(meter.try_charge_occurrence(), Ok(()));
+        assert_eq!(
+            meter.try_charge_occurrence(),
+            Err(LimitExceeded::Occurrences)
+        );
+        assert_eq!(meter.occurrences(), 1);
     }
 
     #[test]

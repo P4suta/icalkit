@@ -131,6 +131,16 @@ pub enum LimitExceeded {
     Elements,
     /// The length of one `href`.
     Href,
+    /// The number of recurrence candidates generated within one period.
+    Candidates,
+    /// The number of occurrences one recurrence search emitted.
+    Occurrences,
+    /// The number of `RDATE` instants offered for one series.
+    RdateEntries,
+    /// The number of `EXDATE` instants offered for one series.
+    ExdateEntries,
+    /// The number of `RECURRENCE-ID` overrides offered for one series.
+    OverrideEntries,
 }
 
 impl Display for LimitExceeded {
@@ -141,6 +151,11 @@ impl Display for LimitExceeded {
             Self::Depth => "nesting depth",
             Self::Elements => "element count",
             Self::Href => "href length",
+            Self::Candidates => "recurrence candidate count",
+            Self::Occurrences => "occurrence count",
+            Self::RdateEntries => "RDATE entry count",
+            Self::ExdateEntries => "EXDATE entry count",
+            Self::OverrideEntries => "override entry count",
         };
         write!(formatter, "the {dimension} limit was exceeded")
     }
