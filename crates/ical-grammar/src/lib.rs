@@ -71,7 +71,7 @@ pub use failure::{LimitExceeded, ParseError};
 pub use instant::Instant;
 pub use location::{Location, Span};
 pub use report::{
-    Diagnostic, DiagnosticCode, DiagnosticSink, IgnoreDiagnostics, Severity, SinkOutcome,
+    Diagnostic, DiagnosticCode, DiagnosticSink, IgnoreDiagnostics, Severity, SinkOutcome, Subject,
     report_diagnostic,
 };
 pub use syntax::{FoldPoint, LineEnding, LineLayout};

@@ -30,7 +30,8 @@
 //!
 //! Generation admits by cadence key. A `RANGE=THISANDFUTURE` shift moves starts, in either
 //! direction. So generation runs over the caller's window *widened by the largest absolute
-//! elapsed shift the override slice implies* — one scan of that slice before generation, which is
+//! shift the override slice implies, counted on the caller's own timeline* — one scan of that
+//! slice before generation, which is
 //! [`max_absolute_shift`] and the only place [`Override::shift_seconds`] is called — and
 //! emission is ordered by effective start and filtered back to the window the caller asked
 //! for, which is [`admit`]. With no time-shifting override present the widening is zero and
@@ -176,15 +177,20 @@ use crate::search::{BudgetExhausted, Occurrence, Window};
 /// `i64` cannot produce a window that fits one either, and [`generation_window`] answers
 /// `None` for it a moment later rather than generating over a window that quietly shrank.
 ///
-/// The seconds this counts are **elapsed** seconds, which is the whole of the move for a
-/// floating or UTC series and only part of it for a zoned one. A `RANGE=THISANDFUTURE` shift
-/// propagated to a later cadence key is a wall-clock move, and on the far side of a daylight
-/// saving transition a wall-clock move of two days costs a different number of elapsed seconds
-/// than it did at the anchor — so a window widened by this number alone can be one transition
-/// short, and the occurrence that falls outside it is not generated at all. A zoned caller adds
-/// `ical_tz::extra_widening`, which reports exactly the seconds this is short by and never
-/// fewer. Named here in prose only: the crate graph is unchanged and `ical-recur` still has no
-/// zone, which is why the shortfall is the caller's to close rather than this function's.
+/// The seconds this counts are seconds **of the timeline the caller's own instants are on**,
+/// and that sentence is a correction of the one this paragraph used to make. An override
+/// carries two instants and this function differences them; which timeline they name is the
+/// caller's decision and not this crate's. For a floating or UTC series it is UTC, and the
+/// count is elapsed seconds. For a zoned series `ical_tz::seam` puts every instant crossing
+/// the seam — the `RECURRENCE-ID` and where the override moved to included — on the series'
+/// own wall clock projected onto UTC, so the difference is a *wall-clock* count and the
+/// widening it gives already covers the wall-clock move that is propagated to every later key.
+///
+/// There is therefore no timeline on which this number and `ical_tz::extra_widening` are two
+/// halves of one quantity: on the nominal timeline the shortfall that function reports is
+/// always zero, and on the real timeline this function is not measuring the move that gets
+/// propagated. `docs/adr/0002` amendment 8 records the correction, and `ical_tz::WallClockShift`
+/// is where the two readings of one move are held apart.
 #[must_use]
 pub fn max_absolute_shift(overrides: OverrideSet<'_>) -> i64 {
     let widest = overrides

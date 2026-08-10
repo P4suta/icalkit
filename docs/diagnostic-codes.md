@@ -30,7 +30,7 @@ has no outside dependencies" may not acquire one.
 
 ## Notes rather than violations
 
-Eleven codes travel on `Severity::Note`, and each is a case where the input is legal and the
+Twelve codes travel on `Severity::Note`, and each is a case where the input is legal and the
 caller still needs telling. RFC 6868 section 2 requires an undefined caret pair to be left
 exactly as it is. RFC 5545 section 3.2.20 permits a `VALUE` type this workspace has no decoder
 for, so not knowing one is a gap here rather than a fault in the file. Section 3.3.10 requires
@@ -44,8 +44,8 @@ the rule does not explain and the caller cannot get more of. A local time that o
 choosing between the two is a caller's policy rather than a repair. Two zone sources that
 disagree are each internally consistent, and neither is the one that violated something. An
 observance rule this workspace does not evaluate in closed form is a gap here rather than a
-fault in the file, and a zone asked about a year past the last transition it knows is a legal
-question put to a legal file. A caller enforcing strictness rejects on `Severity::Violation`,
+fault in the file, and a zone asked about a year past the last transition it knows — or about
+one before its first — is a legal question put to a legal file. A caller enforcing strictness rejects on `Severity::Violation`,
 and would reject half the calendars in the world if it also rejected on `Severity::Note`.
 
 ## Codes with no M0 emitter
@@ -54,8 +54,9 @@ Every row whose milestone is not `M0` is a code this workspace declares today an
 emit yet. Two of those absences are worth naming, because both look like dead API to anyone
 reading `ical-grammar` alone and neither is:
 
-- `Severity::LimitReached` is carried by two codes, `recurrence-budget-exhausted` and
-  `vtimezone-observances-truncated`, which belong to M1 and M2. Nothing in M0 emits either,
+- `Severity::LimitReached` is carried by three codes, `recurrence-budget-exhausted`,
+  `vtimezone-observances-truncated` and `vtimezone-components-truncated`, which belong to M1
+  and M2. Nothing in M0 emits any of them,
   and nothing in M0 is supposed to: ADR 0009
   routes M0's limit breaches to `ParseError`, because the alternative is a truncated value,
   which writes back fewer bytes than it read and contradicts
@@ -137,3 +138,8 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | recurrence-until-not-utc | An `UNTIL` was written as a local time where RFC 5545 section 3.3.10 requires UTC, and it was read in `DTSTART`'s own zone. | Violation | M2 |
 | exdate-value-type-mismatch | An `EXDATE` and its `DTSTART` disagreed about `DATE` versus `DATE-TIME`, which RFC 5545 section 3.8.5.1 requires to agree. | Violation | M2 |
 | override-matches-no-instance | A `RECURRENCE-ID` named an instant the series does not generate, so the override modified nothing. | Violation | M2 |
+| time-zone-without-transitions | A zone source recognized a `TZID` and holds no transition for it, so no wall clock names an instant under it. | Violation | M2 |
+| time-zone-before-known-transitions | A zone was asked about a time earlier than the first transition it knows, so the answer continues the offset in force before it. | Note | M2 |
+| vtimezone-components-truncated | A calendar declared more `VTIMEZONE` components than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M2 |
+| vtimezone-observance-unreadable | An observance's required value was present and unreadable, so it stated no transition at all. | Violation | M2 |
+| exdate-zone-unknown | An `EXDATE` written in UTC named no cadence key because no source recognized the series' zone, so it excluded nothing. | Violation | M2 |

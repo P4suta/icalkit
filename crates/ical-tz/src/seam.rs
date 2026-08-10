@@ -51,6 +51,50 @@
 //!   [`DiagnosticCode::RecurrenceUntilNotUtc`], and `UntilClock::Floating` in `ical-recur` is
 //!   the same fact seen from the other side.
 //!
+//! # The frequency this contract is not stated for
+//!
+//! Everything above is written about a *civil* cadence — `FREQ=DAILY` and coarser, where "every
+//! day at 09:00" is a statement about a clock and the day it steps over may be 23 or 25 hours
+//! long. `FREQ=SECONDLY`, `FREQ=MINUTELY` and `FREQ=HOURLY` say the opposite thing: an hour is
+//! an hour, however the zone behaves inside it. The contract above applied to one of those loses
+//! an hour of the series on the day a zone falls back, because the wall clock reads twenty-four
+//! hours on a day twenty-five hours long, and one nominal key names the repeated hour once.
+//!
+//! Both readings ship, and the disagreement is real rather than a defect anyone can point at:
+//! Google's engine gives 25 occurrences that day and libical's local-time expansion gives 24.
+//! This workspace states both and makes the caller pick, by making the *anchor* the choice.
+//! [`ZonedSeries::anchor`] projects onto the nominal timeline and is what a civil cadence takes;
+//! [`ZonedSeries::real_anchor`] resolves the same `DTSTART` into the real instant it names and
+//! is what an absolute one takes. A series anchored on the real timeline is walked there — its
+//! keys are already the instants its occurrences happen at, and [`ZonedSeries::actual`] is
+//! neither needed nor correct for one.
+//!
+//! `ical-recur` cannot make that choice: it has the frequency and no zone, and this crate has
+//! the zone and not the frequency. So it is the caller's, stated here rather than left to
+//! whichever anchor a caller reached for first.
+//!
+//! [`ZonedSeries::anchor`]: crate::ZonedSeries::anchor
+//! [`ZonedSeries::real_anchor`]: crate::ZonedSeries::real_anchor
+//! [`ZonedSeries::actual`]: crate::ZonedSeries::actual
+//!
+//! # Where `COUNT` is applied, which is the other side of the same seam
+//!
+//! `docs/adr/0011` states two gates on an instance — a date that exists, and a local time that
+//! exists — and says an instance is admitted only when both pass, while `COUNT` counts emitted
+//! instances only. `ical-recur` owns the first gate and applies `COUNT`; this crate owns the
+//! second and used to be applied after the count, so a `COUNT=5` series with one instance in an
+//! hour its zone never showed delivered four and no API in either crate composed the two in the
+//! stated order.
+//!
+//! [`ZonedSeries::admits`] is the second gate as a predicate, and
+//! `ical_recur::RecurrenceInput::admitting` is where it goes: asked about each key after the
+//! window and before the count, so a rejected key costs the series nothing. That is the whole
+//! of the composition, and it is opt-in because a caller that wants section 3.3.10's other
+//! reading — the instance is dropped and the count is spent, which is what a `DTSTART` in a gap
+//! does under section 3.8.5.3 — states it by not passing a gate.
+//!
+//! [`ZonedSeries::admits`]: crate::ZonedSeries::admits
+//!
 //! The one place M1's shipped prose and this contract disagree is `UntilClock::Utc`'s doc
 //! comment, which says the instant beside it "is that UTC instant". For a floating or UTC
 //! series the projection is the identity and the sentence holds verbatim. For a zoned series

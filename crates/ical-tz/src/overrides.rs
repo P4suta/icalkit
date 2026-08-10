@@ -74,6 +74,7 @@ use ical_core::{
 
 use crate::answer::ZoneSource;
 use crate::seam::nominal;
+use crate::series::ZonedSeries;
 
 /// How far an override moved an occurrence, measured both ways.
 ///
@@ -158,6 +159,38 @@ impl WallClockShift {
         let ended = nominal_clock(source, tzid, to)?;
         let wall_clock = started.checked_seconds_until(ended)?;
         Some(Self::new(elapsed, wall_clock))
+    }
+
+    /// Both counts for a move between two cadence keys of `series`.
+    ///
+    /// [`WallClockShift::measure`] takes two real UTC instants, and the two instants an override
+    /// actually carries — its `RECURRENCE-ID` and where it moved to — are neither: everything
+    /// crossing the seam is on the series' own wall clock projected onto UTC (see
+    /// [`crate::seam`]), five hours from the real instants in New York. Fed the values the seam
+    /// carries, `measure` read the offsets at the wrong two points and answered that a move
+    /// straddling a spring-forward crossed no transition at all — the one question the type
+    /// exists to answer, about the one case it was written for.
+    ///
+    /// This is the conversion, in the crate that owns it: each key is read back into a wall
+    /// clock, resolved against the zone under the series' own [`crate::ResolutionPolicy`], and
+    /// the two real instants are what get measured. So `elapsed_seconds` is the time the move
+    /// really costs and `wall_clock_seconds` is what the organizer saw, which for a move from
+    /// 09:00 on the day before a spring-forward to 04:00 on the day after is 64,800 against
+    /// 68,400.
+    ///
+    /// `None` when either key names no instant this policy takes — a wall clock in a gap under
+    /// [`GapPolicy::Skip`] — or on the terms `measure` gives.
+    ///
+    /// [`GapPolicy::Skip`]: crate::GapPolicy::Skip
+    #[must_use]
+    pub fn across<S: ZoneSource + ?Sized>(
+        series: &ZonedSeries<'_, S>,
+        from_key: Instant,
+        to_key: Instant,
+    ) -> Option<Self> {
+        let from = series.resolved(from_key)?;
+        let to = series.resolved(to_key)?;
+        Self::measure(series.source(), series.tzid(), from, to)
     }
 }
 

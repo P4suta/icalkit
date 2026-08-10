@@ -33,9 +33,12 @@
 //! producer wrote disappears, the meeting the user cancelled reappears, and no diagnostic
 //! anywhere says a word. `exdate-value-type-mismatch` travels whichever reading the caller
 //! states, because a silent no-op is the one outcome that is indefensible. This unit is that
-//! code's only emitter, and it is the only code this unit emits: a fold, a gap or an exhausted
-//! table met while sizing a day is a fact about the *shape* of that day rather than about an
-//! occurrence, and unit 5 reports those at the occurrences they actually concern.
+//! code's only emitter, and it emits one other: `exdate-zone-unknown`, for the second silent
+//! no-op M2 found here — a `Z`-terminated exclusion on a series whose `TZID` no source
+//! recognizes, which needs the zone to be placed where a zoned `DTSTART` beside it does not.
+//! Nothing else. A fold, a gap or an exhausted table met while sizing a day is a fact about the
+//! *shape* of that day rather than about an occurrence, and unit 5 reports those at the
+//! occurrences they actually concern.
 //!
 //! [`ExclusionReading::WholeDay`] is the reading several clients implement: the date names the
 //! day, and every occurrence starting inside that day in the series' own zone is excluded. It
@@ -101,6 +104,8 @@ pub struct ResolvedExclusions {
     instants: Vec<Instant>,
     /// The nominal spans excluded whole, ascending by start and non-overlapping.
     spans: Vec<LocalInterval>,
+    /// The real instants no zone could place on this series' timeline, ascending.
+    unplaced: Vec<Instant>,
 }
 
 impl ResolvedExclusions {
@@ -110,6 +115,7 @@ impl ResolvedExclusions {
         Self {
             instants: Vec::new(),
             spans: Vec::new(),
+            unplaced: Vec::new(),
         }
     }
 
@@ -150,6 +156,8 @@ impl ResolvedExclusions {
         resolved.instants.dedup();
         resolved.spans.sort_unstable();
         resolved.spans.dedup();
+        resolved.unplaced.sort_unstable();
+        resolved.unplaced.dedup();
         resolved
     }
 
@@ -177,10 +185,22 @@ impl ResolvedExclusions {
         self.spans.iter().any(|span| span.contains(key))
     }
 
+    /// The real instants no zone could place, ascending.
+    ///
+    /// A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes. It names a real
+    /// instant and the cadence keys it would have to match are on the series' own wall clock,
+    /// so nothing here can turn one into the other — but the exception is what the producer
+    /// wrote, and a caller that later acquires the zone can still apply it.
+    /// `exdate-zone-unknown` travels beside every entry.
+    #[must_use]
+    pub fn unplaced(&self) -> &[Instant] {
+        &self.unplaced
+    }
+
     /// Whether nothing is excluded at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.instants.is_empty() && self.spans.is_empty()
+        self.instants.is_empty() && self.spans.is_empty() && self.unplaced.is_empty()
     }
 
     /// Take one `EXDATE` value, reporting it when its value type is not `DTSTART`'s.
@@ -199,14 +219,25 @@ impl ResolvedExclusions {
         S: ZoneSource + ?Sized,
         D: DiagnosticSink + ?Sized,
     {
-        // Two conditions answer `None` here and `ZonedSeries::anchor` answers `None` to both of
-        // them for the identical `DTSTART`: a wall clock outside the years RFC 5545 section 3.3.4
-        // can write, which nothing read out of a file is, and a `Z`-terminated value on a series
-        // whose identifier the source does not recognize, where there is no offset to project it
-        // through. The second is not this unit dropping an exception quietly — a series whose
-        // `DTSTART` carries the same `Z` has no anchor either, so there is no expansion for the
-        // exception to have gone missing from.
+        // Two conditions answer `None` here: a wall clock outside the years RFC 5545 section
+        // 3.3.4 can write, which nothing read out of a file is, and a `Z`-terminated value on a
+        // series whose identifier the source does not recognize, where there is no offset to
+        // project it through.
+        //
+        // The second used to be justified here by "a series whose `DTSTART` carries the same
+        // `Z` has no anchor either, so there is no expansion for the exception to have gone
+        // missing from" — which is exactly the case that does not arise. A zoned `DTSTART` is a
+        // wall clock and consults no zone, so `DTSTART;TZID=Customized Time Zone:20260301T090000`
+        // anchors and expands with nothing defining that identifier anywhere, and the
+        // `Z`-terminated `EXDATE` beside it was the one value that needed the zone. The
+        // exception vanished and the meeting the user cancelled came back.
+        //
+        // Nothing here can place it — the instant it names is real and the keys it would be
+        // compared against are on the series' own wall clock, and only the zone converts
+        // between the two. So it is kept as what it is, reachable through
+        // `ResolvedExclusions::unplaced`, and reported.
         let Some(point) = project(series, value) else {
+            self.keep_unplaced(value, meter, sink);
             return;
         };
         if matches!(value, DateTimeValue::Date(_)) == dtstart_dated {
@@ -232,6 +263,34 @@ impl ResolvedExclusions {
                 None => self.instants.push(point),
             },
         }
+    }
+
+    /// Keep an exclusion no zone could place, and say so.
+    ///
+    /// Only a `Z`-terminated value reaches this with anything to keep: it names a real instant
+    /// whatever the zone does, and that instant is what a caller holding its own zone data can
+    /// still act on. A wall clock the calendar cannot express names nothing at all, and there
+    /// is no value to carry and no instant for a diagnostic to point at.
+    fn keep_unplaced<D>(&mut self, value: DateTimeValue<'_>, meter: &mut Meter, sink: &mut D)
+    where
+        D: DiagnosticSink + ?Sized,
+    {
+        let DateTimeValue::Utc(stamp) = value else {
+            return;
+        };
+        let Some(named) = stamp.at_offset(UtcOffset::UTC) else {
+            return;
+        };
+        self.unplaced.push(named);
+        report_diagnostic(
+            sink,
+            meter,
+            Diagnostic::at_instant(
+                DiagnosticCode::ExdateZoneUnknown,
+                Severity::Violation,
+                named,
+            ),
+        );
     }
 }
 
@@ -324,6 +383,10 @@ where
         LocalResolution::Unique { reading } => reading.instant,
         LocalResolution::Ambiguous { earlier, .. } => earlier.instant,
         LocalResolution::Nonexistent { gap_end, .. } => gap_end,
+        // A source that recognizes the zone and holds no transition for it says nothing about
+        // where this day begins, which leaves the plain civil midnight — the same answer as a
+        // source that does not know the identifier, and for the same reason.
+        LocalResolution::Undetermined => return plain,
     };
     series.to_nominal(real).or(plain)
 }
@@ -498,6 +561,9 @@ mod tests {
                 LocalResolution::Unique { reading } => reading.instant,
                 LocalResolution::Ambiguous { earlier, .. } => earlier.instant,
                 LocalResolution::Nonexistent { gap_end, .. } => gap_end,
+                // This fixture always holds transitions, so it never answers `Undetermined`;
+                // the arm is what `#[non_exhaustive]` asks of a match on another unit's enum.
+                LocalResolution::Undetermined => return None,
             };
             Some(ZoneAnswer::new(
                 resolution,

@@ -26,8 +26,10 @@
 //!   window admits by cadence key **or** by effective start, so an override that moved an
 //!   instance into the window has to appear even though nothing generated a key inside it.
 //! - **C5 — a collision has a stated answer.** An `RDATE` naming an instant a rule already
-//!   generated yields one occurrence; two overrides naming one instant are refused rather than
-//!   silently ranked.
+//!   generated yields one occurrence; two overrides naming one instant are ranked by the order
+//!   the file wrote them and counted, rather than being either silently ranked or refused. M1
+//!   refused them and M2 found that the refusal costs a zoned series every occurrence it has,
+//!   because the hour a zone repeats is one wall clock and therefore one cadence key.
 //!
 //! # How a fixture becomes an input
 //!
@@ -50,8 +52,8 @@ use ical_core::{
     Document, Instant, Limits, Meter, PropertyId, UtcOffset,
 };
 use ical_recur::{
-    InputError, InputList, Occurrence, Override, OverrideRange, OverrideSet, PropertyChange,
-    PropertyDiff, RecurrenceInput, SearchStep, ValueKind, Window, parse_recur,
+    Occurrence, Override, OverrideRange, OverrideSet, PropertyChange, PropertyDiff,
+    RecurrenceInput, SearchStep, ValueKind, Window, parse_recur,
 };
 
 /// The property identities this corpus reads, as statics.
@@ -627,18 +629,36 @@ fn a_date_valued_exdate_against_a_date_time_series_removes_nothing() {
     );
 }
 
-/// C5. Two overrides naming one instant are refused rather than silently ranked.
+/// C5, as M2 amended it. Two overrides naming one instant are admitted, ranked by file order,
+/// and the collision is counted rather than being either silent or fatal.
+///
+/// M1 refused the pair outright, on the ground that two edits of one instant have no defined
+/// precedence. M2 found what the refusal costs. The projection onto a zoned series' own wall
+/// clock is not injective across the hour a zone repeats, so `RECURRENCE-ID:20261101T053000Z`
+/// and `RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants an hour
+/// apart that land on one cadence key — and refusing the input lost not the second override
+/// but every occurrence of the event. The earlier entry applies, `OverrideSet::collisions`
+/// says how many were shadowed, and a caller that wants to tell a person has the number. See
+/// `docs/adr/0002` amendment 9.
 #[test]
-fn two_overrides_on_one_instant_are_refused_by_name() {
+fn two_overrides_on_one_instant_are_ranked_by_file_order_and_counted() {
     let document = parse("two_overrides_name_one_instant.ics").expect("fixture");
     let series = Series::read(&document).expect("one master VEVENT");
     let entries = series.entries();
     let mut meter = Meter::new(Limits::DEFAULT);
+    let overrides = OverrideSet::new(&entries, &mut meter).expect("the pair is admitted");
     assert_eq!(
-        OverrideSet::new(&entries, &mut meter).err(),
-        Some(InputError::Duplicated(InputList::Override)),
-        "two edits of one instant have no defined precedence, and guessing one silently is the \
-         failure this crate exists to prevent"
+        overrides.collisions(),
+        1,
+        "one override was shadowed, and the count is how a caller sees that it was"
+    );
+    let addressed = entries.first().expect("one entry").recurrence_id();
+    assert_eq!(
+        overrides
+            .exact_match(addressed)
+            .map(|found| found.diff().changes().len()),
+        entries.first().map(|first| first.diff().changes().len()),
+        "the first written is the one that applies"
     );
 }
 

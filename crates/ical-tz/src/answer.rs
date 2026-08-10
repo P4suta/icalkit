@@ -13,10 +13,17 @@
 //! **A source that does not know an identifier says so, and says nothing else.**
 //! [`ZoneSource::resolve`] returns `None` for exactly one condition: this source does not
 //! recognize this `TZID`. It never means "recognized, but I have no data for that year" —
-//! that is [`AnswerBasis`] — and it never licenses an implementation to invent an answer. A
+//! that is [`AnswerBasis`] — nor "recognized, and I hold no transition at all", which is
+//! [`LocalResolution::Undetermined`] on an answer that exists, and it never licenses an
+//! implementation to invent an answer. A
 //! source handed `W. Europe Standard Time` with no alias table returns `None` and lets the
 //! hole stay visible, which is what stops identifier mapping from becoming a fallback chain
 //! buried inside somebody's `impl`.
+//!
+//! The one direction that claim cannot be made in is [`ZoneSource::offset_at`], because an
+//! [`OffsetAnswer`] has no way to spell "no offset" and the only number available to fill the
+//! field with is UTC. So recognition is asked directly, through [`ZoneSource::recognizes`], and
+//! that is what tells a `TZID` nobody supplied from a `TZID` supplied with nothing behind it.
 //!
 //! **An awkward local time is a value.** At a fall-back an hour repeats and a local time names
 //! two instants; at a spring-forward an hour does not exist and a local time names none. Real
@@ -101,6 +108,20 @@ pub enum LocalResolution {
         /// The second, under the offset in force after it.
         later: Reading,
     },
+    /// The source recognizes the zone and holds no transition for it, so it names no instant.
+    ///
+    /// Not a fourth state of a wall clock: a wall clock under a zone is unique, repeated or
+    /// missing and there is no fourth. This is a state of the *source*, and it exists because
+    /// the alternative was worse. A `VTIMEZONE` carrying no usable observance is a file half the
+    /// exporters in the world produce; a table built from one has no offset to report and used
+    /// to say so by answering `None`, which is the one value [`ZoneSource::resolve`] reserves
+    /// for "I have never heard of this identifier". Two facts a caller acts on differently —
+    /// the zone is undefined, and the zone is defined and empty — arrived as one.
+    ///
+    /// It carries nothing, because there is nothing: no offset, no reading, no transition
+    /// either side. [`LocalResolution::pick`] answers `None` under every policy, and
+    /// [`DiagnosticCode::TimeZoneWithoutTransitions`] is what travels.
+    Undetermined,
     /// The wall clock names no instant, because the zone sprang forward over it.
     Nonexistent {
         /// The last instant before the gap opened.
@@ -128,7 +149,7 @@ impl LocalResolution {
     pub const fn unambiguous(self) -> Option<Instant> {
         match self {
             Self::Unique { reading } => Some(reading.instant),
-            Self::Ambiguous { .. } | Self::Nonexistent { .. } => None,
+            Self::Ambiguous { .. } | Self::Nonexistent { .. } | Self::Undetermined => None,
         }
     }
 
@@ -140,7 +161,7 @@ impl LocalResolution {
             | Self::Ambiguous {
                 earlier: reading, ..
             } => Some(reading.instant),
-            Self::Nonexistent { .. } => None,
+            Self::Nonexistent { .. } | Self::Undetermined => None,
         }
     }
 
@@ -164,6 +185,10 @@ impl LocalResolution {
                 GapPolicy::ShiftForward => Some(shifted),
                 GapPolicy::ClampToTransition => Some(gap_end),
             },
+            // No policy applies. A gap policy states what to do with a wall clock a zone
+            // sprang over, and this is a source with no zone data at all: there is no offset
+            // to read the clock with and nothing for a caller to choose between.
+            Self::Undetermined => None,
         }
     }
 
@@ -190,7 +215,14 @@ impl LocalResolution {
             Self::Unique { .. } => None,
             Self::Ambiguous { .. } => Some(DiagnosticCode::AmbiguousLocalTime),
             Self::Nonexistent { .. } => Some(DiagnosticCode::NonexistentLocalTime),
+            Self::Undetermined => Some(DiagnosticCode::TimeZoneWithoutTransitions),
         }
+    }
+
+    /// Whether the source had no transition to answer with at all.
+    #[must_use]
+    pub const fn is_undetermined(self) -> bool {
+        matches!(self, Self::Undetermined)
     }
 }
 
@@ -261,6 +293,15 @@ pub enum AnswerBasis {
     /// caller's own arithmetic: a source that continued one day and one that continued six
     /// years are both this variant, and the date is what tells them apart.
     BeyondKnownTransitions(CivilDate),
+    /// The question lies before the first transition the source knows, whose date this carries.
+    ///
+    /// A table has two ends and this milestone found the claim stated for one of them. A
+    /// `VTIMEZONE` whose `RDATE` lines run from 2027 answers July 2020 by extending its
+    /// earliest observance's `TZOFFSETFROM` backwards forever, which is the whole of what the
+    /// file states about that era and is very often wrong — `America/New_York` was on `-04:00`
+    /// that July and such a table says `-05:00`. Continuing backwards is still the defensible
+    /// thing to do; doing it in a value indistinguishable from a computed answer is not.
+    BeforeKnownTransitions(CivilDate),
 }
 
 impl AnswerBasis {
@@ -270,12 +311,28 @@ impl AnswerBasis {
         matches!(self, Self::BeyondKnownTransitions(_))
     }
 
-    /// The last date the source has real data for, absent when it had data for the question.
+    /// Whether the answer reached back before the first transition its source knows.
+    #[must_use]
+    pub const fn is_before_known_transitions(self) -> bool {
+        matches!(self, Self::BeforeKnownTransitions(_))
+    }
+
+    /// Whether the source held data covering the question at all.
+    #[must_use]
+    pub const fn is_computed(self) -> bool {
+        matches!(self, Self::Computed)
+    }
+
+    /// The nearest date the source has real data for, absent when it had data for the question.
+    ///
+    /// The last such date for [`AnswerBasis::BeyondKnownTransitions`] and the first for
+    /// [`AnswerBasis::BeforeKnownTransitions`]; in both cases the edge of the source's
+    /// knowledge that the answer was continued from.
     #[must_use]
     pub const fn nearest_known(self) -> Option<CivilDate> {
         match self {
             Self::Computed => None,
-            Self::BeyondKnownTransitions(date) => Some(date),
+            Self::BeyondKnownTransitions(date) | Self::BeforeKnownTransitions(date) => Some(date),
         }
     }
 
@@ -285,6 +342,7 @@ impl AnswerBasis {
         match self {
             Self::Computed => None,
             Self::BeyondKnownTransitions(_) => Some(DiagnosticCode::TimeZoneCoverageExhausted),
+            Self::BeforeKnownTransitions(_) => Some(DiagnosticCode::TimeZoneBeforeKnownTransitions),
         }
     }
 }
@@ -398,6 +456,28 @@ pub trait ZoneSource {
     /// What offset the zone `tzid` identifies was running at `instant`, or `None` if that is
     /// not a zone this source knows.
     fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer>;
+
+    /// Whether this source recognizes `tzid` at all, whatever it can say about any instant.
+    ///
+    /// The question [`ZoneSource::offset_at`] cannot answer and [`ZoneSource::resolve`] answers
+    /// only in one direction. Every instant has exactly one offset under a zone, so an
+    /// [`OffsetAnswer`] has nowhere to record "recognized, and I hold nothing" — the offset
+    /// field would have to be filled with a number, and the only candidate is UTC, which is the
+    /// invention `docs/adr/0003` refuses. So the recognition is asked directly.
+    ///
+    /// The provided implementation asks the two answering methods and takes either of them
+    /// speaking as recognition, which is right for every source whose `None` means what the
+    /// trait says it means. A source with an identifier table overrides it with a lookup, which
+    /// is cheaper and is what [`TransitionTable`] does.
+    ///
+    /// [`TransitionTable`]: crate::TransitionTable
+    fn recognizes(&self, tzid: &str) -> bool {
+        if self.offset_at(tzid, Instant::EPOCH).is_some() {
+            return true;
+        }
+        CivilDateTime::from_instant(Instant::EPOCH, UtcOffset::UTC)
+            .is_some_and(|clock| self.resolve(tzid, clock).is_some())
+    }
 }
 
 impl<S: ZoneSource + ?Sized> ZoneSource for &S {
@@ -407,6 +487,10 @@ impl<S: ZoneSource + ?Sized> ZoneSource for &S {
 
     fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
         (**self).offset_at(tzid, instant)
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        (**self).recognizes(tzid)
     }
 }
 
@@ -447,6 +531,16 @@ pub enum PolicyOutcome<A = ZoneAnswer> {
     OnlyFallback(A),
     /// Neither source recognized the identifier.
     Neither,
+    /// A source recognizes the identifier and neither had an answer to this question.
+    ///
+    /// The distinction [`PolicyOutcome::Neither`] used to swallow. A calendar declaring
+    /// `Europe/Berlin` with no observance supplies the identifier and no data, so reporting
+    /// `unknown-time-zone` about it — "a `TZID` named a zone no supplied source could resolve"
+    /// — states something false about the file at [`Severity::Violation`]. What is wrong with
+    /// such a file is `vtimezone-without-observance`, which whoever read it already reported.
+    ///
+    /// [`Severity::Violation`]: ical_core::Severity::Violation
+    Undetermined,
 }
 
 impl<A: Copy> PolicyOutcome<A> {
@@ -462,7 +556,7 @@ impl<A: Copy> PolicyOutcome<A> {
             | Self::Disagreed { embedded, .. }
             | Self::OnlyEmbedded(embedded) => Some(embedded),
             Self::OnlyFallback(answer) => Some(answer),
-            Self::Neither => None,
+            Self::Neither | Self::Undetermined => None,
         }
     }
 
@@ -477,9 +571,11 @@ impl<A: Copy> PolicyOutcome<A> {
     pub const fn diagnostic_code(self) -> Option<DiagnosticCode> {
         match self {
             Self::Disagreed { .. } => Some(DiagnosticCode::TimeZoneSourceDisagreement),
-            Self::Agreed { .. } | Self::OnlyEmbedded(_) | Self::OnlyFallback(_) | Self::Neither => {
-                None
-            },
+            Self::Agreed { .. }
+            | Self::OnlyEmbedded(_)
+            | Self::OnlyFallback(_)
+            | Self::Neither
+            | Self::Undetermined => None,
         }
     }
 }

@@ -131,7 +131,7 @@ pub use crate::ident::{Tzid, TzidForm};
 #[cfg(feature = "vtimezone")]
 pub use crate::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
-    ZoneSetError,
+    ZoneAdmission, ZoneSetError,
 };
 pub use crate::overrides::{OrphanScan, WallClockShift, extra_widening};
 #[cfg(feature = "vtimezone")]

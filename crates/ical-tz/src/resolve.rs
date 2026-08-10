@@ -20,37 +20,53 @@
 //! }
 //! ```
 //!
-//! The load-bearing unit. A wall clock is resolved by taking the observances on either side of
-//! it, projecting the queried fields through each candidate offset, and counting how many
-//! results land in the interval that offset actually governs: two is `LocalResolution::Ambiguous`,
-//! none is `LocalResolution::Nonexistent`, one is `LocalResolution::Unique`. The count is the
-//! definition rather than a special case bolted onto a happy path, which is what keeps a zone
-//! with an unusual transition — one that moves the clock by thirty minutes, or backwards into a
-//! smaller daylight offset — from needing a branch of its own.
+//! The load-bearing unit. A wall clock is resolved by taking every offset this zone runs inside
+//! one day either side of it, projecting the queried fields through each, and counting how many
+//! results land in the stretch that offset actually governs: two is
+//! `LocalResolution::Ambiguous`, none is `LocalResolution::Nonexistent`, one is
+//! `LocalResolution::Unique`. The count is the definition rather than a special case bolted onto
+//! a happy path, which is what keeps a zone with an unusual transition — one that moves the
+//! clock by thirty minutes, or backwards into a smaller daylight offset — from needing a branch
+//! of its own.
 //!
 //! A table whose rules run past the query is asked for the transition in the query's own year
 //! through unit 1, rather than having its future observances materialized. That is what makes a
-//! lookup logarithmic in the table and constant in the rules, and it is the whole of this
-//! crate's answer to `docs/adr/0010` on the resolution path.
+//! lookup a binary search over the dates and a closed-form evaluation of each rule, and it is
+//! the whole of this crate's answer to `docs/adr/0010` on the resolution path.
 //!
-//! Every answer carries its basis: `AnswerBasis::Computed` while the query is at or before
-//! `TransitionTable::coverage_end`, and `AnswerBasis::BeyondKnownTransitions` carrying that date
-//! after it, which is the `RDATE` table that ran out. A `coverage_end` of `None` means the zone
-//! knows the future and no answer it gives is ever an extrapolation.
+//! Every answer carries its basis: `AnswerBasis::Computed` between
+//! `TransitionTable::coverage_start` and `TransitionTable::coverage_end`, and
+//! `AnswerBasis::BeforeKnownTransitions` or `AnswerBasis::BeyondKnownTransitions` outside them,
+//! carrying the date of the end of the table the answer was continued from. A `coverage_end` of
+//! `None` means every side of the zone repeats forever and no answer past the table is ever an
+//! extrapolation; a table with no observance at all answers `LocalResolution::Undetermined`,
+//! which is a smaller claim than any offset and a larger one than silence.
 //!
 //! This unit emits no diagnostic. What it produces are values whose codes units 3 and 5 read
 //! off `LocalResolution::diagnostic_code` and `AnswerBasis::diagnostic_code`, because
 //! `ZoneSource` has no meter and no sink and must stay implementable by a caller that has never
 //! heard of either.
 //!
-//! # What the two candidates are, and why exactly two
+//! # What the candidates are, and where they come from
 //!
 //! RFC 5545 section 3.3.14 cannot write an offset of a whole day, so every instant a wall clock
 //! could name lies strictly inside one day either side of that clock's reading at UTC. The
-//! offsets in force at those two bounds are therefore the only offsets any reading of the clock
-//! could have been taken at, and looking them up is what `observances_around` does. Where the
-//! two agree there is one candidate and one reading; where they differ the zone moved its clock
-//! through the queried wall time, and the count over the two says which way.
+//! offsets in force *anywhere* in that window are therefore the only offsets any reading of the
+//! clock could have been taken at.
+//!
+//! Anywhere, not at its two ends, and that distinction is the correction M2 made here. Reading
+//! only the two ends is right for every zone whose transitions are months apart and wrong the
+//! moment two of them fall inside one day: a definition moving the clock at 02:00 and again at
+//! 20:00 has three offsets that day, the middle one governs seventeen hours of ordinary wall
+//! clock, and a query at noon that never considered it found no candidate governing its own
+//! reading and reported an existing lunchtime as a local time that never happened. So the window
+//! is walked: the era it opens in, then the era each transition inside it begins. On the days a
+//! zone does not move there is one era, no transition, and no allocation.
+//!
+//! The gap a wall clock fell into is found the same way, from the transition that sprang over
+//! *it* rather than from whatever the far end of the window happened to hold — which is what
+//! `gap_end`, `offset_before` and section 3.3.5's `shifted` reading each have to be taken from
+//! to be true.
 //!
 //! # Before the first onset
 //!
@@ -70,6 +86,8 @@
 //! is the last instant before the gap opened, one second earlier, which is the only pair that
 //! keeps both field descriptions literally true and `gap_start < gap_end` with them.
 
+use alloc::vec::Vec;
+
 use ical_core::{CivilDate, CivilDateTime, Instant, UtcOffset};
 
 use crate::answer::{
@@ -77,26 +95,21 @@ use crate::answer::{
 };
 use crate::model::{Observance, TransitionTable};
 
-/// How many observances admitted at or before a query may still be repeating by a rule.
-///
-/// A definition states its current rules as the observances with the latest `DTSTART`s — two
-/// for an ordinary zone, four for one that changed its rules and kept the superseded pair, the
-/// shape Mozilla and Apple both export — so the rules that can still reach a query are the last
-/// few admitted before it. Bounding the scan this way is what leaves a lookup logarithmic in
-/// the table and constant in the rules, which is `docs/adr/0010`'s argument on a path that has
-/// no meter to charge.
-///
-/// The input this gives up on is a definition whose `RDATE` onsets interleave with a rule's own
-/// onsets over the same period, which is a file contradicting itself about that period. It gets
-/// the explicit onset, which is the one it wrote down.
-const RULE_WINDOW: usize = 4;
-
 /// How many years back from a query a rule is asked about.
 ///
-/// A yearly rule fires at most once a year, so the latest onset at or before a query is in the
-/// year the scan starts at, the one before it, or — when an `UNTIL` fell earlier in its year
-/// than the rule does — the one before that.
-const RULE_PROBE_YEARS: u16 = 3;
+/// A yearly rule usually fires every year, and the first two probes answer for every zone a
+/// government has ever run. The bound is what a rule that fires *rarely* costs, and this
+/// vocabulary has such rules: `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` names a fifth Sunday in
+/// February, which exists only in a leap year whose February opens on a Sunday, and the widest
+/// gap between two of those is forty years — 1892 to 1932, across a century that skipped its
+/// leap day. Sixty-four years covers every such gap this closed form can express, with the
+/// observance's own `DTSTART` stopping the scan earlier in the ordinary case.
+///
+/// M1's answer here was three, which is the number of years a rule that fires annually needs.
+/// A rule firing in 2004 and not again until 2032 is nonetheless the observance in force in
+/// 2010, and asking it only about 2008 through 2010 answered with the observance the file
+/// superseded six years earlier.
+const RULE_PROBE_YEARS: u16 = 64;
 
 /// The earliest instant a wall clock can name, as seconds from that clock's reading at UTC.
 ///
@@ -116,8 +129,6 @@ const LATEST_READING_SECONDS: i64 = 86_400;
 struct Era {
     /// The observance that began it, absent before the table's first onset.
     observance: Option<Observance>,
-    /// The instant it began, absent before the table's first onset.
-    began: Option<Instant>,
     /// The offset in force through it.
     offset: UtcOffset,
     /// Whether that offset is the zone's daylight one.
@@ -155,22 +166,29 @@ impl TransitionTable {
     }
 
     /// What `local` names under this table, absent when the table has nothing to say at all.
+    ///
+    /// One walk of the window, which answers both questions the count leaves: which readings
+    /// govern themselves, and — where none does — which transition sprang over `local`.
     fn resolution_of(&self, local: CivilDateTime) -> Option<LocalResolution> {
-        let (opening, closing) = self.eras_around(local)?;
-        let through_opening = self.reading_through(local, opening);
-        // One offset cannot govern two readings of one wall clock, so an era reaching both ends
-        // of the window contributes one candidate and is counted once. The count is over
-        // offsets that govern, not over eras looked up.
-        let through_closing = (closing.offset != opening.offset)
-            .then(|| self.reading_through(local, closing))
-            .flatten();
-        match (through_opening, through_closing) {
-            (Some(first), Some(second)) => Some(fold(first, second)),
-            (Some(only), None) | (None, Some(only)) => {
-                Some(LocalResolution::Unique { reading: only })
-            },
-            (None, None) => gap(local, opening, closing).or_else(|| read_before(local, opening)),
+        let (opens, closes) = window_around(local)?;
+        let mut era = self.era_at(opens)?;
+        let mut found = Readings::EMPTY;
+        let mut sprang_over: Option<LocalResolution> = None;
+        found.offer(self.reading_through(local, era));
+        for onset in self.onsets_between(opens, closes) {
+            let Some(next) = self.era_at(onset) else {
+                continue;
+            };
+            found.offer(self.reading_through(local, next));
+            if sprang_over.is_none() {
+                sprang_over = gap(local, era, next, onset);
+            }
+            era = next;
         }
+        found
+            .resolution()
+            .or(sprang_over)
+            .or_else(|| read_before(local, self.era_at(opens)?))
     }
 
     /// The reading of `local` through `era`'s offset, present only when the instant it produces
@@ -189,29 +207,56 @@ impl TransitionTable {
 
     /// The eras at the earliest and at the latest instant a wall clock showing `local` names.
     fn eras_around(&self, local: CivilDateTime) -> Option<(Era, Era)> {
-        let read_at_utc = local.at_offset(UtcOffset::UTC)?;
-        let opening = read_at_utc.checked_add_seconds(EARLIEST_READING_SECONDS)?;
-        let closing = read_at_utc.checked_add_seconds(LATEST_READING_SECONDS)?;
-        Some((self.era_at(opening)?, self.era_at(closing)?))
+        let (opens, closes) = window_around(local)?;
+        Some((self.era_at(opens)?, self.era_at(closes)?))
+    }
+
+    /// Every transition this table has strictly after `from` and at or before `to`, ascending.
+    ///
+    /// Both forms in one list, because a definition carries both and a reading of a wall clock
+    /// has to consider every offset in force across the window whichever form stated it. The
+    /// dated ones are a contiguous run of the sorted table, found by the same binary search
+    /// [`TransitionTable::latest_onset_at_or_before`] uses; the rule-driven ones are each rule
+    /// evaluated for the two or three years the window can touch.
+    ///
+    /// Empty for every day of the year but the two a zone moves on, and an empty [`Vec`] has
+    /// allocated nothing — which is what keeps an ordinary lookup free of the heap.
+    fn onsets_between(&self, from: Instant, to: Instant) -> Vec<Instant> {
+        let listed = self.observances();
+        let first = listed.partition_point(|candidate| began_by(*candidate, from));
+        let mut found: Vec<Instant> = Vec::new();
+        for observance in listed.get(first..).unwrap_or(&[]) {
+            let Some(onset) = onset_of(*observance) else {
+                continue;
+            };
+            if onset > to {
+                break;
+            }
+            found.push(onset);
+        }
+        for observance in self.rules() {
+            push_rule_onsets(*observance, from, to, &mut found);
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
     }
 
     /// The stretch of the timeline `instant` falls in, absent when this table declares nothing.
     fn era_at(&self, instant: Instant) -> Option<Era> {
         let earliest = *self.observances().first()?;
-        let Some((began, observance)) = self.latest_onset_at_or_before(instant) else {
+        let Some((_onset, observance)) = self.latest_onset_at_or_before(instant) else {
             // Before the first onset the file states one thing and asserts nothing else: the
             // earliest observance's `TZOFFSETFROM` was running, and no subcomponent covers that
             // era to classify it. A `daylight` flag is an assertion, so its absence is `false`.
             return Some(Era {
                 observance: None,
-                began: None,
                 offset: earliest.offset_from(),
                 daylight: false,
             });
         };
         Some(Era {
             observance: Some(observance),
-            began: Some(began),
             offset: observance.offset_to(),
             daylight: observance.daylight(),
         })
@@ -219,18 +264,21 @@ impl TransitionTable {
 
     /// The latest onset this table records at or before `instant`, and what it began.
     ///
-    /// Logarithmic in the table: the binary search places the explicit onsets, and only the
-    /// window of observances just before that point is asked whether a rule of theirs fired
-    /// later still. Nothing between two onsets is ever materialized.
+    /// The dated onsets are placed by a binary search over an order that is the onsets
+    /// themselves, so the latest of them is the entry before the search's own insertion point
+    /// and nothing between two onsets is ever materialized. Every rule is then asked whether it
+    /// fired later still — every one, because a rule is in force from its own `DTSTART` until
+    /// something later supersedes it, and a definition restating two years of its own
+    /// transitions as `RDATE` lines does not supersede anything.
     fn latest_onset_at_or_before(&self, instant: Instant) -> Option<(Instant, Observance)> {
         let listed = self.observances();
         let past = listed.partition_point(|candidate| began_by(*candidate, instant));
-        let window = listed
-            .get(past.saturating_sub(RULE_WINDOW)..past)
-            .unwrap_or(&[]);
-        let mut latest: Option<(Instant, Observance)> = None;
-        for observance in window {
-            let Some(onset) = latest_onset_of(*observance, instant) else {
+        let mut latest = listed
+            .get(..past)
+            .and_then(<[Observance]>::last)
+            .and_then(|dated| onset_of(*dated).map(|onset| (onset, *dated)));
+        for observance in self.rules() {
+            let Some(onset) = latest_rule_onset(*observance, instant) else {
                 continue;
             };
             if latest.is_none_or(|(known, _)| known <= onset) {
@@ -242,11 +290,17 @@ impl TransitionTable {
 
     /// How much of this table stood behind an answer about `date`.
     ///
-    /// `docs/adr/0003`'s third field, and the `RDATE` table that ran out. A date past
-    /// `coverage_end` is answered by continuing the final observance, which is the defensible
-    /// thing to do and a dishonest thing to do quietly, so the answer says so. A date the
-    /// calendar cannot express is not one this table holds data for either.
+    /// `docs/adr/0003`'s third field, and the `RDATE` table that ran out — at either end. A
+    /// date outside the table's own span is answered by continuing the observance nearest it,
+    /// which is the defensible thing to do and a dishonest thing to do quietly, so the answer
+    /// says which end it was continued from. A date the calendar cannot express is not one this
+    /// table holds data for either.
     fn basis_for(&self, date: Option<CivilDate>) -> AnswerBasis {
+        if let (Some(asked), Some(first)) = (date, self.coverage_start()) {
+            if asked < first {
+                return AnswerBasis::BeforeKnownTransitions(first);
+            }
+        }
         let Some(known) = self.coverage_end() else {
             return AnswerBasis::Computed;
         };
@@ -254,6 +308,67 @@ impl TransitionTable {
             AnswerBasis::BeyondKnownTransitions(known)
         } else {
             AnswerBasis::Computed
+        }
+    }
+}
+
+/// The readings of one wall clock a walk of the window has found so far.
+///
+/// Three fields rather than a list, because [`LocalResolution`] holds at most two readings and
+/// what it needs of them is the earliest and the latest. Repeats are dropped: two eras running
+/// the same offset produce the same instant, and one instant read twice is one reading.
+#[derive(Clone, Copy, Debug)]
+struct Readings {
+    /// The earliest reading found.
+    earliest: Option<Reading>,
+    /// The latest, which equals `earliest` while only one has been found.
+    latest: Option<Reading>,
+    /// How many distinct instants have been offered.
+    count: u32,
+}
+
+impl Readings {
+    /// Nothing found yet.
+    const EMPTY: Self = Self {
+        earliest: None,
+        latest: None,
+        count: 0,
+    };
+
+    /// Take `reading` if there is one and it is not one already held.
+    fn offer(&mut self, reading: Option<Reading>) {
+        let Some(found) = reading else {
+            return;
+        };
+        let held = |kept: Option<Reading>| kept.is_some_and(|one| one.instant == found.instant);
+        if held(self.earliest) || held(self.latest) {
+            return;
+        }
+        if self
+            .earliest
+            .is_none_or(|kept| found.instant < kept.instant)
+        {
+            self.earliest = Some(found);
+        }
+        if self.latest.is_none_or(|kept| found.instant > kept.instant) {
+            self.latest = Some(found);
+        }
+        self.count = self.count.saturating_add(1);
+    }
+
+    /// What the count says, absent when nothing governed its own reading.
+    ///
+    /// Two readings are a fold and the pair is the earliest and the latest, which for the two
+    /// a real zone produces is both of them. A third would mean a definition that moved its
+    /// clock through one wall time three times inside a day, where the widest pair is still the
+    /// honest one to report.
+    fn resolution(self) -> Option<LocalResolution> {
+        match (self.count, self.earliest, self.latest) {
+            (0, _, _) => None,
+            (1, Some(only), _) => Some(LocalResolution::Unique { reading: only }),
+            (_, Some(earlier), Some(later)) => Some(LocalResolution::Ambiguous { earlier, later }),
+            // Unreachable: a non-zero count has set both fields.
+            _ => None,
         }
     }
 }
@@ -267,14 +382,22 @@ impl ZoneSource for TransitionTable {
     /// crate may look inside: mapping a vendor name onto an IANA one is the caller's visible
     /// step, per `docs/adr/0003`.
     ///
-    /// `None` also for a table declaring no observance, which RFC 5545 section 3.6.5 forbids
-    /// and files carry anyway. "The zone answers nothing" is a smaller claim than "the zone is
-    /// UTC", and only the first one the file supports.
+    /// A table declaring no observance — which RFC 5545 section 3.6.5 forbids and files carry
+    /// anyway — answers [`LocalResolution::Undetermined`] rather than `None`. It still invents
+    /// no offset: "this zone answers nothing" is a smaller claim than "this zone is UTC" and
+    /// only the first is one the file supports. But it is a *larger* claim than `None`, which
+    /// says the identifier is one this source has never heard of, and the file plainly wrote it
+    /// down.
     fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
         if self.tzid().as_str() != tzid {
             return None;
         }
-        let resolution = self.resolution_of(local)?;
+        // `None` from the resolution has exactly one cause once the identifier matches: a table
+        // with no observance to walk a window over. Every wall clock RFC 5545 section 3.3.4 can
+        // write has a window, and a non-empty table has an era covering it.
+        let resolution = self
+            .resolution_of(local)
+            .unwrap_or(LocalResolution::Undetermined);
         Some(ZoneAnswer::new(
             resolution,
             ZoneProvenance::EmbeddedVtimezone,
@@ -287,6 +410,11 @@ impl ZoneSource for TransitionTable {
     ///
     /// The direction with no ambiguity in it: every instant has exactly one offset under a
     /// zone, which is precisely the asymmetry that makes [`ZoneSource::resolve`] hard.
+    ///
+    /// It is also the direction with nowhere to say "recognized, and I hold nothing": an
+    /// [`OffsetAnswer`] is an offset, and a table with no observance has none to give. So this
+    /// answers `None` there, and [`ZoneSource::recognizes`] below is what keeps that `None`
+    /// from being read as an identifier nobody supplied.
     fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
         if self.tzid().as_str() != tzid {
             return None;
@@ -300,6 +428,26 @@ impl ZoneSource for TransitionTable {
             self.basis_for(date),
         ))
     }
+
+    /// Whether this is the identifier this table was built under, compared by exact bytes.
+    ///
+    /// A table recognizes its own identifier whether or not it holds a transition for it, which
+    /// is the whole distinction this method exists to draw.
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.tzid().as_str() == tzid
+    }
+}
+
+/// The earliest and latest instant a wall clock showing `local` could name.
+///
+/// One day either side, which RFC 5545 section 3.3.14 makes the widest an offset can move a
+/// reading. A free function rather than a method because it is arithmetic over the clock and
+/// says nothing about any table.
+fn window_around(local: CivilDateTime) -> Option<(Instant, Instant)> {
+    let read_at_utc = local.at_offset(UtcOffset::UTC)?;
+    let opens = read_at_utc.checked_add_seconds(EARLIEST_READING_SECONDS)?;
+    let closes = read_at_utc.checked_add_seconds(LATEST_READING_SECONDS)?;
+    Some((opens, closes))
 }
 
 /// The instant an observance's own `DTSTART` names.
@@ -320,12 +468,13 @@ fn began_by(observance: Observance, instant: Instant) -> bool {
     onset_of(observance).is_none_or(|onset| onset <= instant)
 }
 
-/// The latest onset `observance` has at or before `instant`, by its `DTSTART` and by its rule.
-fn latest_onset_of(observance: Observance, instant: Instant) -> Option<Instant> {
-    let mut latest = onset_of(observance).filter(|onset| *onset <= instant);
-    let Some(from) = probe_year(observance, instant) else {
-        return latest;
-    };
+/// The latest onset `observance`'s rule has at or before `instant`.
+///
+/// The years are walked downwards and the first that answers is the latest that can, because a
+/// yearly rule's onsets ascend with the year. Its own `DTSTART` is not consulted here: that
+/// onset is an entry of the table like any other and the binary search already placed it.
+fn latest_rule_onset(observance: Observance, instant: Instant) -> Option<Instant> {
+    let from = probe_year(observance, instant)?;
     for step in 0..RULE_PROBE_YEARS {
         let Some(year) = from.checked_sub(step) else {
             break;
@@ -338,14 +487,40 @@ fn latest_onset_of(observance: Observance, instant: Instant) -> Option<Instant> 
         let asked = observance
             .transition_in(year)
             .and_then(|local| local.at_offset(observance.offset_from()));
-        let Some(onset) = asked.filter(|found| *found <= instant) else {
-            continue;
-        };
-        if latest.is_none_or(|known| known < onset) {
-            latest = Some(onset);
+        if let Some(onset) = asked.filter(|found| *found <= instant) {
+            return Some(onset);
         }
     }
-    latest
+    None
+}
+
+/// Append every onset `observance`'s rule has after `from` and at or before `to`.
+///
+/// The years the window can touch are its own two and one either side of them, because an
+/// observance's onset is read on its own clock and that clock can be a day the other side of
+/// midnight from UTC. A yearly rule contributes at most one onset per year, so this pushes at
+/// most a handful whatever the window holds.
+fn push_rule_onsets(observance: Observance, from: Instant, to: Instant, out: &mut Vec<Instant>) {
+    let (Some(first), Some(last)) = (year_at(from), year_at(to)) else {
+        return;
+    };
+    let begins = observance.start().date().year();
+    for year in first.saturating_sub(1)..=last.saturating_add(1) {
+        if year < begins {
+            continue;
+        }
+        let asked = observance
+            .transition_in(year)
+            .and_then(|local| local.at_offset(observance.offset_from()));
+        if let Some(onset) = asked.filter(|found| *found > from && *found <= to) {
+            out.push(onset);
+        }
+    }
+}
+
+/// The year `instant` falls in on the UTC clock, absent outside the years RFC 5545 can write.
+fn year_at(instant: Instant) -> Option<u16> {
+    CivilDateTime::from_instant(instant, UtcOffset::UTC).map(|clock| clock.date().year())
 }
 
 /// The first year to ask `observance`'s rule about, absent when it repeats by no rule.
@@ -365,37 +540,30 @@ fn probe_year(observance: Observance, instant: Instant) -> Option<u16> {
     )
 }
 
-/// The two readings of a wall clock the zone fell back through, in timeline order.
-fn fold(first: Reading, second: Reading) -> LocalResolution {
-    if first.instant <= second.instant {
-        LocalResolution::Ambiguous {
-            earlier: first,
-            later: second,
-        }
-    } else {
-        LocalResolution::Ambiguous {
-            earlier: second,
-            later: first,
-        }
-    }
-}
-
-/// The wall clock the zone sprang over, carrying the material for both readings of it.
+/// The wall clock the transition at `onset` sprang over, carrying both readings of it.
 ///
-/// `None` when the two eras agree about the offset, which is not a transition and therefore
-/// not a gap; the caller falls back to the only claim left in that case.
-fn gap(local: CivilDateTime, opening: Era, closing: Era) -> Option<LocalResolution> {
-    if opening.offset == closing.offset {
+/// `None` unless this transition is the one that sprang over `local`: the clock read `opened`
+/// the instant before it and `closed` the instant of it, and a wall time this transition
+/// skipped is one at or after the first and before the second. Asking each transition about
+/// its own gap is what makes `gap_end` the instant the queried gap closed rather than the
+/// instant some other transition of the same day did, and `offset_before` the offset that was
+/// actually running rather than the one the far end of the window happens to hold.
+fn gap(local: CivilDateTime, before: Era, after: Era, onset: Instant) -> Option<LocalResolution> {
+    if before.offset == after.offset {
         return None;
     }
-    let gap_end = closing.began?;
-    let gap_start = gap_end.checked_add_seconds(-1)?;
+    let opened = CivilDateTime::from_instant(onset, before.offset)?;
+    let closed = CivilDateTime::from_instant(onset, after.offset)?;
+    if opened > local || local >= closed {
+        return None;
+    }
+    let gap_start = onset.checked_add_seconds(-1)?;
     Some(LocalResolution::Nonexistent {
         gap_start,
-        gap_end,
-        offset_before: opening.offset,
-        offset_after: closing.offset,
-        shifted: local.at_offset(opening.offset)?,
+        gap_end: onset,
+        offset_before: before.offset,
+        offset_after: after.offset,
+        shifted: local.at_offset(before.offset)?,
     })
 }
 
@@ -425,7 +593,8 @@ mod tests {
     };
 
     use crate::answer::{
-        AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, Reading, ZoneProvenance, ZoneSource,
+        AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, Reading, ZoneAnswer, ZoneProvenance,
+        ZoneSource,
     };
     use crate::model::{NthWeek, Observance, RuleDay, TransitionTable, YearlyRule};
 
@@ -888,8 +1057,18 @@ mod tests {
         );
         assert_eq!(
             zone.resolve("Europe/Berlin", stamp(2026, 7, 1, 12, 0)),
-            None
+            Some(ZoneAnswer::new(
+                LocalResolution::Undetermined,
+                ZoneProvenance::EmbeddedVtimezone,
+                AnswerBasis::Computed
+            )),
+            "the identifier is one this table answers to, and `None` would say it was not"
         );
+        assert!(
+            zone.recognizes("Europe/Berlin"),
+            "a table recognizes its own identifier whether or not it holds a transition"
+        );
+        assert!(!zone.recognizes("America/New_York"));
         assert_eq!(zone.offset_at("Europe/Berlin", Instant::EPOCH), None);
         assert_eq!(zone.observance_at(Instant::EPOCH), None);
         assert_eq!(

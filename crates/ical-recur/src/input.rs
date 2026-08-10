@@ -26,6 +26,8 @@
 //! argument — bounded per call, unbounded in aggregate — applies to these three lists exactly
 //! as it applies to a parse, and a bound nobody charges is decoration.
 
+use core::fmt::{self, Debug, Formatter};
+
 use ical_core::{Instant, LimitExceeded, Meter, Property, PropertyId};
 
 use crate::rule::{RecurrenceRule, RuleLimit, ValueKind};
@@ -226,7 +228,7 @@ impl InputError {
 /// anchor for every later one, so splitting them would also duplicate half the entries.
 #[derive(Clone, Copy, Debug)]
 pub struct OverrideSet<'a> {
-    /// The overrides, strictly ascending by `RECURRENCE-ID`.
+    /// The overrides, ascending by `RECURRENCE-ID`.
     entries: &'a [Override<'a>],
 }
 
@@ -239,32 +241,74 @@ impl<'a> OverrideSet<'a> {
 
     /// A set over `entries`, charged to `meter`.
     ///
-    /// Strictly ascending `RECURRENCE-ID`s are required: two overrides claiming one instant
-    /// have no defined precedence, and guessing one silently is the failure this crate exists
-    /// to prevent.
+    /// Ascending `RECURRENCE-ID`s are required and equal ones are admitted, which is the
+    /// correction M2 made here. Descending entries are still refused, because the merge's
+    /// advertised linear cost is not true over them.
+    ///
+    /// Two overrides on one cadence key had been [`InputError::Duplicated`] — refused input for
+    /// the whole series, so a component whose only fault was naming one key twice lost every
+    /// occurrence it had. A zoned series produces that shape without anybody making a mistake:
+    /// `ical_tz::seam` walks the series' own wall clock, and the two halves of the hour a zone
+    /// repeats are one wall clock, so `RECURRENCE-ID:20261101T053000Z` and
+    /// `RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants that project
+    /// onto one key. Refusing the series is a worse answer than applying one of them.
+    ///
+    /// So the earlier entry of a collision is the one [`OverrideSet::exact_match`] answers with
+    /// — file order, which for a fold is the earlier of the two instants — and the later one is
+    /// inert. That is a preference, and a preference nobody stated is the thing this crate is
+    /// arranged against, so it is *counted*: [`OverrideSet::collisions`] reports how many
+    /// entries were shadowed, and a caller that wants to tell a person reads it. This
+    /// constructor takes no sink and cannot report it itself.
     pub fn new(entries: &'a [Override<'a>], meter: &mut Meter) -> Result<Self, InputError> {
         let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
         meter
             .try_charge_override_entries(count)
             .map_err(|breach| InputError::TooMany(InputList::Override, breach))?;
         let keys = entries.iter().map(|entry| entry.recurrence_id());
-        check_strictly_ascending(keys, InputList::Override)?;
+        check_ascending(keys, InputList::Override)?;
         Ok(Self { entries })
     }
 
-    /// The overrides, strictly ascending by `RECURRENCE-ID`.
+    /// The overrides, ascending by `RECURRENCE-ID`.
     #[must_use]
     pub const fn entries(self) -> &'a [Override<'a>] {
         self.entries
     }
 
+    /// How many entries name a `RECURRENCE-ID` an earlier entry already named.
+    ///
+    /// Zero for every set whose identifiers are distinct, which is every set a floating or UTC
+    /// series produces. A non-zero count means the projection onto this series' timeline was
+    /// not injective — the fold in [`OverrideSet::new`]'s note — and that exactly this many
+    /// overrides modify nothing.
+    #[must_use]
+    pub fn collisions(self) -> usize {
+        self.entries
+            .windows(2)
+            .filter(|pair| {
+                pair.first().map(|entry| entry.recurrence_id())
+                    == pair.last().map(|entry| entry.recurrence_id())
+            })
+            .count()
+    }
+
     /// The override addressing exactly `key`, if there is one.
+    ///
+    /// The first of them where several name one key, which is the preference
+    /// [`OverrideSet::new`] documents and [`OverrideSet::collisions`] counts.
     #[must_use]
     pub fn exact_match(self, key: Instant) -> Option<&'a Override<'a>> {
-        self.entries
+        let found = self
+            .entries
             .binary_search_by(|entry| entry.recurrence_id().cmp(&key))
-            .ok()
-            .and_then(|position| self.entries.get(position))
+            .ok()?;
+        let earlier = self
+            .entries
+            .get(..found)?
+            .iter()
+            .rposition(|entry| entry.recurrence_id() != key)
+            .map_or(0, |last| last.saturating_add(1));
+        self.entries.get(earlier)
     }
 
     /// Every `RANGE=THISANDFUTURE` anchor at or before `key`, oldest first.
@@ -317,7 +361,7 @@ impl<'a> Iterator for AppliedDiffs<'a> {
 impl core::iter::FusedIterator for AppliedDiffs<'_> {}
 
 /// Everything one component says about which occurrences it has.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct RecurrenceInput<'a> {
     /// The first instance, and the anchor every `BYxxx` default is taken from.
     dtstart: Instant,
@@ -331,6 +375,25 @@ pub struct RecurrenceInput<'a> {
     exclusions: &'a [Instant],
     /// The `RECURRENCE-ID` overrides.
     overrides: OverrideSet<'a>,
+    /// The caller's own gate on a cadence key, absent when the caller states none.
+    admission: Option<&'a dyn Fn(Instant) -> bool>,
+}
+
+impl Debug for RecurrenceInput<'_> {
+    /// Written by hand because a gate is a function and functions are not [`Debug`]. Whether
+    /// one is present is the fact a reader of a dump needs, and it is the fact printed.
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecurrenceInput")
+            .field("dtstart", &self.dtstart)
+            .field("dtstart_kind", &self.dtstart_kind)
+            .field("rule", &self.rule)
+            .field("additions", &self.additions)
+            .field("exclusions", &self.exclusions)
+            .field("overrides", &self.overrides)
+            .field("admission", &self.admission.is_some())
+            .finish()
+    }
 }
 
 impl<'a> RecurrenceInput<'a> {
@@ -359,7 +422,43 @@ impl<'a> RecurrenceInput<'a> {
             additions,
             exclusions,
             overrides,
+            admission: None,
         })
+    }
+
+    /// The same input, with a second gate the caller states on every rule instance.
+    ///
+    /// `docs/adr/0011` puts two gates on an instance — a date that exists, and a local time
+    /// that exists — and says an instance is admitted only when both pass, while `COUNT`
+    /// "counts emitted instances only". This crate owns the first gate and has no zone, so it
+    /// cannot own the second; before this existed there was no order in which the two could be
+    /// composed. A caller applying the zone afterwards was applying it *after* `COUNT`, so a
+    /// `COUNT=5` series with one instance in an hour its zone never showed delivered four.
+    ///
+    /// `gate` is asked about each cadence key the rule produces, after the window has been
+    /// tested and before the key is counted, so a rejected key costs the series nothing and the
+    /// count is over what survives. It is asked once per key, is not asked about an `RDATE` —
+    /// which is an instance the file states outright rather than one the rule produced — and
+    /// gets no meter and no sink, because it is the caller's own predicate and the caller
+    /// already holds both. `ical_tz::ZonedSeries::admits` is the one this workspace supplies.
+    ///
+    /// A gate that rejects everything terminates: the window is tested first, so generation
+    /// still stops at the window's edge rather than searching for a key the gate will take.
+    #[must_use]
+    pub fn admitting(self, gate: &'a dyn Fn(Instant) -> bool) -> Self {
+        Self {
+            admission: Some(gate),
+            ..self
+        }
+    }
+
+    /// Whether the caller's own gate takes the cadence key `key`.
+    ///
+    /// `true` when no gate was stated, which is what makes the gate's absence the identity
+    /// rather than a second code path.
+    #[must_use]
+    pub fn admits(self, key: Instant) -> bool {
+        self.admission.is_none_or(|gate| gate(key))
     }
 
     /// The first instance.
@@ -446,6 +545,25 @@ where
             if key < earlier {
                 return Err(InputError::NotAscending(list));
             }
+        }
+        previous = Some(key);
+    }
+    Ok(())
+}
+
+/// Whether `keys` ascend, with equal keys admitted.
+///
+/// The override list's check. A repeated instant is a preference to state rather than input to
+/// refuse; see [`OverrideSet::new`]. A descending one is still refused, because that is the
+/// claim the merge's single pass rests on.
+fn check_ascending<I>(keys: I, list: InputList) -> Result<(), InputError>
+where
+    I: IntoIterator<Item = Instant>,
+{
+    let mut previous: Option<Instant> = None;
+    for key in keys {
+        if previous.is_some_and(|earlier| key < earlier) {
+            return Err(InputError::NotAscending(list));
         }
         previous = Some(key);
     }

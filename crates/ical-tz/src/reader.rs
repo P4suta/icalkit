@@ -37,9 +37,16 @@
 //!   note, because the file is legal and what is missing is here: the observance's own
 //!   `DTSTART` still stands as one transition, so the answer is smaller rather than wrong.
 //! - `missing-time-zone-definition` — a `TZID` parameter naming no `VTIMEZONE` in the same
-//!   calendar.
-//! - `duplicate-time-zone-identifier` — read off `ZoneSetError::diagnostic_code` when
-//!   `VtimezoneSet::insert` hands a definition back.
+//!   calendar, named by the identifier it is about.
+//! - `duplicate-time-zone-identifier` — read off `ZoneAdmission::diagnostic_code` when
+//!   `VtimezoneSet::insert` takes a second definition of one identifier beside the first.
+//! - `vtimezone-components-truncated` — read off `ZoneSetError::diagnostic_code` when the
+//!   caller's own zone-count bound turns a definition back. `docs/adr/0003` amendment 6 said
+//!   that refusal carried no code; the identifiers such a definition declares then looked
+//!   exactly like identifiers the calendar never wrote, which is a claim about the file that
+//!   the caller's policy made false.
+//! - `vtimezone-observance-unreadable` — a `STANDARD` or `DAYLIGHT` subcomponent stating every
+//!   property section 3.6.5 requires and yielding no transition at all.
 //!
 //! `vtimezone-observances-truncated` is emitted by `TransitionTable::new`, which this unit
 //! calls and does not reimplement. That is deliberate: the truncation point and the code
@@ -47,15 +54,21 @@
 //!
 //! # What a value this unit cannot read costs
 //!
-//! An observance with no readable `TZOFFSETFROM` or `TZOFFSETTO`, a `DTSTART` or `RDATE` entry
-//! that is a `DATE` rather than a clock, and a `VTIMEZONE` whose `TZID` is absent, empty,
-//! declared twice or not UTF-8 all contribute nothing here and no code of their own. Section
-//! 3.6's own reading of a missing or unreadable required property is [`Component::audit`]'s,
-//! reported under `missing-required-property`, and a second reading of it written here would be
-//! a second place for that answer to live and a second place for the two to disagree. What this
-//! unit reports is what it is the only place to notice: a definition with no observance at all,
-//! a rule it declines to evaluate, an identifier no definition backs, and a definition arriving
-//! twice.
+//! A required property that is *absent* is [`Component::audit`]'s finding under
+//! `missing-required-property`, and a second reading of it written here would be a second place
+//! for that answer to live and a second place for the two to disagree.
+//!
+//! A required property that is *present and unusable* is nobody else's. That is the division M2
+//! corrected: `TZOFFSETTO:+9999` is a value the decoder refuses and the audit counts as there,
+//! and `DTSTART;VALUE=DATE` on an observance carries no hour for a transition to happen at, so
+//! both left a `VTIMEZONE` in the set holding nothing, answering nothing, with no code from
+//! anybody — a definition the file wrote in full, indistinguishable from one it never wrote.
+//! `vtimezone-observance-unreadable` is what this unit says about it, and it is emitted only
+//! where every property section 3.6.5 requires is present, so one fault never earns two codes.
+//!
+//! A `VTIMEZONE` whose `TZID` is absent, empty, declared twice or not UTF-8 still contributes
+//! nothing and no code of its own: there is no identifier to file it under and none to name in
+//! a report.
 //!
 //! # Bounds
 //!
@@ -81,8 +94,8 @@ use core::str;
 
 use ical_core::{
     CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
-    DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, UtcOffset, Weekday,
-    report_diagnostic,
+    DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject, UtcOffset,
+    Weekday, report_diagnostic,
 };
 
 use crate::model::{
@@ -105,14 +118,19 @@ const RUN_LENGTH: usize = 7;
 /// Read every `VTIMEZONE` a calendar carries, and report the identifiers nothing defines.
 ///
 /// The zones come back in a set keyed by exact bytes. A second definition of one identifier is
-/// reported under [`DiagnosticCode::DuplicateTimeZoneIdentifier`] and handed back rather than
-/// preferred, and a `TZID` parameter anywhere in the calendar naming no definition here is
-/// reported once under [`DiagnosticCode::MissingTimeZoneDefinition`].
+/// kept beside the first and reported under [`DiagnosticCode::DuplicateTimeZoneIdentifier`] —
+/// both readings stay reachable through [`VtimezoneSet::definitions`], which is what
+/// `docs/adr/0003` requires of a file with two answers — and a `TZID` parameter anywhere in the
+/// calendar naming no definition here is reported once under
+/// [`DiagnosticCode::MissingTimeZoneDefinition`], naming the identifier it is about.
 ///
 /// Both bounds `docs/adr/0010` gives a zone are charged against `meter` on the way through. A
-/// calendar declaring more zones than the caller's policy admits keeps the ones that fit; that
-/// refusal carries no code of its own, because the golden list of diagnostic codes has none for
-/// it, and a caller that needs to know compares the set's length against what it expected.
+/// calendar declaring more zones than the caller's policy admits keeps the ones that fit and
+/// says so under [`DiagnosticCode::VtimezoneComponentsTruncated`], naming each definition the
+/// bound turned back — and the identifiers those definitions declare are not then reported as
+/// identifiers the calendar never defined, because the calendar did define them.
+///
+/// [`VtimezoneSet::definitions`]: crate::VtimezoneSet::definitions
 #[must_use]
 pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
     calendar: &Component,
@@ -120,6 +138,7 @@ pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
 ) -> VtimezoneSet {
     let mut zones = VtimezoneSet::new();
+    let mut refused: BTreeSet<Box<str>> = BTreeSet::new();
     for component in calendar.components() {
         if !component.is_named(b"VTIMEZONE") {
             continue;
@@ -129,13 +148,32 @@ pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
             continue;
         };
         let table = TransitionTable::new(tzid, observances, meter, sink);
-        if let Err(refused) = zones.insert(table, meter) {
-            if let Some(code) = refused.diagnostic_code() {
-                report(sink, meter, code, Severity::Violation);
-            }
+        // Taken before the table is moved into the set, so that every code below can name the
+        // zone it is about. A diagnostic saying a definition was refused and not which one is
+        // a diagnostic a caller cannot act on.
+        let named = Subject::new(table.tzid().as_str().as_bytes());
+        match zones.insert(table, meter) {
+            Ok(admission) => {
+                if let Some(code) = admission.diagnostic_code() {
+                    report(sink, meter, code, Severity::Violation, Some(named));
+                }
+            },
+            Err(turned_back) => {
+                // The identifier is remembered rather than the definition, because what the
+                // refusal costs downstream is the walk below deciding that this calendar never
+                // defined a zone that the caller's own policy refused.
+                refused.insert(Box::from(turned_back.table().tzid().as_str()));
+                report(
+                    sink,
+                    meter,
+                    turned_back.diagnostic_code(),
+                    Severity::LimitReached,
+                    Some(named),
+                );
+            },
         }
     }
-    report_undefined(calendar, &zones, meter, sink);
+    report_undefined(calendar, &zones, &refused, meter, sink);
     zones
 }
 
@@ -180,6 +218,7 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
             meter,
             DiagnosticCode::VtimezoneWithoutObservance,
             Severity::Violation,
+            Some(Subject::new(tzid.as_bytes())),
         );
     }
     Some(tzid)
@@ -214,8 +253,55 @@ fn unquoted(text: &[u8]) -> &[u8] {
         .unwrap_or(text)
 }
 
-/// Read one `STANDARD` or `DAYLIGHT` subcomponent into `out`.
+/// Read one `STANDARD` or `DAYLIGHT` subcomponent into `out`, reporting one that yields nothing.
+///
+/// An observance contributing no transition at all is reported here under
+/// [`DiagnosticCode::VtimezoneObservanceUnreadable`], and that is a correction M2 made. This
+/// unit used to delegate every unreadable required value to [`Component::audit`]'s reading of
+/// section 3.6 — which is right for a property that is *absent* and answers nothing about one
+/// that is present and cannot be used. `TZOFFSETTO:+9999` is a property the audit counts and
+/// the value decoder refuses, and `DTSTART;VALUE=DATE` on an observance is a value that carries
+/// no hour for a transition to happen at. Both left a `VTIMEZONE` in the set carrying no
+/// observance, answering nothing, with no code emitted on either side — a definition the file
+/// wrote and nothing anywhere could tell from one it never wrote.
 fn read_observance<S: DiagnosticSink + ?Sized>(
+    component: &Component,
+    meter: &mut Meter,
+    sink: &mut S,
+    out: &mut Vec<Observance>,
+) {
+    let before = out.len();
+    read_transitions(component, meter, sink, out);
+    if out.len() == before && states_every_required_property(component) {
+        report(
+            sink,
+            meter,
+            DiagnosticCode::VtimezoneObservanceUnreadable,
+            Severity::Violation,
+            None,
+        );
+    }
+}
+
+/// Whether this observance carries each property RFC 5545 section 3.6.5 requires of one.
+///
+/// Presence only, never readability, and that is the whole of the division of labor: an
+/// *absent* required property is [`Component::audit`]'s finding under
+/// `missing-required-property`, and reporting it here as well would put two codes on one fault
+/// and make one defect look like two. What is left over — every required property present and
+/// the observance still stating no transition — is what nobody else can see.
+fn states_every_required_property(component: &Component) -> bool {
+    [
+        PropertyId::DTSTART,
+        PropertyId::TZOFFSETFROM,
+        PropertyId::TZOFFSETTO,
+    ]
+    .iter()
+    .all(|wanted| component.properties_named(wanted).next().is_some())
+}
+
+/// Append every transition one `STANDARD` or `DAYLIGHT` subcomponent states.
+fn read_transitions<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
     sink: &mut S,
@@ -330,11 +416,15 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
         parse_rule(first.value_text().as_bytes(), start, offset_from)
     };
     if rule.is_none() {
+        // No subject: what this is about is one observance of a zone, and an observance has no
+        // name of its own to carry. The identifier alone would say less than it appears to,
+        // because a definition states several observances and only one of them was refused.
         report(
             sink,
             meter,
             DiagnosticCode::VtimezoneRuleUnsupported,
             Severity::Note,
+            None,
         );
     }
     rule
@@ -666,13 +756,20 @@ fn signed_number(bytes: &[u8]) -> Option<i8> {
 
 /// Report each identifier a `TZID` parameter names that no definition in `zones` backs.
 ///
-/// Once per identifier rather than once per property. A [`Diagnostic`] carries a code, a
-/// severity and a location, and an [`ical_core::Property`] owns fresh unfolded octets rather
-/// than the offsets they were read from, so there is no span to tell two reports of one zone
-/// apart by — which makes the second report of it carry nothing the first did not.
+/// Once per identifier rather than once per property, and each report *names* the identifier.
+/// A [`Location`] cannot: an [`ical_core::Property`] owns fresh unfolded octets rather than the
+/// offsets they were read from, so any span this produced would address a buffer the caller
+/// never handed in. Without the name three undefined zones arrived as three diagnostics that
+/// were equal as values, which told a caller that something was missing and not what to find.
+///
+/// An identifier the caller's own zone-count bound refused is not reported here. The calendar
+/// defines it; what dropped it is in `refused`, and it was reported there under
+/// [`DiagnosticCode::VtimezoneComponentsTruncated`]. Saying instead that the file never defined
+/// it would attribute the caller's policy to the file.
 fn report_undefined<S: DiagnosticSink + ?Sized>(
     calendar: &Component,
     zones: &VtimezoneSet,
+    refused: &BTreeSet<Box<str>>,
     meter: &mut Meter,
     sink: &mut S,
 ) {
@@ -685,46 +782,56 @@ fn report_undefined<S: DiagnosticSink + ?Sized>(
                 let named = parameter.unquoted();
                 // An empty `TZID` names no zone, which is the reading `ical-core` already gives
                 // it when it declines to make such a value a zoned one.
-                if !named.is_empty() && !is_defined(zones, named) {
+                if !named.is_empty() && !is_defined(zones, refused, named) {
                     undefined.insert(named);
                 }
             }
         }
         pending.extend(component.components());
     }
-    for _ in &undefined {
+    for named in &undefined {
         report(
             sink,
             meter,
             DiagnosticCode::MissingTimeZoneDefinition,
             Severity::Violation,
+            Some(Subject::new(named)),
         );
     }
 }
 
-/// Whether `named` is an identifier one of `zones` answers to, compared by exact bytes.
+/// Whether `named` is an identifier this calendar defined, compared by exact bytes.
+///
+/// Defined covers both the definitions that were admitted and the ones the caller's bound
+/// turned back, because both are definitions the file wrote.
 ///
 /// Octets that are not UTF-8 match nothing, because a definition's identifier is text. That is
 /// the refusal [`identifier`] makes at the other end, and for the same reason.
-fn is_defined(zones: &VtimezoneSet, named: &[u8]) -> bool {
-    str::from_utf8(named).is_ok_and(|text| zones.table(text).is_some())
+fn is_defined(zones: &VtimezoneSet, refused: &BTreeSet<Box<str>>, named: &[u8]) -> bool {
+    str::from_utf8(named).is_ok_and(|text| zones.table(text).is_some() || refused.contains(text))
 }
 
 /// Offer one diagnostic about this calendar, charging a refusal to `meter`.
 ///
 /// The location is [`Location::NOWHERE`] throughout, and that is a statement rather than an
 /// omission: what this unit reads is a tree of properties owning fresh octets, so any span it
-/// produced would address a buffer the caller never handed in.
+/// produced would address a buffer the caller never handed in. What a report can carry instead
+/// is the name of the zone it is about, which is `subject`.
 fn report<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
     meter: &mut Meter,
     code: DiagnosticCode,
     severity: Severity,
+    subject: Option<Subject>,
 ) {
+    let diagnostic = Diagnostic::new(code, severity, Location::NOWHERE);
     report_diagnostic(
         sink,
         meter,
-        Diagnostic::new(code, severity, Location::NOWHERE),
+        match subject {
+            Some(named) => diagnostic.about(named),
+            None => diagnostic,
+        },
     );
 }
 
@@ -1415,9 +1522,18 @@ END:VTIMEZONE
         let (zones, reported) = read_under(&body, limits);
         assert_eq!(zones.len(), 1);
         assert!(zones.table("Europe/Berlin").is_some());
-        assert!(
-            codes(&reported).is_empty(),
-            "the golden list has no code for a zone count, and this unit invents none"
+        assert_eq!(
+            codes(&reported),
+            alloc::vec![DiagnosticCode::VtimezoneComponentsTruncated],
+            "a definition the caller's own bound refused is reported as that, and named"
+        );
+        assert_eq!(
+            reported
+                .first()
+                .and_then(|entry| entry.subject())
+                .map(|named| named.as_bytes().to_vec()),
+            Some(b"America/New_York".to_vec()),
+            "the report says which definition was turned back"
         );
     }
 

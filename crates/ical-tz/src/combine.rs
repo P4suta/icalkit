@@ -33,7 +33,13 @@
 //!
 //! Codes this unit owns, and no other unit may emit: `time-zone-source-disagreement`, from
 //! [`PolicyOutcome::diagnostic_code`], and `unknown-time-zone` for [`PolicyOutcome::Neither`],
-//! both against the caller's meter and sink rather than inside the trait. The third fact an
+//! both against the caller's meter and sink rather than inside the trait. `Neither` is now
+//! narrower than it was, and that is what M2 corrected here: a calendar declaring a zone with
+//! no observance supplies the identifier and no data, and reporting it as a `TZID` nobody
+//! supplied is a violation-level claim about a file that plainly wrote it down. Where either
+//! source recognizes the identifier the outcome is [`PolicyOutcome::Undetermined`] and this
+//! unit says nothing, because what is wrong with such a file was already reported by whoever
+//! read it. The third fact an
 //! outcome carries — that one side answered past the end of what it knows — travels on
 //! [`AnswerBasis`] and is reported by whoever consumes the answer, for the reason
 //! `answer.rs` gives: a source implementable by a caller who has never heard of a `Meter`
@@ -189,10 +195,24 @@ impl<'a, E: ZoneSource + ?Sized, F: ZoneSource + ?Sized> CombinedZoneSource<'a, 
     #[must_use]
     pub fn resolve(&self, tzid: &str, local: CivilDateTime) -> PolicyOutcome<ZoneAnswer> {
         let embedded = self.embedded.resolve(tzid, local);
-        let fallback = self.fallback.resolve(tzid, local);
-        outcome(embedded, fallback, |from_file, from_database| {
-            from_file.resolution == from_database.resolution
-        })
+        let fallback = self.fallback.resolve(tzid, local).map(named_by_its_role);
+        outcome(
+            embedded,
+            fallback,
+            || self.recognized(tzid),
+            |one, other| one.resolution == other.resolution,
+        )
+    }
+
+    /// Whether either source recognizes `tzid` at all.
+    ///
+    /// Asked only where both sources answered nothing, and asked of both for the reason every
+    /// other question here is: a source that recognizes an identifier it cannot answer about is
+    /// not a source that was skipped.
+    fn recognized(&self, tzid: &str) -> bool {
+        let embedded = self.embedded.recognizes(tzid);
+        let fallback = self.fallback.recognizes(tzid);
+        embedded || fallback
     }
 
     /// What both sources say the zone `tzid` was running at `instant`.
@@ -204,8 +224,16 @@ impl<'a, E: ZoneSource + ?Sized, F: ZoneSource + ?Sized> CombinedZoneSource<'a, 
     #[must_use]
     pub fn offset_at(&self, tzid: &str, instant: Instant) -> PolicyOutcome<OffsetAnswer> {
         let embedded = self.embedded.offset_at(tzid, instant);
-        let fallback = self.fallback.offset_at(tzid, instant);
-        outcome(embedded, fallback, OffsetAnswer::agrees_with)
+        let fallback = self
+            .fallback
+            .offset_at(tzid, instant)
+            .map(offset_named_by_its_role);
+        outcome(
+            embedded,
+            fallback,
+            || self.recognized(tzid),
+            OffsetAnswer::agrees_with,
+        )
     }
 
     /// Put what the pair found on the caller's sink, charging a refusal to the caller's meter.
@@ -245,6 +273,10 @@ impl<'a, E: ZoneSource + ?Sized, F: ZoneSource + ?Sized> CombinedZoneSource<'a, 
         // The one outcome with no code of its own, because there is no reading to note: both
         // sources were asked and neither recognized the identifier. What is wrong is the
         // calendar's `TZID`, or the wiring that was supposed to answer it.
+        //
+        // `PolicyOutcome::Undetermined` is deliberately not this. There the identifier *was*
+        // supplied and the data behind it was not, which is a different claim and one whoever
+        // read the definition has already reported under `vtimezone-without-observance`.
         if matches!(outcome, PolicyOutcome::Neither) {
             report_diagnostic(
                 &mut *sink,
@@ -266,6 +298,7 @@ impl<'a, E: ZoneSource + ?Sized, F: ZoneSource + ?Sized> CombinedZoneSource<'a, 
 fn outcome<A: Copy>(
     embedded: Option<A>,
     fallback: Option<A>,
+    recognized: impl FnOnce() -> bool,
     agrees: fn(A, A) -> bool,
 ) -> PolicyOutcome<A> {
     match (embedded, fallback) {
@@ -281,7 +314,51 @@ fn outcome<A: Copy>(
         // missing half.
         (Some(embedded), None) => PolicyOutcome::OnlyEmbedded(embedded),
         (None, Some(fallback)) => PolicyOutcome::OnlyFallback(fallback),
+        // Nobody answered, which is two facts and not one. A file declaring a zone with no
+        // observance supplies the identifier and nothing behind it, and reporting that as a
+        // `TZID` nobody supplied is a violation-level claim about a file that plainly wrote it.
+        // The recognition question is asked here and only here, after both lookups have
+        // happened, so it can add no fallback chain to a pair that already asked both.
+        (None, None) if recognized() => PolicyOutcome::Undetermined,
         (None, None) => PolicyOutcome::Neither,
+    }
+}
+
+/// The answer a source in the fallback role gives, named by the role it was wired into.
+///
+/// `docs/adr/0003` calls the second source "the database the caller wired in", and a caller's
+/// database of zones is very often a set of `VTIMEZONE` definitions — that is what RFC 7808's
+/// time zone service distributes and what a CalDAV server stores. A [`TransitionTable`] cannot
+/// know which of the two roles it was handed to, so it names the only source a `VTIMEZONE` can
+/// come from and this is where the wiring corrects it. Without the correction a disagreement
+/// between a file and a database had both halves naming the file.
+///
+/// Only that one provenance is rewritten. A [`FixedOffsetSource`] in the fallback role is still
+/// [`ZoneProvenance::FixedOffset`], because "this is not a zone at all" is a fact about the
+/// source rather than about its role, and a hand-written source already says which it is.
+///
+/// [`TransitionTable`]: crate::TransitionTable
+fn named_by_its_role(answer: ZoneAnswer) -> ZoneAnswer {
+    match answer.source {
+        ZoneProvenance::EmbeddedVtimezone => ZoneAnswer::new(
+            answer.resolution,
+            ZoneProvenance::CallerDatabase,
+            answer.basis,
+        ),
+        _ => answer,
+    }
+}
+
+/// [`named_by_its_role`] for the other direction's answer.
+fn offset_named_by_its_role(answer: OffsetAnswer) -> OffsetAnswer {
+    match answer.source {
+        ZoneProvenance::EmbeddedVtimezone => OffsetAnswer::new(
+            answer.offset,
+            answer.daylight,
+            ZoneProvenance::CallerDatabase,
+            answer.basis,
+        ),
+        _ => answer,
     }
 }
 
@@ -639,6 +716,7 @@ mod tests {
         OnlyEmbedded,
         OnlyFallback,
         Neither,
+        Undetermined,
     }
 
     fn shape<A: Copy>(outcome: PolicyOutcome<A>) -> Shape {
@@ -648,6 +726,7 @@ mod tests {
             PolicyOutcome::OnlyEmbedded(_) => Shape::OnlyEmbedded,
             PolicyOutcome::OnlyFallback(_) => Shape::OnlyFallback,
             PolicyOutcome::Neither => Shape::Neither,
+            _ => Shape::Undetermined,
         }
     }
 
@@ -1088,14 +1167,18 @@ mod tests {
             shape(combined.resolve("Pacific/Kiritimati", local)),
             Shape::Neither
         );
-        assert_eq!((iana.calls(), windows.calls()), (2, 2));
+        assert_eq!(
+            (iana.calls(), windows.calls()),
+            (4, 4),
+            "an identifier neither answered is asked once more of each: the recognition              question, which is what tells a zone nobody supplied from a zone supplied with no              transitions. It is asked only in that arm, and only after both lookups happened."
+        );
         assert_eq!(
             shape(combined.offset_at("Europe/Berlin", at(local, UtcOffset::UTC))),
             Shape::OnlyEmbedded
         );
         assert_eq!(
             (iana.calls(), windows.calls()),
-            (3, 3),
+            (5, 5),
             "offset_at short circuits no more than resolve does"
         );
     }

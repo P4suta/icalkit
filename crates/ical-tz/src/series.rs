@@ -158,6 +158,47 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
         }
     }
 
+    /// The real instant `dtstart` names, for a series whose cadence counts elapsed time.
+    ///
+    /// The other anchor, and the one the seam owes a frequency that is not a civil one.
+    /// [`ZonedSeries::anchor`] projects onto the wall clock, which is what `FREQ=DAILY` and
+    /// everything coarser mean: "every day at 09:00" is a statement about a clock, and a day is
+    /// 23 or 25 hours wherever the zone moved. `FREQ=HOURLY` and finer say the opposite — an
+    /// hour is an hour — so a series anchored on the wall clock and walked hourly loses the hour
+    /// a zone repeats and gains the one it skips, which is 24 occurrences on a day that is
+    /// twenty-five hours long.
+    ///
+    /// A series anchored here is walked on the real timeline, and its keys are already the
+    /// instants the occurrences happen at: [`ZonedSeries::actual`] is neither needed nor correct
+    /// for one, because the keys were never nominal. This is the divergence `crate::seam`
+    /// records — Google's engine gives 25 and libical's local-time expansion gives 24, both
+    /// ship, and this workspace offers both readings by making the anchor the caller's stated
+    /// choice rather than a consequence of a frequency nobody looked at.
+    ///
+    /// `None` when the wall clock names no instant this policy takes, or when the source does
+    /// not recognize this series' identifier.
+    #[must_use]
+    pub fn real_anchor(&self, dtstart: DateTimeValue<'_>) -> Option<Instant> {
+        match dtstart {
+            // Already real: a `Z`-terminated value names a UTC instant outright.
+            DateTimeValue::Utc(stamp) => stamp.at_offset(UtcOffset::UTC),
+            DateTimeValue::Date(date) => {
+                self.resolved_clock(CivilDateTime::new(date, CivilTime::MIDNIGHT))
+            },
+            DateTimeValue::Local(stamp) | DateTimeValue::Zoned { stamp, .. } => {
+                self.resolved_clock(stamp)
+            },
+        }
+    }
+
+    /// The instant a wall clock names under this zone and policy.
+    fn resolved_clock(&self, local: CivilDateTime) -> Option<Instant> {
+        self.source
+            .resolve(self.tzid, local)?
+            .resolution
+            .pick(self.policy.gaps(), self.policy.folds())
+    }
+
     /// The nominal instant a real UTC instant projects onto.
     ///
     /// The zone's offset at `utc`, then the wall clock that offset shows there, then
@@ -249,12 +290,60 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
         self.source.resolve(self.tzid, clock)
     }
 
-    /// The instant the occurrence at cadence key `key` actually happens at.
+    /// The instant the wall clock at cadence key `key` names, with nothing reported.
+    ///
+    /// [`ZonedSeries::actual`] without the sink, for the two callers that have no diagnostic to
+    /// make: a predicate handed to `ical-recur` as a series' second gate, and a measurement
+    /// taken between two keys. Same policy, same answer, no meter.
+    #[must_use]
+    pub fn resolved(&self, key: Instant) -> Option<Instant> {
+        self.answer_for(key)?
+            .resolution
+            .pick(self.policy.gaps(), self.policy.folds())
+    }
+
+    /// Whether an occurrence at cadence key `key` is one this zone and policy admit.
+    ///
+    /// `docs/adr/0011`'s second gate, in the shape `ical_recur::RecurrenceInput::admitting`
+    /// takes: the first gate is a date that exists and this one is a local time that exists,
+    /// and composing them in that order is what makes `COUNT` count instances a caller
+    /// receives. Under the default policy an hour the zone sprang over is not admitted; under
+    /// [`GapPolicy::ShiftForward`] it is, at the instant section 3.3.5 reads it as.
+    ///
+    /// `true` where the source does not recognize this series' identifier. Nothing there has
+    /// said the local time does not exist, and a gate that dropped every occurrence of a series
+    /// whose zone is merely undefined would be answering a question nobody asked it.
+    ///
+    /// [`GapPolicy::ShiftForward`]: crate::GapPolicy::ShiftForward
+    #[must_use]
+    pub fn admits(&self, key: Instant) -> bool {
+        let Some(answer) = self.answer_for(key) else {
+            return true;
+        };
+        answer
+            .resolution
+            .pick(self.policy.gaps(), self.policy.folds())
+            .is_some()
+    }
+
+    /// The instant the wall clock that cadence key `key` spells happens at.
     ///
     /// Called once per emitted occurrence, and that is the whole mechanism: the key is read back
     /// into a wall clock, the wall clock is resolved against the zone, and the offset in force on
     /// that particular day is applied to that occurrence alone. A daily 09:00 series stays at
     /// 09:00 across a transition because the offsets are never applied in bulk to an anchor.
+    ///
+    /// **The argument is the wall clock to resolve, and for a moved occurrence that is not its
+    /// cadence key.** This sentence used to read "the instant the occurrence at cadence key
+    /// `key` actually happens at", which is false for exactly the occurrences an organizer
+    /// edited: a `RANGE=THISANDFUTURE` override moving a 09:00 standup to 11:00 leaves each
+    /// later occurrence with a 09:00 *key* and an 11:00 *effective start*, and resolving the key
+    /// renders a meeting two hours before the one that exists. What to pass is
+    /// `ical_recur::Occurrence::start`, which is the key for every occurrence no override moved
+    /// and the moved value for the rest. This crate cannot take an `Occurrence` and say so
+    /// itself — it is `ical-recur`'s sibling and does not depend on it — so the discipline is
+    /// stated here and held by `crates/ical-conform/tests/break_zones.rs`, which resolves
+    /// effective starts.
     ///
     /// The three states a wall clock can be in are collapsed under [`ResolutionPolicy`] and
     /// reported before they are collapsed, so a caller reading the sink knows which occurrences

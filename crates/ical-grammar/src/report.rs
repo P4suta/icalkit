@@ -289,6 +289,42 @@ pub enum DiagnosticCode {
     /// file then carries a meeting the user sees in the client that wrote it and the expanded
     /// series does not have.
     OverrideMatchesNoInstance,
+    /// A zone source recognized a `TZID` and holds no transition for it, so no wall clock names an instant under it.
+    ///
+    /// The other half of [`DiagnosticCode::UnknownTimeZone`], and a different fact: the
+    /// identifier was supplied and the data was not. A `VTIMEZONE` with no usable observance is
+    /// how a file produces one, and answering `None` for it — the value a source uses to say
+    /// "I have never heard of this identifier" — is what made the two indistinguishable.
+    TimeZoneWithoutTransitions,
+    /// A zone was asked about a time earlier than the first transition it knows, so the answer continues the offset in force before it.
+    ///
+    /// [`DiagnosticCode::TimeZoneCoverageExhausted`] at the other end of the table, and a note
+    /// for the same reason: a `VTIMEZONE` whose `RDATE` lines begin in 2027 is a legal file and
+    /// an event in 2020 is a legal event. The offset reported is the earliest observance's own
+    /// `TZOFFSETFROM`, extended backwards, which is all the file states about that era.
+    TimeZoneBeforeKnownTransitions,
+    /// A calendar declared more `VTIMEZONE` components than the caller's policy admits, and the ones past the bound were dropped.
+    ///
+    /// The zone-count sibling of [`DiagnosticCode::VtimezoneObservancesTruncated`]. Without it
+    /// a refused definition left the identifiers it defines looking like identifiers the file
+    /// never defined, which is a claim about the file that the caller's own bound made false.
+    VtimezoneComponentsTruncated,
+    /// An observance's required value was present and unreadable, so it stated no transition at all.
+    ///
+    /// `TZOFFSETTO:+9999` is a `UTC-OFFSET` the value layer refuses and RFC 5545 section 3.6's
+    /// own audit counts as present, and `DTSTART;VALUE=DATE` inside an observance carries no
+    /// hour for a transition to happen at. Neither is a missing property and neither leaves a
+    /// usable observance, so without this code a `VTIMEZONE` the file wrote in full was
+    /// indistinguishable from one it never wrote.
+    VtimezoneObservanceUnreadable,
+    /// An `EXDATE` written in UTC named no cadence key because no source recognized the series' zone, so it excluded nothing.
+    ///
+    /// A `Z`-terminated value on a zoned series has to be placed through the zone's offset at
+    /// it, and a series whose `TZID` nothing defines has no offset to place it through. The
+    /// exception is kept as the real instant it names, reachable through
+    /// `ical_tz::ResolvedExclusions::unplaced`, because an exception that removes nothing and
+    /// says nothing is the silent no-op that layer exists to refuse.
+    ExdateZoneUnknown,
 }
 
 impl DiagnosticCode {
@@ -359,6 +395,11 @@ impl DiagnosticCode {
             Self::RecurrenceUntilNotUtc => "recurrence-until-not-utc",
             Self::ExdateValueTypeMismatch => "exdate-value-type-mismatch",
             Self::OverrideMatchesNoInstance => "override-matches-no-instance",
+            Self::TimeZoneWithoutTransitions => "time-zone-without-transitions",
+            Self::TimeZoneBeforeKnownTransitions => "time-zone-before-known-transitions",
+            Self::VtimezoneComponentsTruncated => "vtimezone-components-truncated",
+            Self::VtimezoneObservanceUnreadable => "vtimezone-observance-unreadable",
+            Self::ExdateZoneUnknown => "exdate-zone-unknown",
         }
     }
 }
@@ -366,6 +407,81 @@ impl DiagnosticCode {
 impl Display for DiagnosticCode {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+/// The name of the thing a diagnostic is about, carried inline.
+///
+/// A diagnostic about a `TZID` nothing defines is worth nothing if it does not say which
+/// identifier: three undefined zones reported as three equal values tell a caller that
+/// something is missing and not what to go and find. A [`Location`] cannot say it — a
+/// component that owns unfolded octets has no span back into the caller's buffer — and a
+/// borrowed `&str` cannot either, because a `Diagnostic` is `Copy` and outlives the tree it
+/// was read from.
+///
+/// So the name travels by value, in a fixed buffer, and a name longer than
+/// [`Subject::CAPACITY`] is kept as its first octets with [`Subject::is_truncated`] saying so.
+/// The capacity is a compromise stated rather than hidden: it holds every IANA identifier and
+/// `/mozilla.org/20050126_1/Europe/Berlin` besides, and it costs every `Diagnostic` its size
+/// whether one is carried or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Subject {
+    /// The name's first octets, of which the first `len` are live.
+    octets: [u8; Subject::CAPACITY],
+    /// How many are live.
+    len: u8,
+    /// Whether the name offered was longer than the buffer.
+    truncated: bool,
+}
+
+impl Subject {
+    /// How many octets of a name are carried.
+    pub const CAPACITY: usize = 48;
+
+    /// The name `octets` spells, truncated to [`Subject::CAPACITY`] if it is longer.
+    #[must_use]
+    pub fn new(octets: &[u8]) -> Self {
+        let mut kept = [0_u8; Self::CAPACITY];
+        let taken = octets.get(..Self::CAPACITY).unwrap_or(octets);
+        let Some(room) = kept.get_mut(..taken.len()) else {
+            // Unreachable: `taken` is `octets` clipped to the buffer's own length.
+            return Self {
+                octets: kept,
+                len: 0,
+                truncated: true,
+            };
+        };
+        room.copy_from_slice(taken);
+        Self {
+            octets: kept,
+            len: u8::try_from(taken.len()).unwrap_or(0),
+            truncated: taken.len() < octets.len(),
+        }
+    }
+
+    /// The octets of the name, as far as they were kept.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.octets.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+
+    /// Whether the name offered was longer than what is carried.
+    #[must_use]
+    pub const fn is_truncated(self) -> bool {
+        self.truncated
+    }
+}
+
+impl Display for Subject {
+    /// The name as text, with any octets that are not UTF-8 written as `U+FFFD`.
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        for chunk in self.as_bytes().utf8_chunks() {
+            formatter.write_str(chunk.valid())?;
+            if !chunk.invalid().is_empty() {
+                formatter.write_str("\u{fffd}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -385,6 +501,8 @@ pub struct Diagnostic {
     location: Location,
     /// Which occurrence, when it is an occurrence rather than octets.
     instant: Option<Instant>,
+    /// What it was about, when a name is what identifies it.
+    subject: Option<Subject>,
 }
 
 impl Diagnostic {
@@ -396,6 +514,7 @@ impl Diagnostic {
             severity,
             location,
             instant: None,
+            subject: None,
         }
     }
 
@@ -411,6 +530,20 @@ impl Diagnostic {
             severity,
             location: Location::NOWHERE,
             instant: Some(instant),
+            subject: None,
+        }
+    }
+
+    /// The same diagnostic, saying what it is about.
+    ///
+    /// A builder rather than a fourth constructor, because the subject is orthogonal to where
+    /// a diagnostic points: an identifier can be named about octets, about an occurrence, and
+    /// about neither.
+    #[must_use]
+    pub const fn about(self, subject: Subject) -> Self {
+        Self {
+            subject: Some(subject),
+            ..self
         }
     }
 
@@ -437,11 +570,20 @@ impl Diagnostic {
     pub const fn instant(self) -> Option<Instant> {
         self.instant
     }
+
+    /// What the diagnostic is about, when a name is what identifies it.
+    #[must_use]
+    pub const fn subject(self) -> Option<Subject> {
+        self.subject
+    }
 }
 
 impl Display for Diagnostic {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.code.as_str())?;
+        if let Some(subject) = self.subject {
+            write!(formatter, " about {subject}")?;
+        }
         match self.location.span() {
             Some(span) => write!(formatter, " at octets {}..{}", span.start(), span.end()),
             None => match self.instant {
@@ -534,7 +676,7 @@ mod tests {
 
     use super::{
         Diagnostic, DiagnosticCode, DiagnosticSink, IgnoreDiagnostics, Severity, SinkOutcome,
-        report_diagnostic,
+        Subject, report_diagnostic,
     };
     use crate::budget::{Limits, Meter};
     use crate::instant::Instant;
@@ -554,6 +696,47 @@ mod tests {
         let count = keys.len();
         keys.dedup();
         assert_eq!(keys.len(), count, "two codes share a golden-list key");
+    }
+
+    /// A name is what tells two reports of one code apart, so it has to survive into the value
+    /// a sink stores and to say when it did not survive whole.
+    #[test]
+    fn a_diagnostic_can_name_what_it_is_about() {
+        let missing = |zone: &str| {
+            Diagnostic::new(
+                DiagnosticCode::MissingTimeZoneDefinition,
+                Severity::Violation,
+                Location::NOWHERE,
+            )
+            .about(Subject::new(zone.as_bytes()))
+        };
+        let denver = missing("America/Denver");
+        let kolkata = missing("Asia/Kolkata");
+        assert_ne!(
+            denver, kolkata,
+            "two undefined zones may not arrive as two equal values"
+        );
+        assert_eq!(
+            denver.subject().map(|named| named.as_bytes().to_vec()),
+            Some(b"America/Denver".to_vec())
+        );
+        assert!(format!("{denver}").contains("America/Denver"));
+        assert!(denver.subject().is_some_and(|named| !named.is_truncated()));
+
+        let long = "/mozilla.org/20050126_1/Europe/Berlin/and/then/some/more/of/it";
+        let overflowing = Subject::new(long.as_bytes());
+        assert!(overflowing.is_truncated(), "a longer name says it was cut");
+        assert_eq!(overflowing.as_bytes().len(), Subject::CAPACITY);
+        assert_eq!(
+            Diagnostic::new(
+                DiagnosticCode::UnknownTimeZone,
+                Severity::Violation,
+                Location::NOWHERE
+            )
+            .subject(),
+            None,
+            "a diagnostic about nothing in particular names nothing"
+        );
     }
 
     #[test]

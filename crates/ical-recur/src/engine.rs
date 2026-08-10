@@ -249,6 +249,8 @@ struct RuleStream<'a> {
     resume_after: Option<Instant>,
     /// Whether the rule's own end has been reached.
     ended: bool,
+    /// The whole input, for the caller's own gate on a key.
+    input: RecurrenceInput<'a>,
 }
 
 impl<'a> RuleStream<'a> {
@@ -262,6 +264,7 @@ impl<'a> RuleStream<'a> {
             begins_at: input.dtstart(),
             resume_after: cursor.map(SearchCursor::resume_after),
             ended: false,
+            input,
         }
     }
 
@@ -326,6 +329,14 @@ impl<'a> RuleStream<'a> {
         }
         if key >= generation.end() {
             return Some(RuleKey::WindowEnded);
+        }
+        if !self.input.admits(key) {
+            // The caller's own second gate, which `docs/adr/0011` puts beside this crate's
+            // date gate and which only a caller holding a zone can answer. Skipped without
+            // counting, exactly as a candidate before `DTSTART` is: a `COUNT` spent on an
+            // instance nobody receives ends the series an instance early. Asked after the
+            // window's edge so that a gate refusing everything still terminates here.
+            return None;
         }
         self.produced = self.produced.saturating_add(1);
         Some(RuleKey::Next(key))

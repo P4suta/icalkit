@@ -513,6 +513,26 @@ impl RecurrenceRule {
         &self.by_set_pos
     }
 
+    /// The same rule, ending where `limit` says instead of where this one does.
+    ///
+    /// The one edit a parsed rule needs and the one the seam with `ical-tz` cannot do without.
+    /// `parse_recur` reads `UNTIL=20260310T120000Z` as the real UTC instant the file wrote, and
+    /// a zoned series is walked on the timeline `ical_tz::seam` describes, so the bound has to
+    /// be projected onto that timeline before it is compared against a cadence key. Until this
+    /// existed the only way to substitute the projection was to rebuild the rule through
+    /// [`RecurrenceRuleBuilder`] and copy every `BYxxx` list across by hand, which is a
+    /// correction no caller performs by accident and several perform wrongly.
+    ///
+    /// Clones the lists rather than mutating in place, because a `RecurrenceRule` read from a
+    /// file is what the file said and a caller may want to keep both readings.
+    #[must_use]
+    pub fn with_limit(&self, limit: RuleLimit) -> Self {
+        Self {
+            limit,
+            ..self.clone()
+        }
+    }
+
     /// Whether `part` carries at least one value.
     #[must_use]
     pub fn has_part(&self, part: RulePart) -> bool {
