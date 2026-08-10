@@ -25,6 +25,14 @@
 //! budget rather than after it is resident. A refusal is never a truncation: writing back
 //! fewer octets than were read is the one thing this crate may not do, which is why an
 //! oversized value is a [`ParseError`] and not a diagnostic (`docs/adr/0007`).
+//!
+//! Five of the codes reported here are about octets rather than about structure, and not one
+//! of them changes what is stored: a control character where RFC 5545 section 3.1 excludes
+//! one, a physical line past the seventy-five octets it allows, a parameter value whose
+//! `DQUOTE` was never closed, a parameter name that arrived without an `=`, and an RFC 6868
+//! caret pair the specification gives no meaning. Each is offered once the line has ended,
+//! because a fold is what stands between an offset in the unfolded line and an offset in the
+//! octets the caller handed in, and the folds arrive with the line's last token.
 
 use alloc::vec::Vec;
 use core::mem;
@@ -32,7 +40,7 @@ use core::mem;
 use ical_grammar::{
     ContentLineReader, ContentLineSource, Diagnostic, DiagnosticCode, DiagnosticSink, FoldPoint,
     Limits, LineEnding, LineLayout, Location, Meter, ParseError, Severity, Span, Token,
-    report_diagnostic,
+    is_control_octet, report_diagnostic, undefined_caret_escapes, unquote_parameter,
 };
 
 use crate::octets::RawText;
@@ -88,12 +96,29 @@ impl Document {
     }
 }
 
+/// The most octets RFC 5545 section 3.1 allows one physical line, terminator excluded.
+///
+/// Counted over a physical line rather than over a content line, which is the distinction
+/// section 3.1 draws: a producer that folded a long value obeyed it, and the whitespace octet
+/// that introduced each continuation is one of the octets that continuation spent.
+const MAX_PHYSICAL_LINE_OCTETS: usize = 75;
+
 /// A byte count as a charge against the ledger, saturating rather than wrapping.
 ///
 /// `usize` is not `u64` on every target these crates build for. A count that does not fit is
 /// charged as the largest the ledger can hold, which refuses rather than admits.
 fn as_units(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(u64::MAX)
+}
+
+/// Whether `bytes` holds an octet RFC 5545 section 3.1 excludes from a value or a parameter.
+///
+/// The predicate is the grammar crate's rather than a second reading of section 3.1 written
+/// here. `HTAB` is whitespace and belongs in a value; the write side already refuses to author
+/// what this side reports, and the two answers drifting apart is the whole failure a shared
+/// predicate exists to prevent.
+fn holds_control_octet(bytes: &[u8]) -> bool {
+    bytes.iter().any(|octet| is_control_octet(*octet))
 }
 
 /// The diagnostic a terminator earns, or `None` for the one RFC 5545 section 3.1 asks for.
@@ -153,6 +178,231 @@ impl Extent {
             Location::at_offset(self.start)
         }
     }
+}
+
+/// A forward-only walk along one unfolded line, keeping input offsets in step with it.
+///
+/// A [`FoldPoint`] addresses the unfolded line, and the octets a fold spends — its terminator
+/// and the whitespace that introduced the continuation — sit *between* the octets it addresses
+/// rather than inside them. Turning an unfolded offset into an offset in the caller's input is
+/// therefore a sum over the folds already passed.
+///
+/// Forward-only because the line is taken apart from left to right, and because the honest
+/// alternative is a sum over every fold at every lookup. `max_folds_per_line` admits a million
+/// of them and `max_parameters` a thousand parameters on the same line, so the quadratic form
+/// is a denial of service wearing a location's clothes.
+#[derive(Debug)]
+struct FoldWalk<'a> {
+    /// The folds recorded for this line, in the order the producer wrote them.
+    folds: &'a [FoldPoint],
+    /// How many of those the walk has passed.
+    passed: usize,
+    /// What the folds already passed add to every offset from here on.
+    carried: u64,
+    /// Where the line's first octet sits in the caller's input.
+    line_start: u64,
+}
+
+impl<'a> FoldWalk<'a> {
+    /// A walk over `folds`, for a line whose first octet sits at `line_start`.
+    fn new(folds: &'a [FoldPoint], line_start: u64) -> Self {
+        Self {
+            folds,
+            passed: 0,
+            carried: 0,
+            line_start,
+        }
+    }
+
+    /// Where the unfolded octet at `offset` sits in the input.
+    ///
+    /// A fold recorded *at* `offset` breaks the line immediately before that octet, so the
+    /// octets it spends come first and are counted here.
+    fn opens(&mut self, offset: usize) -> u64 {
+        self.advance(offset, true)
+    }
+
+    /// Where a range of unfolded octets that ends at `offset` stops, in the input.
+    ///
+    /// A fold recorded at `offset` breaks before an octet the range does not contain, so its
+    /// octets lie outside the range and are left for the next lookup to count.
+    fn closes(&mut self, offset: usize) -> u64 {
+        self.advance(offset, false)
+    }
+
+    /// Where the unfolded octets `from .. from + len` sit in the input.
+    fn extent(&mut self, from: usize, len: usize) -> Extent {
+        let start = self.opens(from);
+        let end = self.closes(from.saturating_add(len));
+        Extent { start, end }
+    }
+
+    /// The input offset of `offset`, having passed the folds that precede it.
+    ///
+    /// `leading` distinguishes the two answers a fold sitting exactly at `offset` deserves: it
+    /// precedes the octet there and does not precede the end of a range that stops there.
+    fn advance(&mut self, offset: usize, leading: bool) -> u64 {
+        let cursor = as_units(offset);
+        // Bound by value, because the walk mutates itself inside the loop a borrow of it
+        // would still be alive across.
+        while let Some(&point) = self.folds.get(self.passed) {
+            let at = u64::from(point.offset);
+            if at > cursor || (!leading && at == cursor) {
+                break;
+            }
+            self.passed = self.passed.saturating_add(1);
+            // The terminator, plus the one whitespace octet that introduced the continuation.
+            self.carried = self
+                .carried
+                .saturating_add(as_units(point.newline.written_len()))
+                .saturating_add(1);
+        }
+        self.line_start
+            .saturating_add(cursor)
+            .saturating_add(self.carried)
+    }
+}
+
+/// Offer one diagnostic about a stretch of the caller's octets.
+fn report_extent<S>(
+    extent: Extent,
+    code: DiagnosticCode,
+    severity: Severity,
+    meter: &mut Meter,
+    sink: &mut S,
+) where
+    S: DiagnosticSink + ?Sized,
+{
+    let diagnostic = Diagnostic::new(code, severity, extent.location());
+    report_diagnostic(sink, meter, diagnostic);
+}
+
+/// Report a physical line that ran past section 3.1's bound, and nothing for one that did not.
+fn report_overlong_line<S>(start: u64, width: usize, meter: &mut Meter, sink: &mut S)
+where
+    S: DiagnosticSink + ?Sized,
+{
+    if width <= MAX_PHYSICAL_LINE_OCTETS {
+        return;
+    }
+    let extent = Extent {
+        start,
+        end: start.saturating_add(as_units(width)),
+    };
+    report_extent(
+        extent,
+        DiagnosticCode::LineTooLong,
+        Severity::Violation,
+        meter,
+        sink,
+    );
+}
+
+/// Report what one stretch of stored octets was wrong about, and say where it sat.
+///
+/// One diagnostic per piece rather than per octet. `ControlCharacterInText` says that a value
+/// or a parameter held a control character, and a `DESCRIPTION` of a million `NUL`s held one
+/// defect rather than a million — a caller with a fixed-capacity sink would otherwise lose
+/// every other diagnostic in the file to that one line.
+fn report_piece<S>(
+    walk: &mut FoldWalk<'_>,
+    from: usize,
+    bytes: &[u8],
+    meter: &mut Meter,
+    sink: &mut S,
+) -> Extent
+where
+    S: DiagnosticSink + ?Sized,
+{
+    let extent = walk.extent(from, bytes.len());
+    if holds_control_octet(bytes) {
+        report_extent(
+            extent,
+            DiagnosticCode::ControlCharacterInText,
+            Severity::Violation,
+            meter,
+            sink,
+        );
+    }
+    extent
+}
+
+/// Report what one parameter value, quotes and carets and all, was wrong about.
+///
+/// [`report_piece`] answers for the octets themselves. What the `DQUOTE`s were doing and what a
+/// caret was for are questions only a parameter value is asked, and both are answered by the
+/// grammar crate rather than by a second reading of section 3.2 taken here.
+fn report_parameter_value<S>(
+    walk: &mut FoldWalk<'_>,
+    from: usize,
+    bytes: &[u8],
+    meter: &mut Meter,
+    sink: &mut S,
+) where
+    S: DiagnosticSink + ?Sized,
+{
+    let extent = report_piece(walk, from, bytes, meter, sink);
+    let unquoted = unquote_parameter(bytes);
+    if let Some(code) = unquoted.diagnostic_code() {
+        // The octet that was never closed is the `DQUOTE` that opened, and it is that one
+        // octet: everything after it is what the producer meant to send, and it is all here.
+        let quote = Extent {
+            start: extent.start,
+            end: extent.start.saturating_add(1),
+        };
+        report_extent(quote, code, Severity::Violation, meter, sink);
+    }
+    // Asked of the value between the quotes, because that is the scope RFC 6868 defines the
+    // encoding over: a `DQUOTE` is a delimiter, and a caret standing against one is not a pair.
+    // The answer is about the value and not about one octet of it, so the whole value is what
+    // it points at — the grammar crate walks the pairs left to right and reports whether any
+    // was undefined, which is the reading that keeps `^^x` from looking like `^x`.
+    if undefined_caret_escapes(unquoted.value()) {
+        report_extent(
+            extent,
+            DiagnosticCode::UndefinedCaretEscape,
+            // RFC 6868 section 2 requires such a pair be left as it is, so nothing was violated
+            // and nothing was repaired; the caller is told a producer may have meant something.
+            Severity::Note,
+            meter,
+            sink,
+        );
+    }
+}
+
+/// Report one parameter, and say where the octets after it begin.
+///
+/// `at` is the offset of the `;` that opened it, counted in the unfolded line.
+fn report_parameter<S>(
+    walk: &mut FoldWalk<'_>,
+    at: usize,
+    entry: &Parameter,
+    meter: &mut Meter,
+    sink: &mut S,
+) -> usize
+where
+    S: DiagnosticSink + ?Sized,
+{
+    let name = entry.name().as_bytes();
+    let from = at.saturating_add(1);
+    let extent = report_piece(walk, from, name, meter, sink);
+    let after = from.saturating_add(name.len());
+    if !entry.has_value() {
+        // Section 3.2 gives no shape to a name with no `=`, and producers write one anyway.
+        // The octets it concerns are the name, because the name is all that arrived.
+        report_extent(
+            extent,
+            DiagnosticCode::ParameterWithoutValue,
+            Severity::Violation,
+            meter,
+            sink,
+        );
+        return after;
+    }
+    let value = entry.value().as_bytes();
+    let value_at = after.saturating_add(1);
+    report_parameter_value(walk, value_at, value, meter, sink);
+    value_at.saturating_add(value.len())
 }
 
 /// One content line's octets, copied out of the tokens as they arrive.
@@ -342,7 +592,13 @@ impl TreeBuilder {
     ///
     /// The terminators are reported before the verdict because that is the order they were
     /// observed in: how a line ended is known while it is read, what it turned out to be is
-    /// known only once it has.
+    /// known only once it has. What the octets themselves were wrong about sits between the
+    /// two, walked from the name to the value, so that a line's diagnostics arrive in
+    /// roughly the order its octets did.
+    ///
+    /// None of the three can refuse. A line that violates section 3.1 in four separate ways
+    /// is stored exactly as it arrived and written back exactly as it arrived, and the four
+    /// diagnostics are what the caller is given instead of a repair (`docs/adr/0009`).
     fn finish_line<S>(
         &mut self,
         layout: LineLayout,
@@ -354,6 +610,8 @@ impl TreeBuilder {
     {
         let extent = self.measure(&layout);
         self.report_terminators(&layout, extent, meter, sink);
+        self.report_widths(&layout, meter, sink);
+        self.report_text(&layout, meter, sink);
         let kind = self.classify(&layout);
         if let Some(code) = self.apply(kind, layout, extent, meter)? {
             let diagnostic = Diagnostic::new(code, Severity::Violation, extent.location());
@@ -422,6 +680,63 @@ impl TreeBuilder {
             let at = Location::at_offset(mark);
             report_diagnostic(sink, meter, Diagnostic::new(code, Severity::Violation, at));
         }
+    }
+
+    /// Report every physical line of this content line that ran past what section 3.1 allows.
+    ///
+    /// Computed from the recorded folds and the unfolded length rather than from the input,
+    /// because those two are what a write reproduces: the number reported here is the width
+    /// the serializer will put back, which is the only width a caller can act on.
+    ///
+    /// A fold that landed outside the unfolded line is clamped into it, exactly as the writer
+    /// clamps it. Neither is a repair — a fold there addresses an octet that does not exist,
+    /// and the two of them agreeing is what keeps a diagnostic from naming octets the file
+    /// does not have.
+    fn report_widths<S>(&self, layout: &LineLayout, meter: &mut Meter, sink: &mut S)
+    where
+        S: DiagnosticSink + ?Sized,
+    {
+        let unfolded = self.pending.unfolded_len(layout.has_separator());
+        let mut start = self.line_start;
+        let mut from = 0_usize;
+        // The first physical line spends nothing on an indent; every continuation spends one.
+        let mut indent = 0_usize;
+        for point in layout.folds() {
+            let at = usize::try_from(point.offset)
+                .unwrap_or(usize::MAX)
+                .clamp(from, unfolded);
+            let width = indent.saturating_add(at.saturating_sub(from));
+            report_overlong_line(start, width, meter, sink);
+            start = start
+                .saturating_add(as_units(width))
+                .saturating_add(as_units(point.newline.written_len()));
+            from = at;
+            indent = 1;
+        }
+        let width = indent.saturating_add(unfolded.saturating_sub(from));
+        report_overlong_line(start, width, meter, sink);
+    }
+
+    /// Report what the octets of the line that just ended were wrong about.
+    ///
+    /// Walked in the order they were written — the name, then each parameter, then the value —
+    /// because that is the order [`FoldWalk`] can answer in and because it is the order the
+    /// producer wrote them in.
+    fn report_text<S>(&self, layout: &LineLayout, meter: &mut Meter, sink: &mut S)
+    where
+        S: DiagnosticSink + ?Sized,
+    {
+        let mut walk = FoldWalk::new(layout.folds(), self.line_start);
+        let name = self.pending.name.as_slice();
+        report_piece(&mut walk, 0, name, meter, sink);
+        let mut at = name.len();
+        for entry in &self.pending.parameters {
+            at = report_parameter(&mut walk, at, entry, meter, sink);
+        }
+        if layout.has_separator() {
+            at = at.saturating_add(1);
+        }
+        report_piece(&mut walk, at, self.pending.value.as_slice(), meter, sink);
     }
 
     /// Decide what the accumulated line is, by the one recovery rule.
@@ -599,7 +914,7 @@ mod tests {
 
     use ical_grammar::{
         ContentLineSource, Diagnostic, DiagnosticCode, FoldPoint, IgnoreDiagnostics, Limits,
-        LineEnding, LineLayout, Meter, ParseError, Token,
+        LineEnding, LineLayout, Meter, ParseError, Severity, Token,
     };
 
     use crate::octets::RawText;
@@ -697,6 +1012,15 @@ mod tests {
             name: key.to_vec(),
             value: text.to_vec(),
             has_value: true,
+        }
+    }
+
+    /// A parameter that arrived as a bare name, with no `=` after it.
+    fn flag(key: &[u8]) -> Scripted {
+        Scripted::Parameter {
+            name: key.to_vec(),
+            value: Vec::new(),
+            has_value: false,
         }
     }
 
@@ -1069,6 +1393,317 @@ mod tests {
         Document::from_tokens(&mut reading, &mut meter, &mut IgnoreDiagnostics).unwrap();
         assert_eq!(meter.spent(), 7, "UID, A, b and xy, and nothing invented");
         assert_eq!(meter.items(), 1);
+    }
+
+    /// The octets one diagnostic named, as the pair a table can state.
+    fn extent_of(kept: &[Diagnostic], at: usize) -> (u64, u64) {
+        let span = kept.get(at).unwrap().location().span().unwrap();
+        (span.start(), span.end())
+    }
+
+    /// A run of value octets, for the cases that are about widths rather than about content.
+    fn filler(count: usize) -> Vec<u8> {
+        vec![b'a'; count]
+    }
+
+    /// Section 3.1 bounds a physical line at seventy-five octets, terminator excluded, so the
+    /// line of exactly that width is the one that must earn nothing.
+    #[test]
+    fn a_physical_line_is_measured_against_the_octets_section_3_1_allows() {
+        // Fourteen octets of name and one `:` leave sixty for the value at the bound.
+        let cases: Vec<(usize, Vec<DiagnosticCode>)> = vec![
+            (59, Vec::new()),
+            (60, Vec::new()),
+            (61, vec![DiagnosticCode::LineTooLong]),
+        ];
+        for (width, wanted) in cases {
+            let text = filler(width);
+            let (document, kept) = build(vec![name(b"X-SEVENTY-FIVE"), value(&text), crlf()]);
+            let mut expected = b"X-SEVENTY-FIVE:".to_vec();
+            expected.extend_from_slice(&text);
+            expected.extend_from_slice(b"\r\n");
+            assert_eq!(rewrite(&document), expected, "{width} octets of value");
+            assert_eq!(codes(&kept), wanted, "{width} octets of value");
+        }
+    }
+
+    #[test]
+    fn an_overlong_line_names_the_octets_before_its_terminator() {
+        let (_, kept) = build(vec![
+            name(b"X-SEVENTY-SIX"),
+            value(&filler(62)),
+            eol(Some(LineEnding::Lf)),
+        ]);
+        assert_eq!(
+            codes(&kept),
+            vec![DiagnosticCode::BareLineFeed, DiagnosticCode::LineTooLong,]
+        );
+        assert_eq!(
+            extent_of(&kept, 1),
+            (0, 76),
+            "the terminator is not one of the octets section 3.1 counts"
+        );
+    }
+
+    /// The distinction section 3.1 draws is between physical lines, so a content line longer
+    /// than the bound is inside it once its producer folded, and the leading whitespace of each
+    /// continuation is one of the octets that continuation spent.
+    #[test]
+    fn a_folded_line_is_measured_one_physical_line_at_a_time() {
+        let cases: Vec<(u32, usize, Vec<DiagnosticCode>)> = vec![
+            (60, 58, Vec::new()),
+            (75, 73, Vec::new()),
+            (76, 74, vec![DiagnosticCode::LineTooLong]),
+        ];
+        for (fold_at, head, wanted) in cases {
+            let text = filler(118);
+            let folds = vec![FoldPoint {
+                offset: fold_at,
+                tab: false,
+                newline: LineEnding::CrLf,
+            }];
+            let (document, kept) = build(vec![
+                name(b"X"),
+                value(&text),
+                Scripted::EndOfLine {
+                    folds,
+                    ending: Some(LineEnding::CrLf),
+                    has_separator: true,
+                },
+            ]);
+            let mut expected = b"X:".to_vec();
+            expected.extend_from_slice(&filler(head));
+            expected.extend_from_slice(b"\r\n ");
+            expected.extend_from_slice(&filler(118usize.saturating_sub(head)));
+            expected.extend_from_slice(b"\r\n");
+            assert_eq!(rewrite(&document), expected, "folded at {fold_at}");
+            assert_eq!(codes(&kept), wanted, "folded at {fold_at}");
+        }
+    }
+
+    /// A scripted line, the octets it has to be written back as, and the span the one
+    /// diagnostic it earns must name.
+    type PlacedCase<'a> = (Vec<Scripted>, &'a [u8], (u64, u64));
+
+    /// Four places section 3.1 excludes a control character from, and one it does not.
+    #[test]
+    fn a_control_character_is_reported_wherever_section_3_1_excludes_it() {
+        let cases: Vec<PlacedCase<'_>> = vec![
+            (
+                vec![name(b"X-BEL"), value(b"a\x07b"), crlf()],
+                b"X-BEL:a\x07b\r\n",
+                (6, 9),
+            ),
+            (
+                vec![name(b"X-IN\x07NAME"), value(b"v"), crlf()],
+                b"X-IN\x07NAME:v\r\n",
+                (0, 9),
+            ),
+            (
+                vec![
+                    name(b"X-P"),
+                    parameter(b"A\x0bB", b"1"),
+                    value(b"v"),
+                    crlf(),
+                ],
+                b"X-P;A\x0bB=1:v\r\n",
+                (4, 7),
+            ),
+            (
+                vec![
+                    name(b"X-NUL"),
+                    parameter(b"P", b"a\x00b"),
+                    value(b"v"),
+                    crlf(),
+                ],
+                b"X-NUL;P=a\x00b:v\r\n",
+                (8, 11),
+            ),
+        ];
+        for (script, expected, at) in cases {
+            let (document, kept) = build(script);
+            assert_eq!(rewrite(&document), expected, "{expected:?}");
+            assert_eq!(
+                codes(&kept),
+                vec![DiagnosticCode::ControlCharacterInText],
+                "{expected:?}"
+            );
+            assert_eq!(extent_of(&kept, 0), at, "{expected:?}");
+        }
+    }
+
+    #[test]
+    fn a_horizontal_tab_is_whitespace_and_not_a_control_character() {
+        let (document, kept) = build(vec![name(b"SUMMARY"), value(b"a\tb"), crlf()]);
+        assert_eq!(rewrite(&document), b"SUMMARY:a\tb\r\n");
+        assert!(kept.is_empty(), "section 3.1 counts HTAB as whitespace");
+    }
+
+    /// A shape section 3.2 has no grammar for, kept exactly as it arrived so that it can be.
+    #[test]
+    fn a_parameter_with_no_value_is_reported_and_written_back_as_it_arrived() {
+        let (document, kept) = build(vec![
+            name(b"X-SHAPES"),
+            flag(b"NOVALUE"),
+            parameter(b"EMPTY", b""),
+            value(b"v"),
+            crlf(),
+        ]);
+        assert_eq!(rewrite(&document), b"X-SHAPES;NOVALUE;EMPTY=:v\r\n");
+        assert_eq!(codes(&kept), vec![DiagnosticCode::ParameterWithoutValue]);
+        assert_eq!(
+            extent_of(&kept, 0),
+            (9, 16),
+            "the name, which is the whole of what arrived; `EMPTY=` earns nothing"
+        );
+    }
+
+    /// The case the reader used to describe only as a missing `:`. Both are true and both are
+    /// reported: the quote was never closed, and the line really has no separator left.
+    #[test]
+    fn an_unterminated_quote_is_named_beside_the_separator_it_swallowed() {
+        let (document, kept) = build(vec![
+            name(b"X-UNTERMINATED"),
+            parameter(b"CN", b"\"never closed:still the header"),
+            colonless(Some(LineEnding::CrLf)),
+        ]);
+        assert_eq!(
+            rewrite(&document),
+            b"X-UNTERMINATED;CN=\"never closed:still the header\r\n"
+        );
+        assert_eq!(
+            codes(&kept),
+            vec![
+                DiagnosticCode::UnterminatedQuotedParameter,
+                DiagnosticCode::MissingValueSeparator,
+            ]
+        );
+        assert_eq!(
+            extent_of(&kept, 0),
+            (18, 19),
+            "the octet that was never closed is the quote that opened"
+        );
+    }
+
+    #[test]
+    fn a_closed_quote_earns_nothing_at_all() {
+        let (document, kept) = build(vec![
+            name(b"ATTENDEE"),
+            parameter(b"CN", b"\"Doe, John; the third: esq.\""),
+            value(b"mailto:d@example.test"),
+            crlf(),
+        ]);
+        assert_eq!(
+            rewrite(&document),
+            b"ATTENDEE;CN=\"Doe, John; the third: esq.\":mailto:d@example.test\r\n"
+        );
+        assert!(kept.is_empty());
+    }
+
+    /// A parameter value as written, and the span of the note it earns — `None` where RFC 6868
+    /// gives every pair in it a meaning and nothing is reported.
+    type CaretCase<'a> = (&'a [u8], Option<(u64, u64)>);
+
+    /// RFC 6868 section 2 requires an undefined pair be left as it is, so this is the one code
+    /// this unit reports as a note: nothing was violated and nothing was repaired. The value it
+    /// points at is the value the caret sits in, quotes and all, because that is the scope the
+    /// grammar crate answers over.
+    #[test]
+    fn an_undefined_caret_pair_is_a_note_over_the_value_that_stays_as_it_is() {
+        let cases: Vec<CaretCase<'_>> = vec![
+            (b"^n^^^'", None),
+            (b"^^x", None),
+            (b"trailing ^", None),
+            (b"^x undefined", Some((12, 24))),
+            (b"\"^n^^^'^x\"", Some((12, 22))),
+            (b"100 and ^q and ^z", Some((12, 29))),
+        ];
+        for (text, wanted) in cases {
+            let (document, kept) = build(vec![
+                name(b"ATTENDEE"),
+                parameter(b"CN", text),
+                value(b"mailto:a@example.test"),
+                crlf(),
+            ]);
+            let mut expected = b"ATTENDEE;CN=".to_vec();
+            expected.extend_from_slice(text);
+            expected.extend_from_slice(b":mailto:a@example.test\r\n");
+            assert_eq!(rewrite(&document), expected, "{text:?}");
+            let Some(span) = wanted else {
+                assert!(kept.is_empty(), "{text:?}");
+                continue;
+            };
+            assert_eq!(
+                codes(&kept),
+                vec![DiagnosticCode::UndefinedCaretEscape],
+                "{text:?}"
+            );
+            assert_eq!(kept.first().unwrap().severity(), Severity::Note, "{text:?}");
+            assert_eq!(extent_of(&kept, 0), span, "{text:?}");
+        }
+    }
+
+    /// The claim every one of these diagnostics rests on: an offset into the caller's octets is
+    /// not an offset into the unfolded line, and a fold is exactly the difference.
+    #[test]
+    fn an_offset_inside_a_folded_line_counts_the_octets_the_folds_spent() {
+        let folds = vec![FoldPoint {
+            offset: 3,
+            tab: false,
+            newline: LineEnding::CrLf,
+        }];
+        let (document, kept) = build(vec![
+            name(b"X"),
+            value(b"abc\x07"),
+            Scripted::EndOfLine {
+                folds,
+                ending: Some(LineEnding::CrLf),
+                has_separator: true,
+            },
+        ]);
+        assert_eq!(rewrite(&document), b"X:a\r\n bc\x07\r\n");
+        assert_eq!(codes(&kept), vec![DiagnosticCode::ControlCharacterInText]);
+        assert_eq!(
+            extent_of(&kept, 0),
+            (2, 9),
+            "the value begins before the fold and ends after it"
+        );
+    }
+
+    /// Every one of these is a diagnostic and none of them is a refusal, which is the half of
+    /// `docs/adr/0001` that a code cannot state on its own.
+    #[test]
+    fn a_line_wrong_in_six_ways_is_kept_whole_and_diagnosed_six_times() {
+        let (document, kept) = build(vec![
+            name(b"X-EVERYTHING"),
+            flag(b"NOVALUE"),
+            parameter(b"CN", b"\"^q\x07"),
+            value(&filler(80)),
+            eol(None),
+        ]);
+        let mut expected = b"X-EVERYTHING;NOVALUE;CN=\"^q\x07:".to_vec();
+        expected.extend_from_slice(&filler(80));
+        assert_eq!(
+            rewrite(&document),
+            expected,
+            "a line nothing accepted is a line nothing rewrote"
+        );
+        assert_eq!(
+            codes(&kept),
+            vec![
+                DiagnosticCode::MissingFinalLineBreak,
+                DiagnosticCode::LineTooLong,
+                DiagnosticCode::ParameterWithoutValue,
+                DiagnosticCode::ControlCharacterInText,
+                DiagnosticCode::UnterminatedQuotedParameter,
+                DiagnosticCode::UndefinedCaretEscape,
+            ]
+        );
+        assert_eq!(
+            extent_of(&kept, 1),
+            (0, 109),
+            "one physical line, and every octet of it is still there"
+        );
     }
 
     #[test]
