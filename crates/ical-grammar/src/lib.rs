@@ -38,8 +38,8 @@
 //! The whole surface is implemented and tested. Alongside the shared vocabulary — spans,
 //! diagnostics and their sink, the two failure channels, the limits policy and its meter, the
 //! recorded line syntax, the token shape — [`ContentLineReader`] now unfolds and lexes in one
-//! pass, and section 3.3.11's escaping and section 3.2's quoting are readable and writable in
-//! both directions.
+//! pass, and section 3.3.11's escaping, section 3.2's quoting and RFC 6868's caret encoding
+//! are readable and writable in both directions.
 //!
 //! Two readings this crate had to choose are permissive and are the ones a corpus case should
 //! pin down. A bare `LF` or a bare `CR` followed by whitespace is lexed as a fold, recording
@@ -47,14 +47,16 @@
 //! exactly that. And a `DQUOTE` opens a quoted parameter value only where a value may begin,
 //! so one unbalanced quote inside a `CN` cannot swallow the rest of the line. Both readings
 //! round-trip; they disagree with a stricter one about where the header ends. RFC 6868's
-//! caret encoding is not implemented, so a `DQUOTE` inside a parameter value stays the octets
-//! it arrived as. See `ROADMAP.md` and `ical-conform`.
+//! caret encoding is a codec rather than a storage rule: storage keeps the octets a producer
+//! wrote, so a `DQUOTE` written `^'` stays `^'` on the wire and is a `"` only in the decoded
+//! view. See `ROADMAP.md` and `ical-conform`.
 
 #![no_std]
 
 extern crate alloc;
 
 mod budget;
+mod caret;
 mod escape;
 mod failure;
 mod instant;
@@ -75,8 +77,9 @@ pub use report::{
 pub use syntax::{FoldPoint, LineEnding, LineLayout};
 pub use token::{ContentLineSource, Token};
 
-// `escape` and `lexer` are re-exported wholesale rather than item by item. Their contents
-// arrive with the milestone that implements them, and a glob keeps that from turning this
-// file into a place two separate pieces of work both have to edit.
+// `caret`, `escape` and `lexer` are re-exported wholesale rather than item by item. Their
+// contents arrive with the milestone that implements them, and a glob keeps that from turning
+// this file into a place two separate pieces of work both have to edit.
+pub use caret::*;
 pub use escape::*;
 pub use lexer::*;
