@@ -57,9 +57,50 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sections they come from: `break_debts.rs`, `break_values.rs`, `break_components.rs` and
   `break_sweeps.rs`, the last of which attacks `sweep.rs` as an artifact rather than using it
   as one.
+- `ical-recur` expands. `parse_recur` reads a `RECUR` value leniently — a part it cannot use is
+  dropped and reported, never clamped, so one producer's `BYMONTHDAY=32` does not cost a series
+  its `FREQ` — and `RecurrenceInput::search` walks one period per `FREQ` step, applies every
+  `BYxxx` part through RFC 5545 section 3.3.10's own expand/limit table, selects with
+  `BYSETPOS` over the closed period, and merges `RDATE`, `EXDATE` and `RECURRENCE-ID` overrides
+  in one forward pass that materializes nothing. `SearchCursor` resumes a `COUNT`-bounded
+  search into a later window and reproduces the recurrence set the file describes.
+- All forty-two worked examples of RFC 5545 section 3.8.5.3, as a table test in `ical-conform`
+  assembled through the public surface only, with the expected column transcribed from the RFC
+  rather than read off the implementation. One of them — "Every other year on January,
+  February, and March for 10 occurrences" — caught the omission that a recurrence set begins at
+  `DTSTART`: the period holding `DTSTART` is expanded whole and offers candidates before it,
+  and counting one against `COUNT` ends the series an instance early.
+- Six diagnostic codes for the recurrence layer and their golden-list rows:
+  `malformed-recurrence-rule`, `duplicate-recurrence-rule-part`, `unknown-recurrence-rule-part`,
+  `recurrence-rule-part-out-of-range`, `mutually-exclusive-rule-parts` for a value
+  carrying both `UNTIL` and `COUNT`, and `override-shift-not-representable` for an override that
+  moves a start off the timeline. The last two are new here rather than declared in M0: without
+  the first, a rule that states two bounds resolves silently; without the second, an override
+  asking for an instant no calendar can hold reported itself as a date section 3.3.10 defines
+  away, which is a different fact.
+- The recurrence dimensions of the shared policy: `Limits::occurrences_per_search`,
+  `rdate_entries` and `exdate_entries`, and the `Meter` charges behind them.
 
 ### Changed
 
+- `DEFAULT_CANDIDATE_BUDGET` is 262,144 rather than 65,536, which is the calibration ADR 0010
+  assigns to whoever ships the first recurrence milestone. The old number was exactly
+  `Limits::DEFAULT.candidates_per_period()`, so the per-period ceiling and the whole-search
+  budget were one bound wearing two names: a search that filled a single maximal period had
+  already spent everything. Four times the ceiling admits a decade of a daily rule, a year of
+  an hourly one and a day of `FREQ=SECONDLY`, and refuses a year of `FREQ=MINUTELY` and a week
+  of `FREQ=SECONDLY`, which are policies rather than defaults. The workload table is asserted
+  against the shipped constant.
+- ADR 0002 carries eight amendments, each written because M1 found the sentence above it wrong
+  rather than merely unbuilt. The largest: the `Item = Result<Occurrence, BudgetExhausted>` the
+  ADR first committed to does not deliver its own guarantee, because `Result`'s `IntoIterator`
+  makes `search.flatten()` discard every terminal marker; what shipped is a crate-owned
+  `SearchStep` enum, the caller's latching `Meter`, and `RecurrenceSearch::outcome()`. Also
+  amended: a window admits by cadence key *or* by effective start rather than by start alone,
+  emission is ordered by cadence key because reordering needs a buffer nothing charges, the
+  `results()` adapter is withdrawn rather than deferred, and the open dedup case the ADR filed
+  without an answer is closed — an `RDATE`-added instant and a diff-moved one that collide are
+  both emitted.
 - The purity gate reads the package a dependency links rather than the key it was written
   under. A `package = "..."` rename defeated every leg of the old gate; it is now a violation
   in both the inline and the sub-table spelling, alongside a dependency taken from a registry

@@ -43,10 +43,18 @@ What now binds it. The budget is a field of the shared `Limits` and is charged p
 is filtered rather than clamped, and it still debits the meter
 ([ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md)).
 
-Gates this milestone owes: a `FusedIterator` test that calls `next` past the end, a
+Gates this milestone owed, all met: a `FusedIterator` test that calls `next` past the end, a
 `COUNT`-bounded resume matching a from-scratch expansion, a negative `BYSETPOS` that cannot
 outspend its budget inside one `next`, a `RANGE=THISANDFUTURE` override that changes only a
 non-time property, and an instant present in both an `EXDATE` and an override table.
+
+**Met.** All forty-two worked examples of RFC 5545 section 3.8.5.3 are a table test in
+`ical-conform`, with the expected column transcribed from the RFC. The item type ADR 0002
+committed to did not survive contact with `Iterator`, and eight sentences of that ADR are
+amended rather than reinterpreted; the amendments are the record of what shipped. Two things
+are known and named: emission is ordered by cadence key rather than by effective start, and the
+period walk's own vocabulary is on the public surface as an integration artifact and is
+expected to narrow.
 
 ## M2 — Time zones
 

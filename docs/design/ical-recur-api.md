@@ -240,41 +240,69 @@ impl SearchCursor {
     pub const fn rule_cursor(self) -> RuleCursorState;
 }
 
-pub struct RecurrenceSearch<'a> { /* private */ }
-impl<'a> RecurrenceSearch<'a> {
-    pub fn outcome(&self) -> SearchOutcome;
+#[non_exhaustive]
+#[must_use]
+pub enum SearchStep<'a> {
+    Occurrence(Occurrence<'a>),
+    BudgetExhausted(BudgetExhausted),
+}
+impl<'a> SearchStep<'a> {
+    pub const fn occurrence(self) -> Option<Occurrence<'a>>;
+    pub const fn is_terminal(self) -> bool;
+}
+
+pub struct RecurrenceSearch<'a, S: DiagnosticSink + ?Sized = dyn DiagnosticSink + 'a> {
+    /* private */
+}
+impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
+    pub const fn outcome(&self) -> SearchOutcome;
     pub fn cursor(&self) -> SearchCursor;
 }
-impl<'a> Iterator for RecurrenceSearch<'a> {
-    type Item = Result<Occurrence<'a>, BudgetExhausted>;
+impl<'a, S: DiagnosticSink + ?Sized> Iterator for RecurrenceSearch<'a, S> {
+    type Item = SearchStep<'a>;
 }
-impl FusedIterator for RecurrenceSearch<'_> {}
+impl<S: DiagnosticSink + ?Sized> FusedIterator for RecurrenceSearch<'_, S> {}
 ```
+
+The sink is a defaulted second type parameter because a struct with one lifetime parameter
+cannot hold a `&'s mut S`. `RecurrenceSearch<'a>` still names the erased form, and a caller
+passing a concrete sink gets it monomorphized with no vtable — which is the property the
+`Expand` sketch below argues for, arriving here instead.
 
 **`key` and `start` are not interchangeable, and this is the crate's sharpest invariant.**
 `key` is the base cadence instant: what a `RECURRENCE-ID` addresses, what the merge sorts on,
-what `COUNT` counts, and what `Window` bounds. `start` is when the occurrence actually happens.
-They differ exactly when an override moved it. A search bounded by a window can therefore yield
-an occurrence whose `start` is outside that window, and can decline to yield one whose `start`
-would have been inside it. That is not a defect in the search; it is what a `THISANDFUTURE`
-time shift means, and it is visible through `starts_within` and repairable through
-`Window::widened` rather than hidden behind a name that promises otherwise.
+what `COUNT` counts, and what generation walks. `start` is when the occurrence actually happens.
+They differ exactly when an override moved it. A `Window` therefore admits on *either*: an
+occurrence is emitted when the window the caller asked about contains its `key` **or** contains
+its `start`. Start-only admission would drop an occurrence the caller can still address by
+`RECURRENCE-ID`; key-only admission would lose one an override moved *into* the window. Both
+halves are the library's work — generation runs over the asked window widened by the largest
+absolute shift the override set implies, and the filter back down is inside the search — so
+`Window::widened` is a tool a caller may reach for and never an obligation it has to discover.
+An occurrence admitted by its key whose start lies outside is emitted and reported on
+`DiagnosticCode::OverrideLeftWindow`, and `starts_within` is how a caller asks the second
+question for itself. Emission is ordered by cadence key; see `docs/adr/0002`'s amendments 2
+and 3.
 
 `Occurrence` is `Copy` and borrows the override table, so `applied_anchors` and
 `effective_change` recompose on demand and nothing is materialized per occurrence.
 `effective_change` walks every anchor oldest to newest and then the exact match: a `LOCATION`
 set in March survives a `SUMMARY`-only edit in June.
 
-**The terminal state is reported twice, on purpose.** DP-09 fixes `Item = Result<Occurrence,
-BudgetExhausted>`, and that is honored. It is also, on its own, insufficient: `Result`
-implements `IntoIterator`, so `search.flatten()` compiles against this exact item type and
-silently drops every error; `.filter_map(Result::ok)` is indistinguishable; `.count()` counts
-errors as occurrences; and `for x in search {}` binds the whole `Result` in one irrefutable
-pattern and forces no match at all. So the second report is the caller's `Meter`, which
-`Expand::search` borrows rather than owns and which therefore outlives the iterator and every
+**The terminal state is reported three times, on purpose.** DP-09 fixed `Item =
+Result<Occurrence, BudgetExhausted>` and that decision did not survive: `Result` implements
+`IntoIterator`, so `search.flatten()` compiles against that exact item type and silently drops
+every error; `.filter_map(Result::ok)` and `.take_while(Result::is_ok)` are indistinguishable
+from it; and `for x in search {}` binds the whole `Result` in one irrefutable pattern and forces
+no match at all. Each is a reviewed-without-comment one-liner that converts budget exhaustion
+back into the truncated-but-plausible answer the budget exists to prevent. `SearchStep` is a
+crate-owned enum, so none of the three compiles. The second report is the caller's `Meter`,
+which `search` borrows rather than owns and which therefore outlives the iterator and every
 combinator applied to it, and whose exhaustion flag latches. A reviewer who cannot find the
-`Err` arm can still find `meter.is_exhausted()`. `SearchOutcome` is the third and weakest of
-the three, available only to a caller who still holds the search by name.
+terminal arm can still find `meter.is_exhausted()`. `SearchOutcome` is the third and weakest,
+available only to a caller who still holds the search by name. `Iterator::count()` remains the
+honest remainder — it counts steps, so an exhausted search returns a number inflated by one —
+and `SearchStep::occurrence` is deliberately not named `ok`.
 
 ### Traits whose bodies are the crate
 
@@ -286,7 +314,7 @@ pub trait RecurParser {
 }
 
 pub trait OccurrenceStream<'a>: core::fmt::Debug {
-    fn step(&mut self) -> Option<Result<Occurrence<'a>, BudgetExhausted>>;
+    fn step(&mut self) -> Option<SearchStep<'a>>;
     fn outcome(&self) -> SearchOutcome;
     fn cursor(&self) -> SearchCursor;
 }
@@ -552,22 +580,26 @@ fn fold_one(mut tally: Relocations, occurrence: Occurrence<'_>, window: Window) 
 ```
 
 `escaped` counts occurrences the window admitted by key and would not have admitted by start.
-A renderer that cares runs the search over `window.widened(before, after)` and filters on
-`starts_within(window)`.
+The search already widened generation and filtered back, so a renderer does not have to; what
+`escaped` names is the occurrence whose start the caller did not ask about, which the search
+also reported on `DiagnosticCode::OverrideLeftWindow`.
 
 ## Consequences
 
-The window bounds keys, not starts, and no amount of documentation makes that intuitive. A
-caller who reads "occurrences between these two instants" and gets one starting an hour after
-the second has been surprised by a correct answer, which is the worst kind. `Window::widened`
-is a remedy the caller has to know to reach for, and it needs a bound on the largest shift the
-overrides imply — a number this crate does not compute for them.
+A window admits by key or by start, and no amount of documentation makes two questions feel
+like one. A caller who reads "occurrences between these two instants" and gets one starting an
+hour after the second has been surprised by a correct answer, which is the worst kind — the
+answer is correct because that occurrence is still addressable by `RECURRENCE-ID` inside the
+window, and `DiagnosticCode::OverrideLeftWindow` is what says so out loud. The widening is the
+library's, and `max_absolute_shift` computes the number `Window::widened` needs, so a caller
+that wants start-only admission can express it rather than having to derive it.
 
-`Item = Result<Occurrence, BudgetExhausted>` is kept because DP-09 adopted it, and the meter is
-added because DP-09's own stress testing showed the item type is not enough. Two reports of one
-fact is a design that admits its primary mechanism is leaky. `.count()` on an exhausted search
-still returns a plausible number that is silently wrong by the count of errors, and nothing
-here prevents that.
+`Item = SearchStep<'a>` replaces the `Result` DP-09 adopted, because `Result`'s own
+`IntoIterator` makes `.flatten()` discard every terminal marker. The meter is kept beside it
+because DP-09's stress testing was right that one report is not enough, and `SearchOutcome` is
+the third. Three reports of one fact is a design that admits its primary mechanism is leaky.
+`.count()` on an exhausted search still returns a number inflated by its terminal step, and
+nothing here prevents that.
 
 `OverrideProvenance` is one tag where three facts sometimes apply. An `RDATE`-added instant
 that an exact-match override also modifies reports `ExactMatch`, and the `RDATE` origin is lost
@@ -624,3 +656,53 @@ occurrence; `ical-core` re-exports it, so the name in this crate's signatures is
 `LimitExceeded` became an enum naming the dimension that ran out. The candidate budget is
 untouched: it is still `Limits::candidates_per_period`, still charged per candidate generated, and
 still reported as an outcome rather than an error.
+
+## What M1 shipped
+
+The engine behind the surface above was built in M1 and is no longer a proposal. Four things
+this document left open or stated wrongly are settled here; `docs/adr/0002`'s Amendments carry
+the argument, and this section carries the consequence for the surface.
+
+**The four open questions above are closed.** (1) The diagnostic codes exist and are golden-
+listed under `ical-core`'s own naming — `by-set-pos-without-by-rule`, `exdate-shadows-override`,
+`override-left-window`, `extra-recurrence-rule-ignored` — together with four this document did
+not anticipate: `malformed-recurrence-rule`, `duplicate-recurrence-rule-part`,
+`unknown-recurrence-rule-part` and `recurrence-rule-part-out-of-range` for the lenient reading,
+plus `mutually-exclusive-rule-parts` for a value carrying both `UNTIL` and `COUNT`
+and `override-shift-not-representable` for a shift that leaves the timeline. (2) `&Limits` stays
+dropped: `Limits` lives inside `Meter` and one argument carries both. (3) `ValueKind` stays, and
+its deletion is still owed if `ical-core` narrows its own. (4) `DEFAULT_CANDIDATE_BUDGET` is
+calibrated at 262,144 — four times `Limits::DEFAULT.candidates_per_period()`, because a search
+budget equal to the period ceiling is one bound wearing two names.
+
+**A period's own vocabulary is internal and stays internal.** The walk that produces one period
+per `FREQ` step, the candidate set a period expands to, and the `BYSETPOS` selection over it are
+`Period`, `PeriodWalk`, `CandidateSet` and `SelectedCandidates`. They are on the crate's public
+surface today because the modules holding them are private and `unreachable_pub` is denied, and
+that is an integration artifact rather than a promise: `ical_core::Period` is RFC 5545 section
+3.3.9's PERIOD *value type* and means something else entirely, so a caller glob-importing both
+crates sees two `Period`s. Anything published from these four types before the surface is
+narrowed should expect to move.
+
+**A period anchor is the normalized start of the period, and February is a period.** A
+`FREQ=MONTHLY` walk from January 31 yields anchors on the 1st of each month, so it reaches March
+without ever producing February 28 *and* without deleting February — `FREQ=MONTHLY;BYMONTHDAY=1`
+under that same `DTSTART` has a February instance, and a walk that skipped the month leaves
+nothing downstream able to recover it. A period's extent is one `FREQ` unit and `INTERVAL` is
+the distance between two anchors, so `FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=1,15` recurs twice in
+January and not at all in February; a two-month-wide period would put February's candidates in
+January's set, where `BYSETPOS=-1` would then pick the wrong one.
+
+**The merge's two undecided cases are decided.** An `RDATE`-added instant colliding on the same
+effective start as a diff-moved one is *not* deduplicated — identity here is the cadence key,
+the two have different keys, and fusing them leaves one addressable and the other silently gone
+from a file that names it. And an anchor's stated time *shift* does not reach an instant an
+`RDATE` named, while its property *diff* does: an `RDATE` value is a literal instant the file
+states, with no cadence in it to shift, and shifting it would render a meeting at an hour no
+line of the file contains. Both are argued at length in `crates/ical-recur/src/merge.rs`.
+
+**Every worked example in RFC 5545 section 3.8.5.3 is a test.** All forty-two of them, in
+`crates/ical-conform/tests/rfc5545_recurrence_examples.rs`, assembled through this crate's
+public surface only, with the expected column transcribed from the RFC rather than read off the
+implementation. One of them — "Every other year on January, February, and March for 10
+occurrences" — is what caught the omission that the recurrence set begins at `DTSTART`.

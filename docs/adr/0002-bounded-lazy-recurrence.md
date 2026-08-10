@@ -153,3 +153,93 @@ rather than easier: a paged store must answer "maximum absolute shift" without m
 itself. And "omission means no opinion" leaves reverting a property to its base value
 unexpressible in a later override — RFC 5545 offers no syntax for it either — so that loss is
 documented rather than eliminated, the same class as the `EXDATE` tie-break.
+
+## Amendments
+
+M1 built the engine this document specified, and eight sentences above did not survive contact
+with it. Each is amended here rather than quietly reinterpreted, and each has a test in
+`ical-recur` or a conformance case in `ical-conform` behind it.
+
+**1. The item type this ADR first committed to was found not to work, and the replacement is
+what the Decision now states.** The shape originally adopted — `Item = Result<Occurrence,
+BudgetExhausted>`, carried into `docs/design/ical-recur-api.md` as DP-09 — does not deliver the
+guarantee the rest of this document rests on: std's `impl<T, E> IntoIterator for Result<T, E>`
+makes `search.flatten()` compile against it and discard every terminal marker, and
+`.filter_map(Result::ok)` and `.take_while(Result::is_ok)` do the same in one reviewed-without-
+comment line each. What shipped is `SearchStep<'a>` — a crate-owned `#[non_exhaustive]`
+`#[must_use]` enum of `Occurrence(Occurrence<'a>)` and `BudgetExhausted(BudgetExhausted)` —
+together with the caller's own `&mut Meter`, whose exhaustion flag latches and outlives every
+combinator applied to the iterator, and `RecurrenceSearch::outcome()`. Three reports of one
+fact, in decreasing order of survivability. The Decision above carries that text; this entry
+exists because an ADR whose committed mechanism was replaced without saying so is worse than one
+that was never specific.
+
+**2. A window admits an occurrence by its cadence key *or* by its effective start, not by the
+start alone.** "The caller's window admits or rejects an occurrence by its effective start,
+never by its cadence key" and `crates/ical-recur/src/search.rs`'s "a window admits by cadence
+key" are opposite statements, and implementing either one alone loses occurrences. Start-only
+admission drops an occurrence the caller can still address by `RECURRENCE-ID` because something
+moved it out; key-only admission loses an occurrence an override moved *into* the window the
+caller asked about. The search asks both questions and emits on either, and an occurrence
+admitted by its key whose start lies outside is reported on
+`DiagnosticCode::OverrideLeftWindow`. The widening this document specifies is unchanged and is
+the library's work rather than the caller's: generation runs over the asked window widened by
+the largest absolute shift the override set implies, and the filter back down is inside the
+search.
+
+**3. Emission is ordered by cadence key, not by effective start.** The two cannot both hold with
+a merge that materializes nothing. Effective starts are not sorted — a `THISANDFUTURE` shift
+reorders them by up to the largest shift in the override set, which is attacker-controlled — so
+emitting in start order needs a buffer holding every occurrence within one skew-width of the
+cursor. That is a retained-size dimension with no field in `Limits` and no charge site, which is
+exactly `docs/adr/0010`'s "a bound nobody charges is decoration". Cadence-key order is what a
+linear merge over sorted sources can do, and it is also what makes the stop rule sound: the
+first key at or past the widened generation window proves nothing after it can reach the
+caller's window. A caller that wants start order sorts what it collected, which is a bound it
+chose.
+
+**4. The `results()` adapter is not built, and is withdrawn rather than deferred.** It was named
+above as the opt-in that puts the original hazard one deliberate call away. Shipping it ships
+the hazard back with a name on it, and nothing in M1 needed it: a caller that wants `?` writes
+one `match` over a two-variant enum. `SearchStep::occurrence` is the discard this document calls
+visible-but-possible, and it is deliberately not named `ok`.
+
+**5. The recurrence set begins at `DTSTART`.** Nothing above says so, and the omission was a
+defect the RFC's own worked examples caught. A period is expanded whole, so the period holding
+`DTSTART` offers candidates before it: `FREQ=MONTHLY;BYMONTHDAY=1,-1` from September 30 names
+September 1 of the same period. RFC 5545 section 3.8.5.3 begins every recurrence set at
+`DTSTART`, so a cadence key before it is not an instance and does not spend a `COUNT`. The skip
+is after `BYSETPOS` selection and not before it, because a `BYSETPOS` position counts within the
+period as the rule describes it. Section 3.8.5.3's "Every other year on January, February, and
+March for 10 occurrences" is the row that pins this: its own answer is one instance in the first
+year and three in each of the next three, which only totals ten if January and February of the
+`DTSTART` year are skipped without being counted.
+
+**6. The collision case filed open above is closed: an `RDATE`-added instant and a diff-moved
+one landing on the same effective start are both emitted, and neither is deduplicated.**
+Identity in this crate is the cadence key — what a `RECURRENCE-ID` addresses, what `EXDATE`
+removes, what `COUNT` counts — and the two candidates have different keys, so fusing them leaves
+one addressable and the other silently gone from a file that names it. A caller can fuse and
+cannot unfuse. A dedup keyed on effective start is also not a linear merge, for the reason
+amendment 3 gives. Related and decided the same way: an anchor's stated time shift does not
+reach an instant an `RDATE` named, while its property diff does — an `RDATE` value is a literal
+instant the file states, with no cadence in it to shift.
+
+**7. One site charges a candidate, and the default budget is calibrated.** Budget is charged
+inside the expansion, where a candidate is generated and where a nonexistent date is discovered,
+and nowhere else; the search counts what expansion charged for its terminal report, and counting
+is not charging. Two sites would halve the advertised budget and no site would void the
+guarantee. `DEFAULT_CANDIDATE_BUDGET` is 262,144 rather than 65,536: the old value was exactly
+`Limits::DEFAULT.candidates_per_period()`, so the per-period ceiling and the whole-search budget
+were one bound wearing two names and the second dimension `docs/adr/0010` argued for bought
+nothing. The workload table the new number was read off is in `crates/ical-recur/src/accounting.rs`
+and is asserted against the shipped constant.
+
+**8. The precondition this document set on `COUNT`-bounded resume and `BYSETPOS` is discharged.**
+"`RuleCursorState`'s shape and that charging rule are named here as requirements and not yet
+designed; `COUNT`-bounded resume and `BYSETPOS` must not ship until that design closes." Both
+closed in M1. `RuleCursorState` is an opaque period index and is deliberately not serializable —
+freezing its encoding would freeze the expansion algorithm — and a resumed search restarts one
+period behind the last it yielded, skipping by cadence key what it already produced, so no
+candidate inside a half-read period is lost. `BYSETPOS` selects from a period that was charged
+as it filled, so a negative position cannot do unbounded uncharged work inside one `next()`.
