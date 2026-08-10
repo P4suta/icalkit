@@ -25,6 +25,7 @@ homepage.workspace = true
 # version so the dependency resolves from inside this workspace rather than from a registry.
 ical-core = { path = "../ical-core", version = "0.0.0" }
 ical-recur = { path = "../ical-recur", version = "0.0.0" }
+ical-tz = { path = "../ical-tz", version = "0.0.0" }
 
 [lints]
 workspace = true
