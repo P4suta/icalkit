@@ -325,6 +325,75 @@ pub enum DiagnosticCode {
     /// `ical_tz::ResolvedExclusions::unplaced`, because an exception that removes nothing and
     /// says nothing is the silent no-op that layer exists to refuse.
     ExdateZoneUnknown,
+    /// A `METHOD` was present and named no method RFC 5546 defines, so the message states no scheduling semantics at all.
+    ///
+    /// The division `docs/adr/0009` amendment 1 draws for a value that is present and
+    /// unusable, applied to the one property that decides which rules the rest of a message is
+    /// read under. A missing `METHOD` is a different fact and is an error rather than a
+    /// diagnostic: an `.ics` with no `METHOD` is an ordinary calendar, and one naming `INVITE`
+    /// is a scheduling message nothing here can judge.
+    SchedulingMethodUnknown,
+    /// An `ORGANIZER` or `ATTENDEE` was present and its `CAL-ADDRESS` did not decode, so it identifies no party.
+    ///
+    /// RFC 5545 section 3.6's audit counts the property as present and RFC 5546's
+    /// authorization asks which party it names, which is exactly the case `docs/adr/0009`
+    /// amendment 1 was written for. An address that does not decode matches nobody, the
+    /// conservative direction: the alternative is an address that compares equal to something
+    /// it is not.
+    SchedulingCalendarAddressUnreadable,
+    /// A `SEQUENCE` was present and was not an integer, so no revision ordering could be read from it.
+    ///
+    /// Distinct from an absent `SEQUENCE`, which RFC 5546 section 3.2 reads as zero. Zero is a
+    /// revision and this is the absence of one, and a message whose revision cannot be read
+    /// cannot be held against the revision a caller already holds.
+    SchedulingSequenceUnreadable,
+    /// A scheduling payload carried a property RFC 5546 section 3 forbids for its `METHOD` and component type.
+    ///
+    /// The presence `0` rows of the section 3 constraint tables. It travels as a diagnostic
+    /// rather than an error because whether such a payload is refused is an authorization
+    /// answer and not a reading one: a forbidden property an attendee wrote is a denial, and
+    /// the same property in a message a caller is only inspecting is a fact about the file.
+    SchedulingPropertyNotAllowed,
+    /// A scheduling payload lacked a property RFC 5546 section 3 requires for its `METHOD` and component type.
+    ///
+    /// The presence `1` and `1+` rows of the section 3 constraint tables, and the sibling of
+    /// [`DiagnosticCode::SchedulingPropertyNotAllowed`] at the other end of the same row.
+    SchedulingRequiredPropertyMissing,
+    /// A `RECURRENCE-ID` named a wall clock its series' zone repeats, and nothing said which of the two instants it addresses.
+    ///
+    /// The two halves of a fold are one cadence key on the nominal timeline `ical_tz::seam`
+    /// describes, so `20261101T053000Z` and `20261101T063000Z` in `America/New_York` name one
+    /// key and two meetings. M2 bounded the damage by admitting both overrides and counting the
+    /// rest; a scheduling message has to decide which instance it is about, and a guess moves
+    /// somebody else's meeting.
+    SchedulingInstanceAmbiguous,
+    /// A `RECURRENCE-ID` carried `RANGE=THISANDFUTURE` under a `METHOD` RFC 5546 does not permit it for.
+    ///
+    /// Section 3.2.3's `REPLY` table admits one `RECURRENCE-ID` referring to one instance, and
+    /// a reply reaching every later instance answers for meetings the sender was never asked
+    /// about.
+    SchedulingRangeNotPermitted,
+    /// A scheduling message addressed a component carrying an exclusion no zone could place, so which instances it has is not decidable.
+    ///
+    /// `ical_tz::ResolvedExclusions::unplaced` and [`DiagnosticCode::ExdateZoneUnknown`] name
+    /// the same octets from the other side: the instant is real and the series' timeline is
+    /// not. A `CANCEL` judged against such a series either ignores the exclusion and reinstates
+    /// a cancelled meeting, or guesses and cancels a different one.
+    SchedulingExclusionUnplaced,
+    /// An instance identity was resolved through a zone answer continued past one end of its source's transition table.
+    ///
+    /// A note rather than a violation, for the reason
+    /// [`DiagnosticCode::TimeZoneCoverageExhausted`] is one: the file is legal and continuing
+    /// is the defensible answer. What it adds is that the answer decided *identity* — which
+    /// instance a message addresses — rather than only rendering a time, and
+    /// `ical_tz::AnswerBasis::nearest_known` is how far the continuation reached.
+    SchedulingZoneContinued,
+    /// A scheduling message was sent by a party RFC 5546 section 3 does not permit to send its `METHOD`.
+    ///
+    /// An attendee sending a `CANCEL`, an organizer sending a `REPLY`. Section 3's per-method
+    /// prose names the permitted sender and no constraint table states it, so this is the code
+    /// a row transcribed from prose rather than from a table reports under.
+    SchedulingSenderNotPermitted,
 }
 
 impl DiagnosticCode {
@@ -400,6 +469,16 @@ impl DiagnosticCode {
             Self::VtimezoneComponentsTruncated => "vtimezone-components-truncated",
             Self::VtimezoneObservanceUnreadable => "vtimezone-observance-unreadable",
             Self::ExdateZoneUnknown => "exdate-zone-unknown",
+            Self::SchedulingMethodUnknown => "scheduling-method-unknown",
+            Self::SchedulingCalendarAddressUnreadable => "scheduling-calendar-address-unreadable",
+            Self::SchedulingSequenceUnreadable => "scheduling-sequence-unreadable",
+            Self::SchedulingPropertyNotAllowed => "scheduling-property-not-allowed",
+            Self::SchedulingRequiredPropertyMissing => "scheduling-required-property-missing",
+            Self::SchedulingInstanceAmbiguous => "scheduling-instance-ambiguous",
+            Self::SchedulingRangeNotPermitted => "scheduling-range-not-permitted",
+            Self::SchedulingExclusionUnplaced => "scheduling-exclusion-unplaced",
+            Self::SchedulingZoneContinued => "scheduling-zone-continued",
+            Self::SchedulingSenderNotPermitted => "scheduling-sender-not-permitted",
         }
     }
 }

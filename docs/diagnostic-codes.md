@@ -143,3 +143,13 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | vtimezone-components-truncated | A calendar declared more `VTIMEZONE` components than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M2 |
 | vtimezone-observance-unreadable | An observance's required value was present and unreadable, so it stated no transition at all. | Violation | M2 |
 | exdate-zone-unknown | An `EXDATE` written in UTC named no cadence key because no source recognized the series' zone, so it excluded nothing. | Violation | M2 |
+| scheduling-method-unknown | A `METHOD` was present and named no method RFC 5546 defines, so the message states no scheduling semantics at all. | Violation | M3 |
+| scheduling-calendar-address-unreadable | An `ORGANIZER` or `ATTENDEE` was present and its `CAL-ADDRESS` did not decode, so it identifies no party. | Violation | M3 |
+| scheduling-sequence-unreadable | A `SEQUENCE` was present and was not an integer, so no revision ordering could be read from it. | Violation | M3 |
+| scheduling-property-not-allowed | A scheduling payload carried a property RFC 5546 section 3 forbids for its `METHOD` and component type. | Violation | M3 |
+| scheduling-required-property-missing | A scheduling payload lacked a property RFC 5546 section 3 requires for its `METHOD` and component type. | Violation | M3 |
+| scheduling-instance-ambiguous | A `RECURRENCE-ID` named a wall clock its series' zone repeats, and nothing said which of the two instants it addresses. | Violation | M3 |
+| scheduling-range-not-permitted | A `RECURRENCE-ID` carried `RANGE=THISANDFUTURE` under a `METHOD` RFC 5546 does not permit it for. | Violation | M3 |
+| scheduling-exclusion-unplaced | A scheduling message addressed a component carrying an exclusion no zone could place, so which instances it has is not decidable. | Violation | M3 |
+| scheduling-zone-continued | An instance identity was resolved through a zone answer continued past one end of its source's transition table. | Note | M3 |
+| scheduling-sender-not-permitted | A scheduling message was sent by a party RFC 5546 section 3 does not permit to send its `METHOD`. | Violation | M3 |
