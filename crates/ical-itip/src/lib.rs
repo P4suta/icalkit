@@ -41,9 +41,83 @@
 //!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M3). The public surface is
-//! designed and compiled; `docs/design/ical-itip-api.md` carries it.
+//! M3 is landed and tested end to end: the eight methods and their sender rules, RFC 5546
+//! section 3's twenty-two constraint tables transcribed as data, the party and instance
+//! identities including the fold side M2 left open, the message model with its bounds, the
+//! occurrence-addressed transition, the octet diff, the authorization gate with its ordered
+//! denials, both bridges to [`ical_core::Component`] — [`ScheduledView`] for reading and
+//! [`ComponentTarget`] for writing — the zone-aware instance resolution, the reporting pass
+//! behind every `scheduling-*` diagnostic code, and the two feature modules.
+//!
+//! What is deliberately not here: `RANGE=THISANDFUTURE` is represented and not implemented,
+//! nothing splits a series, and a `COUNTER` that changes a time is refused because the field
+//! rule has no per-method dimension. This crate is not RFC-5546-complete and nothing here
+//! entitles anyone to say it is. See `ROADMAP.md` (M3) and `docs/design/ical-itip-api.md`.
+//!
+//! # Reading order
+//!
+//! [`method`] and [`table`] are RFC 5546 as data. [`identity`] and [`party`] are what a
+//! message is about and who it is from. [`state`] is how a caller offers what it already
+//! holds, and [`component`] is that trait answered for an [`ical_core::Component`].
+//! [`message`] is the checked-and-charged message. [`instance`] is the one place a zone is
+//! asked anything, and it runs before the gate. [`transition`] is what would change and
+//! [`diff`] works it out. [`authorize`] decides whether it may happen, and its module
+//! documentation is where the byte-boundary question is answered. [`target`] writes an
+//! authorized transition back. [`report`] emits what the gate refuses to turn into a denial,
+//! and it changes no authorization answer.
 
 #![no_std]
 
 extern crate alloc;
+
+pub mod authorize;
+pub mod component;
+pub mod diff;
+#[cfg(feature = "freebusy")]
+pub mod freebusy;
+pub mod identity;
+#[cfg(feature = "imip")]
+pub mod imip;
+pub mod instance;
+pub mod message;
+pub mod method;
+pub mod party;
+pub mod report;
+pub mod state;
+pub mod table;
+pub mod target;
+pub mod transition;
+
+pub use crate::authorize::{
+    Authorization, AuthorizationDenied, Commitment, actor_role, apply_transition, attendee_index,
+    evaluate_message,
+};
+pub use crate::component::ScheduledView;
+pub use crate::diff::{attendee_occurrence_of, describe_message, describe_payload};
+#[cfg(feature = "freebusy")]
+pub use crate::freebusy::{
+    BusyPeriod, FreeBusyError, FreeBusyKind, busy_periods, requested_window, window_of,
+};
+pub use crate::identity::{
+    FoldSide, InstanceClock, InstanceMatch, InstanceRef, MessageIdentity, Revision, SequenceRead,
+    Uid,
+};
+pub use crate::instance::{
+    ResolvedInstance, check_exclusions_are_placeable, exclusions_are_placeable, resolve_instance,
+};
+pub use crate::message::{ItipMessage, MessageError};
+pub use crate::method::{ActorRole, Method, SenderRule};
+pub use crate::party::{Attendee, PartStat, Party, PartyId, Role};
+pub use crate::report::inspect_message;
+pub use crate::state::{PropertyOccurrence, ScheduledComponent};
+pub use crate::table::{MethodRule, Presence, PriorState, Rule};
+pub use crate::target::ComponentTarget;
+pub use crate::transition::{
+    ApplyReport, Changes, FieldRule, RejectedChange, ScheduleTarget, Transition, TransitionReason,
+    WriteRejected, field_rule, is_time_property,
+};
+// The shared vocabulary is re-exported so that a caller names one crate for one concept, the
+// way `ical-tz` re-exports the civil types. `ProposedChange` and `ParameterEdit` in particular:
+// a transition is described in `ical-core`'s words, and a caller reading one should not have
+// to know which crate the words came from.
+pub use ical_core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
