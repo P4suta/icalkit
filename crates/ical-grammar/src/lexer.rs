@@ -252,7 +252,11 @@ impl<'a> ContentLineReader<'a> {
                         Stage::Ending
                     };
                 },
-                Stage::Value => return Some(Ok(self.next_value_chunk())),
+                Stage::Value => {
+                    return Some(self.next_value_chunk().inspect_err(|_bound| {
+                        self.stage = Stage::Done;
+                    }));
+                },
                 Stage::Ending => {
                     self.stage = Stage::LineStart;
                     return Some(Ok(Emit::EndOfLine));
@@ -307,7 +311,7 @@ impl<'a> ContentLineReader<'a> {
                 return Ok(());
             };
             if let Some((newline, width)) = terminator_at(self.input, self.cursor) {
-                if !self.take_fold(newline, width) {
+                if !self.take_fold(newline, width)? {
                     self.close_header(false);
                     self.ending = Some(newline);
                     self.cursor = self.cursor.saturating_add(width);
@@ -326,34 +330,34 @@ impl<'a> ContentLineReader<'a> {
     }
 
     /// The next run of the value, which ends at the next fold, terminator, or end of input.
-    fn next_value_chunk(&mut self) -> Emit {
+    fn next_value_chunk(&mut self) -> Result<Emit, ParseError> {
         let start = self.cursor;
         let end = self.scan_to_break();
         self.advance_line_offset(end.saturating_sub(start));
         let Some((newline, width)) = terminator_at(self.input, end) else {
             self.ending = None;
             self.stage = Stage::Ending;
-            return Emit::Value {
+            return Ok(Emit::Value {
                 start,
                 end,
                 more: false,
-            };
+            });
         };
-        if self.take_fold(newline, width) {
-            return Emit::Value {
+        if self.take_fold(newline, width)? {
+            return Ok(Emit::Value {
                 start,
                 end,
                 more: true,
-            };
+            });
         }
         self.ending = Some(newline);
         self.cursor = end.saturating_add(width);
         self.stage = Stage::Ending;
-        Emit::Value {
+        Ok(Emit::Value {
             start,
             end,
             more: false,
-        }
+        })
     }
 
     /// Advance the cursor to the next `CR` or `LF`, or to the end of the input.
@@ -372,13 +376,24 @@ impl<'a> ContentLineReader<'a> {
     /// Any of the three terminators may introduce a continuation. RFC 5545 section 3.1 spells
     /// a fold `CRLF` followed by one whitespace octet, and a file written with bare `LF`s
     /// folds with bare `LF`s; recording which one arrived is what lets it be written back.
-    fn take_fold(&mut self, newline: LineEnding, width: usize) -> bool {
+    ///
+    /// Recording it is also what has to be bounded. A value's chunks borrow the input and cost
+    /// this reader nothing, so a line of nothing but continuations is one octet of value and no
+    /// header — and the only thing that grows with it is this vector, one entry per fold, with
+    /// no bound of its own until [`GrammarLimits::max_folds_per_line`] states one. The refusal
+    /// arrives at the fold that crosses the bound rather than after the line is resident, which
+    /// is the same posture the header ceiling above takes (`docs/adr/0010`).
+    fn take_fold(&mut self, newline: LineEnding, width: usize) -> Result<bool, ParseError> {
         let after = self.cursor.saturating_add(width);
         let Some(&octet) = self.input.get(after) else {
-            return false;
+            return Ok(false);
         };
         if !is_fold_whitespace(octet) {
-            return false;
+            return Ok(false);
+        }
+        let ceiling = self.limits.max_folds_per_line();
+        if !u32::try_from(self.folds.len()).is_ok_and(|held| held < ceiling) {
+            return Err(ParseError::TooManyFolds { limit: ceiling });
         }
         self.folds.push(FoldPoint {
             offset: self.line_offset,
@@ -386,7 +401,7 @@ impl<'a> ContentLineReader<'a> {
             newline,
         });
         self.cursor = after.saturating_add(1);
-        true
+        Ok(true)
     }
 
     /// Count `octets` more of the unfolded line.
@@ -1064,6 +1079,43 @@ mod tests {
         let limits = GrammarLimits::DEFAULT.with_max_header_bytes(2);
         let input: &[u8] = b"X:a value far longer than any header this reader would accept\r\n";
         assert_eq!(rebuild(input, limits).unwrap(), input);
+    }
+
+    /// A value is unbounded here and a fold is not, because a chunk borrows the input and a
+    /// fold is retained. The bound applies wherever the fold fell, header or value alike.
+    #[test]
+    fn one_fold_past_the_per_line_ceiling_is_refused() {
+        let limits = GrammarLimits::DEFAULT.with_max_folds_per_line(2);
+        assert_eq!(
+            rebuild(b"X:a\r\n b\r\n c\r\n", limits).unwrap(),
+            b"X:a\r\n b\r\n c\r\n"
+        );
+        assert_eq!(
+            rebuild(b"X:a\r\n b\r\n c\r\n d\r\n", limits),
+            Err(ParseError::TooManyFolds { limit: 2 })
+        );
+        assert_eq!(
+            rebuild(b"X-A\r\n B\r\n C\r\n D:v\r\n", limits),
+            Err(ParseError::TooManyFolds { limit: 2 }),
+            "a header folded past the bound is refused by the same count"
+        );
+    }
+
+    /// The shape no other bound sees: one item, one octet of value, no header, and a hundred
+    /// continuations. The fold ceiling is the only thing standing between it and memory
+    /// proportional to the input rather than to the caller's policy.
+    #[test]
+    fn a_line_of_nothing_but_continuations_is_refused_at_the_fold_that_crosses_the_bound() {
+        let limits = GrammarLimits::DEFAULT.with_max_folds_per_line(8);
+        let mut bomb: Vec<u8> = Vec::from(&b"X:"[..]);
+        for _ in 0..100_u32 {
+            bomb.extend_from_slice(b"\n ");
+        }
+        bomb.extend_from_slice(b"v\r\n");
+        assert_eq!(
+            rebuild(&bomb, limits),
+            Err(ParseError::TooManyFolds { limit: 8 })
+        );
     }
 
     #[test]

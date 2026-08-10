@@ -29,25 +29,33 @@ use crate::failure::{LimitExceeded, ParseError};
 /// Separate from the rest of [`Limits`] because a caller of the token layer has no component
 /// tree, no recurrence and no XML, and should not have to state bounds for them to read a
 /// line.
+///
+/// Every field is a ceiling, which is what the type is for, so none of them says so again in
+/// its own name. The accessors do, because `max_header_bytes()` is read at a call site where
+/// the type has already been forgotten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GrammarLimits {
     /// The most octets one content line's name and parameters may occupy together.
-    max_header_bytes: u32,
+    header_bytes: u32,
     /// The most parameters one content line may carry.
-    max_parameters: u32,
+    parameters: u32,
+    /// The most continuation lines one content line may be folded across.
+    folds_per_line: u32,
 }
 
 impl GrammarLimits {
     /// Bounds a phone rendering one month can afford.
     pub const DEFAULT: Self = Self {
-        max_header_bytes: 4096,
-        max_parameters: 64,
+        header_bytes: 4096,
+        parameters: 64,
+        folds_per_line: 16_384,
     };
 
     /// Bounds a server indexing a decade can afford.
     pub const GENEROUS: Self = Self {
-        max_header_bytes: 65_536,
-        max_parameters: 1024,
+        header_bytes: 65_536,
+        parameters: 1024,
+        folds_per_line: 1_048_576,
     };
 
     /// The most octets one content line's name and parameters may occupy together.
@@ -57,20 +65,39 @@ impl GrammarLimits {
     /// the reader never buffers.
     #[must_use]
     pub const fn max_header_bytes(self) -> u32 {
-        self.max_header_bytes
+        self.header_bytes
     }
 
     /// The most parameters one content line may carry.
     #[must_use]
     pub const fn max_parameters(self) -> u32 {
-        self.max_parameters
+        self.parameters
+    }
+
+    /// The most continuation lines one content line may be folded across.
+    ///
+    /// A value has no octet ceiling at this layer because its chunks are never buffered, but
+    /// each fold *is* retained: the reader records where the producer folded so the writer can
+    /// put the fold back, and a caller that never states this bound has a line of nothing but
+    /// continuations charging its memory rather than its budget. A hundred thousand octets of
+    /// `LF SP` is one item, one octet of value, and no header at all, so no other bound here
+    /// sees it.
+    ///
+    /// The default is the width the specification asks for divided into the octets a value is
+    /// allowed to carry, with headroom: a one mebibyte value folded at section 3.1's
+    /// seventy-five octets needs about fourteen thousand continuations, so sixteen thousand
+    /// three hundred and eighty-four accepts every legitimate line and refuses a line whose
+    /// continuations outnumber its content.
+    #[must_use]
+    pub const fn max_folds_per_line(self) -> u32 {
+        self.folds_per_line
     }
 
     /// The same policy with a different header bound.
     #[must_use]
     pub const fn with_max_header_bytes(self, bytes: u32) -> Self {
         Self {
-            max_header_bytes: bytes,
+            header_bytes: bytes,
             ..self
         }
     }
@@ -79,7 +106,16 @@ impl GrammarLimits {
     #[must_use]
     pub const fn with_max_parameters(self, count: u32) -> Self {
         Self {
-            max_parameters: count,
+            parameters: count,
+            ..self
+        }
+    }
+
+    /// The same policy with a different per-line fold bound.
+    #[must_use]
+    pub const fn with_max_folds_per_line(self, folds: u32) -> Self {
+        Self {
+            folds_per_line: folds,
             ..self
         }
     }

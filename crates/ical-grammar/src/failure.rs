@@ -54,6 +54,16 @@ pub enum ParseError {
         /// The per-line parameter-count bound.
         limit: u32,
     },
+    /// One content line was folded across more than `limit` continuation lines.
+    ///
+    /// A separate variant from `InputTooLarge` because a fold is retained rather than merely
+    /// read: the position of every one of them travels with the line so the writer can put it
+    /// back, and a line of nothing but continuations is one item, one octet of value and no
+    /// header, which is to say that no other bound here counts it.
+    TooManyFolds {
+        /// The per-line fold-count bound.
+        limit: u32,
+    },
     /// The document held more properties and components together than `limit`.
     TooManyItems {
         /// The item-count bound.
@@ -82,6 +92,12 @@ impl Display for ParseError {
                 write!(
                     formatter,
                     "a content line carries more than {limit} parameters"
+                )
+            },
+            Self::TooManyFolds { limit } => {
+                write!(
+                    formatter,
+                    "a content line is folded across more than {limit} continuation lines"
                 )
             },
             Self::TooManyItems { limit } => {

@@ -30,8 +30,9 @@ use alloc::vec::Vec;
 use core::mem;
 
 use ical_grammar::{
-    ContentLineReader, ContentLineSource, Diagnostic, DiagnosticCode, DiagnosticSink, Limits,
-    LineEnding, LineLayout, Location, Meter, ParseError, Severity, Span, Token, report_diagnostic,
+    ContentLineReader, ContentLineSource, Diagnostic, DiagnosticCode, DiagnosticSink, FoldPoint,
+    Limits, LineEnding, LineLayout, Location, Meter, ParseError, Severity, Span, Token,
+    report_diagnostic,
 };
 
 use crate::octets::RawText;
@@ -256,6 +257,7 @@ impl TreeBuilder {
                 ending,
                 has_separator,
             } => {
+                Self::charge_folds(folds, meter)?;
                 let layout = LineLayout::preserved(folds.to_vec(), ending, has_separator);
                 self.finish_line(layout, meter, sink)
             },
@@ -265,6 +267,29 @@ impl TreeBuilder {
             // contributes no octets rather than ending a parse that can still finish.
             _ => Ok(()),
         }
+    }
+
+    /// Charge the octets this line's folds occupy, before any of them is retained.
+    ///
+    /// A fold is the one thing the tree keeps that no other charge counts. A name, a parameter
+    /// and a value are charged as they are appended; a fold's terminator and the whitespace
+    /// octet that introduced the continuation are neither, and yet a [`FoldPoint`] is stored
+    /// for each of them so the writer can put the fold back. A line of a hundred thousand `LF
+    /// SP` pairs is therefore one item, one octet of value and no header — nothing the ledger
+    /// sees — while the tree grows with the input rather than with the caller's policy.
+    ///
+    /// Charged against the same octet budget the rest of the line is, because they *are*
+    /// octets of the caller's input: a caller who stated sixty-four octets has not agreed to
+    /// sixteen megabytes being read on its behalf (`docs/adr/0010`). The reader's own
+    /// `max_folds_per_line` bounds what one line may retain before this is ever reached; this
+    /// is the half that binds in aggregate, across every line of the document.
+    fn charge_folds(folds: &[FoldPoint], meter: &mut Meter) -> Result<(), ParseError> {
+        for point in folds {
+            // The terminator, plus the one whitespace octet that introduced the continuation.
+            let cost = as_units(point.newline.written_len()).saturating_add(1);
+            meter.charge_bytes(cost)?;
+        }
+        Ok(())
     }
 
     /// Take the property name, charging its octets before they are appended.
