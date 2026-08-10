@@ -67,6 +67,11 @@ wasm:
 purity:
     cargo run --quiet -p xtask -- purity
 
+# Hold every diagnostic code's meaning, channel, and owing milestone to the committed
+# golden list docs/adr/0009 requires.
+codes:
+    cargo run --quiet -p xtask -- codes
+
 # Spell-check the repository.
 typos:
     typos
@@ -104,9 +109,9 @@ msrv:
     cargo msrv verify --path xtask
 
 # Fast deterministic checks used during the edit/commit loop.
-check: fmt-check toml-check typos lint purity shear reuse actionlint zizmor
+check: fmt-check toml-check typos lint purity codes shear reuse actionlint zizmor
     @echo "fast local checks passed"
 
 # Every practical CI gate available on a developer machine.
-ci: fmt-check toml-check typos lint feature-matrix test-ci doc no-std wasm purity deny shear reuse actionlint zizmor msrv
+ci: fmt-check toml-check typos lint feature-matrix test-ci doc no-std wasm purity codes deny shear reuse actionlint zizmor msrv
     @echo "local CI passed"

@@ -35,6 +35,31 @@
 //!
 //! The reasoning is `docs/adr/0004` and `docs/adr/0007`, which the violations cite: the fix
 //! is usually to move the code up a layer, not to add the dependency.
+//!
+//! # `codes`
+//!
+//! `DiagnosticCode` is one vocabulary for the whole workspace and its meanings are frozen as
+//! hard as its names (`docs/adr/0009`), because `docs/adr/0006`'s corpus asserts "this input
+//! produces this code, on this channel" across releases. A meaning that only a doc comment
+//! records is a meaning anybody can edit inside a diff nobody reads, so it is written twice —
+//! once as the variant's first doc paragraph, once as a row of `docs/diagnostic-codes.md` —
+//! and this task fails unless the two agree. Editing a meaning then means editing both files,
+//! which is the review a frozen meaning is owed; improving the prose below a variant's first
+//! paragraph stays free, because that prose is not the meaning.
+//!
+//! Exactly two committed files are read, `crates/ical-grammar/src/report.rs` and the golden
+//! list, by the same kind of hand-rolled scan and for the same reason: a gate about
+//! dependencies may not have any. The task fails on a code with no row, on a row no code
+//! declares, on rows out of declaration order, on a meaning that drifted from either side, on
+//! a channel that is not a `Severity` the source declares, and on a milestone `ROADMAP.md`
+//! does not name. An addition that carries a row passes trivially, which is the one edit
+//! `docs/adr/0009` allows without ceremony.
+//!
+//! The milestone column is the part that reads like bookkeeping and is not. `Severity` has a
+//! variant and `Diagnostic` a constructor that no M0 code path reaches, nothing recorded that
+//! they were waiting on M1 and M2 rather than left over from a design that moved, and both
+//! were duly rediscovered as suspected dead API. So a severity that no row carries is a
+//! violation here, and the milestone written against a code names who owes the emitter.
 
 use std::fs;
 use std::io;
@@ -56,9 +81,25 @@ const CORE_CRATES: &[&str] = &[
     "ical-dav",
 ];
 
+/// The committed golden list of diagnostic codes, relative to the workspace root.
+const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
+
+/// The declarations the golden list is checked against, relative to the workspace root.
+const DIAGNOSTIC_SOURCE: &str = "crates/ical-grammar/src/report.rs";
+
+/// The golden list's columns, in the order its cells are read.
+const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
+
+/// The milestones a row may name as owing the emitter. Mirrors `ROADMAP.md`.
+///
+/// A code whose milestone has not shipped has no emitter at all, and that is the honest
+/// reading of the column rather than a defect in it.
+const MILESTONES: &[&str] = &["M0", "M1", "M2", "M3", "M4", "M5"];
+
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("purity") => report("purity", collect_purity_violations()),
+        Some("codes") => report("codes", collect_codes_violations()),
         Some(task) => {
             eprintln!("xtask: unknown task `{task}`");
             print_usage();
@@ -73,7 +114,7 @@ fn main() -> ExitCode {
 
 /// Print the available tasks.
 fn print_usage() {
-    eprintln!("usage: cargo run -p xtask -- purity");
+    eprintln!("usage: cargo run -p xtask -- <purity|codes>");
 }
 
 /// Turn a task's findings into output and an exit status.
@@ -332,10 +373,423 @@ fn dependency_subtable_name(header: &str) -> Option<&str> {
     is_dependency_table(prefix).then(|| name.trim_matches('"'))
 }
 
+/// Check the committed golden list against the codes `ical-grammar` declares.
+fn collect_codes_violations() -> io::Result<Vec<String>> {
+    let root = workspace_root()?;
+    let declarations = fs::read_to_string(root.join(DIAGNOSTIC_SOURCE))?;
+    let golden = fs::read_to_string(root.join(GOLDEN_LIST))?;
+    Ok(codes_violations(&declarations, &golden))
+}
+
+/// Everything the declarations and the golden list disagree about.
+///
+/// The checks are staged, because a later one is only meaningful once the earlier one holds:
+/// comparing meanings across a table whose rows and codes do not line up reports the same
+/// mistake once per row and buries the one line that says what happened.
+fn codes_violations(declarations: &str, golden: &str) -> Vec<String> {
+    let variants = enum_variants(declarations, "DiagnosticCode");
+    let arms = as_str_arms(declarations);
+    let channels: Vec<String> = enum_variants(declarations, "Severity")
+        .into_iter()
+        .map(|(variant, _)| variant)
+        .collect();
+
+    let scanned = declaration_violations(&variants, &arms, &channels);
+    if !scanned.is_empty() {
+        return scanned;
+    }
+
+    let rows = match golden_rows(golden) {
+        Ok(rows) => rows,
+        Err(message) => return vec![message],
+    };
+    let codes = join_codes(&variants, &arms);
+    let placement = placement_violations(&codes, &rows);
+    if placement.is_empty() {
+        content_violations(&codes, &rows, &channels)
+    } else {
+        placement
+    }
+}
+
+/// What the scan of the declarations found before the golden list is opened at all.
+///
+/// A hand-rolled scan that stops matching reports nothing and passes, which is the failure
+/// mode a gate cannot afford: an empty result here means the source moved out from under the
+/// scan, not that the vocabulary is empty.
+fn declaration_violations(
+    variants: &[(String, String)],
+    arms: &[(String, String)],
+    channels: &[String],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    if variants.is_empty() {
+        violations.push(format!(
+            "{DIAGNOSTIC_SOURCE}: no `DiagnosticCode` variant was found; a scan that matches \
+             nothing would pass every remaining check for free"
+        ));
+    }
+    if channels.is_empty() {
+        violations.push(format!(
+            "{DIAGNOSTIC_SOURCE}: no `Severity` variant was found, so every channel a row \
+             names would be unrecognizable"
+        ));
+    }
+    if !names(variants).eq(names(arms)) {
+        violations.push(format!(
+            "{DIAGNOSTIC_SOURCE}: the `DiagnosticCode` variants and the `as_str` arms are not \
+             the same names in the same order; the golden list is keyed on the arms, so a \
+             variant with no arm has no key to be listed under (ADR 0009)"
+        ));
+    }
+    violations
+}
+
+/// Pair each declared variant with the key its `as_str` arm gives it.
+///
+/// Total only because [`declaration_violations`] has already established that the two lists
+/// name the same variants in the same order.
+fn join_codes(variants: &[(String, String)], arms: &[(String, String)]) -> Vec<DeclaredCode> {
+    variants
+        .iter()
+        .zip(arms)
+        .map(|((_, meaning), (_, key))| DeclaredCode {
+            key: key.clone(),
+            meaning: meaning.clone(),
+        })
+        .collect()
+}
+
+/// Which codes have a row, which rows have a code, and whether the two agree on order.
+fn placement_violations(codes: &[DeclaredCode], rows: &[Row]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for code in codes {
+        let key = &code.key;
+        match rows.iter().filter(|row| row.code == *key).count() {
+            0 => violations.push(format!(
+                "{GOLDEN_LIST}: `{key}` is declared in {DIAGNOSTIC_SOURCE} and has no row; a \
+                 code with no row is a meaning nothing holds still (ADR 0009)"
+            )),
+            1 => {},
+            count => violations.push(format!(
+                "{GOLDEN_LIST}: `{key}` has {count} rows; the row for a code is that code's \
+                 meaning, and two of them are two meanings (ADR 0009)"
+            )),
+        }
+    }
+    for row in rows {
+        let key = &row.code;
+        if !codes.iter().any(|code| code.key == *key) {
+            violations.push(format!(
+                "{GOLDEN_LIST}: `{key}` has a row and no `DiagnosticCode` declares it; a \
+                 removed code is a break, and a typo in this column quietly retires a live one \
+                 (ADR 0009)"
+            ));
+        }
+    }
+    if violations.is_empty() && !row_codes(rows).eq(code_keys(codes)) {
+        violations.push(format!(
+            "{GOLDEN_LIST}: the rows are not in declaration order; the two files stay in one \
+             order so that adding a code is one line of diff in each (ADR 0009)"
+        ));
+    }
+    violations
+}
+
+/// What the rows claim, checked row by row against the code they are about.
+///
+/// Zipping is total here: [`placement_violations`] came back empty, so the rows are the codes
+/// in the codes' own order.
+fn content_violations(codes: &[DeclaredCode], rows: &[Row], channels: &[String]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (code, row) in codes.iter().zip(rows) {
+        let key = &row.code;
+        if row.meaning != code.meaning {
+            violations.push(format!(
+                "{GOLDEN_LIST}: `{key}` is listed as \"{listed}\" and documented as \
+                 \"{documented}\"; a meaning is frozen as hard as a name, so changing one is a \
+                 rename or a deprecation (ADR 0009)",
+                listed = row.meaning,
+                documented = code.meaning
+            ));
+        }
+        if !channels.contains(&row.channel) {
+            violations.push(format!(
+                "{GOLDEN_LIST}: `{key}` travels on `{channel}`, which is not a `Severity` \
+                 {DIAGNOSTIC_SOURCE} declares (ADR 0009)",
+                channel = row.channel
+            ));
+        }
+        if !MILESTONES.contains(&row.milestone.as_str()) {
+            violations.push(format!(
+                "{GOLDEN_LIST}: `{key}` is owed by `{milestone}`, which ROADMAP.md does not \
+                 name as a milestone",
+                milestone = row.milestone
+            ));
+        }
+    }
+    violations.extend(unused_channel_violations(rows, channels));
+    violations
+}
+
+/// Severities that no code travels on.
+///
+/// `Severity::LimitReached` spent the whole of M0 with no emitter and no row saying which
+/// milestone owed it one, which is how it came to be rediscovered as suspected dead API. A
+/// severity nothing carries is either unbuilt work with a milestone against it or a variant
+/// nobody needs, and both answers belong in the table rather than in somebody's memory.
+fn unused_channel_violations(rows: &[Row], channels: &[String]) -> Vec<String> {
+    channels
+        .iter()
+        .filter(|channel| !rows.iter().any(|row| row.channel == **channel))
+        .map(|channel| {
+            format!(
+                "{GOLDEN_LIST}: no code travels on `Severity::{channel}`; a severity with \
+                 nothing on it is unbuilt work, and the milestone column is where that is \
+                 written down (ADR 0009)"
+            )
+        })
+        .collect()
+}
+
+/// One `DiagnosticCode` as the golden list has to see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeclaredCode {
+    /// The `as_str` key, which is what the golden list is keyed on and what a conformance
+    /// case names.
+    key: String,
+    /// The first paragraph of the variant's doc comment, as one line.
+    meaning: String,
+}
+
+/// One row of the committed golden list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Row {
+    /// The `as_str` key this row is about.
+    code: String,
+    /// The one-line meaning, which is the variant's first doc paragraph verbatim.
+    meaning: String,
+    /// The `Severity` the emitter passes.
+    channel: String,
+    /// The milestone that owns the emission site.
+    milestone: String,
+}
+
+impl Row {
+    /// Read one row from its cells.
+    fn read(cells: &[String]) -> Result<Self, String> {
+        let [code, meaning, channel, milestone] = cells else {
+            return Err(format!(
+                "{GOLDEN_LIST}: a row has {count} cells rather than {expected}: {cells:?}. A \
+                 meaning holding a `|` reads as two cells, so this is refused rather than \
+                 guessed at",
+                count = cells.len(),
+                expected = GOLDEN_COLUMNS.len()
+            ));
+        };
+        Ok(Self {
+            code: code.clone(),
+            meaning: meaning.clone(),
+            channel: channel.clone(),
+            milestone: milestone.clone(),
+        })
+    }
+}
+
+/// The rows of the golden list's table.
+///
+/// A hand-rolled scan rather than a Markdown parser, for the reason [`declared_dependencies`]
+/// gives about manifests. The table is the first one in the file, and its header is checked
+/// rather than skipped: the cells are read by position, so swapping two columns would
+/// redefine every row at once and change nothing a reader would notice.
+///
+/// Structure is the error channel and content is the diagnostic one, which is the split the
+/// crates themselves make: a table this cannot read at all is one message about the file
+/// rather than one message per row of it.
+fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
+    let mut rows = Vec::new();
+    let mut header: Option<Vec<String>> = None;
+    let mut in_table = false;
+
+    for line in document.lines() {
+        match table_cells(line) {
+            None if in_table => break,
+            None => header = None,
+            Some(cells) if in_table => rows.push(Row::read(&cells)?),
+            Some(cells) if is_rule_row(&cells) => {
+                check_columns(header.as_deref())?;
+                in_table = true;
+            },
+            Some(cells) => header = Some(cells),
+        }
+    }
+
+    if !in_table {
+        return Err(format!(
+            "{GOLDEN_LIST}: no `{columns}` table was found, so the declarations would have been \
+             compared against nothing",
+            columns = GOLDEN_COLUMNS.join(" | ")
+        ));
+    }
+    if rows.is_empty() {
+        return Err(format!("{GOLDEN_LIST}: the table has a header and no rows"));
+    }
+    Ok(rows)
+}
+
+/// Check that the header names the columns this scan reads by position.
+fn check_columns(header: Option<&[String]>) -> Result<(), String> {
+    let Some(cells) = header else {
+        return Err(format!(
+            "{GOLDEN_LIST}: a table rule has no header row above it"
+        ));
+    };
+    if cells.iter().map(String::as_str).eq(GOLDEN_COLUMNS) {
+        return Ok(());
+    }
+    Err(format!(
+        "{GOLDEN_LIST}: the table's columns are `{found}`, not `{expected}`; the cells are read \
+         by position, so renaming or reordering one redefines every row",
+        found = cells.join(" | "),
+        expected = GOLDEN_COLUMNS.join(" | ")
+    ))
+}
+
+/// The cells of one Markdown table row, or `None` when the line is not one.
+fn table_cells(line: &str) -> Option<Vec<String>> {
+    let inner = line.trim().strip_prefix('|')?.strip_suffix('|')?;
+    Some(
+        inner
+            .split('|')
+            .map(|cell| cell.trim().to_owned())
+            .collect(),
+    )
+}
+
+/// Whether a row is the `| --- | --- |` rule under a header rather than data.
+fn is_rule_row(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            !cell.is_empty()
+                && cell
+                    .chars()
+                    .all(|character| character == '-' || character == ':')
+        })
+}
+
+/// The variants of one enum body, each with the first paragraph of its doc comment.
+///
+/// Hand-rolled over source this repository writes in one style: the enum bodies it reads hold
+/// no braces of their own, so the first `}` closes the body.
+fn enum_variants(source: &str, name: &str) -> Vec<(String, String)> {
+    let header = format!("pub enum {name} {{");
+    let mut variants = Vec::new();
+    let mut meaning = Paragraph::default();
+    let mut inside = false;
+
+    for line in source.lines() {
+        let line = line.trim();
+        if !inside {
+            inside = line == header;
+        } else if line == "}" {
+            break;
+        } else if let Some(doc) = line.strip_prefix("///") {
+            meaning.push(doc.trim());
+        } else if let Some(variant) = variant_name(line) {
+            variants.push((variant.to_owned(), meaning.take()));
+        }
+    }
+    variants
+}
+
+/// A fieldless enum variant written as `Name,`.
+fn variant_name(line: &str) -> Option<&str> {
+    let name = line.strip_suffix(',')?;
+    let plain = !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_');
+    plain.then_some(name)
+}
+
+/// The `variant -> key` pairs `DiagnosticCode::as_str` declares, in arm order.
+///
+/// Bounded to that one function: the impl block may grow another method with arms of its own,
+/// and those arms are not keys.
+fn as_str_arms(source: &str) -> Vec<(String, String)> {
+    let mut arms = Vec::new();
+    let mut inside = false;
+
+    for line in source.lines() {
+        if !inside {
+            inside = line.contains("fn as_str(");
+        } else if line == "}" || line.trim_start().starts_with("pub ") {
+            break;
+        } else if let Some(arm) = match_arm(line.trim()) {
+            arms.push(arm);
+        }
+    }
+    arms
+}
+
+/// Read `Self::Variant => "key",` as the pair it declares.
+fn match_arm(line: &str) -> Option<(String, String)> {
+    let (variant, rest) = line.strip_prefix("Self::")?.split_once("=>")?;
+    let quoted = rest.trim().strip_suffix(',')?;
+    let key = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    Some((variant.trim().to_owned(), key.to_owned()))
+}
+
+/// The first paragraph of a doc comment, gathered one `///` line at a time.
+#[derive(Debug, Default)]
+struct Paragraph {
+    /// The lines gathered so far.
+    text: Vec<String>,
+    /// Whether a blank `///` has closed the paragraph.
+    ended: bool,
+}
+
+impl Paragraph {
+    /// Offer one `///` line, with the marker already stripped.
+    ///
+    /// Everything after the first blank line is dropped. A variant's later paragraphs are
+    /// prose that gets improved, and freezing those would make an editorial fix a CI failure
+    /// while doing nothing for the meaning `docs/adr/0009` actually freezes.
+    fn push(&mut self, line: &str) {
+        if line.is_empty() {
+            self.ended = !self.text.is_empty();
+        } else if !self.ended {
+            self.text.push(line.to_owned());
+        }
+    }
+
+    /// The paragraph as one line, leaving an empty one behind for the next variant.
+    fn take(&mut self) -> String {
+        self.ended = false;
+        std::mem::take(&mut self.text).join(" ")
+    }
+}
+
+/// The names of a scanned enum body or arm list, in order.
+fn names(entries: &[(String, String)]) -> impl Iterator<Item = &str> {
+    entries.iter().map(|(name, _)| name.as_str())
+}
+
+/// The keys of the declared codes, in declaration order.
+fn code_keys(codes: &[DeclaredCode]) -> impl Iterator<Item = &str> {
+    codes.iter().map(|code| code.key.as_str())
+}
+
+/// The codes the rows are about, in row order.
+fn row_codes(rows: &[Row]) -> impl Iterator<Item = &str> {
+    rows.iter().map(|row| row.code.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        declared_dependencies, declares, dependency_subtable_name, is_dependency_table,
+        as_str_arms, codes_violations, collect_codes_violations, declared_dependencies, declares,
+        dependency_subtable_name, enum_variants, golden_rows, is_dependency_table,
         manifest_violations,
     };
 
@@ -528,6 +982,352 @@ extern crate alloc;
                 "#![no_std]"
             ),
             "naming the attribute in prose is not declaring it"
+        );
+    }
+
+    /// A stand-in for `report.rs`: two severities, two codes, one of them a note.
+    const SAMPLE_DECLARATIONS: &str = r#"
+pub enum Severity {
+    /// Something worth recording that the specification permits.
+    Note,
+    /// The specification was violated. The input was kept anyway.
+    Violation,
+}
+
+#[non_exhaustive]
+pub enum DiagnosticCode {
+    /// A content line carried no `:`, so it has a name and no value.
+    MissingValueSeparator,
+    /// A `^` was followed by an octet RFC 6868 gives no meaning.
+    ///
+    /// A note rather than a violation: RFC 6868 section 2 requires the pair to be left as it
+    /// is, so the octets are what they were.
+    UndefinedCaretEscape,
+}
+
+impl DiagnosticCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingValueSeparator => "missing-value-separator",
+            Self::UndefinedCaretEscape => "undefined-caret-escape",
+        }
+    }
+}
+"#;
+
+    /// The same stand-in with one code added, which is the edit ADR 0009 allows freely.
+    const SAMPLE_ADDED: &str = r#"
+pub enum Severity {
+    /// Something worth recording that the specification permits.
+    Note,
+    /// The specification was violated. The input was kept anyway.
+    Violation,
+}
+
+#[non_exhaustive]
+pub enum DiagnosticCode {
+    /// A content line carried no `:`, so it has a name and no value.
+    MissingValueSeparator,
+    /// A `^` was followed by an octet RFC 6868 gives no meaning.
+    ///
+    /// A note rather than a violation: RFC 6868 section 2 requires the pair to be left as it
+    /// is, so the octets are what they were.
+    UndefinedCaretEscape,
+    /// An `END` arrived with no `BEGIN` open.
+    UnmatchedEnd,
+}
+
+impl DiagnosticCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingValueSeparator => "missing-value-separator",
+            Self::UndefinedCaretEscape => "undefined-caret-escape",
+            Self::UnmatchedEnd => "unmatched-end",
+        }
+    }
+}
+"#;
+
+    /// The golden list those declarations are owed.
+    const SAMPLE_GOLDEN: &str = "\
+# Diagnostic codes
+
+Prose, and a `|` in it, above the table.
+
+| code | meaning | channel | milestone |
+| --- | --- | --- | --- |
+| missing-value-separator | A content line carried no `:`, so it has a name and no value. | Violation | M0 |
+| undefined-caret-escape | A `^` was followed by an octet RFC 6868 gives no meaning. | Note | M0 |
+";
+
+    /// The sample list with one substring rewritten, which is how a drift case is written.
+    fn edited(document: &str, from: &str, to: &str) -> String {
+        assert!(
+            document.contains(from),
+            "the sample does not carry `{from}`"
+        );
+        document.replace(from, to)
+    }
+
+    /// The sample list with the row an added code would arrive with.
+    fn golden_with_added_row() -> String {
+        format!(
+            "{SAMPLE_GOLDEN}| unmatched-end | An `END` arrived with no `BEGIN` open. | Violation \
+             | M0 |\n"
+        )
+    }
+
+    #[test]
+    fn a_list_that_mirrors_the_declarations_is_clean() {
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, SAMPLE_GOLDEN),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_committed_list_matches_the_committed_declarations() {
+        // The gate's own subject. Running it here rather than only in CI is what proves the
+        // scan reads the style `report.rs` is written in, not the style the samples are.
+        assert_eq!(collect_codes_violations().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn empty_inputs_are_reported_rather_than_passing_for_free() {
+        let violations = codes_violations("", "");
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("no `DiagnosticCode` variant")),
+            "a scan that matched nothing must say so: {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("no `Severity` variant")),
+            "and must say so for the channel vocabulary too: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn an_added_code_that_carries_a_row_passes_trivially() {
+        assert_eq!(
+            codes_violations(SAMPLE_ADDED, &golden_with_added_row()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_code_with_no_row_is_a_violation() {
+        let violations = codes_violations(SAMPLE_ADDED, SAMPLE_GOLDEN);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("`unmatched-end`") && line.contains("has no row")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_code_is_a_violation() {
+        let violations = codes_violations(SAMPLE_DECLARATIONS, &golden_with_added_row());
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("no `DiagnosticCode` declares it")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn an_edited_meaning_fails_from_whichever_side_it_was_edited() {
+        let drifted = "so it has no value.";
+        let listed = edited(SAMPLE_GOLDEN, "so it has a name and no value.", drifted);
+        let documented = edited(
+            SAMPLE_DECLARATIONS,
+            "so it has a name and no value.",
+            drifted,
+        );
+        for violations in [
+            codes_violations(SAMPLE_DECLARATIONS, &listed),
+            codes_violations(&documented, SAMPLE_GOLDEN),
+        ] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|line| line.contains("frozen as hard as a name")),
+                "the two copies of a meaning are what freeze it: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rename_carried_through_both_files_passes() {
+        let declarations = edited(
+            SAMPLE_DECLARATIONS,
+            "\"undefined-caret-escape\"",
+            "\"undefined-caret-escape-v2\"",
+        );
+        let golden = edited(
+            SAMPLE_GOLDEN,
+            "| undefined-caret-escape |",
+            "| undefined-caret-escape-v2 |",
+        );
+        assert_eq!(
+            codes_violations(&declarations, &golden),
+            Vec::<String>::new(),
+            "a rename is how a meaning is allowed to change (ADR 0009)"
+        );
+    }
+
+    #[test]
+    fn a_channel_that_is_not_a_severity_is_a_violation() {
+        let golden = edited(SAMPLE_GOLDEN, "| Note | M0 |", "| Warning | M0 |");
+        let violations = codes_violations(SAMPLE_DECLARATIONS, &golden);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("`Warning`") && line.contains("not a `Severity`")),
+            "{violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("Severity::Note")),
+            "retiring the last row on a severity leaves that severity with no emitter: \
+             {violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_severity_no_code_travels_on_is_a_violation() {
+        let declarations = edited(
+            SAMPLE_DECLARATIONS,
+            "    Violation,\n}",
+            "    Violation,\n    /// Cut short at a caller-stated bound.\n    LimitReached,\n}",
+        );
+        let violations = codes_violations(&declarations, SAMPLE_GOLDEN);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("Severity::LimitReached")),
+            "this is the debt the milestone column exists to keep closed: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_milestone_the_roadmap_does_not_name_is_a_violation() {
+        let golden = edited(SAMPLE_GOLDEN, "| Violation | M0 |", "| Violation | later |");
+        let violations = codes_violations(SAMPLE_DECLARATIONS, &golden);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("`later`") && line.contains("ROADMAP.md")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn rows_out_of_declaration_order_are_a_violation() {
+        let golden = "\
+| code | meaning | channel | milestone |
+| --- | --- | --- | --- |
+| undefined-caret-escape | A `^` was followed by an octet RFC 6868 gives no meaning. | Note | M0 |
+| missing-value-separator | A content line carried no `:`, so it has a name and no value. | Violation | M0 |
+";
+        let violations = codes_violations(SAMPLE_DECLARATIONS, golden);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("not in declaration order")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_first_paragraph_is_one_meaning_and_the_rest_is_free_prose() {
+        let source = "\
+pub enum DiagnosticCode {
+    /// A recurrence rule generated an instance whose date does not exist, so it was
+    /// filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one.
+    ///
+    /// Reported so that the two answers stay different.
+    NonexistentRecurrenceInstance,
+}
+";
+        assert_eq!(
+            enum_variants(source, "DiagnosticCode"),
+            vec![(
+                "NonexistentRecurrenceInstance".to_owned(),
+                "A recurrence rule generated an instance whose date does not exist, so it was \
+                 filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one."
+                    .to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn the_arm_scan_stops_at_the_end_of_as_str() {
+        let source = r#"
+impl DiagnosticCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnmatchedEnd => "unmatched-end",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::UnmatchedEnd => "an END with no BEGIN",
+        }
+    }
+}
+"#;
+        assert_eq!(
+            as_str_arms(source),
+            vec![("UnmatchedEnd".to_owned(), "unmatched-end".to_owned())],
+            "only `as_str` produces golden-list keys; a later method's arms are prose"
+        );
+    }
+
+    #[test]
+    fn a_variant_whose_arm_is_missing_is_a_violation() {
+        let declarations = edited(
+            SAMPLE_DECLARATIONS,
+            "            Self::UndefinedCaretEscape => \"undefined-caret-escape\",\n",
+            "",
+        );
+        let violations = codes_violations(&declarations, SAMPLE_GOLDEN);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("same names in the same order")),
+            "a variant with no key cannot be listed under one: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_table_that_cannot_be_read_is_an_error_rather_than_a_row_of_diagnostics() {
+        let swapped = edited(
+            SAMPLE_GOLDEN,
+            "| code | meaning | channel | milestone |",
+            "| code | meaning | milestone | channel |",
+        );
+        assert!(
+            golden_rows(&swapped).is_err(),
+            "the cells are read by position, so a column swap is not a readable table"
+        );
+
+        let piped = edited(
+            SAMPLE_GOLDEN,
+            "so it has a name and no value.",
+            "a name | no value.",
+        );
+        assert!(golden_rows(&piped).is_err(), "a five-cell row is not a row");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &piped).len(),
+            1,
+            "a file that cannot be read is one message about the file, not one per row"
         );
     }
 }

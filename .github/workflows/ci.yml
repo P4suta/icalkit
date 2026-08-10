@@ -181,6 +181,11 @@ jobs:
       # moment it arrives: a bundled tzdb makes the library wrong when a government moves
       # DST, and a clock makes "is this in the past" untestable (docs/adr/0003).
       - run: just purity
+      # ADR-0009 freezes a diagnostic code's meaning, and a freeze nothing reads is a
+      # convention. `just codes` diffs report.rs against the committed golden list, so an
+      # edited meaning fails here rather than in the release notes of whoever depended on it.
+      # It rides in this job because the job id is what the gate list below names.
+      - run: just codes
 
   doc:
     name: doc (rustdoc, warnings are errors)
