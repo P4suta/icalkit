@@ -90,6 +90,48 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   neither `COUNT` nor `UNTIL` that reaches the end of the four-digit year RFC 5545 section 3.3.4
   writes. The answer is complete — there is no more calendar — and it is not `RuleEnded`, which
   would be a false claim about the rule.
+- `ical-tz` resolves. A `VTIMEZONE` is read into a bounded `TransitionTable` — one `Observance`
+  per subcomponent `DTSTART` and one per `RDATE` value, with the subcomponent's `RRULE` attached
+  to the first — and that table is a `ZoneSource`. Rule evaluation is closed-form arithmetic over
+  the weekday of the first of the month, so a lookup has no loop in it to make expensive, and
+  `RuleDay` carries the shapes producers actually emit: a fixed day, an ordinal weekday, a last
+  weekday, and the seven-day `BYDAY`-with-`BYMONTHDAY`-run window every `Sun>=8` rule is exported
+  as. A local time that occurs twice is `LocalResolution::Ambiguous` and one that does not occur
+  is `Nonexistent`, each carrying its offsets; `pick` is the one place a policy collapses them to
+  an instant. `CombinedZoneSource` queries two sources unconditionally and reports rather than
+  prefers. Nothing is bundled, nothing reads a clock, and a `TZID` is matched by exact bytes, so
+  `W. Europe Standard Time` and `/mozilla.org/20050126_1/Europe/Berlin` are identifiers this
+  crate answers about rather than names it tries to translate.
+- The seam with `ical-recur`, which M1 could only half-specify and which is the reason this
+  milestone existed. `ical_tz::seam` states the contract — the timeline a zoned series is
+  expanded on is that series' own wall clock projected onto UTC — and `ZonedSeries` is the
+  driver: `anchor` projects a `DTSTART` of any of its four shapes, `project_until` reads an
+  `UNTIL` under all three of its readings, and `actual` resolves one cadence key at a time,
+  which is the only place a transition can be seen. `crates/ical-conform/tests/break_zones.rs`
+  is the only file in the workspace naming both crates; it expands a daily 09:00 Europe/Berlin
+  series through `RecurrenceInput::search`, resolves each key through `ical-tz`, asserts the
+  seven UTC instants Berlin's published rules give across both 2026 transitions, and asserts
+  separately that the reading which anchors once and never re-resolves is 3,600 seconds out from
+  March 29th onward — so bypassing the seam fails the suite rather than shipping quietly.
+- The five remaining questions M1 recorded and could not answer without a zone, each closed with
+  a case. A floating `UNTIL` against a UTC or zoned `DTSTART` is read in `DTSTART`'s own zone and
+  reported on `recurrence-until-not-utc`. An `UNTIL` written as a `DATE` against a date-time
+  `DTSTART` is read where `UntilReading` says, because midnight drops the named day and end of
+  day keeps it and both are permitted. An `EXDATE` written as a `DATE` becomes a whole-day
+  `LocalInterval` under `ExclusionReading::WholeDay`, whose boundaries are computed through the
+  zone rather than assumed — the day Europe/Berlin springs forward is 82,800 seconds long and
+  the day it falls back is 90,000. `WallClockShift::measure` reports an override's elapsed and
+  wall-clock moves as two numbers, which differ across a transition, and `extra_widening` is the
+  seconds `max_absolute_shift`'s elapsed-only widening is short by. And `OrphanScan` reports a
+  `RECURRENCE-ID` that names no generated instant on `override-matches-no-instance`, which is
+  the last silent drop in these crates that had no code.
+- Eight diagnostic codes for the zone layer and their golden-list rows:
+  `vtimezone-without-observance`, `vtimezone-rule-unsupported`, `vtimezone-observances-truncated`
+  on `Severity::LimitReached`, `duplicate-time-zone-identifier`, `time-zone-coverage-exhausted`,
+  `recurrence-until-not-utc`, `exdate-value-type-mismatch` and `override-matches-no-instance`.
+  Five more that M0 declared against M2 now have emitters: `unknown-time-zone`,
+  `missing-time-zone-definition`, `ambiguous-local-time`, `nonexistent-local-time` and
+  `time-zone-source-disagreement`.
 
 ### Fixed
 
@@ -209,3 +251,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in the reader; a fixture it cannot examine now fails it rather than being counted and
   skipped; and a fourth leg puts every committed fixture through one scoped write of each kind
   the change vocabulary has, which is the first time anything in that file reached P3 or P4.
+- ADR 0003 carries six amendments, each written because M2 found the sentence above it narrower
+  than what the crate needed rather than merely unbuilt. The source trait has two methods, not
+  one: without `offset_at` a source can carry an instant out of a zone and not into it, which
+  leaves a `Z`-terminated `UNTIL`, a `RECURRENCE-ID` and an override's own ends with no reading
+  at all. `LocalResolution` is `{ Unique, Ambiguous, Nonexistent }` with each reading carrying
+  its own offset and daylight flag, because the shape the ADR pinned cannot express RFC 5545
+  section 3.3.5 and because a flag inferred from which offset is larger answers
+  `Australia/Lord_Howe` backwards. `PolicyOutcome::Agreed` keeps both answers and the enum is
+  generic over them. Reporting a disagreement is a second call rather than a side effect of
+  asking, because one series resolved a thousand times is one fact. The instruction that
+  `LocalResolution` "must be verified against real transition data rather than merely shaped
+  correctly" is discharged against four real zones read from committed fixtures. And the
+  zone-count bound `VtimezoneSet::insert` charges is reported by no code, which is recorded as
+  the hole it is rather than closed with a code invented during integration.
+- `docs/design/ical-tz-api.md` is brought onto the shipped surface and gains a "What M2 shipped"
+  section. The document described `LocalResolution::Single`/`Gap`, a `ZoneProvenance` pair
+  holding a `Coverage`, public struct fields on `Observance` and `YearlyRule`, a `Limits`
+  argument where a `Meter` shipped, and none of the seam at all; three of its five usage
+  examples would not have compiled. Its five open questions are answered, including the one
+  proposed code that was refused: an observance whose `TZOFFSETFROM` cannot be read is
+  `Component::audit`'s finding under section 3.6, and a second copy of that judgment in this
+  crate is a second place for the two to disagree.
+- `ical-recur`'s own documentation states the seam from its side rather than only naming
+  `UntilClock`: the crate-level docs carry the nominal timeline and the caller's two
+  obligations under it, `UntilClock`'s own doc narrows the sentence that was true only of a
+  floating or UTC series, and `max_absolute_shift` says outright that the seconds it counts are
+  elapsed ones and names `ical_tz::extra_widening` as what a zoned caller adds. The crate graph
+  is unchanged; `ical-recur` still has no zone and `just purity` still says so.

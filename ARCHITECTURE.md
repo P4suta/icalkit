@@ -23,7 +23,15 @@ or a fuzz harness never compiles the typed model
 
 `ical-recur` and `ical-tz` are siblings: neither depends on the other. Recurrence needs a
 zone answer, and the caller obtains it from `ical-tz` and passes in the instant, which is why
-recurrence expansion and zone resolution can be compiled apart.
+recurrence expansion and zone resolution can be compiled apart. M2 settled the one thing that
+arrangement leaves unsaid: **the timeline `ical-recur` walks for a zoned series is that series'
+own wall clock projected onto UTC, not the UTC timeline.** Every instant crossing the seam in
+either direction is on it, and each cadence key is resolved against the zone one at a time,
+which is the only place a daylight saving transition can be seen. `ical_tz::seam` states the
+contract, `ical-recur`'s crate documentation states the caller's two obligations under it, and
+`crates/ical-conform/tests/break_zones.rs` is the only file in the workspace that names both
+crates — it holds a daily 09:00 series to its wall clock across both of Europe/Berlin's 2026
+transitions and asserts that the reading which never re-resolves is 3,600 seconds out.
 
 ## Invariants
 

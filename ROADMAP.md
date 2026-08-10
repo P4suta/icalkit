@@ -84,8 +84,34 @@ owns the resolution types and the source trait, and every caller-facing outcome 
 `#[non_exhaustive]`. Transition search takes the shared limits and meter
 ([ADR 0010](docs/adr/0010-shared-resource-limits.md)).
 
-Gates this milestone owes: a compiled `ZoneSource` sketch before implementation starts, and a
-spring-forward and fall-back case per resolution outcome.
+Gates this milestone owed, both met: a compiled `ZoneSource` sketch before implementation
+started, and a spring-forward and fall-back case per resolution outcome.
+
+**Met.** `ical-tz` reads a `VTIMEZONE` into a transition table, evaluates its rules in closed
+form, resolves a wall clock against a caller-supplied source that names itself in every answer,
+and combines two such sources without preferring either. The two awkward hours are values with
+three gap policies and two fold policies over them; a table that runs out answers and says the
+answer was continued; and a `TZID` is compared by exact bytes and never parsed, so
+`W. Europe Standard Time` and `/mozilla.org/20050126_1/Europe/Berlin` are identifiers rather
+than puzzles.
+
+The milestone's real subject was the seam with M1, which M1 could only half-specify. It is
+settled: the timeline `ical-recur` walks for a zoned series is that series' own wall clock
+projected onto UTC, `ical_tz::seam` states the contract, `ical-recur`'s own documentation states
+it from the other side, and `crates/ical-conform/tests/break_zones.rs` — the only file naming
+both crates — holds a daily 09:00 Berlin series to 09:00 across both 2026 transitions and
+asserts that the reading which never re-resolves is 3,600 seconds out from the transition
+onwards. All six questions M1 left open are closed with a test each, and four of them left a
+golden-listed code behind that no emitter had before: `recurrence-until-not-utc`,
+`exdate-value-type-mismatch`, `override-matches-no-instance` and `time-zone-coverage-exhausted`.
+
+Two things are known and named. `AnswerBasis` says an answer continued a final observance and
+from which date, but what a caller should do about a continuation six years wide as against one
+a day wide is still nobody's decision, exactly as ADR 0003 left it — the conformance case pins
+the honest version, where an `RDATE` table ending in 2029 answers June 2035 as CET and real
+Berlin is on CEST. And `VtimezoneSet::insert` charges a zone-count bound that no code reports,
+so a calendar declaring more zones than the bound silently keeps the ones that fit; the doc
+comment saying otherwise and the golden list disagree, and M3 owes the decision.
 
 ## M3 — Scheduling
 
