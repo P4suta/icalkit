@@ -178,6 +178,17 @@ pub enum FieldRule {
 /// organizer's copy, and a permissive default there is a hole no test written against the
 /// properties we know will ever find. The price is the failure mode we prefer: the first real
 /// interoperability report is "this legitimate `COUNTER` was refused", not a silent write.
+///
+/// # `ORGANIZER` and `SEQUENCE` are the organizer's, and echoing one is not changing it
+///
+/// Both were [`FieldRule::EitherParty`] on the reading that an attendee's `COUNTER` legally
+/// *restates* them. That is true and is not what the rule decides: a transition holds only
+/// occurrences whose octets differ from the ones held, so a restatement produces no entry and
+/// is never asked about. What the permission actually bought was the other case — an
+/// attendee-authored message whose `ORGANIZER` line names somebody else, which RFC 5546
+/// section 3.2.7 gives an attendee no authority over and which hands the meeting away, and one
+/// whose `SEQUENCE` is a number section 2.1.4 makes the *organizer's* to increment and which
+/// the revision gate then reads back as the version to refuse everything older than.
 #[must_use]
 pub fn field_rule(name: &[u8]) -> FieldRule {
     for (spelling, rule) in [
@@ -185,10 +196,8 @@ pub fn field_rule(name: &[u8]) -> FieldRule {
         (b"REQUEST-STATUS", FieldRule::EitherParty),
         (b"COMMENT", FieldRule::EitherParty),
         (b"DTSTAMP", FieldRule::EitherParty),
-        (b"SEQUENCE", FieldRule::EitherParty),
         (b"UID", FieldRule::EitherParty),
         (b"RECURRENCE-ID", FieldRule::EitherParty),
-        (b"ORGANIZER", FieldRule::EitherParty),
     ] {
         if spelling.eq_ignore_ascii_case(name) {
             return rule;
@@ -406,6 +415,20 @@ mod tests {
         assert_eq!(field_rule(b"DTSTART"), FieldRule::OrganizerOnly);
         assert_eq!(field_rule(b"attendee"), FieldRule::AttendeeOwn);
         assert_eq!(field_rule(b"REQUEST-STATUS"), FieldRule::EitherParty);
+    }
+
+    /// The two properties an attendee may echo and may not write: who runs the meeting, and
+    /// which revision of it this is.
+    #[test]
+    fn the_organizer_line_and_the_revision_are_not_an_attendees_to_change() {
+        assert_eq!(field_rule(b"ORGANIZER"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(b"organizer"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(b"SEQUENCE"), FieldRule::OrganizerOnly);
+        assert_eq!(
+            field_rule(b"DTSTAMP"),
+            FieldRule::EitherParty,
+            "a reply states when it was written, and section 2.1.5 orders replies by it"
+        );
     }
 
     /// The list an attendee may never write, which is the first attack `SECURITY.md` names.

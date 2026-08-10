@@ -647,3 +647,35 @@ only instrument that can find this class of defect.
    any method whose table forbids `SEQUENCE` — read from the table rather than special-cased —
    because such a method states no version of its own and the absent-is-zero reading would make
    every refresh stale against every held revision above zero.
+
+### What four adversarial lenses then found, and what the surface owes them
+
+Nineteen cases, eleven of them security findings, all closed in the implementation. ADR 0005
+amendments 7 to 11 carry the reasoning; this section carries the surface changes a caller sees.
+
+- `AuthorizationDenied` gains `CalendarAddressUnreadable`. A `REPLY` whose `ATTENDEE` value is
+  empty or does not decode is refused rather than authorized to change nothing, because an `Ok`
+  with an empty transition and an answer that was silently dropped look identical to a caller.
+- `MessageError` gains `AmbiguousMethod` and `TooManyProperties`. The first keeps "no `METHOD`"
+  and "two `METHOD`s" apart, since reading the second as the first files a scheduling message as
+  an ordinary calendar; `scheduling-method-ambiguous` travels with it. The second is the bound
+  ADR 0010 was missing: `Limits::max_payload_properties` is counted and charged at `read`,
+  because `evaluate_message` takes no ledger and describes a transition per property occurrence.
+- `ScheduledComponent` gains `attendee_answered_at`, defaulted to `None`. It is the only place a
+  per-attendee reply timestamp can live, and without it RFC 5546 section 2.1.5 cannot order two
+  answers from one attendee — the component's own `DTSTAMP` is the organizer's, and advancing it
+  on a reply would refuse one attendee's answer because a different attendee answered later. The
+  shipped bridge reads and writes it as the `ical_itip::ANSWERED_AT` parameter on the `ATTENDEE`
+  line, which is a vendor `x-param` because RFC 5545 registers nothing for the fact.
+- `FoldSide` gains `Nowhere`, and `resolve_instance` applies the caller's `GapPolicy`. An
+  identity in a gap resolves under one permitted reading and vanishes under the other, and it
+  compares `Different` rather than `Ambiguous` so the refusal names an instance the state does
+  not have instead of claiming two meetings could not be told apart.
+- `field_rule` moves `ORGANIZER` and `SEQUENCE` to `OrganizerOnly`, and `AttendeeOwn` now asks
+  whether the line a change leaves behind still names the actor.
+- The gate's order is identity, sender, **conformance**, revision, fields. Conformance moved
+  ahead of the revision because it is the half of the judgment about the message alone: a
+  `REPLY` with no `DTSTAMP` is a message its own table refuses, and reporting it as *stale* is a
+  true statement about the comparison and the wrong thing to tell a caller.
+- An organizer-authored message that supersedes nothing describes nothing. `describe_message`
+  is unchanged and still hands back what such a message claimed.

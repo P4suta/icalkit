@@ -16,10 +16,17 @@
 //! # The gate, in order
 //!
 //! [`evaluate_message`] runs a fixed order and a denial names the first reason a caller can
-//! act on: **identity**, then **sender**, then **revision**, then **method conformance**, then
+//! act on: **identity**, then **sender**, then **method conformance**, then **revision**, then
 //! **fields**. There is no partial success. A message that overreaches on one property is
 //! denied whole, because applying its permitted half would leave the caller holding a
 //! component no party ever described.
+//!
+//! Conformance sits ahead of the revision because it is the half of the judgment that is
+//! about the message alone. A `REPLY` carrying no `DTSTAMP` is a message RFC 5546 section
+//! 3.2.3's table refuses; ordering it first instead would report it as *stale*, since a
+//! revision with no timestamp loses the tie to one that has a timestamp — a true statement
+//! about the comparison and the wrong thing to tell a caller about a message whose own table
+//! it never satisfied.
 //!
 //! # What survives the byte boundary, stated plainly
 //!
@@ -49,7 +56,7 @@
 
 use ical_core::{ComponentKind, Instant, PropertyId, ProposedChange};
 
-use crate::diff::{attendee_occurrence_of, describe_payload};
+use crate::diff::{attendee_occurrence_of, describe_payload, reason_for};
 use crate::identity::{MessageIdentity, Revision, Uid};
 use crate::message::ItipMessage;
 use crate::method::{ActorRole, Method};
@@ -78,6 +85,16 @@ pub enum AuthorizationDenied {
     AmbiguousInstance,
     /// The sender is on neither the attendee list nor the organizer line.
     UnknownAttendee,
+    /// A `CAL-ADDRESS` the decision turns on was present and identifies nobody.
+    ///
+    /// RFC 5546 section 3.2.3 makes the `ATTENDEE` of a `REPLY` the address of the attendee
+    /// replying, so a value that does not decode — or that is empty — is an answer on behalf of
+    /// no party. It is a refusal rather than a transition describing nothing, because the two
+    /// look identical to a caller and only one of them means the attendee's answer was dropped.
+    /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`] is the same fact reported.
+    ///
+    /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`]: ical_core::DiagnosticCode::SchedulingCalendarAddressUnreadable
+    CalendarAddressUnreadable,
     /// The sender is not the organizer this component names.
     OrganizerMismatch,
     /// RFC 5546 does not permit this party to send this method.
@@ -347,11 +364,25 @@ fn revision_of(component: &dyn ScheduledComponent) -> Option<Revision> {
 }
 
 /// Whether `current` is a component the caller actually holds.
+///
+/// Asked of the component as a whole and never of its `UID`. A `UID` that does not read is a
+/// component whose *identity* cannot be compared, which is a reason to refuse the message in
+/// [`matching_payload`]; reading it as "the caller holds nothing" is a reason to look the
+/// sending party up in the attacker's own message instead of in the recipient's copy, and a
+/// stranger is then authorized to rewrite the organizer line of a meeting the caller is holding
+/// while this function answers that the caller holds no such meeting.
+///
+/// So absence is absence: a component that states no property, carries no attendee and nests
+/// nothing is the placeholder a caller passes when it has nothing, and everything else is
+/// something it has.
 fn prior_state(current: &dyn ScheduledComponent) -> PriorState {
-    if current.uid().is_some() {
-        PriorState::Present
-    } else {
+    let empty = current.property_count() == 0
+        && current.attendee_count() == 0
+        && current.child_count() == 0;
+    if empty {
         PriorState::Absent
+    } else {
+        PriorState::Present
     }
 }
 
@@ -373,15 +404,19 @@ pub fn evaluate_message<'a>(
     }
     let payload = matching_payload(message, current, prior)?;
     let role = sender_role(message, sender_state(current, payload, prior), actor)?;
+    check_conformance(constraints, payload)?;
+    check_nesting(constraints, payload)?;
+    check_range(message.method(), payload)?;
     if !constraints.presence_of(b"SEQUENCE").is_forbidden() {
         check_revision(payload, current)?;
     }
-    check_range(message.method(), payload)?;
-    check_conformance(constraints, payload)?;
-    check_nesting(constraints, payload)?;
+    if message.method() == Method::Reply {
+        check_answer(payload, current)?;
+    }
 
-    let transition = describe_payload(message.method(), payload, current);
-    check_fields(&transition, current, role, actor)?;
+    let described = describe_payload(message.method(), payload, current);
+    check_fields(&described, current, role, actor)?;
+    let transition = settle(message.method(), prior, (payload, current), described);
     Ok(Authorization {
         message,
         current,
@@ -503,6 +538,88 @@ fn check_revision(
     })
 }
 
+/// RFC 5546 section 2.1.5, applied to the two messages it was written for: one attendee's
+/// answers.
+///
+/// The revision gate above orders a message against the component; two replies from one
+/// attendee are one revision of that component answered twice, so nothing it compares can tell
+/// them apart. What can is the time the answer already on the line was written at, and
+/// [`ScheduledComponent::attendee_answered_at`] is where a state keeps it.
+///
+/// A state that keeps none admits the second answer, which is the direction that lets an
+/// attendee change its mind; a state that keeps one refuses an answer that is not newer, which
+/// is the direction that stops an attendee's own earlier answer, replayed, from reverting the
+/// current one. A reply whose `DTSTAMP` cannot be read is refused against a recorded time for
+/// the same reason a message with no tie-break does not win a tie.
+fn check_answer(
+    payload: &dyn ScheduledComponent,
+    current: &dyn ScheduledComponent,
+) -> Result<(), AuthorizationDenied> {
+    let Some(answer) = payload.attendee(0) else {
+        // Section 3.2.3's `1` row has already refused a reply with no `ATTENDEE`, so this arm
+        // is a `ScheduledComponent` whose count and whose lookup disagree.
+        return Ok(());
+    };
+    let Some(who) = answer.party().address() else {
+        return Err(AuthorizationDenied::CalendarAddressUnreadable);
+    };
+    let Some(have) = attendee_index(current, who).and_then(|at| current.attendee_answered_at(at))
+    else {
+        return Ok(());
+    };
+    if payload.dtstamp().is_some_and(|stated| stated > have) {
+        Ok(())
+    } else {
+        Err(AuthorizationDenied::DtstampStale { have })
+    }
+}
+
+/// The transition as it stands once RFC 5546 section 2.1.4 has been read.
+///
+/// Section 2.1.4 requires the organizer to increment `SEQUENCE` for every update it sends, so
+/// an organizer-authored message that does not supersede the revision the caller holds is not a
+/// newer version of it — it is the version already held, restated, whatever else its lines say.
+/// Two messages at one revision are one version, and one of them is not the one the organizer
+/// sent; describing the second as a change would let a captured message replayed with an edited
+/// time move the meeting without any revision moving.
+///
+/// So it describes nothing rather than being refused, because the commonest message of this
+/// shape is a message already applied arriving twice, and a caller shown "no change" for a
+/// duplicate is being told the truth. What the message *claimed* stays reachable through
+/// [`describe_message`](crate::describe_message), which is ADR-0005's own recommendation.
+///
+/// Attendee-authored methods are left alone: a `REPLY` or a `COUNTER` restates the revision it
+/// answers and never claims to be a newer one, so there is nothing here for section 2.1.4 to
+/// say about it. So is a caller that holds nothing: the two methods RFC 5546 admits against an
+/// absent prior state exist to arrive first, and there is no revision of anything for a first
+/// message to fail to supersede.
+///
+/// The two components arrive as a pair rather than as two parameters because they are the two
+/// sides of one comparison, and `clippy::similar_names` is right that `payload` and `current`
+/// read alike at a call site with four arguments.
+fn settle(
+    method: Method,
+    prior: PriorState,
+    versions: (&dyn ScheduledComponent, &dyn ScheduledComponent),
+    described: Transition,
+) -> Transition {
+    let (payload, current) = versions;
+    if !method.is_organizer_authored() || described.is_empty() || prior == PriorState::Absent {
+        return described;
+    }
+    let advanced = match (revision_of(payload), revision_of(current)) {
+        (Some(offered), Some(held)) => offered.supersedes(held),
+        // Either side stating no readable revision leaves section 2.1.4 nothing to order, and
+        // the message stands on whatever the gates above made of it.
+        _ => true,
+    };
+    if advanced {
+        described
+    } else {
+        Transition::new(reason_for(method, current, false))
+    }
+}
+
 /// RFC 5546 section 3.2.3: a `REPLY` answers one instance, not every later one.
 fn check_range(
     method: Method,
@@ -522,6 +639,13 @@ fn check_range(
 /// Counted per name over the payload's own properties, so a `0` row is refused however many
 /// times it appears and a `1` row is refused when it appears twice. The `SUBCOMPONENTS` rows
 /// are read the same way by [`check_nesting`].
+///
+/// Every row is read and not only the ones that require something. A `0 or 1` row left unread
+/// is a row that says a name means one thing when it appears and something else when it
+/// appears twice: section 3.2.5 gives `CANCEL` a `RECURRENCE-ID` of `0 or 1`, so a message
+/// stating it twice satisfies neither the instance reading nor the series reading — and the
+/// duplicate widens the message's reach from one occurrence to the whole recurring event,
+/// which is the shape a reader must never resolve by picking.
 ///
 /// The `COMPONENTS` rows are deliberately **not** read here. They state which top-level
 /// components a message may carry, and [`crate::ItipMessage::read`] already refuses a second
@@ -549,18 +673,23 @@ fn check_conformance(
         *seen = seen.saturating_add(1);
     }
     for row in constraints.properties() {
-        if !row.presence().is_required() {
-            continue;
-        }
         let seen = counts
             .iter()
             .find(|(name, _)| row.is_named(name))
             .map_or(0, |(_, count)| *count);
-        if !row.presence().admits(seen) {
+        if row.presence().admits(seen) {
+            continue;
+        }
+        if seen == 0 {
             return Err(AuthorizationDenied::MethodRequiresField(
                 PropertyId::from_name(row.name()),
             ));
         }
+        // Every row that fails with something present fails for having too much of it, and the
+        // occurrence named is the first one the row does not admit.
+        return Err(AuthorizationDenied::MethodForbidsField(
+            PropertyOccurrence::named(row.name(), seen.saturating_sub(1)),
+        ));
     }
     Ok(())
 }
@@ -604,6 +733,12 @@ fn check_nesting(
 /// An organizer-side actor may write anything the method's table admits. An attendee-side one
 /// may write only [`FieldRule::EitherParty`] properties and its own `ATTENDEE` line — which is
 /// the rule that stops a reply from moving a meeting, the first attack `SECURITY.md` names.
+///
+/// "Its own" is two questions and not one. The occurrence has to be the line this actor sits
+/// at, **and** the line the change would leave behind has to still name this actor: a `COUNTER`
+/// replacing the sender's own `ATTENDEE` line with a party the meeting never invited passes the
+/// first question and is the substitution of a stranger for the sender, which takes the sender
+/// off the list and puts somebody nobody asked for on it, on one authorized change.
 fn check_fields(
     transition: &Transition,
     current: &dyn ScheduledComponent,
@@ -614,10 +749,10 @@ fn check_fields(
         return Ok(());
     }
     let own = attendee_occurrence_of(current, actor);
-    for (at, _) in transition.changes() {
+    for (at, change) in transition.changes() {
         let permitted = match field_rule(at.name()) {
             FieldRule::EitherParty => true,
-            FieldRule::AttendeeOwn => own.as_ref() == Some(at),
+            FieldRule::AttendeeOwn => own.as_ref() == Some(at) && keeps_the_actor(change, actor),
             FieldRule::OrganizerOnly => false,
         };
         if !permitted {
@@ -625,6 +760,40 @@ fn check_fields(
         }
     }
     Ok(())
+}
+
+/// Whether the line `change` would leave behind still names `actor`.
+///
+/// A parameter edit does not reach the value, so the line names whoever it named. A whole line
+/// written in has to name the actor itself, and a removal names nobody: an attendee stating
+/// that it is no longer a participant is `PARTSTAT=DECLINED`, not the deletion of the line the
+/// organizer is tracking that answer on.
+fn keeps_the_actor(change: &ProposedChange, actor: PartyId<'_>) -> bool {
+    match *change {
+        ProposedChange::SetParameters(_) => true,
+        ProposedChange::Add(ref line) | ProposedChange::Replace(ref line) => {
+            address_of(line.as_bytes()).is_some_and(|written| written.matches(actor))
+        },
+        ProposedChange::Remove => false,
+    }
+}
+
+/// The `CAL-ADDRESS` a written content line states, or `None` when it states none.
+///
+/// The value is what follows the first `:` outside a quoted parameter value, which is RFC 5545
+/// section 3.1's own division of a content line and is the same one
+/// [`crate::ScheduledView`] assembles a line by.
+fn address_of(line: &[u8]) -> Option<PartyId<'_>> {
+    let mut quoted = false;
+    let cut = line.iter().position(|octet| match *octet {
+        b'"' => {
+            quoted = !quoted;
+            false
+        },
+        b':' => !quoted,
+        _ => false,
+    })?;
+    PartyId::from_bytes(line.get(cut..)?.get(1..)?)
 }
 
 /// Write an authorized transition to `target`, reporting what it took.
@@ -652,7 +821,50 @@ pub fn apply_transition(
 
 #[cfg(test)]
 mod tests {
+    use ical_core::{ParameterEdit, ProposedChange, RawText};
+
+    use super::{address_of, keeps_the_actor};
+    use crate::party::PartyId;
     use crate::table::RULES;
+
+    /// The second half of "its own `ATTENDEE` line": a line the actor no longer appears on is
+    /// not the actor's line, however it is addressed.
+    #[test]
+    fn a_change_keeps_the_actor_only_when_the_line_it_leaves_behind_names_them() {
+        let bo = PartyId::new("mailto:bo@example.com");
+        let substitution = ProposedChange::Replace(RawText::from_bytes(
+            b"ATTENDEE;PARTSTAT=ACCEPTED:mailto:eve@example.com",
+        ));
+        assert!(!keeps_the_actor(&substitution, bo));
+
+        let answer = ProposedChange::Replace(RawText::from_bytes(
+            b"ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.com",
+        ));
+        assert!(keeps_the_actor(&answer, bo));
+
+        // A parameter edit does not reach the value, so it cannot move the line to anybody.
+        let edited = ProposedChange::SetParameters(alloc::vec![ParameterEdit::set(
+            b"PARTSTAT",
+            b"DECLINED"
+        )]);
+        assert!(keeps_the_actor(&edited, bo));
+        assert!(!keeps_the_actor(&ProposedChange::Remove, bo));
+    }
+
+    /// A content line's value is what follows the first `:` outside a quoted parameter, which
+    /// is where a `SENT-BY` full of colons would otherwise end the search early.
+    #[test]
+    fn the_address_of_a_line_is_read_the_way_the_grammar_divides_one() {
+        let quoted =
+            address_of(b"ATTENDEE;SENT-BY=\"mailto:pa@example.com\":mailto:bo@example.com");
+        assert_eq!(quoted.map(PartyId::as_str), Some("mailto:bo@example.com"));
+        assert_eq!(
+            address_of(b"ATTENDEE:").map(PartyId::as_str),
+            Some(""),
+            "an empty value is a value, and it is the one that identifies nobody"
+        );
+        assert_eq!(address_of(b"ATTENDEE"), None);
+    }
 
     /// [`super::check_nesting`] reads only the forbidden direction of the `SUBCOMPONENTS` rows,
     /// and that is only correct while no such row requires anything. Checked against the

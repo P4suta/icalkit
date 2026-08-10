@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-11 (three times)
+- Amended: 2026-08-11 (eleven amendments)
 
 ## Context
 
@@ -202,3 +202,77 @@ invented rather than for anything the attendee wrote. `describe_payload` answers
 transition for it, the way it already answered one attendee's line for a `REPLY`, and for the
 same reason: RFC 5546 says what these two methods are about, and a general octet diff says
 something else.
+
+**7. The attendee side may write its own participation and nothing that decides who writes
+next.** Amendment 1 settled the *address* of a change and this document settled the
+*vocabulary*; what neither settled is that a field permission is a statement about an octet
+diff, and a diff records only what differs. `field_rule` gave `ORGANIZER` and `SEQUENCE`
+`EitherParty` on the true observation that an attendee's `COUNTER` legally restates both — but a
+restatement produces no entry and is never asked about, so the permission bought only the case
+it was not written for: an attendee-authored line naming somebody else as `ORGANIZER`, which
+hands the meeting away, and a `SEQUENCE` an attendee raises, which is the number the revision
+gate then refuses every genuine organizer update against. Both are `OrganizerOnly`. In the same
+place, `AttendeeOwn` was read as "the occurrence this actor sits at" and is now also "and the
+line this change leaves behind still names this actor", because replacing one's own `ATTENDEE`
+line with a stranger's satisfies the first reading exactly.
+
+What this cannot reach is a state that already names the wrong party. A component whose
+`ORGANIZER` line names an attendee says that attendee organizes it, and section 1.3 lets one
+calendar user be both — every real invitation lists the organizer on the attendee list — so no
+rule readable from that file alone can refuse them without refusing every organizer who attends
+their own meeting. The defense is that no message may write that line, and the corpus asserts
+the state is unreachable rather than asserting a reading of it that cannot exist.
+
+**8. A component that states anything is a component the caller holds.** Amendment 4 made the
+sending party's lookup fall back to the message when the prior state is absent, and priced that
+honestly. What it did not say is how *absent* is decided, and the answer was "the `UID` did not
+read" — which is a different question, and the wrong one. A held copy whose `UID` line appears
+twice is a component the caller plainly has, and reading it as one the caller has nothing about
+sent the sender's lookup into the attacker's own message, where the attacker is the `ORGANIZER`.
+Absence is now the absence of everything: no property, no attendee, no nested component. A
+`UID` that cannot be compared is a reason to refuse the message on identity, never a reason to
+believe the recipient is holding nothing.
+
+Underneath it, the bridge stopped refusing a name stated twice with byte-identical lines. Two
+identical claims have no winner to pick between them, and refusing them was conservative about
+the reading while being permissive about the consequence.
+
+**9. Ordering is refused where it cannot be done, and a reply is ordered against the answer it
+replaces.** Sections 2.1.4 and 2.1.5 are this protocol's whole replay defense, and three of
+their edges were open. At an equal `SEQUENCE`, a revision stating a `DTSTAMP` now supersedes one
+stating none — the tie is broken towards refusal in both directions, because the spelling of a
+`DTSTAMP` is the sender's to choose and an unreadable one is a tie-break declined rather than an
+accident. An organizer-authored message that supersedes nothing describes nothing, because
+section 2.1.4 requires an update to increment `SEQUENCE`: two messages at one revision are one
+version, and the second is not the one the organizer sent.
+
+The third needed the state model to grow, which is why it is an amendment and not a fix. Two
+replies from one attendee are one revision answered twice, and nothing on a component can order
+them: its `DTSTAMP` is the organizer's, it is older than both, and advancing it on a reply would
+refuse one attendee's answer because a *different* attendee answered later.
+`ScheduledComponent::attendee_answered_at` is where that fact lives, the reply diff writes it
+onto the line it answers for as `ical_itip::ANSWERED_AT`, and a state that records nothing
+admits the second answer rather than refusing it — the direction that keeps a change of mind
+working, stated in `SECURITY.md` as a defense a caller can discard by discarding the parameter.
+No parameter RFC 5545 registers carries this, and an `x-param` on the line it is about is the
+only conformant place for it.
+
+**10. A gap is the caller's reading, and an identity that names no instant is not an ambiguous
+one.** Amendment 3 gave instance identity a fold side and stopped there, at the half of the
+question the octets can raise. The other half is a wall clock a zone sprang over, which names no
+instant until `ical_tz::GapPolicy` says otherwise — and `resolve_instance` was reaching past
+that policy to the raw resolution, so an identity in a gap came back identical under all three
+readings, with an empty report, and the message was then refused `AmbiguousInstance`: a claim
+that two meetings could not be told apart, about an hour in which the zone showed none.
+`FoldSide::Nowhere` is that state, it compares `Different` rather than `Ambiguous` so the
+refusal is `NoMatchingInstance`, and `scheduling-instance-nonexistent` says when a reading
+dropped an identity. `FoldPolicy` stays deliberately unread here: a policy for *rendering* a
+repeated hour must not decide which of two meetings a message is about.
+
+**11. The work of judging a message is cardinality, and cardinality is charged at `read`.**
+`ItipMessage` means "already checked and already charged" and `evaluate_message` takes no ledger
+on the strength of it. The list that was never counted is the one a transition is described
+over: a payload of a hundred thousand properties read for four units and cost a hundred thousand
+allocations to judge, so a shared meter bounded how many messages an inbox read and not what
+reading one cost. `Limits::max_payload_properties` bounds it and `read` charges it, beside the
+attendee list it already charged.

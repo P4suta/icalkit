@@ -48,19 +48,39 @@
 //!
 //! # Present and unusable is an answer
 //!
-//! A name RFC 5545 declares at most once, arriving more than once, is not one value —
-//! [`ical_core::Component::get`] reports that as `View::Malformed` and this reports it in the
-//! only vocabulary the trait has. `UID`, `METHOD`, `DTSTAMP`, `RECURRENCE-ID` and `ORGANIZER`
-//! answer `None`, which refuses the message rather than picking a winner out of two. `SEQUENCE`
-//! has a third state of its own and answers [`SequenceRead::Unreadable`], which is not
-//! [`SequenceRead::Absent`]: an absent `SEQUENCE` is revision zero and an unreadable one is no
-//! revision at all.
+//! A name RFC 5545 declares at most once, arriving more than once with **two different lines**,
+//! is not one value — [`ical_core::Component::get`] reports that as `View::Malformed` and this
+//! reports it in the only vocabulary the trait has. `UID`, `METHOD`, `DTSTAMP`, `RECURRENCE-ID`
+//! and `ORGANIZER` answer `None`, which refuses the message rather than picking a winner out of
+//! two. `SEQUENCE` has a third state of its own and answers [`SequenceRead::Unreadable`], which
+//! is not [`SequenceRead::Absent`]: an absent `SEQUENCE` is revision zero and an unreadable one
+//! is no revision at all.
+//!
+//! Two occurrences whose whole content lines are byte-identical are **one statement written
+//! twice**, and they answer with that statement. Refusing them was the more conservative
+//! reading of the two and it was not the safer one: a stored copy whose `UID` line is
+//! duplicated — which ADR-0001's lossless reading preserves, and which any producer can leave
+//! behind — then reported as a component the caller does not hold, and a message about it was
+//! judged against itself instead of against the recipient's `ORGANIZER` line. There is no
+//! winner to pick between two identical claims, and reading one is not a guess.
 //!
 //! A `RECURRENCE-ID` that is present and does not decode is the sharpest of these. Answering
 //! `None` would make a message about one instance look like a message about the whole series,
 //! which is how a `CANCEL` for Tuesday cancels the year. It answers an instance reference whose
 //! fold side is [`crate::FoldSide::Unresolved`] instead, and an unresolved side can never
 //! compare [`crate::InstanceMatch::Same`] — so the gate above denies rather than guesses.
+//!
+//! # A wall clock is the series' clock, whether or not the file repeats the zone
+//!
+//! A `RECURRENCE-ID` written with a trailing `Z` names an instant and falls in no fold. Every
+//! other spelling names a wall clock, and this crate resolves no zone, so both the `TZID` form
+//! and the bare form answer [`crate::FoldSide::Unresolved`] and a caller holding the zone
+//! attaches a side with [`crate::resolve_instance`]. The bare form used to answer
+//! [`crate::FoldSide::Once`] on the reading that a floating value projects onto the nominal
+//! timeline as itself. That is true of a series that runs on no zone and false of the value
+//! several producers actually emit — a bare override of a *zoned* series — and the difference
+//! was one reply answering both halves of a repeated hour, which the zoned spelling of the same
+//! pair was already refused for.
 //!
 //! # Names are normalized and lines are not
 //!
@@ -78,14 +98,14 @@ use core::fmt::{self, Debug, Formatter};
 use core::mem;
 
 use ical_core::{
-    CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, Instant, Property,
-    PropertyId, RawText, decode_caret,
+    CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue, Instant,
+    Property, PropertyId, RawText, decode_caret,
 };
 use ical_recur::OverrideRange;
 use ical_tz::nominal;
 
 use crate::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
-use crate::party::{Attendee, Party};
+use crate::party::{ANSWERED_AT, Attendee, Party};
 use crate::state::{PropertyOccurrence, ScheduledComponent};
 
 /// The RFC 6868-resolved parameter values one `ORGANIZER` or `ATTENDEE` line states.
@@ -106,6 +126,8 @@ struct PartyValues {
     delegated_from: Option<RawText>,
     /// The `DELEGATED-TO` value, absent when the line states none.
     delegated_to: Option<RawText>,
+    /// When this party's own answer was written, absent when the line records no time.
+    answered_at: Option<Instant>,
 }
 
 /// One property, with the two things a scheduling decision needs and the tree does not store.
@@ -226,12 +248,15 @@ impl<'a> ScheduledView<'a> {
         let lines: Vec<PropertyLine<'a>> = component.properties().map(PropertyLine::read).collect();
         let attendees = positions_of(&lines, &PropertyId::ATTENDEE);
         let found = positions_of(&lines, &PropertyId::ORGANIZER);
-        // Exactly one, or none at all: two `ORGANIZER` lines are two claims about who owns this
-        // component, and picking the first is how the second one gets to be the one that counts.
-        let organizer = match found.as_slice() {
-            [only] => Some(*only),
-            _ => None,
-        };
+        // One claim, however many times it was written. Two `ORGANIZER` lines that differ are
+        // two claims about who owns this component, and picking the first is how the second one
+        // gets to be the one that counts; two that are byte-identical are one claim restated.
+        let organizer = found.first().copied().filter(|first| {
+            let stated = lines.get(*first).map(|entry| &entry.line);
+            found
+                .iter()
+                .all(|at| lines.get(*at).map(|entry| &entry.line) == stated)
+        });
         Self {
             component,
             lines,
@@ -242,18 +267,21 @@ impl<'a> ScheduledView<'a> {
     }
 
     /// The one property of this component with the identity `id`, absent when there are two.
+    ///
+    /// Two occurrences whose whole content lines are byte-identical are one statement stated
+    /// twice, and answering them is not picking a winner out of two — there is one value, and
+    /// a reader that refused it would report a component the caller plainly holds as one it
+    /// holds nothing about. Two that differ anywhere, in a parameter as much as in a value,
+    /// are two claims, and those stay `None`.
     fn single(&self, id: &PropertyId) -> Option<&'a Property> {
-        let mut found = self
-            .lines
-            .iter()
-            .filter(|entry| entry.property.has_id(id))
-            .map(|entry| entry.property);
+        let mut found = self.lines.iter().filter(|entry| entry.property.has_id(id));
         let first = found.next()?;
-        if found.next().is_some() {
-            None
-        } else {
-            Some(first)
+        for later in found {
+            if later.line != first.line {
+                return None;
+            }
         }
+        Some(first.property)
     }
 
     /// The value octets of the one property with the identity `id`.
@@ -326,6 +354,15 @@ fn party_values(property: &Property) -> Option<PartyValues> {
         role: parameter_value(property, b"ROLE"),
         delegated_from: parameter_value(property, b"DELEGATED-FROM"),
         delegated_to: parameter_value(property, b"DELEGATED-TO"),
+        answered_at: parameter_value(property, ANSWERED_AT).and_then(|stated| {
+            // Read exactly as a `DTSTAMP` is read, because that is what it was: a value under a
+            // `TZID` or written as a `DATE` orders nothing, and a time nothing could read is
+            // the absence of one rather than a guess at one.
+            match DateTimeValue::decode_value(stated.as_bytes()).ok()? {
+                DateTimeValue::Utc(stamp) | DateTimeValue::Local(stamp) => nominal(stamp),
+                DateTimeValue::Date(_) | DateTimeValue::Zoned { .. } => None,
+            }
+        }),
     })
 }
 
@@ -340,7 +377,7 @@ fn party_values(property: &Property) -> Option<PartyValues> {
 /// would let an answer to a two-delegate line write only the first delegate back, while keeping
 /// the list whole makes it match nobody — the conservative direction, and the same one
 /// [`crate::PartyId`] takes for an address that does not decode.
-fn parameter_value(property: &Property, name: &'static [u8]) -> Option<RawText> {
+fn parameter_value(property: &Property, name: &[u8]) -> Option<RawText> {
     let held = property
         .parameters_named(name)
         .find(|entry| entry.has_value())?;
@@ -387,16 +424,20 @@ fn instance_reading(property: &Property) -> Option<(Instant, InstanceClock)> {
 
 /// Which half of a repeated wall clock a value written in `clock` names.
 ///
-/// A UTC value names a real instant and a floating one projects onto the nominal timeline as
-/// itself, so neither can fall inside a fold and both are [`FoldSide::Once`] — which is what
-/// [`crate::FoldSide`]'s own documentation says the answer is for a floating or UTC series. A
-/// zoned value is the case that needs a zone, and this crate resolves none, so it stays
-/// [`FoldSide::Unresolved`] and a caller holding the zone attaches a side with
-/// [`InstanceRef::with_side`].
+/// A UTC value names a real instant, so it falls inside no fold and is [`FoldSide::Once`]
+/// whatever zone the series runs on.
+///
+/// Everything else is a wall clock, and a wall clock is the *series'* clock whether or not the
+/// value repeats the `TZID`: producers emit a bare `RECURRENCE-ID` for an override of a zoned
+/// series, and reading that as a value on no zone at all was how one reply answered both halves
+/// of a repeated hour. So a floating value is [`FoldSide::Unresolved`] exactly as a zoned one
+/// is, and a caller holding the zone attaches a side with [`crate::resolve_instance`] and
+/// [`InstanceRef::with_side`]. The cost lands where it should: a message whose instance nobody
+/// placed is refused rather than applied to a guess.
 const fn side_of(clock: InstanceClock) -> FoldSide {
     match clock {
-        InstanceClock::Utc | InstanceClock::Floating => FoldSide::Once,
-        InstanceClock::Zoned => FoldSide::Unresolved,
+        InstanceClock::Utc => FoldSide::Once,
+        InstanceClock::Zoned | InstanceClock::Floating => FoldSide::Unresolved,
     }
 }
 
@@ -434,21 +475,22 @@ impl ScheduledComponent for ScheduledView<'_> {
     }
 
     fn sequence(&self) -> SequenceRead {
-        let mut found = self
+        if !self
             .lines
             .iter()
-            .filter(|entry| entry.property.has_id(&PropertyId::SEQUENCE));
-        let Some(first) = found.next() else {
+            .any(|entry| entry.property.has_id(&PropertyId::SEQUENCE))
+        {
             // RFC 5546 section 3.2 reads an absent `SEQUENCE` as zero, which is a revision.
             return SequenceRead::Absent;
-        };
-        if found.next().is_some() {
-            return SequenceRead::Unreadable;
         }
+        // Two revisions stated at once are no revision, and the same line stated twice is one:
+        // `single` draws that division once for every name read here.
+        let Some(stated) = self.single(&PropertyId::SEQUENCE) else {
+            return SequenceRead::Unreadable;
+        };
         // A negative `SEQUENCE` is an integer RFC 5545 section 3.8.7.4 does not admit, and it is
         // no more a revision than a value that is not an integer at all.
-        first
-            .property
+        stated
             .value::<i32>()
             .value()
             .and_then(|stated| u32::try_from(stated).ok())
@@ -500,6 +542,11 @@ impl ScheduledComponent for ScheduledView<'_> {
             who = who.with_delegated_to(stated.as_bytes());
         }
         Some(who)
+    }
+
+    fn attendee_answered_at(&self, index: usize) -> Option<Instant> {
+        let entry = self.lines.get(*self.attendees.get(index)?)?;
+        entry.values.as_ref()?.answered_at
     }
 
     fn attendee_occurrence(&self, index: usize) -> Option<PropertyOccurrence> {
@@ -641,11 +688,6 @@ mod tests {
     /// The one `VEVENT` inside it.
     fn event_of(document: &Document) -> &Component {
         calendar_of(document).components().next().unwrap()
-    }
-
-    /// The octets one component serializes to, on its own.
-    fn octets_of(component: &Component) -> Vec<u8> {
-        Document::new(vec![Item::Component(component.clone())]).to_bytes()
     }
 
     /// A place an authorized transition is written, so a test can go through the real door.
@@ -843,11 +885,82 @@ mod tests {
         let mut written = held.clone();
         let report = apply_transition(&mut Target(&mut written), authorized);
         assert!(report.is_complete() && report.applied() == 1);
+        // The reply restates the delegation it already carries and records when it was
+        // answered, and nothing else on the line moves: the value the file spelled with `^'`
+        // is written back with `^'`, where encoding a value that skipped the decode would
+        // write `^^'`. Compared through the reader rather than as file octets, because a line
+        // that grew past 75 octets is folded by the writer and a fold is not a difference.
+        let after = ScheduledView::of(&written);
+        let at = attendee_line(&after, 0);
         assert_eq!(
-            octets_of(&written),
-            octets_of(held),
-            "encoding a value that skipped the decode writes ^^' where the file had ^'"
+            after.property_line(at),
+            Some(
+                &b"ATTENDEE;PARTSTAT=DELEGATED;DELEGATED-TO=\"mailto:a^'b@x.te\";\
+                   X-ICALKIT-ANSWERED-AT=20260810T120000Z:mailto:b@x.te"[..]
+            )
         );
+        let untouched = attendee_line(&after, 1);
+        assert_eq!(
+            after.property_line(untouched),
+            Some(&b"ATTENDEE;ROLE=CHAIR:mailto:c@x.te"[..]),
+            "a reply reaches one line"
+        );
+    }
+
+    /// The parameter the reply diff writes, and the ordering it exists for.
+    ///
+    /// RFC 5546 section 2.1.5 orders two messages at one revision by `DTSTAMP`, and two replies
+    /// from one attendee are exactly that. The component's own `DTSTAMP` is the organizer's and
+    /// is older than both, so the time each answer was written at is recorded on the line it
+    /// answers for — and the attendee's own earlier answer, replayed afterwards, is then
+    /// refused rather than silently reverting the later one.
+    #[test]
+    fn an_earlier_answer_replayed_after_a_later_one_is_refused() {
+        let held_document = read(HELD.as_bytes());
+        let held = event_of(&held_document);
+
+        let mut store = held.clone();
+        for (stamp, expected) in [("20260810T140000Z", true), ("20260810T130000Z", false)] {
+            let snapshot = store.clone();
+            let current = ScheduledView::of(&snapshot);
+            let message_bytes = reply("2", stamp, "", "ATTENDEE;PARTSTAT=ACCEPTED:mailto:b@x.te");
+            let message_document = read(&message_bytes);
+            let calendar = ScheduledView::of(calendar_of(&message_document));
+            let mut meter = Meter::new(Limits::DEFAULT);
+            let message = ItipMessage::read(
+                &calendar,
+                Limits::DEFAULT,
+                &mut meter,
+                &mut IgnoreDiagnostics,
+            )
+            .unwrap();
+
+            match evaluate_message(&message, &current, PartyId::new("mailto:b@x.te")) {
+                Ok(authorized) => {
+                    assert!(expected, "the replayed earlier answer was authorized");
+                    let report = apply_transition(&mut Target(&mut store), authorized);
+                    assert!(report.is_complete());
+                },
+                Err(denied) => {
+                    assert!(!expected, "the first answer was refused: {denied:?}");
+                    assert!(matches!(denied, AuthorizationDenied::DtstampStale { .. }));
+                },
+            }
+        }
+
+        let after = ScheduledView::of(&store);
+        assert_eq!(
+            after.attendee_answered_at(0),
+            ScheduledView::of(event_of(&read(&reply(
+                "2",
+                "20260810T140000Z",
+                "",
+                "ATTENDEE:mailto:b@x.te"
+            ))))
+            .dtstamp(),
+            "the line records the answer that was applied and not the one that was refused"
+        );
+        assert_eq!(after.attendee(0).unwrap().part_stat(), PartStat::Accepted);
     }
 
     /// RFC 5546 section 2.1.4: an older revision never overwrites a newer one.

@@ -8,11 +8,19 @@
 //! for what a `METHOD` may carry.
 //!
 //! [`ItipMessage`] means *already checked and already charged*: the `METHOD` is one RFC 5546
-//! defines, RFC 5546 defines that method for the component type present, at least one
-//! scheduling payload exists, every payload shares one `UID`, every attendee list and every
-//! nesting is inside the caller's [`Limits`], and the work of establishing all of that was
-//! debited from the caller's [`Meter`]. Nothing downstream re-checks any of it, which is why
-//! [`ItipMessage::read`] is the only constructor.
+//! defines and is stated once, RFC 5546 defines that method for the component type present, at
+//! least one scheduling payload exists, every payload shares one `UID`, every attendee list,
+//! every property list and every nesting is inside the caller's [`Limits`], and the work of
+//! establishing all of that was debited from the caller's [`Meter`]. Nothing downstream
+//! re-checks any of it, which is why [`ItipMessage::read`] is the only constructor.
+//!
+//! The property list is counted and charged here because it is the cardinality a *judgment* is
+//! proportional to: [`crate::evaluate_message`] describes a transition per property occurrence
+//! and takes no ledger, on this type's promise that the message it was handed is already
+//! bounded. A payload whose lines were never counted breaks that promise quietly — the message
+//! reads for four units and costs a hundred thousand allocations to judge — and an inbox
+//! sharing one meter is then bounded in the number of messages it reads rather than in the work
+//! they cost, which is the amplification ADR-0010 exists to refuse.
 //!
 //! # Why a limit breach is an error here and a diagnostic everywhere else
 //!
@@ -47,6 +55,17 @@ pub enum MessageError {
     MissingMethod,
     /// A `METHOD` naming no method RFC 5546 defines.
     UnknownMethod,
+    /// More than one `METHOD`, so the verb of the message is two claims rather than one.
+    ///
+    /// A third fact beside [`MessageError::MissingMethod`] and [`MessageError::UnknownMethod`],
+    /// and it has to be a third: RFC 5545 section 3.7.2 permits one `METHOD` per calendar, and
+    /// a calendar carrying `REPLY` beside `REQUEST` is a file two conforming readers act on
+    /// differently. Reading it as absent would file a scheduling message as an ordinary
+    /// calendar, which is the one answer that loses the fact that anything was wrong.
+    /// [`DiagnosticCode::SchedulingMethodAmbiguous`] travels beside it.
+    ///
+    /// [`DiagnosticCode::SchedulingMethodAmbiguous`]: ical_core::DiagnosticCode::SchedulingMethodAmbiguous
+    AmbiguousMethod,
     /// No component RFC 5546 states scheduling semantics for.
     NoPayload,
     /// A payload with no `UID`.
@@ -64,6 +83,13 @@ pub enum MessageError {
     UndefinedForComponent(ComponentKind),
     /// A payload carried more attendees than the caller's policy admits.
     TooManyAttendees,
+    /// A payload carried more properties than the caller's policy admits.
+    ///
+    /// The cardinality a transition is described over. Refused whole rather than truncated for
+    /// the reason the attendee list is: a payload read to its first four thousand lines is a
+    /// different component from the one that arrived, and describing a change against it would
+    /// state removals nobody wrote.
+    TooManyProperties,
     /// The message carried more components than the caller's policy admits.
     TooManyComponents,
     /// The message nested components deeper than the caller's policy admits.
@@ -109,7 +135,12 @@ impl<'a> ItipMessage<'a> {
         let rule =
             MethodRule::lookup(method, kind).ok_or(MessageError::UndefinedForComponent(kind))?;
         let uid = agreed_uid(calendar, &payloads)?;
+        // The attendee list first, so that a message whose lines are mostly attendees is
+        // refused for the bound it actually crossed: `TooManyAttendees` names a list a caller
+        // can go and look at, and `TooManyProperties` about the same message would name the
+        // count that happened to be checked first.
         charge_attendees(calendar, &payloads, limits, meter)?;
+        charge_properties(calendar, &payloads, limits, meter)?;
         Ok(Self {
             calendar,
             method,
@@ -195,12 +226,33 @@ impl<'a> ItipMessage<'a> {
 }
 
 /// The method `calendar` states, reported when it states one nothing here knows.
+///
+/// Three answers rather than two where the property is absent. A reader hands back no value
+/// both for a calendar that states no `METHOD` and for one that states two irreconcilable ones,
+/// and those are different files: the first is an ordinary calendar and the second is a
+/// scheduling message whose verb cannot be picked. They are told apart by asking whether the
+/// name occurs at all, which every [`ScheduledComponent`] can answer without a new question
+/// being added to the trait.
 fn read_method<S: DiagnosticSink + ?Sized>(
     calendar: &dyn ScheduledComponent,
     meter: &mut Meter,
     sink: &mut S,
 ) -> Result<Method, MessageError> {
-    let value = calendar.method().ok_or(MessageError::MissingMethod)?;
+    let Some(value) = calendar.method() else {
+        if !states_a_method(calendar) {
+            return Err(MessageError::MissingMethod);
+        }
+        report_diagnostic(
+            sink,
+            meter,
+            Diagnostic::new(
+                DiagnosticCode::SchedulingMethodAmbiguous,
+                Severity::Violation,
+                ical_core::Location::NOWHERE,
+            ),
+        );
+        return Err(MessageError::AmbiguousMethod);
+    };
     Method::read(value).ok_or_else(|| {
         report_diagnostic(
             sink,
@@ -213,6 +265,13 @@ fn read_method<S: DiagnosticSink + ?Sized>(
         );
         MessageError::UnknownMethod
     })
+}
+
+/// Whether `calendar` states a `METHOD` property at all, whatever it reads as.
+fn states_a_method(calendar: &dyn ScheduledComponent) -> bool {
+    (0..calendar.property_count())
+        .filter_map(|index| calendar.property_name(index))
+        .any(|name| name.eq_ignore_ascii_case(b"METHOD"))
 }
 
 /// Which children of `calendar` are scheduling payloads, charged and bounded.
@@ -342,6 +401,35 @@ fn agreed_uid(calendar: &dyn ScheduledComponent, payloads: &[usize]) -> Result<U
         }
     }
     agreed.ok_or(MessageError::NoPayload)
+}
+
+/// Charge every property of every payload, refusing a payload with more than policy admits.
+///
+/// The bound this type's own promise rests on. `ItipMessage` means *already checked and already
+/// charged*, and [`crate::evaluate_message`] takes no ledger because of it — so the cardinality
+/// a judgment is proportional to has to be counted here or nowhere. A transition is described
+/// per property occurrence of the payload, so an uncounted property list is a message that
+/// costs a caller one allocation per line it never agreed to pay for, and an inbox sharing one
+/// meter is then bounded in the number of messages read rather than in the work they cost.
+fn charge_properties(
+    calendar: &dyn ScheduledComponent,
+    payloads: &[usize],
+    limits: Limits,
+    meter: &mut Meter,
+) -> Result<(), MessageError> {
+    let ceiling = usize::try_from(limits.max_payload_properties()).unwrap_or(usize::MAX);
+    for at in payloads {
+        let payload = calendar.child(*at).ok_or(MessageError::NoPayload)?;
+        let count = payload.property_count();
+        if count > ceiling {
+            return Err(MessageError::TooManyProperties);
+        }
+        let units = u64::try_from(count).unwrap_or(u64::MAX);
+        meter
+            .try_charge(units)
+            .map_err(|_exhausted| MessageError::BudgetExhausted)?;
+    }
+    Ok(())
 }
 
 /// Charge every attendee of every payload, refusing a list longer than policy.

@@ -107,7 +107,7 @@ pub use crate::instance::{
 };
 pub use crate::message::{ItipMessage, MessageError};
 pub use crate::method::{ActorRole, Method, SenderRule};
-pub use crate::party::{Attendee, PartStat, Party, PartyId, Role};
+pub use crate::party::{ANSWERED_AT, Attendee, PartStat, Party, PartyId, Role};
 pub use crate::report::inspect_message;
 pub use crate::state::{PropertyOccurrence, ScheduledComponent};
 pub use crate::table::{MethodRule, Presence, PriorState, Rule};

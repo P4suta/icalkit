@@ -31,6 +31,25 @@
 //! [`crate::AuthorizationDenied::AmbiguousInstance`], and a guess between the two halves
 //! cancels somebody else's meeting.
 //!
+//! # The hour that happened to nobody, which is the caller's reading and not this crate's
+//!
+//! The other side of a fold is a gap, and it is a different question with a different owner. A
+//! wall clock a zone sprang over names *no* instant until a reading says otherwise, and which
+//! reading applies is [`ical_tz::GapPolicy`] — the same policy the caller's own expansion is
+//! gated by, so an identity resolved under any other rule would name a meeting the caller's
+//! series does not deliver. [`resolve_instance`] therefore asks the series, and the two
+//! permitted readings answer differently: under [`ical_tz::GapPolicy::ShiftForward`] the
+//! identity is [`FoldSide::Once`] at the instant section 3.3.5 reads it as, and under
+//! [`ical_tz::GapPolicy::Skip`] it is [`FoldSide::Nowhere`] and
+//! `scheduling-instance-nonexistent` travels.
+//!
+//! [`FoldSide::Nowhere`] is not [`FoldSide::Unresolved`], and the difference is what a caller
+//! is told: an identity nothing could tell from its neighbor is *ambiguous*, and one that names
+//! no instant is *different from everything* — so the gate refuses it as
+//! [`crate::AuthorizationDenied::NoMatchingInstance`], which is what naming an instance the
+//! state does not have actually is. A gap has no neighbor and must never be reported as though
+//! it had one.
+//!
 //! # A continuation is made visible and is not decided, which closes agenda item 4
 //!
 //! A source asked past either end of its transition table continues the observance at that end
@@ -66,20 +85,28 @@
 //!
 //! # What is emitted here, and what is deliberately not
 //!
-//! Three codes and no others: `scheduling-instance-ambiguous`, `scheduling-zone-continued` and
+//! Four codes and no others: `scheduling-instance-ambiguous`,
+//! `scheduling-instance-nonexistent`, `scheduling-zone-continued` and
 //! `scheduling-exclusion-unplaced`. `ambiguous-local-time`, `nonexistent-local-time`,
 //! `time-zone-coverage-exhausted` and `exdate-zone-unknown` are `ical-tz`'s own, emitted where
 //! that crate resolves an occurrence or reads an exclusion list, and reporting one of them a
 //! second time here would make one defect look like two.
+//!
+//! `scheduling-instance-nonexistent` is not a rename of `nonexistent-local-time` for the same
+//! reason `scheduling-zone-continued` is not one of `time-zone-coverage-exhausted`: that code
+//! says a time could not be rendered, and this one says an *identity* named nothing, so a
+//! message addressed to it is about no meeting the caller has.
 //!
 //! `scheduling-zone-continued` in particular is not a rename of
 //! `time-zone-coverage-exhausted`. That code says a rendered time rested on a continuation;
 //! this one says an *identity* did — which meeting a message is about — and the two are read by
 //! different people for different decisions.
 //!
-//! A local time the zone never showed is reported by neither: it resolves to nothing, the
-//! identity stays unresolved, and the message is refused for naming an instance the state does
-//! not have. That refusal is the report.
+//! A local time the zone never showed used to be reported by neither, on the reading that "the
+//! refusal is the report". It was not: the refusal that followed was `AmbiguousInstance`, which
+//! claims two meetings could not be told apart about an hour in which the zone showed none, and
+//! it was the same refusal under both readings of the gap. The identity now says which reading
+//! placed it and the code above says when nothing did.
 
 use ical_core::{
     CivilDate, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity,
@@ -205,13 +232,21 @@ where
             basis: None,
         };
     };
-    let side = FoldSide::from_resolution(answer.resolution, real_instant(reference));
+    let side = side_of(series, answer, reference);
     // The ambiguity first and the continuation second, for the reason `ical_tz::series` orders
     // its two the same way: the fact about this identity's own wall clock is the one a reader
     // is looking for, and the fact about the table behind it is the qualification.
     if answer.resolution.is_ambiguous() && !side.is_resolved() {
         report_at(
             DiagnosticCode::SchedulingInstanceAmbiguous,
+            reference.named(),
+            meter,
+            sink,
+        );
+    }
+    if side.is_nowhere() {
+        report_at(
+            DiagnosticCode::SchedulingInstanceNonexistent,
             reference.named(),
             meter,
             sink,
@@ -270,6 +305,51 @@ where
         );
     }
     exclusions_are_placeable(exclusions)
+}
+
+/// Which side of `answer` the identity `reference` names, under `series`' own reading.
+///
+/// A fold and a gap are the two halves of this question and only one of them is settled by the
+/// octets. A repeated wall clock names two instants and nothing but a `Z` in the file picks
+/// between them, so a caller's [`ical_tz::FoldPolicy`] is deliberately **not** read here: that
+/// policy exists to render a time and picking a half of a fold to decide *identity* cancels
+/// somebody else's meeting.
+///
+/// A gap is the opposite. It names no instant at all until a reading says otherwise, and which
+/// reading is the caller's [`ical_tz::GapPolicy`] — RFC 5545 permits the gated and the ungated
+/// reading both, `ical_tz::ZonedSeries::admits` applies it to decide whether the series even
+/// has that occurrence, and an identity resolved by any other rule than the one the series was
+/// built with would be a different meeting from the one the caller's own expansion delivers. So
+/// the policy is asked, through the same door the expansion asks it through, and the answer is
+/// [`FoldSide::Once`] where it places the clock and [`FoldSide::Nowhere`] where it does not.
+fn side_of<S>(series: &ZonedSeries<'_, S>, answer: ZoneAnswer, reference: InstanceRef) -> FoldSide
+where
+    S: ZoneSource + ?Sized,
+{
+    if !answer.resolution.is_nonexistent() {
+        return FoldSide::from_resolution(answer.resolution, real_instant(reference));
+    }
+    if series.resolved(clock_key(series, reference)).is_some() {
+        FoldSide::Once
+    } else {
+        FoldSide::Nowhere
+    }
+}
+
+/// The cadence key `reference` stands for on `series`' own timeline.
+///
+/// The same projection [`ask_zone`] performs, kept beside it so the policy is applied to the
+/// key the zone was asked about rather than to a second reading of the same value.
+fn clock_key<S>(series: &ZonedSeries<'_, S>, reference: InstanceRef) -> Instant
+where
+    S: ZoneSource + ?Sized,
+{
+    match reference.clock() {
+        InstanceClock::Utc => series
+            .to_nominal(reference.named())
+            .unwrap_or_else(|| reference.named()),
+        InstanceClock::Zoned | InstanceClock::Floating => reference.named(),
+    }
 }
 
 /// What `series`' zone says about the wall clock `reference` stands for.
@@ -339,8 +419,8 @@ mod tests {
     };
     use ical_recur::OverrideRange;
     use ical_tz::{
-        AnswerBasis, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy, ResolvedExclusions,
-        ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,
+        AnswerBasis, GapPolicy, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy,
+        ResolvedExclusions, ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,
     };
 
     use super::{
@@ -713,22 +793,44 @@ mod tests {
         assert_eq!(reported[0].instant(), Some(key(2026, 11, 1, 1, 30)));
     }
 
-    /// An instance the series never had resolves to nothing, and this unit reports none of it:
-    /// a local time the zone sprang over is `ical-tz`'s `nonexistent-local-time` at the
-    /// occurrence, and an identifier nothing recognizes is nobody's ambiguity to claim.
+    /// An hour the zone sprang over is an instance the caller's own reading either has or does
+    /// not, and which of those it is comes back in the answer rather than being the same
+    /// silence under both.
     ///
-    /// Both leave the side unresolved, which is what the gate above refuses on.
+    /// Under the default gated reading the series has no such occurrence, so the identity names
+    /// nothing and says so; under `GapPolicy::ShiftForward` the caller's own expansion delivers
+    /// that instance and the identity resolves to it. Both readings are ones RFC 5545 permits,
+    /// which is exactly why the answer may not be the same value with the same empty sink.
+    ///
+    /// An identifier nothing recognizes is a third thing and stays unreported: no zone said
+    /// this wall clock repeats or vanishes, so there is nothing here to claim about it.
     #[test]
-    fn an_instance_the_series_never_had_resolves_to_nothing_and_is_not_reported_here() {
+    fn an_hour_the_zone_sprang_over_resolves_by_the_reading_the_caller_stated() {
         let zone = new_york();
         let sprang = reference(key(2026, 3, 8, 2, 30), InstanceClock::Zoned);
+
         let mut reported = Vec::new();
         let missing = resolved(&zone, "America/New_York", sprang, &mut reported);
-        assert_eq!(missing.side(), FoldSide::Unresolved);
-        assert!(
-            reported.is_empty(),
-            "a local time the zone sprang over is unit 5's report at the occurrence"
+        assert_eq!(missing.side(), FoldSide::Nowhere);
+        assert!(!missing.is_resolved());
+        assert_eq!(
+            codes(&reported),
+            [DiagnosticCode::SchedulingInstanceNonexistent]
         );
+        assert_eq!(reported[0].severity(), Severity::Violation);
+
+        let ungated = ZonedSeries::new(
+            &zone,
+            "America/New_York",
+            ResolutionPolicy::DEFAULT.with_gaps(GapPolicy::ShiftForward),
+        );
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let mut quiet = Vec::new();
+        let shifted = resolve_instance(&ungated, sprang, &mut meter, &mut quiet);
+        assert_eq!(shifted.side(), FoldSide::Once);
+        assert!(shifted.is_resolved());
+        assert!(quiet.is_empty());
+        assert_ne!(missing.side(), shifted.side());
 
         let mut elsewhere = Vec::new();
         let unknown = resolved(

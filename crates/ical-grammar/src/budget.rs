@@ -171,6 +171,8 @@ pub struct Limits {
     max_vtimezone_components: u32,
     /// The most components one scheduling payload may carry.
     max_payload_components: u32,
+    /// The most properties one scheduling payload may carry.
+    max_payload_properties: u32,
     /// The most attendees one component may carry.
     max_attendees: u32,
     /// The deepest XML elements may nest.
@@ -204,6 +206,9 @@ impl Limits {
         max_vtimezone_observances: 4096,
         max_vtimezone_components: 256,
         max_payload_components: 1024,
+        // Twice the attendee ceiling, so a payload holding the longest admissible list still
+        // has room for the properties around it and nothing else.
+        max_payload_properties: 8192,
         max_attendees: 4096,
         max_xml_depth: 64,
         max_xml_elements: 100_000,
@@ -232,6 +237,7 @@ impl Limits {
         max_vtimezone_observances: 65_536,
         max_vtimezone_components: 4096,
         max_payload_components: 65_536,
+        max_payload_properties: 131_072,
         max_attendees: 65_536,
         max_xml_depth: 128,
         max_xml_elements: 5_000_000,
@@ -337,6 +343,17 @@ impl Limits {
     #[must_use]
     pub const fn max_payload_components(self) -> u32 {
         self.max_payload_components
+    }
+
+    /// The most properties one scheduling payload may carry.
+    ///
+    /// Read where a scheduling message is checked and charged, because the properties of a
+    /// payload are what a transition is described over: a message nothing counted costs a
+    /// judgment one allocation per line, and the ratio of that work to what the ledger was
+    /// told would otherwise be the sender's to choose.
+    #[must_use]
+    pub const fn max_payload_properties(self) -> u32 {
+        self.max_payload_properties
     }
 
     /// The most attendees one component may carry.
@@ -479,6 +496,15 @@ impl Limits {
     pub const fn with_max_payload_components(self, components: u32) -> Self {
         Self {
             max_payload_components: components,
+            ..self
+        }
+    }
+
+    /// The same policy with a different payload-property bound.
+    #[must_use]
+    pub const fn with_max_payload_properties(self, properties: u32) -> Self {
+        Self {
+            max_payload_properties: properties,
             ..self
         }
     }

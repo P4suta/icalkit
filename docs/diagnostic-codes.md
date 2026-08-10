@@ -153,3 +153,5 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | scheduling-exclusion-unplaced | A scheduling message addressed a component carrying an exclusion no zone could place, so which instances it has is not decidable. | Violation | M3 |
 | scheduling-zone-continued | An instance identity was resolved through a zone answer continued past one end of its source's transition table. | Note | M3 |
 | scheduling-sender-not-permitted | A scheduling message was sent by a party RFC 5546 section 3 does not permit to send its `METHOD`. | Violation | M3 |
+| scheduling-method-ambiguous | A calendar stated more than one `METHOD`, so the verb of the whole message is two claims rather than one. | Violation | M3 |
+| scheduling-instance-nonexistent | A `RECURRENCE-ID` named a wall clock its series' zone does not show, and the reading the caller stated dropped it. | Violation | M3 |

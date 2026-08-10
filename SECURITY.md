@@ -65,6 +65,41 @@ message that overreaches on one property is denied entire, because applying its 
 would leave the caller holding a component no party ever described. `describe_message` hands a
 caller what a denied message *tried* to do without handing it the ability to do it.
 
+**An attendee-side message may write only its own participation, and nothing that decides who
+may write next.** `ORGANIZER` and `SEQUENCE` are the organizer's: an attendee-authored message
+may restate either and may not change either, because the first is who runs the meeting (RFC
+5546 section 3.2.7 gives an attendee no authority over it) and the second is the number this
+protocol's whole replay defense reads. "Its own `ATTENDEE` line" is two questions — the line has
+to be the one the sender sits at, and the line the change leaves behind has to still name the
+sender — so a `COUNTER` substituting a party the meeting never invited for the sender is
+refused rather than treated as an edit to the sender's own line.
+
+**Version ordering refuses what it cannot order, and a reply is ordered against the answer it
+replaces.** At an equal `SEQUENCE` a revision that states a readable `DTSTAMP` supersedes one
+that does not, so a message whose `DTSTAMP` is written in a spelling nothing can read has not
+won the tie it declined to offer. An organizer-authored message that is neither newer nor older
+than the state describes nothing, because RFC 5546 section 2.1.4 requires an update to increment
+`SEQUENCE` and two messages at one revision are one version. Two replies from one attendee are
+one revision answered twice and the component's own `DTSTAMP` cannot order them, so the time
+each answer was written at is recorded on the line it answers for — `ical_itip::ANSWERED_AT` in
+the shipped bridge, `ScheduledComponent::attendee_answered_at` for a store keeping its own
+column. **A state that records no such time cannot order two answers and admits the second**: a
+caller whose storage discards that parameter keeps the change-of-mind case working and loses the
+defense against an attendee's own earlier answer being replayed.
+
+**Absence is absence, and identity is compared or the message is refused.** A component that
+states anything at all is a component the caller holds, so the payload fallback above is reached
+only for a state that is genuinely empty — a `UID` that cannot be read no longer downgrades a
+held meeting into an absent one, which is how a stranger was once authorized to rewrite the
+organizer line of a component the caller was holding.
+
+**The work of judging a message is bounded before the message exists.** `ItipMessage::read`
+counts and charges a payload's properties against `Limits::max_payload_properties` as well as
+its attendees, components and depth, because `evaluate_message` takes no ledger and describes a
+transition per property occurrence. Without that, one message read for four units could cost a
+hundred thousand allocations to judge, and an inbox sharing one meter would be bounded in the
+number of messages it read rather than in the work they cost.
+
 ## Reporting
 
 Report privately through GitHub's ["Report a vulnerability"][advisories] flow rather than a

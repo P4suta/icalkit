@@ -25,6 +25,19 @@
 
 use crate::method::ActorRole;
 
+/// The parameter an `ATTENDEE` line records the time of its own answer in.
+///
+/// RFC 5545 registers no parameter for it and RFC 5546 section 2.1.5 needs one: two replies
+/// from one attendee are one revision answered twice, and nothing else on the line says which
+/// came first. Section 3.2 admits an `x-param` on any property, so this is where the fact goes
+/// — written by the reply diff, read back by [`crate::ScheduledView`], and named here so that a
+/// store keeping its own column can answer
+/// [`ScheduledComponent::attendee_answered_at`](crate::ScheduledComponent::attendee_answered_at)
+/// from the same fact under another name.
+///
+/// The value is a UTC `DATE-TIME`, which is what a `DTSTAMP` is.
+pub const ANSWERED_AT: &[u8] = b"X-ICALKIT-ANSWERED-AT";
+
 /// A calendar address, as an identity rather than as text.
 ///
 /// Holds valid UTF-8 by construction. A `CAL-ADDRESS` that does not decode is not a
@@ -83,6 +96,11 @@ impl<'a> PartyId<'a> {
     }
 }
 
+/// The identity `address` names, or `None` when those octets identify nobody.
+fn readable(address: &[u8]) -> Option<PartyId<'_>> {
+    PartyId::from_bytes(address).filter(|found| !found.as_str().is_empty())
+}
+
 /// The local part and the domain of a `mailto:` address, or `None` for anything else.
 ///
 /// The last `@` separates them, because RFC 5321 section 4.1.2 lets a quoted local part carry
@@ -115,12 +133,17 @@ impl<'a> Party<'a> {
     ///
     /// Both are decoded here rather than by the caller, so that "did not decode" is one
     /// answer arrived at one way.
+    ///
+    /// An empty value is read the same way as one that is not UTF-8: the property is present
+    /// and it identifies nobody. RFC 5545 section 3.3.3 makes a `CAL-ADDRESS` a URI, and no URI
+    /// is the empty string — while a `PartyId` holding one would compare equal to the next
+    /// empty value it met, which is an identity two unrelated lines would share.
     #[must_use]
     pub fn read(address: &'a [u8], sent_by: Option<&'a [u8]>) -> Self {
         Self {
             raw: address,
-            address: PartyId::from_bytes(address),
-            sent_by: sent_by.and_then(PartyId::from_bytes),
+            address: readable(address),
+            sent_by: sent_by.and_then(readable),
         }
     }
 
@@ -437,6 +460,25 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// An empty `CAL-ADDRESS` is present and identifies nobody, which is the same answer an
+    /// address that did not decode gets and for the same reason.
+    ///
+    /// The alternative is an identity every empty value shares: `ATTENDEE;PARTSTAT=ACCEPTED:`
+    /// on one line would then be the same party as an empty `ORGANIZER` on another.
+    #[test]
+    fn an_empty_address_identifies_nobody_rather_than_identifying_every_other_empty_one() {
+        let empty = Party::read(b"", None);
+        assert!(!empty.is_readable());
+        assert_eq!(empty.address(), None);
+        assert_eq!(empty.raw(), b"");
+        assert!(!empty.is(PartyId::new("")));
+        assert!(!empty.is(PartyId::new("mailto:ann@example.com")));
+
+        let agentless = Party::read(b"mailto:ann@example.com", Some(b""));
+        assert_eq!(agentless.sent_by(), None);
+        assert!(agentless.is_readable());
     }
 
     /// `SENT-BY` is a second identity and never the first one.

@@ -184,15 +184,37 @@ anything, because the sender was looked up in state that by definition names nob
 `REFRESH` described the removal of the organizer's own calendar. All three are fixed in the
 implementation and recorded as ADR 0005 amendments 4 to 6.
 
-Four things are known and named. An attendee's `REPLY` carrying a moved `DTSTART` is *ignored*
+Four adversarial lenses were then run against the shipped gate — an invited party attacking the
+authorization model, version ordering and message identity, RFC 5546 section 3's tables read
+against the RFC's own text, and the composition with `ical-recur`, `ical-tz` and ADR 0010's
+bounds. They landed nineteen failing cases, eleven of them security findings, and every one is
+answered in the implementation rather than documented as a limitation: an attendee could rewrite
+the `ORGANIZER` line and the `SEQUENCE`, substitute a stranger for itself on its own `ATTENDEE`
+line, and reach both through a party named only in somebody else's `DELEGATED-TO`; a held copy
+whose `UID` was stated twice read as a component the caller did not hold, so a stranger was
+judged against the stranger's own message; an unreadable `DTSTAMP` won a tie it had declined to
+offer, and one that had been applied disarmed the ordering for good; an attendee's own earlier
+`REPLY`, replayed, reverted the current one; a `RECURRENCE-ID` written as a bare wall clock
+answered both halves of a repeated hour; a `CANCEL` naming one instance twice cancelled the
+series; a calendar stating two `METHOD`s was filed as an ordinary `.ics`; a `REPLY` whose
+`ATTENDEE` identified nobody was authorized to change nothing; a gap read one way and a gap read
+the other were the same silent answer; and a message of a hundred thousand properties was read
+for four units and described in full. ADR 0005 amendments 7 to 11 record what changed, and two
+diagnostic codes are new: `scheduling-method-ambiguous` and `scheduling-instance-nonexistent`.
+
+Five things are known and named. An attendee's `REPLY` carrying a moved `DTSTART` is *ignored*
 rather than refused — the transition holds one change on the sender's own `ATTENDEE` line, so
 the security property holds, but a caller that applies `Authorization::message`'s payload instead
-of the transition moves the meeting. A `REPLY` carrying two `ATTENDEE` lines is denied
-`MethodRequiresField(ATTENDEE)`, which tells a user the opposite of what happened. A legitimate
-`COUNTER` is refused, because the field rule has no per-method dimension — the interoperability
-cost the design document said it preferred, now observed rather than predicted. And a delegate's
-`REPLY` describes nothing until the delegator's own reply has been applied, which is RFC 5546's
-order but is not what a caller wanting one turn gets.
+of the transition moves the meeting. A legitimate `COUNTER` is refused, because the field rule
+has no per-method dimension — the interoperability cost the design document said it preferred,
+now observed rather than predicted. A delegate's `REPLY` describes nothing until the delegator's
+own reply has been applied, which is RFC 5546's order but is not what a caller wanting one turn
+gets. Ordering two replies from one attendee needs the state to record when the first was
+written, so a store that keeps no such column keeps the change-of-mind case and loses that
+defense. And a component whose own `ORGANIZER` line names an attendee authorizes that attendee
+to cancel it: RFC 5546 section 1.3 lets one calendar user be both, so the defense is that no
+message may write that line, and the corpus asserts the state is unreachable rather than
+asserting a reading of the file that cannot exist.
 
 ## M4 — CalDAV
 

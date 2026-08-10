@@ -394,6 +394,20 @@ pub enum DiagnosticCode {
     /// prose names the permitted sender and no constraint table states it, so this is the code
     /// a row transcribed from prose rather than from a table reports under.
     SchedulingSenderNotPermitted,
+    /// A calendar stated more than one `METHOD`, so the verb of the whole message is two claims rather than one.
+    ///
+    /// RFC 5545 section 3.7.2 permits one `METHOD` per calendar and RFC 5546 section 3 reads it
+    /// as the verb every other rule is chosen by. Two of them is a third fact beside "absent"
+    /// and "present and undefined": a file two conforming readers act on differently, which is
+    /// why it is neither read as one of the two nor filed as an ordinary calendar.
+    SchedulingMethodAmbiguous,
+    /// A `RECURRENCE-ID` named a wall clock its series' zone does not show, and the reading the caller stated dropped it.
+    ///
+    /// The other side of [`DiagnosticCode::SchedulingInstanceAmbiguous`]: a fold names two
+    /// instants and a gap names none. Which of those a gap is depends on the caller's own
+    /// `ical_tz::GapPolicy`, so the identity resolves under one reading and vanishes under
+    /// another, and a message addressed to it is refused for naming an instance nothing places.
+    SchedulingInstanceNonexistent,
 }
 
 impl DiagnosticCode {
@@ -479,6 +493,8 @@ impl DiagnosticCode {
             Self::SchedulingExclusionUnplaced => "scheduling-exclusion-unplaced",
             Self::SchedulingZoneContinued => "scheduling-zone-continued",
             Self::SchedulingSenderNotPermitted => "scheduling-sender-not-permitted",
+            Self::SchedulingMethodAmbiguous => "scheduling-method-ambiguous",
+            Self::SchedulingInstanceNonexistent => "scheduling-instance-nonexistent",
         }
     }
 }

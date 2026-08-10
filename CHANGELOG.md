@@ -202,6 +202,56 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Eleven scheduling authorization and replay defects, found by four adversarial lenses run
+  against the shipped gate.** An attendee's `COUNTER` could rewrite the `ORGANIZER` line — and
+  so hand itself a meeting it was merely invited to — raise `SEQUENCE` and lock the real
+  organizer out of its own updates, and replace its own `ATTENDEE` line with a party nobody
+  invited; a party named only inside somebody else's `DELEGATED-TO` could do the first of those
+  without being on the attendee list at all. `field_rule` moves `ORGANIZER` and `SEQUENCE` to
+  `OrganizerOnly`, since an attendee restating either produces no change to be asked about and
+  the permission bought only the case it was not written for, and `FieldRule::AttendeeOwn` now
+  asks both whether the occurrence is the actor's and whether the line the change leaves behind
+  still names the actor.
+- A held component whose `UID` line appeared twice read as a component the caller does not
+  hold, so the sending party was looked up in the attacker's own message — where the attacker is
+  the `ORGANIZER` — and a stranger was authorized to rewrite the organizer line, the time and
+  the attendee list of a meeting the caller was holding. Absence is now the absence of
+  everything a component could state, and the bridge reads a name stated twice with
+  byte-identical lines as the one claim it is.
+- A message at the revision already held overwrote it. At an equal `SEQUENCE` a revision
+  stating a readable `DTSTAMP` supersedes one stating none, so a `DTSTAMP` written as a `DATE`
+  or under a `TZID` no longer wins the tie it declined to offer — nor, once applied, disarms the
+  ordering for every later message at that revision. An organizer-authored message that
+  supersedes nothing describes nothing, because RFC 5546 section 2.1.4 requires an update to
+  increment `SEQUENCE`.
+- An attendee's own earlier `REPLY`, replayed, silently reverted their current answer. Two
+  replies are one revision answered twice and no component can order them, so
+  `ScheduledComponent::attendee_answered_at` carries the fact and the reply diff records it on
+  the line it answers for as `ical_itip::ANSWERED_AT`. A state that records nothing admits the
+  second answer, which keeps a change of mind working and is stated in `SECURITY.md` as a
+  defense a caller can discard.
+- A `RECURRENCE-ID` written as a bare wall clock was read as naming one instant, so one `REPLY`
+  answered both halves of a repeated hour — the spelling the zoned form was already refused for.
+  Every wall-clock spelling is now unresolved until a zone places it.
+- A `CANCEL` naming one instance twice cancelled the whole series: the gate read only the `0`
+  rows and the required rows of section 3's tables, so a `0 or 1` row was enforced for no method
+  at all. Every row is read in both directions now.
+- A calendar stating two different `METHOD`s was reported as stating none, and filed as an
+  ordinary `.ics` with nothing recorded. It is `MessageError::AmbiguousMethod` with
+  `scheduling-method-ambiguous` beside it.
+- A `REPLY` whose `ATTENDEE` was empty or did not decode was authorized to change nothing, which
+  is indistinguishable from an answer that was applied. It is
+  `AuthorizationDenied::CalendarAddressUnreadable`, and an empty `CAL-ADDRESS` now identifies
+  nobody rather than identifying every other empty one.
+- A `RECURRENCE-ID` in an hour a zone sprang over answered identically under all three readings
+  of `GapPolicy` with an empty report, and the refusal that followed claimed the instance could
+  not be told from its neighbor — about an hour in which the zone showed no meeting at all.
+  `resolve_instance` applies the caller's own gap reading, `FoldSide::Nowhere` is an identity
+  that names no instant, and `scheduling-instance-nonexistent` says when a reading dropped one.
+- A message of a hundred thousand properties was read for four units and then described in
+  full, so a shared meter bounded how many messages an inbox read and not what reading one
+  cost. `Limits::max_payload_properties` bounds a payload's property list and
+  `ItipMessage::read` charges it.
 - A `REPLY` carrying a `VALARM` was accepted whole. The gate counted a payload's properties
   against RFC 5546 section 3 and never its components, so the `VALARM` row of section 3.2.3's
   `SUBCOMPONENTS` table — which reads `0` — was unenforced, and an attendee's answer could

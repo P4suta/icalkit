@@ -131,6 +131,24 @@ pub trait ScheduledComponent: Debug {
     /// The `index`th `ATTENDEE`, in document order.
     fn attendee(&self, index: usize) -> Option<Attendee<'_>>;
 
+    /// When the `index`th `ATTENDEE` last answered, as this state records it.
+    ///
+    /// RFC 5546 section 2.1.5 orders two messages at one `SEQUENCE` by `DTSTAMP`, and two
+    /// replies from one attendee are exactly that pair: the same revision, answered twice. The
+    /// component's own `DTSTAMP` cannot order them — it is the organizer's, it is older than
+    /// both, and reading a reply against it would refuse one attendee's answer because a
+    /// *different* attendee answered later. So the fact has to sit on the line it is about.
+    ///
+    /// The default is `None`, which says the state records nothing and is not a claim that the
+    /// attendee never answered. A gate handed `None` cannot order two answers and admits the
+    /// second, which is the direction that keeps a legitimate change of mind working; a store
+    /// that does record the time gets the refusal instead. [`crate::ANSWERED_AT`] is how the
+    /// shipped bridge spells it, and a store keeping its own column answers from that.
+    fn attendee_answered_at(&self, index: usize) -> Option<Instant> {
+        let _ = index;
+        None
+    }
+
     /// Which occurrence the `index`th `ATTENDEE` is, as a property occurrence.
     ///
     /// The two indexes agree for a component whose only repeated name is `ATTENDEE` and would

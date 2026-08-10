@@ -77,13 +77,27 @@ impl Uid {
 pub enum FoldSide {
     /// The wall clock names one instant, which is every hour of the year but one.
     ///
-    /// Also the answer for a floating or UTC series, where the projection onto the nominal
-    /// timeline is the identity and no hour repeats.
+    /// Also the answer for a value on a series that runs on no zone at all, where the
+    /// projection onto the nominal timeline is the identity and no hour repeats. A value
+    /// written as a wall clock on a series that *does* run on a zone is not this: the clock it
+    /// spells is the zone's, whether or not the file says so.
     Once,
     /// The first of the two instants, under the offset in force before the transition.
     Earlier,
     /// The second, under the offset in force after it.
     Later,
+    /// The wall clock names no instant at all under the reading the caller stated.
+    ///
+    /// The other side of a fold. A repeated hour names two instants and nothing here picks
+    /// between them; an hour a zone sprang over names none, and whether it names one after all
+    /// is the caller's [`ical_tz::GapPolicy`] — [`ical_tz::GapPolicy::ShiftForward`] places it
+    /// and [`ical_tz::GapPolicy::Skip`] does not.
+    ///
+    /// It is not [`FoldSide::Unresolved`], because the two lead to different refusals: an
+    /// identity nothing could tell from its neighbor is ambiguous, and one that names no
+    /// instant matches nothing — including another identity that also names none, since
+    /// neither of them is an instance the state has.
+    Nowhere,
     /// Nothing resolved this key: no zone was supplied, or the value named neither instant.
     ///
     /// The default, because a value nobody resolved must not read as one somebody did.
@@ -115,9 +129,19 @@ impl FoldSide {
     }
 
     /// Whether something resolved this side.
+    ///
+    /// `false` for [`FoldSide::Nowhere`] as well as for [`FoldSide::Unresolved`]: an identity
+    /// that names no instant is not one a decision may be taken on either. Which of the two it
+    /// is decides *which* refusal, and [`InstanceRef::compare`] is where that is read.
     #[must_use]
     pub const fn is_resolved(self) -> bool {
-        !matches!(self, Self::Unresolved)
+        matches!(self, Self::Once | Self::Earlier | Self::Later)
+    }
+
+    /// Whether this side says the wall clock names no instant at all.
+    #[must_use]
+    pub const fn is_nowhere(self) -> bool {
+        matches!(self, Self::Nowhere)
     }
 
     /// Whether this side says the wall clock repeats.
@@ -250,9 +274,17 @@ impl InstanceRef {
     /// Two values written in different clocks are also ambiguous unless both sides were
     /// resolved, because a wall clock and an instant are equal here only by the accident of
     /// their arithmetic agreeing.
+    ///
+    /// A side of [`FoldSide::Nowhere`] on either value is [`InstanceMatch::Different`] and not
+    /// ambiguous: an identity the zone places nowhere is not an instance the other side has,
+    /// and saying "these might be the same" about an hour that happened to nobody would report
+    /// a doubt where there is an absence.
     #[must_use]
     pub fn compare(self, other: Self) -> InstanceMatch {
         if self.named != other.named || self.range != other.range {
+            return InstanceMatch::Different;
+        }
+        if self.side.is_nowhere() || other.side.is_nowhere() {
             return InstanceMatch::Different;
         }
         let resolved = self.side.is_resolved() && other.side.is_resolved();
@@ -349,9 +381,15 @@ impl Revision {
 
     /// Whether this revision is strictly newer than `held`.
     ///
-    /// A higher `SEQUENCE` is newer. An equal `SEQUENCE` is newer only when both sides carry a
-    /// `DTSTAMP` and this one is later: a tie nothing can break is not a win, because the
-    /// alternative lets a message with no `DTSTAMP` at all overwrite one that has one.
+    /// A higher `SEQUENCE` is newer. At an equal `SEQUENCE` the `DTSTAMP` decides, and it
+    /// decides in one direction only: a revision that states a readable `DTSTAMP` supersedes
+    /// one that states none, and two that state none supersede each other in neither
+    /// direction.
+    ///
+    /// The asymmetry is the whole of section 2.1.5's use. A tie nothing can break is not a win,
+    /// because the alternative lets a message whose `DTSTAMP` cannot be read overwrite a state
+    /// whose `DTSTAMP` can — and the spelling of a `DTSTAMP` is the sender's to choose, so an
+    /// unreadable one is a tie-break an attacker declines to offer rather than an accident.
     #[must_use]
     pub fn supersedes(self, held: Self) -> bool {
         if self.sequence != held.sequence {
@@ -359,7 +397,8 @@ impl Revision {
         }
         match (self.dtstamp, held.dtstamp) {
             (Some(mine), Some(theirs)) => mine > theirs,
-            _ => false,
+            (Some(_), None) => true,
+            (None, _) => false,
         }
     }
 
@@ -548,6 +587,30 @@ mod tests {
             !Revision::new(2, Some(at(9_999))).is_stale_against(Revision::new(2, None)),
             "and it does not lose one either, since neither is stale"
         );
+        assert!(
+            Revision::new(2, None).is_stale_against(held),
+            "a revision that cannot show a timestamp is stale against one that can, because \
+             the spelling of a DTSTAMP is the sender's to choose"
+        );
+        assert!(Revision::new(2, Some(at(1_000))).supersedes(Revision::new(2, None)));
+        assert!(!Revision::new(2, None).supersedes(Revision::new(2, None)));
+    }
+
+    /// The other side of a fold: a wall clock the zone shows at no instant at all.
+    ///
+    /// It is not ambiguous — nothing could be confused with it — so it compares `Different`,
+    /// which is what makes the gate refuse it for naming an instance the state does not have
+    /// rather than for naming one it could not tell from its neighbor.
+    #[test]
+    fn an_identity_that_names_no_instant_matches_nothing_including_another_one() {
+        let nowhere = instance(90, InstanceClock::Zoned).with_side(FoldSide::Nowhere);
+        let placed = instance(90, InstanceClock::Zoned).with_side(FoldSide::Once);
+        assert_eq!(nowhere.compare(placed), InstanceMatch::Different);
+        assert_eq!(placed.compare(nowhere), InstanceMatch::Different);
+        assert_eq!(nowhere.compare(nowhere), InstanceMatch::Different);
+        assert!(!FoldSide::Nowhere.is_resolved());
+        assert!(FoldSide::Nowhere.is_nowhere() && !FoldSide::Unresolved.is_nowhere());
+        assert!(!FoldSide::Nowhere.is_folded());
     }
 
     /// An absent `SEQUENCE` is zero. An unreadable one is not a revision at all.

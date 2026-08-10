@@ -37,9 +37,9 @@ mod tests {
     use ical_core::{ComponentKind, IgnoreDiagnostics, Instant, UtcOffset};
     use ical_itip::{
         ActorRole, Attendee, AuthorizationDenied, Commitment, FoldSide, InstanceClock, InstanceRef,
-        ItipMessage, Limits, MessageError, Meter, Party, PartyId, PriorState, PropertyId,
-        PropertyOccurrence, ProposedChange, Revision, ScheduledComponent, SequenceRead,
-        TransitionReason, describe_message, evaluate_message,
+        ItipMessage, Limits, MessageError, Meter, Party, PartyId, PriorState, PropertyOccurrence,
+        ProposedChange, Revision, ScheduledComponent, SequenceRead, TransitionReason,
+        describe_message, evaluate_message,
     };
     use ical_recur::OverrideRange;
     use ical_tz::{LocalResolution, Reading};
@@ -439,8 +439,16 @@ mod tests {
     }
 
     /// An organizer's update of the summary, at revision `sequence`.
+    ///
+    /// Stamped later than the state it updates, which is what a message is: RFC 5545 section
+    /// 3.8.7.2 makes `DTSTAMP` the time the object was created, and RFC 5546 section 2.1.4 only
+    /// requires `SEQUENCE` to move for a *significant* change — so a summary edit is ordered by
+    /// the stamp alone, and a message carrying neither a newer number nor a newer stamp is the
+    /// version already held rather than an update of it.
     fn request_at(sequence: u32) -> Node {
-        held_at(sequence).property("SUMMARY", "Quarterly review, room 2")
+        held_at(sequence)
+            .stamped(LATE)
+            .property("SUMMARY", "Quarterly review, room 2")
     }
 
     /// The identity `address` names.
@@ -543,11 +551,18 @@ mod tests {
             .expect("the organizer may update the component the organizer organizes");
         assert_eq!(authorized.reason(), TransitionReason::Updated);
         assert_eq!(authorized.actor(), ActorRole::Organizer);
-        assert_eq!(authorized.transition().len(), 1);
+        // The summary, and the stamp that says this is a newer statement of one revision.
+        assert_eq!(authorized.transition().len(), 2);
         assert!(
             authorized
                 .transition()
                 .change(&PropertyOccurrence::named(b"SUMMARY", 0))
+                .is_some()
+        );
+        assert!(
+            authorized
+                .transition()
+                .change(&PropertyOccurrence::named(b"DTSTAMP", 0))
                 .is_some()
         );
 
@@ -562,6 +577,21 @@ mod tests {
             .expect("the organizer may move the meeting");
         assert_eq!(authorized.reason(), TransitionReason::Rescheduled);
         assert_eq!(authorized.transition().len(), 2);
+
+        // RFC 5546 section 2.1.4: two messages at one revision are one version, and one of them
+        // is not the one the organizer sent. Neither newer nor older is not an update, so the
+        // same edit carrying neither a newer number nor a newer stamp describes nothing at all
+        // — which is also what makes a message that has already been applied idempotent when it
+        // arrives a second time.
+        let restated = Node::calendar("REQUEST", request_at(2).stamped(EARLY));
+        let message = message_of(&restated, &mut meter);
+        let authorized = evaluate_message(&message, &current, party(CHAIR))
+            .expect("a restatement is not a refusal, it is a message with nothing new in it");
+        assert!(
+            authorized.transition().is_empty(),
+            "an equal revision restating a different summary described a change"
+        );
+        assert_eq!(authorized.reason(), TransitionReason::Updated);
     }
 
     /// `SECURITY.md`'s first named attack, in both of the shapes it has.
@@ -673,10 +703,13 @@ mod tests {
         let verdict = evaluate_message(&message, &current, party(ANN));
         assert_eq!(
             verdict.err(),
-            Some(AuthorizationDenied::MethodRequiresField(
-                PropertyId::ATTENDEE
+            Some(AuthorizationDenied::MethodForbidsField(
+                PropertyOccurrence::named(b"ATTENDEE", 1)
             )),
-            "section 3.2.3 prints ATTENDEE as 1, and two is not one"
+            "section 3.2.3 prints ATTENDEE as 1, and the second line is the one it does not \
+             admit — the row is read in both directions, so a message with too many of a name \
+             is refused at the occurrence that is one too many rather than reported as lacking \
+             the name it plainly carries"
         );
     }
 

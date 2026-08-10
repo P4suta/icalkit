@@ -20,11 +20,15 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use ical_core::{ParameterEdit, PropertyId, ProposedChange, RawText};
+use ical_core::{
+    DateTimeValue, EncodeValue, Instant, ParameterEdit, PropertyId, ProposedChange, RawText,
+    ValueBuf,
+};
+use ical_tz::wall_clock;
 
 use crate::message::ItipMessage;
 use crate::method::Method;
-use crate::party::PartyId;
+use crate::party::{ANSWERED_AT, PartyId};
 use crate::state::{PropertyOccurrence, ScheduledComponent};
 use crate::transition::{Transition, TransitionReason, is_time_property};
 
@@ -119,8 +123,33 @@ fn describe_reply(
     if let Some(delegator) = answer.delegated_from() {
         edits.push(ParameterEdit::set(b"DELEGATED-FROM", delegator.as_bytes()));
     }
+    // When the answer was written, recorded on the line it answers for. Without it the next
+    // reply from this attendee is one RFC 5546 section 2.1.5 has nothing to order, and the
+    // attendee's own earlier answer replayed afterwards silently reverts this one.
+    let stamped = payload.dtstamp().and_then(utc_text);
+    match stamped.as_ref() {
+        Some(written) => edits.push(ParameterEdit::set(ANSWERED_AT, written.as_bytes())),
+        // A reply whose own `DTSTAMP` did not read records no time rather than a wrong one, and
+        // the parameter already on the line is cleared: keeping an older answer's time beside a
+        // newer answer's status would order the next reply against the wrong one.
+        None => edits.push(ParameterEdit::remove(ANSWERED_AT)),
+    }
     transition.record(at, ProposedChange::SetParameters(edits));
     transition
+}
+
+/// `instant` written as the UTC `DATE-TIME` a `DTSTAMP` is, or `None` when it is off the
+/// representable calendar.
+///
+/// Through [`ical_tz::wall_clock`], because that is the inverse of the projection every
+/// timestamp reaching this crate came in on: a `DTSTAMP` is read onto the nominal timeline, and
+/// writing one back through any other offset would move it.
+fn utc_text(instant: Instant) -> Option<RawText> {
+    let mut written = ValueBuf::new();
+    DateTimeValue::Utc(wall_clock(instant)?)
+        .encode_value(&mut written)
+        .ok()?;
+    Some(written.into_raw_text())
 }
 
 /// Which `ATTENDEE` occurrence of `component` is `who`.
@@ -163,7 +192,11 @@ fn lines(component: &dyn ScheduledComponent) -> BTreeMap<PropertyOccurrence, &[u
 }
 
 /// What kind of change a method describes, given what the caller already holds.
-fn reason_for(method: Method, current: &dyn ScheduledComponent, moved: bool) -> TransitionReason {
+pub(crate) fn reason_for(
+    method: Method,
+    current: &dyn ScheduledComponent,
+    moved: bool,
+) -> TransitionReason {
     match method {
         Method::Publish => TransitionReason::Published,
         Method::Request if current.uid().is_none() => TransitionReason::Created,
