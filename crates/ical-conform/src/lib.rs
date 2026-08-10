@@ -58,3 +58,9 @@
 //!
 //! What is still owed is M5's: a foreign implementation actually run, so that a "where
 //! implementations differ" note records a measurement rather than what a project documents.
+
+// The chapters that are prose plus a case table rather than a fixture plus a runner. A
+// scheduling case is a triple — prior state, incoming message, applying party — and the state
+// is reached through a trait rather than through a file, so the cases live beside the
+// documentation that says which section each one is addressed to.
+pub mod itip;

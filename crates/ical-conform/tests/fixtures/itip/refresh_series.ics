@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Corp//Corpus//EN
+METHOD:REFRESH
+BEGIN:VEVENT
+UID:4f1b9a2c-corpus@example.com
+DTSTAMP:20260302T080000Z
+ORGANIZER;SENT-BY="mailto:pa@example.com":mailto:chair@example.com
+ATTENDEE:mailto:bo@example.com
+END:VEVENT
+END:VCALENDAR

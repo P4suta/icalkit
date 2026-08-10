@@ -24,6 +24,9 @@ homepage.workspace = true
 # The implementation this workspace supplies for the corpus to run against. A path plus a
 # version so the dependency resolves from inside this workspace rather than from a registry.
 ical-core = { path = "../ical-core", version = "0.0.0" }
+# The scheduling chapter runs its cases through this crate's own gate, and supplies the state
+# they are judged against through `ScheduledComponent` rather than through a `Component`.
+ical-itip = { path = "../ical-itip", version = "0.0.0" }
 ical-recur = { path = "../ical-recur", version = "0.0.0" }
 ical-tz = { path = "../ical-tz", version = "0.0.0" }
 
