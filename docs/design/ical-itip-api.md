@@ -5,8 +5,9 @@
 - Implements: [ADR 0005](../adr/0005-scheduling-apart-from-the-model.md), with
   [0007](../adr/0007-allocation-policy.md), [0009](../adr/0009-error-and-diagnostic-model.md),
   [0010](../adr/0010-shared-resource-limits.md)
+- Amended: 2026-08-11 (M3 shipped)
 - Skeleton: assembled with the other five into one workspace and compiled together; see
-  "What the first compile changed" below
+  "What the first compile changed" and "What M3 shipped" below
 
 ## Responsibility
 
@@ -59,21 +60,19 @@ reachable, so `PartStat::Other` loses nothing.
 
 ```rust
 pub trait ScheduledComponent: core::fmt::Debug {
-    fn component_kind(&self) -> ComponentKind;
-    fn method(&self) -> Option<Method>;
+    fn component_kind(&self) -> Option<ComponentKind>;
+    fn method(&self) -> Option<&[u8]>;
     fn uid(&self) -> Option<&[u8]>;
-    fn sequence(&self) -> u32;
+    fn sequence(&self) -> SequenceRead;
     fn dtstamp(&self) -> Option<Instant>;
-    fn dtstart(&self) -> Option<Instant>;
-    fn dtend(&self) -> Option<Instant>;
     fn recurrence_id(&self) -> Option<InstanceRef>;
     fn organizer(&self) -> Option<Party<'_>>;
     fn attendee_count(&self) -> usize;
     fn attendee(&self, index: usize) -> Option<Attendee<'_>>;
-    fn attendee_property_id(&self, index: usize) -> Option<PropertyId>;
+    fn attendee_occurrence(&self, index: usize) -> Option<PropertyOccurrence>;
     fn property_count(&self) -> usize;
-    fn property_id(&self, index: usize) -> Option<PropertyId>;
-    fn property_bytes(&self, id: &PropertyId) -> Option<&[u8]>;
+    fn property_name(&self, index: usize) -> Option<&[u8]>;
+    fn property_line(&self, index: usize) -> Option<&[u8]>;
     fn child_count(&self) -> usize;
     fn child(&self, index: usize) -> Option<&dyn ScheduledComponent>;
 }
@@ -106,10 +105,10 @@ only constructor. This is also where ADR-0010's `&Limits, &mut Meter` pair enter
 `evaluate_message` keeps the three parameters ADR-0005 gives it, because by the time a message
 exists its cardinality is already bounded.
 
-`ScheduledComponent` is how ADR-0005's `current: &Component` is spelled. `ical-itip` ships
-`impl ScheduledComponent for ical_core::Component`, so the literal call
-`evaluate_message(&message, &component, actor)` compiles unchanged — `&Component` unsizes to
-`&dyn ScheduledComponent` at the argument position. Naming the trait buys two things: a CalDAV
+`ScheduledComponent` is how ADR-0005's `current: &Component` is spelled. `ical-itip` bridges an
+`ical_core::Component` onto it with `ScheduledView::of(&component)`, which is a value rather
+than an impl on `Component` itself; "What M3 shipped" gives the two reasons that is forced
+and what it costs. Naming the trait buys two things: a CalDAV
 server whose current state is a database row never has to build a `Component` to answer "who may
 change this", and the crate's demand on `ical-core` becomes one readable list instead of an
 inference from call sites. The trait is deliberately object-safe — index accessors rather than
@@ -136,14 +135,18 @@ policy for a 40 KB `DESCRIPTION` and an unsafe one for anything the authorizatio
 ### The transition
 
 ```rust
-pub struct Transition { changes: BTreeMap<PropertyId, ProposedChange>, reason: TransitionReason }
+pub struct Transition {
+    changes: BTreeMap<PropertyOccurrence, ProposedChange>,
+    reason: TransitionReason,
+}
 
 impl Transition {
     pub const fn reason(&self) -> TransitionReason;
     pub fn len(&self) -> usize;
     pub fn is_empty(&self) -> bool;
-    pub fn change(&self, property: &PropertyId) -> Option<&ProposedChange>;
-    pub fn changes(&self) -> Changes<'_>;   // Iterator<Item = (&PropertyId, &ProposedChange)>
+    pub fn change(&self, at: &PropertyOccurrence) -> Option<&ProposedChange>;
+    // Iterator<Item = (&PropertyOccurrence, &ProposedChange)>
+    pub fn changes(&self) -> Changes<'_>;
 }
 
 pub enum TransitionReason {
@@ -155,9 +158,9 @@ pub fn describe_message(message: &ItipMessage<'_>, current: &dyn ScheduledCompon
 ```
 
 **Invariants.** `Transition` reuses `ical-core`'s `ProposedChange` rather than inventing a second
-change vocabulary, keyed by `PropertyId` so two conflicting changes to one property occurrence
-cannot both exist. It is inert: no method on it reaches a component, and the only route to
-`apply_transition` is through `evaluate_message`. `describe_message` therefore hands a caller
+change vocabulary, keyed by `PropertyOccurrence` so two conflicting changes to one property
+occurrence cannot both exist. It is inert: no method on it reaches a component, and the only
+route to `apply_transition` is through `evaluate_message`. `describe_message` therefore hands a caller
 what a *denied* message tried to do without handing it the ability to do it — which is ADR-0005's
 recommendation that a rejected reply stay inspectable, discharged without giving
 `AuthorizationDenied` an allocated field on every rejection path.
@@ -230,25 +233,28 @@ no test written against the properties we know will ever find.
 
 ```rust
 pub trait ScheduleTarget: core::fmt::Debug {
-    fn write_change(&mut self, property: &PropertyId, change: &ProposedChange)
+    fn write_change(&mut self, at: &PropertyOccurrence, change: &ProposedChange)
         -> Result<(), WriteRejected>;
 }
 
 pub enum WriteRejected { UnknownProperty, ValueTypeMismatch, ReadOnly }
-pub struct RejectedChange { /* property, reason */ }
+pub struct RejectedChange { /* at, reason */ }
 pub struct ApplyReport { /* applied: u32, rejected: Vec<RejectedChange> */ }
 
 pub fn apply_transition(
     target: &mut dyn ScheduleTarget,
-    authorized: AuthorizedTransition,
+    authorized: Authorization<'_>,
 ) -> ApplyReport;
 ```
 
 **Invariants.** `ical-itip` ships `impl ScheduleTarget for ical_core::Component`, routing each
-change through the scoped `PropertyMut` guard of ADR-0001; a server whose storage is a row
-implements the trait against its rows instead. A partial application is reported, never hidden:
-this crate owns no transaction and cannot roll one back, so a caller that needs all-or-nothing
-checks `ApplyReport::is_complete` before committing its own storage.
+change through `Component::apply_to_occurrence` — the occurrence-addressed door ADR-0001
+amendment 5 adds, not ADR-0001's scoped `PropertyMut` guard, which addresses an identity and
+would answer for every `ATTENDEE` at once. `ComponentTarget` is the same door carrying the
+caller's `Limits`; see "What M3 shipped" for why there are two. A server whose storage
+is a row implements the trait against its rows instead. A partial application is reported, never
+hidden: this crate owns no transaction and cannot roll one back, so a caller that needs
+all-or-nothing checks `ApplyReport::is_complete` before committing its own storage.
 
 ### What this needs from `ical-core`
 
@@ -472,12 +478,19 @@ fn from_mail(
     let mut diagnostics = DiscardDiagnostics;
     let message = ItipMessage::read(calendar, &limits, meter, &mut diagnostics)?;
 
-    let declared = MediaTypeParams::read(content_type);
-    if !declared.agrees_with(&message) {
-        return Ok(Prompt::Refused(AuthorizationDenied::UnknownAttendee));
+    // The header is bounded and charged like anything else off the wire, and an unclosed
+    // quoted value is a refusal rather than a truncation: see "What M3 shipped".
+    // Both envelope answers are the *caller's* refusals and not `AuthorizationDenied`: the
+    // gate below never ran, and reporting one as though it had would tell a user that a
+    // message was refused on scheduling grounds when it was refused on postal ones.
+    let Ok(declared) = MediaTypeParams::read(content_type, limits, meter) else {
+        return Ok(Prompt::EnvelopeUnreadable);
+    };
+    if !declared.is_calendar() || !declared.agrees_with(&message) {
+        return Ok(Prompt::EnvelopeDisagrees);
     }
     if !sender_is_named(envelope_sender, current) {
-        return Ok(Prompt::Refused(AuthorizationDenied::UnknownAttendee));
+        return Ok(Prompt::EnvelopeNamesNobody);
     }
     match evaluate_message(&message, current, envelope_sender) {
         Ok(authorized) => Ok(Prompt::Confirm(authorized.reason())),
@@ -488,10 +501,14 @@ fn from_mail(
 
 ## What this makes worse
 
-The `ScheduledComponent` trait is seventeen methods, and `ical-core` has to implement all of them
+The `ScheduledComponent` trait is sixteen methods, and something has to implement all of them
 before this crate does anything at all. That is the price of not requiring a `Component` to
-exist, and if no second implementation ever appears the trait earns its cost as insurance rather
-than as demonstrated demand — the same bet the crate decomposition made on `ical-grammar`.
+exist, and M3 paid it twice over: `ScheduledView` bridges an `ical_core::Component` and the
+conformance corpus wrote a second implementation over its own `.ics` reader, so the trait is
+demonstrated demand rather than insurance. The bill arrived elsewhere. Because the bridge is a
+value that owns the reconstructed content lines and the RFC 6868-resolved parameter values, a
+caller holding a `Component` pays one build pass over it before the first question is asked,
+where an impl on `Component` would have paid nothing — and could not have existed.
 
 Reusing `ical-core`'s change vocabulary couples the crates where ADR-0005's own text wanted them
 clear: every newly mutable property `ical-core` learns must now also decide whether it is
@@ -542,3 +559,91 @@ time resolves it before handing the message over, exactly as before.
 `Meter::try_charge(u64)`, the shared ledger's own primitive. `Limits::CONSERVATIVE` is
 `Limits::DEFAULT`: `ical-core`'s default policy already is the conservative one, and two names for
 one value is how a caller learns to distrust both.
+
+## What M3 shipped
+
+The crate behind the surface above was built in M3 and is no longer a proposal. Its eight units
+were written against this document and compiled together for the first time afterwards. Nothing
+in the responsibility or the threat model moved. Five spellings did, and each is a place where
+this document promised something the frozen signatures could not deliver.
+
+**`ScheduledComponent` is bridged by a value, not by an impl on `Component`.** This document
+said `ical-itip` ships `impl ScheduledComponent for ical_core::Component`. It cannot, for two
+independent reasons and neither is stylistic. `property_line` hands back a whole content line as
+`&[u8]`, and a `Component` stores the name, the ordered parameter list, the value and the
+recorded folds separately — the line as one contiguous run of octets exists nowhere in the tree,
+and a borrow can only point at octets something already owns. Second, ADR-0001 amendment 3
+requires every parameter value handed to `Party` or `Attendee` to be RFC 6868-decoded first, and
+resolving `^'` into `"` *produces an octet the file does not contain*, while `Party<'a>` and
+`Attendee<'a>` are `Copy` over `&'a [u8]` and cannot hold a `Cow`. Both derivations need storage
+with the `&self` lifetime, and a `Component` has none. So the bridge is
+`ScheduledView::of(&component)`, which borrows the component and owns exactly the two things the
+component does not store. The alternative cost three frozen files — `property_line` returning a
+`Cow`, the diff's map, and `Party`/`Attendee` losing `Copy` — to buy one line at one call site.
+
+**`ScheduleTarget` has two doors, because a policy is not part of a transition.**
+`write_change` takes no `Limits` and `Component::apply_to_occurrence` needs one, since a
+replacement is octets off the wire read through the same content-line reader a file goes
+through. `impl ScheduleTarget for ical_core::Component` therefore writes under `Limits::DEFAULT`,
+which is safe for the ordinary caller because those octets came out of an `ItipMessage` already
+read under that caller's own bounds. `Transition::new` and `Transition::record` are public, so a
+hand-built transition's octets have cleared nothing — and such a caller uses `ComponentTarget`,
+which carries the caller's `Limits`. Both route through one private writer so the two cannot come
+to disagree about which occurrence a change addresses.
+
+**`current` and the target cannot be the same value, and the type system says so.**
+`Authorization<'a>` holds `&'a dyn ScheduledComponent`, so the immutable borrow of the state a
+decision was made against overlaps the `&mut dyn ScheduleTarget` that `apply_transition` writes
+to. A caller applies into its own storage, or into a separate value. The propose/confirm example
+above takes `current` and `target` as separate parameters and so happens to compile; this
+paragraph is why it must.
+
+**`MediaTypeParams::read` is bounded, charged and fallible.** The sketch spelled
+`read(content_type)`. ADR-0010 requires the header to be held under `Limits::max_header_bytes`
+and charged to the meter, and an unclosed quoted value has to be a refusal rather than a
+truncation — truncating lets an attacker choose where a value ends and therefore which method
+the envelope appears to declare. Those cannot hold in an infallible one-argument constructor, so
+the signature is `read(header, limits, meter) -> Result<Self, MediaTypeError>`, matching
+`ItipMessage::read`'s own shape. `agrees_with` covers the `method` parameter only; RFC 6047
+section 2.4 also requires the media type itself, which is `is_calendar()`, and a caller asks
+both.
+
+**Two surfaces gained a parameter or a return type the sketch did not name.**
+`resolve_instance` answers a `ResolvedInstance` rather than an `InstanceRef`, because the same
+paragraph asks for `nearest_known()` on what comes back and `InstanceRef` is frozen with nowhere
+to keep an `AnswerBasis`; `ResolvedInstance::reference()` and `From<ResolvedInstance> for
+InstanceRef` hand back exactly the value the sketch named. `inspect_message` takes
+`Option<PartyId<'_>>`, because it is required to report `scheduling-sender-not-permitted` for a
+supplied actor and the actor has to arrive somehow; `None` is the ordinary inbox case, where a
+file is being inspected rather than a sender judged.
+
+### Three gaps the corpus found in the gate
+
+The conformance chapter was written from RFC 5546 rather than from the implementation, and
+landed with three cases the gate failed. All three were the specification's reading and all
+three are now closed; the alternative — editing the corpus to agree — would have retired the
+only instrument that can find this class of defect.
+
+1. **Section 3's `SUBCOMPONENTS` rows were never read.** `check_conformance` counted properties
+   and nothing else, so a `REPLY` carrying a `VALARM` — a `0` row — was accepted whole, and an
+   attendee's answer could install a component the recipient's client will act on. The gate now
+   runs `check_nesting`, and the refusal is `AuthorizationDenied::MethodForbidsComponent(kind)`
+   rather than a `PropertyOccurrence` carrying a component's name, because a nested `VALARM` is
+   not a property and a caller looking that name up among the payload's properties would find
+   nothing. The `COMPONENTS` rows are deliberately still unread here: `ItipMessage::read` already
+   refuses a second payload kind and a payload the tables do not nest, earlier and for the whole
+   message.
+2. **`PUBLISH` and `REQUEST` could never create anything.** The sending party was resolved
+   against the state the caller holds, which for the two methods whose whole purpose is to
+   arrive first names nobody — so both were refused `OrganizerMismatch` and
+   `TransitionReason::Created` was unreachable. The lookup now falls back to the payload when the
+   prior state is absent. What that costs is stated in `SECURITY.md` and in `authorize.rs`: for a
+   first message this gate proves the actor is a party *the message names*, and the claim that
+   the actor really sent it rests entirely on the transport.
+3. **A `REFRESH` described the removal of the organizer's calendar.** It was diffed as a
+   restatement of the component, so it stated a removal for every property its four lines do not
+   echo, and the field rule then refused the attendee for removals the diff had invented.
+   `describe_payload` now answers an empty transition for it. The revision gate is skipped for
+   any method whose table forbids `SEQUENCE` — read from the table rather than special-cased —
+   because such a method states no version of its own and the absent-is-zero reading would make
+   every refresh stale against every held revision above zero.

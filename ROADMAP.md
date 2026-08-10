@@ -145,6 +145,55 @@ enums crossing this crate's boundary are `#[non_exhaustive]`. A transition addre
 property *occurrence*, not a property name, because a message changes one attendee among
 many.
 
+**Met.** `ical-itip` reads an RFC 5546 message, judges it against the state a caller already
+holds and the identity of the party applying it, and answers a described transition or the first
+reason it was refused. The transition is `ical-core`'s own change vocabulary keyed on a property
+*occurrence*, which `Component::apply_to_occurrence` writes back — a second door beside the
+identity-addressed `Component::apply`, because a `REPLY` answers for one `ATTENDEE` among many
+and M0 chose identity-addressing for a reason this does not disturb. Section 3's twenty-two
+constraint tables are data rather than code, and every conformance case names the subsection its
+expectation was read from and asserts that name against the section the implementation's own
+`MethodRule` carries, so a case and the table cannot drift apart silently.
+
+Authorization is one fixed order with no partial success, and what it proves is now written down
+rather than assumed. `Authorization` borrows both of its inputs, so it has no owned form to
+encode and a caller that tries to carry one across a request boundary gets a compile error
+instead of a forgeable token; `apply_transition` consumes it, so it is single-use. `Commitment`
+is the one value designed to cross bytes and carries no authority at all — compared only to
+refuse, digest a checksum and not a MAC — so forging one buys an attacker the ability to decline
+to be told that the target moved, and nothing else. `SECURITY.md` gained the paragraphs that say
+so, including the one nobody wants to write: for a first `PUBLISH` or `REQUEST` there is no local
+state to compare a sender against, so the gate proves the actor is a party the *message* names
+and the rest rests on the transport.
+
+Two of the questions earlier milestones left are closed here and two are not the way they were
+asked. A `Z`-terminated `RECURRENCE-ID` now picks its own half of a repeated hour, so M2's
+cadence-key collision stops being a coin flip for scheduling — and a `TZID`-qualified one still
+names both halves, which most real clients write, so those messages are permanently denied
+rather than guessed at. An `AnswerBasis` continuation is reported where it decided *identity*
+rather than only a rendering, which is the caller with a stake M2 said would come. An exclusion
+no zone could place is a precondition the caller checks before the gate, not a denial inside it,
+because handing the gate a zone would put zone resolution inside an authorization decision. And
+RFC 6868 parameter copying has a case that asserts byte-identical output through the whole
+read-describe-apply path, which is the hazard ADR 0001 amendment 3 named and no gate catches.
+
+The corpus found three defects in the gate it was measuring, which is the whole reason it is
+written from the RFC rather than from the code: section 3's `SUBCOMPONENTS` rows were unread, so
+an attendee's `REPLY` could install a `VALARM`; `PUBLISH` and `REQUEST` could never create
+anything, because the sender was looked up in state that by definition names nobody; and a
+`REFRESH` described the removal of the organizer's own calendar. All three are fixed in the
+implementation and recorded as ADR 0005 amendments 4 to 6.
+
+Four things are known and named. An attendee's `REPLY` carrying a moved `DTSTART` is *ignored*
+rather than refused — the transition holds one change on the sender's own `ATTENDEE` line, so
+the security property holds, but a caller that applies `Authorization::message`'s payload instead
+of the transition moves the meeting. A `REPLY` carrying two `ATTENDEE` lines is denied
+`MethodRequiresField(ATTENDEE)`, which tells a user the opposite of what happened. A legitimate
+`COUNTER` is refused, because the field rule has no per-method dimension — the interoperability
+cost the design document said it preferred, now observed rather than predicted. And a delegate's
+`REPLY` describes nothing until the delegator's own reply has been applied, which is RFC 5546's
+order but is not what a caller wanting one turn gets.
+
 ## M4 — CalDAV
 
 `ical-dav`: RFC 4791 requests and responses, sans-I/O, usable from both sides. Calendar

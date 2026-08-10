@@ -156,8 +156,75 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cadence keys rather than between two instants the seam never carries.
 - `ical_tz::VtimezoneSet::definitions` keeps every reading of one identifier reachable, and
   `ical_recur::OverrideSet::collisions` counts the overrides a repeated cadence key shadowed.
+- `ical-itip` answers what an incoming RFC 5546 message would change and whether the party
+  applying it may. The eight methods and their sender rules, section 3's twenty-two constraint
+  tables transcribed as data, the party and instance identities, the checked-and-charged
+  `ItipMessage`, the occurrence-addressed `Transition`, the octet diff, and `evaluate_message`
+  running one fixed order of denials with no partial success. The description is inert:
+  applying it needs an `Authorization`, and there is no route to one that does not run the gate.
+- `Authorization<'a>` borrows both of its inputs, so "not encodable" is a property of the type
+  rather than a promise in prose — a caller that tries to carry one across a request boundary
+  gets a compile error rather than a forgeable token — and `apply_transition` takes it by value,
+  so a vetted transition is single-use. `Commitment` is the one value designed to cross bytes
+  and deliberately carries no authority: it is compared only to cause a refusal, its digest is a
+  checksum and not a MAC, and forging one buys exactly the ability to decline to be told that
+  the target moved. `SECURITY.md` now states what the gate proves and what it does not.
+- `ical_core::Component::apply_to_occurrence`, the occurrence-addressed write door beside the
+  identity-addressed `Component::apply`, which is unchanged. A `REPLY` answers for one
+  `ATTENDEE` among many, and an identity-addressed write would answer for all of them at once;
+  ADR 0001 amendment 5 records why that is a second door rather than a widened first one.
+- Both bridges from `ical_core::Component` to the scheduling surface: `ScheduledView::of` for
+  reading, which owns the reconstructed content lines and the RFC 6868-decoded parameter values
+  a `Component` does not store, and `ComponentTarget` for writing under the caller's own
+  `Limits`.
+- `ical_itip::resolve_instance` closes M2's repeated-hour question for scheduling: a
+  `Z`-terminated `RECURRENCE-ID` picks its own half of a fold through
+  `FoldSide::from_resolution`, a wall-clock one names both halves and stays unresolved, and an
+  unresolved side can never compare `Same`, so the gate denies rather than guessing which
+  meeting a message is about. `check_exclusions_are_placeable` is the caller precondition for a
+  series carrying an exclusion no zone could place, and an `AnswerBasis` continuation is
+  reported where it decided identity rather than only a rendering.
+- `ical_itip::inspect_message`, the reporting pass that says "present and unusable" where
+  `Component::audit` says "present": an `ORGANIZER` or `ATTENDEE` whose `CAL-ADDRESS` does not
+  decode, an unreadable `SEQUENCE`, a section 3 `0` row, a missing required row, a `RANGE` no
+  method admits, and a sender RFC 5546's prose does not permit. All ten `scheduling-*`
+  diagnostic codes now have an emitter.
+- Two features: `imip` reads an RFC 6047 `Content-Type` header under the caller's bounds and
+  answers whether the envelope's `method` agrees with the body's `METHOD` — verdict-free, so it
+  can only refuse before the gate and never widen it — and `freebusy` reads RFC 5546 section
+  3.3's `VFREEBUSY` window and busy periods, refusing rather than reporting an empty calendar
+  wherever a bound does not read.
+- The scheduling chapter of the conformance corpus — thirty-six cases addressed to RFC 5546
+  subsections, each asserting the section its own `MethodRule` carries, so a case and the
+  transcribed table cannot drift apart — and a twenty-case adversarial suite, one test per named
+  attack, each fixture built so exactly one gate can fire, which makes the assertion about the
+  gate's order and not only its answer.
 
 ### Fixed
+
+- A `REPLY` carrying a `VALARM` was accepted whole. The gate counted a payload's properties
+  against RFC 5546 section 3 and never its components, so the `VALARM` row of section 3.2.3's
+  `SUBCOMPONENTS` table — which reads `0` — was unenforced, and an attendee's answer could
+  install a component the recipient's client will act on. The refusal is
+  `AuthorizationDenied::MethodForbidsComponent`, a variant of its own rather than the existing
+  property-shaped one carrying a component's name; only the forbidden direction is read, and
+  that omission is machine-checked against the transcribed tables rather than asserted in prose.
+- A `PUBLISH` or a `REQUEST` about something the caller does not hold was always refused
+  `OrganizerMismatch`, so the two methods RFC 5546 defines to arrive before the recipient has
+  anything could never succeed and `TransitionReason::Created` was unreachable: the sending
+  party was resolved only against state that, being absent, names nobody. The lookup falls back
+  to the message's own payload when the prior state is absent. What rests on the transport as a
+  result is stated in `SECURITY.md` and in ADR 0005 amendment 4 rather than left implicit.
+- A `REFRESH` described the removal of the organizer's `DTSTART`, `RRULE` and attendee list.
+  It was diffed as a restatement of the component, so it stated a removal for every property its
+  four lines do not echo, and the field rule then refused the attendee for removals the diff had
+  invented. It describes nothing now, per section 3.2.6. Relatedly, the revision gate runs only
+  for a method whose own table admits a `SEQUENCE`: a refresh states no version of its own, so
+  the absent-is-zero reading made every refresh stale against every held revision above zero.
+- The octet diff counted property occurrences per name *as written* while filing them under the
+  normalized identity, so an implementation reporting `DTSTART` on one line and `dtstart` on
+  another counted two first occurrences and filed both under one key, silently discarding the
+  first. Both sides count the normalized identity now.
 
 - A zone rule stopped being consulted once four dated transitions stood between it and the
   query, so a `Europe/Berlin` definition restating two years of its own transitions as `RDATE`
@@ -272,6 +339,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   answers with the first definition carrying a transition rather than the first definition.
 - ADR 0003 carries thirteen amendments, ADR 0011 three, ADR 0002 sixteen and ADR 0009 one, each
   written because an adversarial case found the sentence above it wrong rather than unbuilt.
+- ADR 0005 carries six amendments and ADR 0001 a fifth, and `docs/design/ical-itip-api.md`
+  gains a "What M3 shipped" section for the five places it promised something the frozen
+  signatures could not deliver. The largest: `impl ScheduledComponent for ical_core::Component`
+  cannot exist, because `property_line` must hand back a whole content line a `Component` stores
+  nowhere as one contiguous run, and RFC 6868 decoding produces octets the file does not contain
+  while `Party` and `Attendee` are `Copy` over borrowed ones. The bridge is `ScheduledView`, a
+  value that owns both — which costs one build pass per component and keeps three frozen files
+  untouched. Also amended: `ScheduleTarget` routes through `Component::apply_to_occurrence` and
+  not ADR 0001's identity-addressed `PropertyMut` guard, `MediaTypeParams::read` is bounded,
+  charged and fallible, and `Authorization` borrowing its state means the same `Component`
+  cannot be both the state judged and the target written.
 - The purity gate reads the package a dependency links rather than the key it was written
   under. A `package = "..."` rename defeated every leg of the old gate; it is now a violation
   in both the inline and the sub-table spelling, alongside a dependency taken from a registry
