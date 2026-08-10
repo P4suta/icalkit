@@ -42,6 +42,19 @@
 //!
 //! # Status
 //!
-//! Bootstrap. No cases are written yet; see `ROADMAP.md` (M5). The case vocabulary, the
-//! subject contract and the two runners are designed and compiled;
-//! `docs/design/ical-conform-api.md` carries them.
+//! The case vocabulary, the subject contract and the two runners are designed and compiled;
+//! `docs/design/ical-conform-api.md` carries them. The cases beside them in `tests/` are the
+//! ones M0 owes: what real clients export and what an adversary sends (`break_clients.rs`,
+//! `break_grammar.rs`, `break_hostile.rs`, `break_hostile_stack_overflow.rs`), what the write
+//! side may author (`write_side_grammar.rs`, `break_construction.rs`), and the two readings
+//! this workspace had to choose about parameters and RFC 6868 (`break_parameters.rs`).
+//!
+//! `sweep.rs` is the other kind of evidence: a seeded, deterministic, time-bounded sweep over
+//! inputs nobody chose — exhaustively every short string over the octets that decide a line,
+//! randomly from a committed seed, and generatively as edits to every committed fixture — each
+//! asserting the round trip and accepting a refusal only where the input itself confirms the
+//! bound was crossed. It prints what it covered, because a generative test that quietly stops
+//! generating passes.
+//!
+//! What is still owed is M5's: a foreign implementation actually run, so that a "where
+//! implementations differ" note records a measurement rather than what a project documents.
