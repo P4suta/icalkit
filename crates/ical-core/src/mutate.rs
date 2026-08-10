@@ -37,14 +37,15 @@ use alloc::vec::Vec;
 
 use ical_grammar::{
     ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token,
-    parameter_is_representable, parameter_name_is_representable, quote_parameter_into,
+    parameter_is_representable, parameter_name_is_representable, property_name_is_representable,
+    quote_parameter_into,
 };
 
 use crate::change::{ParameterEdit, ProposedChange};
 use crate::gregorian::DateTimeValue;
 use crate::ident::PropertyId;
 use crate::octets::RawText;
-use crate::tree::{Component, Item, Parameter, Property};
+use crate::tree::{Boundary, Component, Item, Parameter, Property};
 use crate::view::{EncodeValue, MutationError, PropertyMut, ValueBuf};
 
 /// Refuse octets carrying an ASCII control character.
@@ -113,6 +114,102 @@ fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError>
     Ok(())
 }
 
+/// One parameter in the section 3.2 spelling its value requires, the refusals already made.
+///
+/// The value is stored quoted where `SAFE-CHAR` excludes what it carries, because that is the
+/// form the tree stores for a value that was read: a parameter keeps the quotes its producer
+/// wrote, so a parameter this crate writes has to carry the quotes its value needs. Storing the
+/// bare octets instead would put a `:` on the wire unquoted and the next read would end the
+/// header at it.
+fn spelled_parameter(name: &[u8], value: &[u8]) -> Parameter {
+    let mut spelled = Vec::new();
+    quote_parameter_into(value, &mut spelled);
+    Parameter::new(RawText::from_bytes(name), RawText::from_vec(spelled))
+}
+
+impl Parameter {
+    /// A parameter a caller is assembling, refused where section 3.2 has no way to write it.
+    ///
+    /// # Errors
+    ///
+    /// [`MutationError::NotRepresentable`] for a name the reader would hand back in pieces, and
+    /// for a value carrying a `DQUOTE` or a control character — the two shapes `QSAFE-CHAR`
+    /// excludes and section 3.2 defines no escape for.
+    pub fn create(name: &[u8], value: &[u8]) -> Result<Self, MutationError> {
+        if !parameter_name_is_representable(name) || !parameter_is_representable(value) {
+            return Err(MutationError::NotRepresentable);
+        }
+        Ok(spelled_parameter(name, value))
+    }
+}
+
+impl Property {
+    /// A property a caller is assembling, refused where RFC 5545 has no way to write it back.
+    ///
+    /// This is the tree-building door, and it is the same door
+    /// [`PropertyMut::set_raw`](crate::PropertyMut::set_raw) is: octets a caller hands over have
+    /// no producer whose spelling to preserve, so refusing them costs the round-trip guarantee
+    /// nothing (`docs/adr/0001`). Without it, a `SUMMARY` taken from a web form could carry its
+    /// own `CRLF` into a component through [`Component::items_mut`] and come back on the next
+    /// read as a second `ATTENDEE` nobody added — the injection the scoped-write refusal exists
+    /// to stop, arriving through construction instead.
+    ///
+    /// The line is given a canonical layout: this is a line the crate authors, so it is folded
+    /// the way the crate folds and terminated the way section 3.1 requires.
+    ///
+    /// # Errors
+    ///
+    /// [`MutationError::NotRepresentable`] for a name that would not read back whole — the
+    /// empty one included — and [`MutationError::IllegalControlCharacter`] for a value carrying
+    /// one, which is refused rather than escaped because escaping would silently store
+    /// something other than what the caller asked to store.
+    pub fn create(
+        name: &[u8],
+        parameters: Vec<Parameter>,
+        value: &[u8],
+    ) -> Result<Self, MutationError> {
+        if !property_name_is_representable(name) {
+            return Err(MutationError::NotRepresentable);
+        }
+        refuse_control_characters(value)?;
+        Ok(Self::new(
+            RawText::from_bytes(name),
+            parameters,
+            RawText::from_bytes(value),
+            LineLayout::canonical(LineEnding::CANONICAL),
+        ))
+    }
+}
+
+impl Component {
+    /// A component a caller is assembling, with the two boundary lines section 3.6 requires.
+    ///
+    /// The `END` is written from the same octets as the `BEGIN`, so a component this crate
+    /// authored is closed by the name it was opened with and in the case it was opened in.
+    ///
+    /// [`Component::new`] stays open beside this because nothing it takes can be fabricated: a
+    /// [`Boundary`] has no public constructor, so the only ones in existence came out of a file
+    /// or out of this call, and rearranging those is a caller's business rather than an
+    /// injection.
+    ///
+    /// # Errors
+    ///
+    /// [`MutationError::NotRepresentable`] for a name that would not read back whole.
+    pub fn create(name: &[u8], items: Vec<Item>) -> Result<Self, MutationError> {
+        if !property_name_is_representable(name) {
+            return Err(MutationError::NotRepresentable);
+        }
+        let edge = |keyword: &[u8]| {
+            Boundary::new(
+                RawText::from_bytes(keyword),
+                RawText::from_bytes(name),
+                LineLayout::canonical(LineEnding::CANONICAL),
+            )
+        };
+        Ok(Self::new(edge(b"BEGIN"), items, Some(edge(b"END"))))
+    }
+}
+
 /// Assign `value` to the parameter `name`, keeping the position the line already gave it.
 ///
 /// In place rather than remove-and-append, because where a parameter sits on the line is
@@ -120,17 +217,12 @@ fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError>
 /// the same name goes: one that stayed would still be on the line and still be read, so an
 /// assignment that left it there would not be one.
 ///
-/// The value is stored in the form section 3.2 writes it in, `DQUOTE`s included, because that
-/// is the form the tree stores for a value that was read: a parameter keeps the quotes its
-/// producer wrote, so a parameter this crate writes has to carry the quotes its value needs.
-/// Storing the bare octets instead would put a `:` on the wire unquoted and the next read
-/// would end the header at it.
+/// The value is stored in the form section 3.2 writes it in, `DQUOTE`s included, which is what
+/// [`spelled_parameter`] does and why both write doors go through it.
 fn assign_parameter(parameters: &mut Vec<Parameter>, name: &[u8], value: &[u8]) {
     let at = parameters.iter().position(|held| held.is_named(name));
     parameters.retain(|held| !held.is_named(name));
-    let mut spelled = Vec::new();
-    quote_parameter_into(value, &mut spelled);
-    let written = Parameter::new(RawText::from_bytes(name), RawText::from_vec(spelled));
+    let written = spelled_parameter(name, value);
     match at {
         // Every parameter before the first match survived the retain, so the recorded index
         // is still a position this vector has.
@@ -330,7 +422,12 @@ impl Component {
     }
 
     /// A guard over `DTSTART`, RFC 5545 section 3.8.2.4.
-    pub fn dtstart_mut(&mut self) -> Option<PropertyMut<'_, DateTimeValue>> {
+    ///
+    /// The value written through it states its own zone: writing a
+    /// [`DateTimeValue::Zoned`](crate::DateTimeValue::Zoned) assigns the `TZID` the value
+    /// names, and writing any of the other three drops the one that was there, because none of
+    /// them has a zone to keep.
+    pub fn dtstart_mut(&mut self) -> Option<PropertyMut<'_, DateTimeValue<'_>>> {
         self.get_mut(&PropertyId::DTSTART)
     }
 
@@ -1136,6 +1233,78 @@ mod tests {
             Err(MutationError::Absent)
         );
         assert_eq!(component.items().len(), 1);
+    }
+
+    /// The injection the construction door used to be open to. `Property::new` was public and
+    /// unchecked, so the octets a scoped write refuses arrived through the tree builder
+    /// instead and serialized as two content lines.
+    #[test]
+    fn construction_refuses_the_octets_a_write_refuses() {
+        let refused: [&[u8]; 4] = [
+            b"a\r\nATTENDEE:mailto:eve@example.test",
+            b"a\n",
+            b"a\r",
+            b"a\x00b",
+        ];
+        for attempt in refused {
+            assert_eq!(
+                Property::create(b"SUMMARY", Vec::new(), attempt),
+                Err(MutationError::IllegalControlCharacter),
+                "{attempt:?}"
+            );
+        }
+    }
+
+    /// A name the reader would hand back in pieces is a name this crate declines to author,
+    /// whether it names a property or a component.
+    #[test]
+    fn construction_refuses_a_name_that_would_not_read_back_whole() {
+        let refused: [&[u8]; 4] = [b"", b"SUMMARY:x", b"SUMMARY;X-A=1", b"SUM\r\nATTENDEE"];
+        for attempt in refused {
+            assert_eq!(
+                Property::create(attempt, Vec::new(), b"standup"),
+                Err(MutationError::NotRepresentable),
+                "{attempt:?}"
+            );
+            assert_eq!(
+                Component::create(attempt, Vec::new()),
+                Err(MutationError::NotRepresentable),
+                "{attempt:?}"
+            );
+        }
+        assert_eq!(
+            Parameter::create(b"X-A;B", b"1"),
+            Err(MutationError::NotRepresentable)
+        );
+        assert_eq!(
+            Parameter::create(b"CN", b"say \"hi\""),
+            Err(MutationError::NotRepresentable),
+            "a DQUOTE has no section 3.2 spelling, so a parameter carrying one is refused"
+        );
+    }
+
+    /// What construction accepts is written back as the caller asked, quoting only what the
+    /// grammar forces and closing a component with the name it opened.
+    #[test]
+    fn what_construction_accepts_serializes_as_the_caller_stated_it() {
+        let attendee = Property::create(
+            b"ATTENDEE",
+            vec![Parameter::create(b"CN", b"Doe, John").expect("a quotable value")],
+            b"mailto:j@example.test",
+        )
+        .expect("a well-formed property");
+        assert_eq!(
+            parameters_of(&attendee),
+            vec![(&b"CN"[..], &b"\"Doe, John\""[..])]
+        );
+
+        let event = Component::create(b"VEVENT", vec![Item::Property(attendee)])
+            .expect("a well-formed component");
+        let document = crate::tree::Document::new(vec![Item::Component(event)]);
+        assert_eq!(
+            document.to_bytes(),
+            b"BEGIN:VEVENT\r\nATTENDEE;CN=\"Doe, John\":mailto:j@example.test\r\nEND:VEVENT\r\n"
+        );
     }
 
     /// The parsed shape a replacement is written from, so that a change to the reader shows up

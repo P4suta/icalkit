@@ -23,6 +23,9 @@
 //! `BEGIN:VEVENT` serializes back in the case it was written.
 
 use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::fmt::{self, Debug, Formatter};
+use core::hash::{Hash, Hasher};
 use core::{mem, slice};
 
 use ical_grammar::{LineEnding, LineLayout};
@@ -46,8 +49,14 @@ pub struct Boundary {
 
 impl Boundary {
     /// A boundary line with the given spelling and syntax.
+    ///
+    /// Crate-private, for the reason [`Property::new`] is: the octets are stored as they are,
+    /// and a caller that could hand over `VEVENT\r\nATTENDEE:mailto:eve@example.test` as a
+    /// component name would have written two content lines through a constructor. The public
+    /// door is [`Component::create`](crate::Component::create), which refuses what section 3.1
+    /// cannot write back.
     #[must_use]
-    pub fn new(keyword: RawText, name: RawText, layout: LineLayout) -> Self {
+    pub(crate) fn new(keyword: RawText, name: RawText, layout: LineLayout) -> Self {
         Self {
             keyword,
             name,
@@ -98,9 +107,13 @@ pub struct Parameter {
 }
 
 impl Parameter {
-    /// A parameter with a value.
+    /// A parameter with a value, stored in the section 3.2 spelling it arrived in.
+    ///
+    /// Crate-private, for the reason [`Property::new`] is. The public door is
+    /// [`Parameter::create`](crate::Parameter::create), which chooses the spelling rather than
+    /// trusting one.
     #[must_use]
-    pub fn new(name: RawText, value: RawText) -> Self {
+    pub(crate) fn new(name: RawText, value: RawText) -> Self {
         Self {
             name,
             value,
@@ -109,8 +122,11 @@ impl Parameter {
     }
 
     /// A parameter that arrived with no `=`, which RFC 5545 does not allow and producers do.
+    ///
+    /// Crate-private because it is a shape only a reader observes: a caller that wants a
+    /// parameter writes one with a value, and this one exists to write back what was read.
     #[must_use]
-    pub fn without_value(name: RawText) -> Self {
+    pub(crate) fn without_value(name: RawText) -> Self {
         Self {
             name,
             value: RawText::default(),
@@ -181,9 +197,23 @@ pub struct Property {
 }
 
 impl Property {
-    /// A property with the given name, parameters, value and line syntax.
+    /// A property with the given name, parameters, value and line syntax, stored unchecked.
+    ///
+    /// Crate-private, and that is the other half of what makes
+    /// [`PropertyMut::set_raw`](crate::PropertyMut::set_raw)'s refusal true rather than
+    /// customary. The scoped-write door was closed by making the setters below crate-private;
+    /// this is the tree-building door, and it was open for as long as this constructor was
+    /// public. `Property::new(b"SUMMARY", [], b"a\r\nATTENDEE:mailto:eve@example.test", ..)`
+    /// pushed through [`Component::items_mut`] serializes as two content lines, which is the
+    /// same injection arriving through construction rather than through a write.
+    ///
+    /// It stays unchecked because the reader needs it: octets that came out of a file are kept
+    /// whatever they hold, control characters included, and a constructor that refused them
+    /// would be a parser that discarded the file. The public door is
+    /// [`Property::create`](crate::Property::create), which is for octets that were never read
+    /// from anywhere and therefore have no producer's spelling to preserve (`docs/adr/0001`).
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         name: RawText,
         parameters: Vec<Parameter>,
         value_text: RawText,
@@ -374,7 +404,16 @@ impl<'a> Iterator for PropertiesNamed<'a> {
 ///
 /// One heterogeneous sequence, not a properties list beside a components list: the interleaved
 /// order is what a producer wrote and what serialization has to reproduce.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Nothing about this type is derived, and the reason is the same one [`Component::drop`]
+/// gives. Every derived traversal of a tree whose entries hold more of the tree recurses, one
+/// stack frame per level, and the depth is `Limits::max_component_depth` — a `u16` a caller
+/// raises through a public builder — so sixteen thousand `BEGIN` lines parse cleanly and take
+/// the process down the first time anything clones, compares, orders, hashes or prints them.
+/// A stack overflow is an abort and not an unwind: no `catch_unwind` sees it, and a server that
+/// parsed an untrusted attachment loses the process rather than the request. Each of the six is
+/// therefore written over an explicit stack, and [`Item`] and [`Document`] may keep their
+/// derives because what those delegate to no longer recurses.
 pub struct Component {
     /// The `BEGIN` line.
     begin: Boundary,
@@ -472,6 +511,194 @@ impl Component {
     }
 }
 
+/// One step of a walk over a component and everything nested inside it.
+///
+/// Four of the six hand-written traits are one line each over this, because each of them asks
+/// the same question about the same sequence: two components are equal when they walk alike,
+/// ordered by the first step that differs, hashed as the steps they produce, and shown as the
+/// lines they write. A sequence of steps determines the tree it came from — the `Begin` and
+/// `End` steps carry the nesting — so answering over it is answering over the tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Step<'a> {
+    /// A component's `BEGIN` line. Every step until the matching `End` is inside it.
+    Begin(&'a Boundary),
+    /// One content line.
+    Line(&'a Property),
+    /// A component's `END` line, `None` when it never arrived.
+    End(Option<&'a Boundary>),
+}
+
+/// A component whose `BEGIN` has been walked past and whose entries are still being walked.
+#[derive(Debug)]
+struct OpenFrame<'a> {
+    /// The entries not yet reached.
+    rest: slice::Iter<'a, Item>,
+    /// The `END` line owed once they run out.
+    end: Option<&'a Boundary>,
+}
+
+/// The steps of one component, innermost nesting held on an explicit stack.
+#[derive(Debug)]
+struct Walk<'a> {
+    /// The components entered and not yet left, outermost first.
+    open: Vec<OpenFrame<'a>>,
+    /// The `BEGIN` line owed before anything else.
+    opening: Option<&'a Boundary>,
+}
+
+impl<'a> Walk<'a> {
+    /// The steps of `component`, its own two boundaries included.
+    fn over(component: &'a Component) -> Self {
+        let open = alloc::vec![OpenFrame {
+            rest: component.items.iter(),
+            end: component.end.as_ref(),
+        }];
+        Self {
+            open,
+            opening: Some(&component.begin),
+        }
+    }
+}
+
+impl<'a> Iterator for Walk<'a> {
+    type Item = Step<'a>;
+
+    fn next(&mut self) -> Option<Step<'a>> {
+        if let Some(begin) = self.opening.take() {
+            return Some(Step::Begin(begin));
+        }
+        // Bound before the match so that the borrow of the stack ends before an arm pushes to
+        // it. The entry itself borrows the tree rather than this walk, so it outlives the
+        // statement.
+        let next = self.open.last_mut()?.rest.next();
+        match next {
+            Some(Item::Property(property)) => Some(Step::Line(property)),
+            Some(Item::Component(nested)) => {
+                self.open.push(OpenFrame {
+                    rest: nested.items.iter(),
+                    end: nested.end.as_ref(),
+                });
+                Some(Step::Begin(&nested.begin))
+            },
+            None => self.open.pop().map(|frame| Step::End(frame.end)),
+        }
+    }
+}
+
+/// One component under construction while the component it copies is being walked.
+#[derive(Debug)]
+struct CloneFrame<'a> {
+    /// The entries of the source not yet copied.
+    rest: slice::Iter<'a, Item>,
+    /// The `BEGIN` line, already copied.
+    begin: Boundary,
+    /// The `END` line, already copied.
+    end: Option<Boundary>,
+    /// The entries copied so far.
+    items: Vec<Item>,
+}
+
+impl<'a> CloneFrame<'a> {
+    /// A frame that will copy `source`, with its boundaries taken and no entry yet.
+    fn of(source: &'a Component) -> Self {
+        Self {
+            rest: source.items.iter(),
+            begin: source.begin.clone(),
+            end: source.end.clone(),
+            items: Vec::with_capacity(source.items.len()),
+        }
+    }
+
+    /// The copy, once every entry of the source has been reached.
+    fn finish(self) -> Component {
+        Component {
+            begin: self.begin,
+            items: self.items,
+            end: self.end,
+        }
+    }
+}
+
+/// Copy a component and everything nested inside it, one flat worklist deep.
+///
+/// A nested component is copied into a frame of its own rather than through [`Item`]'s derived
+/// clone, which is what keeps the two from recursing into each other.
+fn clone_component(source: &Component) -> Component {
+    let mut open: Vec<CloneFrame<'_>> = Vec::new();
+    let mut current = CloneFrame::of(source);
+    loop {
+        let next = current.rest.next();
+        match next {
+            Some(Item::Property(property)) => current.items.push(Item::Property(property.clone())),
+            Some(Item::Component(nested)) => {
+                open.push(current);
+                current = CloneFrame::of(nested);
+            },
+            None => {
+                let finished = current.finish();
+                let Some(parent) = open.pop() else {
+                    return finished;
+                };
+                current = parent;
+                current.items.push(Item::Component(finished));
+            },
+        }
+    }
+}
+
+impl Clone for Component {
+    fn clone(&self) -> Self {
+        clone_component(self)
+    }
+}
+
+impl PartialEq for Component {
+    fn eq(&self, other: &Self) -> bool {
+        Walk::over(self).eq(Walk::over(other))
+    }
+}
+
+impl Eq for Component {}
+
+impl Ord for Component {
+    /// Ordered by the first step the two walks disagree on, and by which walk ran out first.
+    ///
+    /// A total order consistent with equality, which is all `Ord` promises and all a `BTreeMap`
+    /// key needs. It is not the order the derive produced — that one compared the `BEGIN` line,
+    /// then the entries, then the `END` line, and a component's `END` therefore sorted before
+    /// everything nested inside it. Nothing observes either order but the comparison itself.
+    fn cmp(&self, other: &Self) -> Ordering {
+        Walk::over(self).cmp(Walk::over(other))
+    }
+}
+
+impl PartialOrd for Component {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for Component {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for step in Walk::over(self) {
+            step.hash(state);
+        }
+    }
+}
+
+impl Debug for Component {
+    /// Shown as the flat sequence of lines it writes rather than as a nested structure.
+    ///
+    /// A nested rendering is the one thing this type cannot afford: `{:#?}` on a tree deeper
+    /// than the stack aborts the process, and a `Debug` that is only safe for shallow values is
+    /// a footgun in exactly the case somebody reaches for it, which is a file that went wrong.
+    /// Every octet is still there, in order, with the nesting readable off the `Begin` and
+    /// `End` steps.
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.debug_list().entries(Walk::over(self)).finish()
+    }
+}
+
 impl Drop for Component {
     /// Dismantle the nesting iteratively rather than letting the derived drop recurse.
     ///
@@ -539,14 +766,84 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::cmp::Ordering;
+    use core::hash::{Hash, Hasher};
 
     use ical_grammar::{FoldPoint, LineEnding, LineLayout};
 
     use super::{Boundary, Component, Document, Item, Parameter, Property};
     use crate::ident::PropertyId;
     use crate::octets::RawText;
+
+    /// FNV-1a, because `core` ships no hasher and these tests need one that answers
+    /// differently for octets that differ rather than only for octets that are longer.
+    #[derive(Debug)]
+    struct Fnv {
+        /// The accumulated state.
+        state: u64,
+    }
+
+    impl Default for Fnv {
+        fn default() -> Self {
+            Self {
+                state: 0xcbf2_9ce4_8422_2325,
+            }
+        }
+    }
+
+    impl Hasher for Fnv {
+        fn finish(&self) -> u64 {
+            self.state
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            for &octet in bytes {
+                self.state ^= u64::from(octet);
+                self.state = self.state.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+
+    /// What `value` hashes to under [`Fnv`].
+    fn hashed<T: Hash>(value: &T) -> u64 {
+        let mut hasher = Fnv::default();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// A property with no parameters, on a line this crate would have authored.
+    fn line(name: &[u8], value: &[u8]) -> Property {
+        Property::new(
+            RawText::from_bytes(name),
+            Vec::new(),
+            RawText::from_bytes(value),
+            LineLayout::canonical(LineEnding::CANONICAL),
+        )
+    }
+
+    /// A component named `X` wrapping `items`, closed.
+    fn wrapper(items: Vec<Item>) -> Component {
+        Component::new(
+            boundary(b"BEGIN", b"X"),
+            items,
+            Some(boundary(b"END", b"X")),
+        )
+    }
+
+    /// A tree `depth` components deep with one property at the bottom.
+    ///
+    /// Built from the inside out, because a helper that nested by recursion would abort in the
+    /// test rather than in the code under test.
+    fn nested(depth: usize) -> Component {
+        let mut innermost = wrapper(vec![Item::Property(folded_summary())]);
+        for _ in 1..depth {
+            innermost = wrapper(vec![Item::Component(innermost)]);
+        }
+        innermost
+    }
 
     /// `SUMMARY;X-A=1;X-A=2:hello`, folded once, as a producer might have written it.
     fn folded_summary() -> Property {
@@ -656,6 +953,80 @@ mod tests {
             "the alarm's SUMMARY is the alarm's"
         );
         assert_eq!(event.components().count(), 1);
+    }
+
+    /// A component is shown as the lines it writes, flat, with the nesting readable off the
+    /// boundary steps. Pinned on a small tree, because the reason for the shape is a large one.
+    #[test]
+    fn a_component_is_shown_as_the_sequence_of_lines_it_writes() {
+        let shown = format!("{:?}", wrapper(vec![Item::Property(line(b"UID", b"1"))]));
+        assert!(shown.starts_with("[Begin("), "{shown}");
+        assert!(shown.ends_with(']'), "{shown}");
+        assert!(shown.contains("Line(Property"), "{shown}");
+        assert!(shown.contains("End(Some("), "{shown}");
+
+        let unclosed = Component::new(boundary(b"BEGIN", b"X"), Vec::new(), None);
+        assert!(format!("{unclosed:?}").contains("End(None)"));
+    }
+
+    /// Equality, ordering and hashing are answers about the whole tree and not about its top
+    /// line, which is what a walk that stopped at the boundaries would have got wrong.
+    #[test]
+    fn two_components_differing_only_deep_inside_are_told_apart() {
+        /// A `UID` of the given value, two components down.
+        fn buried(value: &[u8]) -> Component {
+            let inner = wrapper(vec![Item::Property(line(b"UID", value))]);
+            wrapper(vec![Item::Component(inner)])
+        }
+
+        let one = buried(b"1@example.test");
+        let again = buried(b"1@example.test");
+        let other = buried(b"2@example.test");
+
+        assert_eq!(one, again);
+        assert_eq!(one.cmp(&again), Ordering::Equal);
+        assert_eq!(hashed(&one), hashed(&again));
+
+        assert_ne!(one, other);
+        assert_eq!(one.cmp(&other), Ordering::Less, "1 sorts before 2");
+        assert_ne!(hashed(&one), hashed(&other));
+
+        assert!(
+            one < other,
+            "the order is antisymmetric, not merely unequal"
+        );
+        assert!(other > one);
+
+        // A component with nothing in it is neither, and the comparison still answers rather
+        // than stopping at the two boundary lines they share.
+        let empty = wrapper(Vec::new());
+        assert_ne!(empty, one);
+        assert_ne!(empty.cmp(&one), Ordering::Equal);
+    }
+
+    /// The traversals that recursed until this file stopped deriving them.
+    ///
+    /// `Limits::max_component_depth` is a `u16` a caller raises through a public builder, so a
+    /// tree this deep is one the reader will build when it is asked to. Every derived traversal
+    /// of it overflows the stack, which is an abort rather than a panic: no `catch_unwind` sees
+    /// it, no sibling test in the same binary survives it, and this test asserts the whole of
+    /// its claim by returning at all.
+    #[test]
+    fn every_traversal_of_a_tree_deeper_than_the_stack_returns() {
+        const DEPTH: usize = 20_000;
+
+        let deep = nested(DEPTH);
+        let copy = deep.clone();
+        assert_eq!(copy, deep);
+        assert_eq!(copy.cmp(&deep), Ordering::Equal);
+        assert_eq!(hashed(&copy), hashed(&deep));
+        assert!(!format!("{deep:?}").is_empty());
+
+        // Through the derives that delegate to those, which is how a caller reaches them.
+        let document = Document::new(vec![Item::Component(deep)]);
+        assert_eq!(document.clone(), document);
+        assert_eq!(document.items().len(), 1);
+        drop(document);
     }
 
     #[test]

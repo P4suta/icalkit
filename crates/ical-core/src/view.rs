@@ -22,6 +22,7 @@ use core::marker::PhantomData;
 use ical_grammar::{Diagnostic, DiagnosticCode};
 
 use crate::change::ParameterEdit;
+use crate::gregorian::{DateTimeValue, Duration};
 use crate::octets::RawText;
 use crate::tree::Property;
 
@@ -100,6 +101,23 @@ impl<'a, T> View<'a, T> {
 pub trait DecodeValue<'a>: Sized {
     /// Read this type out of `bytes`, or say which diagnostic describes the failure.
     fn decode_value(bytes: &'a [u8]) -> Result<Self, DiagnosticCode>;
+
+    /// Read this type out of a whole property, for a value whose shape its parameters decide.
+    ///
+    /// One value type needs this and the rest must not: RFC 5545 makes a date-time's zone a
+    /// `TZID` parameter rather than part of the value, so a decoder handed only the octets
+    /// cannot tell a floating time from a zoned one — and a caller that read one and wrote it
+    /// back would silently drop the zone. `docs/adr/0001` requires the two to be inseparable,
+    /// which is a requirement about the read side as much as the write side.
+    ///
+    /// The default is the value's own octets and nothing else, so adding this changed no
+    /// existing codec. What an implementation may read is this property's parameters and its
+    /// value; the property's *name* is not a question a value type is allowed to ask, because
+    /// the two accessor levels are named on different axes and a decoder that looked at the
+    /// name would be a property accessor wearing a value type's clothes.
+    fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
+        Self::decode_value(property.value_text().as_bytes())
+    }
 }
 
 /// A value type that can be written into a property.
@@ -354,6 +372,100 @@ impl<'a> TextValue<'a> {
     #[must_use]
     pub const fn as_bytes(self) -> &'a [u8] {
         self.bytes
+    }
+}
+
+/// A borrowed `BINARY` value, before it is read out of the base 64 it is written in.
+///
+/// [`TextValue`]'s posture, for [`TextValue`]'s reason. RFC 5545 section 3.3.1 fixes the
+/// alphabet and not the line breaks, the padding a producer chose, or the case of the octets
+/// it padded with, so the written text is authoritative and the decoded octets are derived
+/// from it. Reading is a step a caller asks for and never one storage takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BinaryValue<'a> {
+    /// The base 64 text, exactly as it will be written back.
+    bytes: &'a [u8],
+}
+
+impl<'a> BinaryValue<'a> {
+    /// A view over octets that are a `BINARY` value.
+    #[must_use]
+    pub const fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    /// The base 64 text, exactly as it will be written back.
+    #[must_use]
+    pub const fn as_bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+}
+
+/// A borrowed `URI`, as RFC 5545 section 3.3.13 writes one.
+///
+/// Section 3.3.3's `CAL-ADDRESS` is this type as well: that section defines a calendar address
+/// as a URI and adds no syntax of its own, so a second type would be a second name for one
+/// grammar. What tells them apart is the property, which the caller is holding either way.
+///
+/// Borrowed and unresolved. A URI's percent-encoding, its case-insensitive scheme and its
+/// case-sensitive path are all things a normalizer would rewrite, and rewriting one is how a
+/// `mailto:` stops matching the `ATTENDEE` a scheduling reply names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UriValue<'a> {
+    /// The URI, exactly as it will be written back.
+    bytes: &'a [u8],
+}
+
+impl<'a> UriValue<'a> {
+    /// A view over octets that are a `URI`.
+    #[must_use]
+    pub const fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    /// The URI, exactly as it will be written back.
+    #[must_use]
+    pub const fn as_bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+}
+
+/// A span between two points in time, as RFC 5545 section 3.3.9 writes one.
+///
+/// Two variants because section 3.3.9's ABNF has two productions and they are not
+/// interchangeable: `period-explicit` names an end and `period-start` names a length, and a
+/// producer that wrote one gets it back rather than the other. Which one arrived is therefore
+/// part of the value and not a normalization this crate is free to take.
+///
+/// The bounds are [`DateTimeValue`]s so that a `PERIOD` under a `TZID` carries the zone the
+/// property gave it, exactly as a bare `DTSTART` does. Section 3.3.9 permits no `DATE` at
+/// either end; refusing one is the decoder's business rather than this type's, because a value
+/// that cannot be read is still a value that must be written back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Period<'a> {
+    /// `period-explicit`: a start and an end.
+    Explicit {
+        /// When it begins.
+        start: DateTimeValue<'a>,
+        /// When it ends.
+        end: DateTimeValue<'a>,
+    },
+    /// `period-start`: a start and how long it lasts.
+    Starting {
+        /// When it begins.
+        start: DateTimeValue<'a>,
+        /// How long it lasts, which section 3.3.9 requires be positive.
+        duration: Duration,
+    },
+}
+
+impl<'a> Period<'a> {
+    /// When the span begins, whichever form it was written in.
+    #[must_use]
+    pub const fn start(self) -> DateTimeValue<'a> {
+        match self {
+            Self::Explicit { start, .. } | Self::Starting { start, .. } => start,
+        }
     }
 }
 

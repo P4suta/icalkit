@@ -365,28 +365,45 @@ impl MonthAddOutcome {
     }
 }
 
-/// A property value that is a date or a date-time, in the three forms RFC 5545 writes.
+/// A property value that is a date or a date-time, in the four shapes RFC 5545 gives one.
 ///
-/// Carries no `TZID`. A `TZID` is a parameter rather than part of the value, and keeping the
-/// two apart is what lets a zone source take this type by value: `resolve(tzid, local)` reads
-/// as what it is, and a value that carried its own zone would have two places to disagree.
+/// Four rather than the three forms section 3.3.4 and section 3.3.5 write, because a
+/// date-time's *meaning* is decided by the `TZID` parameter beside it as much as by the octets
+/// of the value, and `docs/adr/0001` requires that a date-time cannot be constructed apart from
+/// the parameter set it implies. A floating time and a zoned one are written identically and
+/// are not the same value; keeping them one variant made [`EncodeValue::coupled_parameters`]
+/// unable to state a `TZID`, so every write of a zoned `DTSTART` dropped the zone.
+///
+/// [`EncodeValue::coupled_parameters`]: crate::EncodeValue::coupled_parameters
+///
+/// The zone identifier is borrowed rather than owned so that this type stays `Copy` — it is a
+/// parameter's octets, held by the property the value was read from or by the caller writing
+/// one. It is not resolved here and cannot be: a `TZID` names a zone that only a caller-supplied
+/// source can turn into an offset (`docs/adr/0003`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DateTimeValue {
+pub enum DateTimeValue<'a> {
     /// A `DATE`, written under `VALUE=DATE`.
     Date(CivilDate),
-    /// A floating `DATE-TIME`, with no `Z` and no zone of its own.
+    /// A floating `DATE-TIME`, with no `Z` and no `TZID`, which is a wall clock anywhere.
     Local(CivilDateTime),
     /// A `DATE-TIME` in UTC, written with a trailing `Z`.
     Utc(CivilDateTime),
+    /// A `DATE-TIME` read under the zone a `TZID` parameter names.
+    Zoned {
+        /// The wall clock the value's octets spell.
+        stamp: CivilDateTime,
+        /// The zone identifier, exactly as the parameter carried it, `DQUOTE`s removed.
+        tzid: &'a [u8],
+    },
 }
 
-impl DateTimeValue {
-    /// The date part, whichever form this is.
+impl<'a> DateTimeValue<'a> {
+    /// The date part, whichever shape this is.
     #[must_use]
     pub const fn date(self) -> CivilDate {
         match self {
             Self::Date(date) => date,
-            Self::Local(stamp) | Self::Utc(stamp) => stamp.date(),
+            Self::Local(stamp) | Self::Utc(stamp) | Self::Zoned { stamp, .. } => stamp.date(),
         }
     }
 
@@ -395,16 +412,28 @@ impl DateTimeValue {
     pub const fn time(self) -> Option<CivilTime> {
         match self {
             Self::Date(_) => None,
-            Self::Local(stamp) | Self::Utc(stamp) => Some(stamp.time()),
+            Self::Local(stamp) | Self::Utc(stamp) | Self::Zoned { stamp, .. } => Some(stamp.time()),
         }
     }
 
-    /// The value type this form is written under, which a write has to emit as a parameter.
+    /// The zone identifier this value was read under, `None` for the three that carry none.
+    ///
+    /// A `DATE` and a UTC date-time carry no zone because neither can; a floating date-time
+    /// carries none because it asserts the absence of one, which is a claim rather than a gap.
+    #[must_use]
+    pub const fn tzid(self) -> Option<&'a [u8]> {
+        match self {
+            Self::Date(_) | Self::Local(_) | Self::Utc(_) => None,
+            Self::Zoned { tzid, .. } => Some(tzid),
+        }
+    }
+
+    /// The value type this shape is written under, which a write has to emit as a parameter.
     #[must_use]
     pub const fn value_type(self) -> ValueType {
         match self {
             Self::Date(_) => ValueType::Date,
-            Self::Local(_) | Self::Utc(_) => ValueType::DateTime,
+            Self::Local(_) | Self::Utc(_) | Self::Zoned { .. } => ValueType::DateTime,
         }
     }
 }

@@ -56,15 +56,21 @@
 //! shape and its mutation guard, the output sink — now carries the behavior built on it:
 //! [`Document::parse`] and [`Document::from_tokens`] read a tree out of the public token path,
 //! [`Document::serialize`] writes one back, the civil arithmetic is checked in every direction,
-//! every value type of sections 3.3.4 through 3.3.14 decodes and all but `GEO` encode, the
+//! every value type of RFC 5545 section 3.3 decodes and all but `GEO` and `FLOAT` encode, the
 //! typed accessors read through [`View`], and [`PropertyMut`] is the only way to write.
+//!
+//! Construction is a door rather than an opening. `Property::new`, `Parameter::new` and
+//! `Boundary::new` are crate-private; the public [`Property::create`], [`Parameter::create`]
+//! and [`Component::create`] refuse the octets section 3.1 cannot write back, so a `SUMMARY`
+//! taken from a web form can no longer arrive as a second `ATTENDEE` through the tree.
 //!
 //! The round trip is asserted end to end rather than per unit: `crates/ical-core/tests` parses
 //! and serializes folds in every position, all three terminators, a value that is not UTF-8, a
 //! fold that splits a codepoint, an unterminated quoted parameter, and a file whose every
-//! structural rule is broken, and compares octets. What milestone M0 still owes is the corpus
-//! that makes the claim about calendars real clients exported rather than about inputs written
-//! here — that is `ical-conform`'s, and `ROADMAP.md` lists it with the gates that read it.
+//! structural rule is broken, and compares octets. The reader also reports what it sees now
+//! rather than only what it refuses: a physical line over 75 octets, a control character in a
+//! name, a parameter name or a value, a parameter with no value, an unterminated quoted
+//! parameter, and an RFC 6868 pair nothing defines.
 //!
 //! `RRULE` is the deliberate hole. [`PropertyId::RRULE`] exists, its value stays preserved
 //! text, and [`ValueType::Recur`] names it; the section 3.3.10 grammar is `ical-recur`'s.
@@ -105,5 +111,6 @@ pub use crate::tree::{
     Boundary, Component, Document, Item, Parameter, ParametersNamed, PropertiesNamed, Property,
 };
 pub use crate::view::{
-    DecodeValue, EncodeValue, Geo, MutationError, PropertyMut, TextValue, ValueBuf, ValueType, View,
+    BinaryValue, DecodeValue, EncodeValue, Geo, MutationError, Period, PropertyMut, TextValue,
+    UriValue, ValueBuf, ValueType, View,
 };

@@ -83,16 +83,23 @@ fn a_typed_read_is_a_view_and_leaves_the_text_it_read_alone() {
 
     match subject.dtstart() {
         View::Valid { value, source } => {
+            // The zone is part of what was read, because a date-time cannot be constructed
+            // apart from the parameter set it implies: read as floating, this value would have
+            // dropped its `TZID` the first time anything wrote it back.
             assert_eq!(
                 value,
-                DateTimeValue::Local(CivilDateTime::new(
-                    CivilDate::from_ymd(1996, 4, 1).unwrap(),
-                    CivilTime::from_hms(9, 30, 0).unwrap(),
-                ))
+                DateTimeValue::Zoned {
+                    stamp: CivilDateTime::new(
+                        CivilDate::from_ymd(1996, 4, 1).unwrap(),
+                        CivilTime::from_hms(9, 30, 0).unwrap(),
+                    ),
+                    tzid: b"America/New_York",
+                }
             );
-            // The `TZID` is a parameter and not part of the value, which is what lets the
-            // zone stay `ical-tz`'s question.
+            // Reading it is still a view: the octets are the floating ones the producer wrote,
+            // and resolving the zone stays `ical-tz`'s question rather than this one's.
             assert_eq!(source.value_text().as_bytes(), b"19960401T093000");
+            assert_eq!(value.tzid(), Some(&b"America/New_York"[..]));
         },
         View::Malformed { .. } | View::Absent => panic!("the fixture has a readable DTSTART"),
     }

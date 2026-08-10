@@ -56,7 +56,7 @@ impl Property {
     /// call.
     #[must_use]
     pub fn value<'a, T: DecodeValue<'a>>(&'a self) -> View<'a, T> {
-        match T::decode_value(self.value_text().as_bytes()) {
+        match T::decode_property(self) {
             Ok(value) => View::Valid {
                 source: self,
                 value,
@@ -123,14 +123,18 @@ impl Component {
     }
 
     /// The `DTSTART`, RFC 5545 section 3.8.2.4.
+    ///
+    /// The zone is part of the answer: a value written beside a `TZID` reads as
+    /// [`DateTimeValue::Zoned`] carrying that parameter's octets, so a caller cannot read one
+    /// and write it back without the zone it came with.
     #[must_use]
-    pub fn dtstart(&self) -> View<'_, DateTimeValue> {
+    pub fn dtstart(&self) -> View<'_, DateTimeValue<'_>> {
         self.get(&PropertyId::DTSTART)
     }
 
     /// The `DTEND`, RFC 5545 section 3.8.2.2.
     #[must_use]
-    pub fn dtend(&self) -> View<'_, DateTimeValue> {
+    pub fn dtend(&self) -> View<'_, DateTimeValue<'_>> {
         self.get(&PropertyId::DTEND)
     }
 
