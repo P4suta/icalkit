@@ -93,3 +93,45 @@ anything at all. Two conforming implementations can therefore differ by orders o
 when they report exhaustion for one rule, so 0002's claim that the budget is observable enough for
 the conformance suite to assert on is not yet true. Nor is the denial all of this rests on
 unconditional: it holds only while every lint invocation remembers `-D warnings`.
+
+## Amendments
+
+M2 built the second gate and the seam it sits on, and three sentences above needed either an
+owner or a correction. Each has a case in `crates/ical-conform/tests/break_tz_seam.rs`.
+
+**1. The composition of the two gates now has a type, a signature and an owner.** The
+Consequences record that "composition of the two gates is mandated and not designed", and what
+that cost was measurable: `ical-recur` owns the date gate and applies `COUNT`, `ical-tz` owns
+the local-time gate and was applied afterwards, so a `COUNT=5` series with one instance in an
+hour its zone never showed delivered four occurrences and no API in either crate composed them
+in the order this ADR states. `ical_tz::ZonedSeries::admits` is the second gate as a predicate
+and `ical_recur::RecurrenceInput::admitting` is where it goes — consulted after the window and
+before the count, so a rejected key costs the series nothing and `COUNT` counts what a caller
+receives.
+
+It is opt-in, and that is the decision rather than an omission. A caller that states no gate
+gets the other reading the specification licenses, which is the one section 3.8.5.3 forces for a
+`DTSTART` that lands in a gap: the instance is `DTSTART`, section 3.3.10 says to ignore it, and
+the count is spent on it either way.
+
+**2. A frequency finer than a day counts elapsed time, and the anchor is where a caller says
+so.** Everything this ADR and `ical_tz::seam` say about a zoned series is written about a civil
+cadence: "every day at 09:00" is a statement about a clock, and the projection onto the series'
+own wall clock is what keeps it at 09:00 across a transition. `FREQ=SECONDLY`, `FREQ=MINUTELY`
+and `FREQ=HOURLY` say the opposite thing, and the same projection loses an hour of an hourly
+series on the day a zone falls back — the wall clock reads twenty-four hours on a day that is
+twenty-five hours long. Both readings ship: Google gives 25 occurrences and libical's local-time
+expansion gives 24. `ical_tz::ZonedSeries::real_anchor` is the absolute reading and
+`ZonedSeries::anchor` the civil one, a series anchored on the real timeline is walked there and
+needs no per-occurrence resolution, and neither crate can pick between them — one has the
+frequency and no zone, the other has the zone and not the frequency.
+
+**3. The projection onto a series' own wall clock is not injective, and what that costs is
+recorded rather than repaired.** The hour a zone repeats is one wall clock, so two
+`RECURRENCE-ID`s naming the two real instants inside it project onto one cadence key. Nothing
+downstream can tell them apart, and this ADR's own resolution types are what would have to carry
+the distinction — a cadence key would have to be a wall clock *and* a fold side. It is not, in
+M2, and the cost is bounded and stated: the earlier override applies, `OverrideSet::collisions`
+counts the shadowed ones (`docs/adr/0002` amendment 16), and a caller that needs both must
+address them by their real instants outside the seam. A `RECURRENCE-ID` carrying a fold side is
+the shape that would close it, and no RFC defines one.

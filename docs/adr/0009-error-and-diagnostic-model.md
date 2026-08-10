@@ -69,3 +69,21 @@ one from the other is the real fix and is not here. `DiagnosticSink`, meanwhile,
 proposal, has since acquired the refusal protocol and the out-of-band counter, and is what
 ADR 0001's promise rests on with no allocator linked — the least-reviewed part of this decision and
 now the most load-bearing.
+
+## Amendments
+
+**1. A diagnostic may name the subject it is about, inline and bounded.** This ADR gives a
+`Diagnostic` a code, a severity, a location and — since M1 — an instant, and says a location
+that points nowhere is honest about a thing that exists at no offset in any file. M2 found what
+is left over. Three `TZID` parameters that no `VTIMEZONE` defines produce three diagnostics that
+are *equal as values*: a caller learns that something is missing and not what to go and find,
+and a component that owns unfolded octets has no span back into the caller's buffer for a
+location to use. A borrowed name cannot go in either, because a `Diagnostic` is `Copy` and
+outlives the tree it was read from.
+
+`Subject` is therefore a fixed inline buffer of `Subject::CAPACITY` octets with a truncation
+flag, `Diagnostic::about` attaches one, and `Diagnostic::subject` reads it back. The cost is
+paid by every diagnostic in the workspace whether it carries a name or not, which is what a
+`Copy` diagnostic that allocates nothing costs; the capacity holds every IANA identifier and
+`/mozilla.org/20050126_1/Europe/Berlin` besides. The gate in `xtask` is unaffected: a subject is
+not a code, and the golden list still keys on the code alone.

@@ -816,3 +816,61 @@ zone-count refusal. A calendar declaring more zones than the bound silently keep
 fit. That is the behavior `read_calendar_zones` documents and a test pins, and it is a smaller
 hole than inventing a ninth code during integration, but it is a hole: either the doc comment or
 the code list is wrong, and M3 should settle which.
+
+## What the four lenses changed
+
+M2's crate was then attacked by four adversarial lenses — the transitions, the sources, the seam
+with `ical-recur`, and the bounds — and the surface above is amended by what they found. Each
+change has a case in `crates/ical-conform/tests/break_tz_*.rs` that failed before it. ADR-0003
+amendments 7 through 13, ADR-0011's three amendments, ADR-0002 amendments 15 and 16 and
+ADR-0009's one carry the reasoning; this section lists the surface.
+
+**`None` from `resolve` is narrower, and recognition is asked directly.** The invariant above —
+"`None` means exactly one thing" — was false for a `VTIMEZONE` that exists and carries no usable
+observance, which answered `None` to everything while recognizing its own identifier.
+`LocalResolution::Undetermined` is the fourth variant such a source answers with; it holds
+nothing, picks to `None` under every policy, and travels on
+`time-zone-without-transitions`. `ZoneSource::recognizes` is a third trait method with a provided
+implementation, because an `OffsetAnswer` has no way to spell "no offset" and filling it with UTC
+is the invention this crate refuses. `PolicyOutcome` gained `Undetermined` for the pair.
+
+**`AnswerBasis` has a variant for the other end of a table.** `BeforeKnownTransitions(CivilDate)`
+beside `BeyondKnownTransitions`, `TransitionTable::coverage_start` beside `coverage_end`, and
+`time-zone-before-known-transitions` beside `time-zone-coverage-exhausted`. `coverage_end` is
+also stricter: `None` requires *every* side of a definition — `STANDARD` against `DAYLIGHT` — to
+repeat forever.
+
+**A `VtimezoneSet` holds every reading of an identifier.** `insert` answers
+`Result<ZoneAdmission, ZoneSetError>` where `ZoneAdmission::Repeated` carries
+`duplicate-time-zone-identifier`; `ZoneSetError` keeps only `TooMany`. `definitions(tzid)` is
+every reading in file order, `table(tzid)` is the first that carries a transition, and `len` counts
+identifiers. The hole the section above left open is closed rather than left to M3:
+`vtimezone-components-truncated` reports the zone-count refusal at `Severity::LimitReached`, and
+the identifiers a refused definition declares are excluded from the undefined-identifier walk.
+
+**`ZoneOffsetInvalid` was reconsidered and shipped narrower.** The rejection above holds for a
+required property that is *absent*, which is `Component::audit`'s finding — and answers nothing
+about one that is present and unreadable, which the audit counts as there.
+`vtimezone-observance-unreadable` is emitted where every property section 3.6.5 requires is
+present and the observance still states no transition.
+
+**Every diagnostic about a zone names it.** `Diagnostic::about` carries a bounded inline
+`Subject`, because a component owning unfolded octets has no span for a `Location` and a
+`Diagnostic` is `Copy`.
+
+**The seam gained three things it could not express.** `ZonedSeries::admits` is ADR-0011's second
+gate as a predicate, handed to `ical_recur::RecurrenceInput::admitting` so `COUNT` counts what a
+caller receives. `ZonedSeries::real_anchor` is the anchor an absolute cadence takes — `HOURLY`
+and finer count elapsed time, and the wall-clock projection loses the hour a zone repeats.
+`WallClockShift::across` measures a move between two cadence keys, which is what an override
+carries; `WallClockShift::measure` takes real instants and was being handed nominal ones.
+`ResolvedExclusions::unplaced` keeps a `Z`-terminated exclusion no zone could place, reported
+under `exdate-zone-unknown`.
+
+**A resolution costs a little more than this document claimed.** Every rule a definition carries
+is consulted on every query rather than the last four observances' worth, a rule is probed back
+sixty-four years rather than three, the candidate offsets come from every era inside one day
+either side of the query rather than from its two ends, and the table is ordered by the instant
+each observance begins rather than by the wall clock its `DTSTART` spells. A lookup is
+logarithmic in the dated transitions, linear in the rules, and allocates a small vector only on
+the days a zone actually moves.

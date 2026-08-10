@@ -132,9 +132,77 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Five more that M0 declared against M2 now have emitters: `unknown-time-zone`,
   `missing-time-zone-definition`, `ambiguous-local-time`, `nonexistent-local-time` and
   `time-zone-source-disagreement`.
+- Four adversarial lenses against the built zone layer — the transitions, the sources, the seam
+  with `ical-recur`, and the bounds — landed as `break_tz_transitions.rs`, `break_tz_sources.rs`,
+  `break_tz_seam.rs` and `break_tz_hostile.rs`. Every zone in them is real and every expected
+  column is transcribed from that zone's published rules: `Asia/Kathmandu`'s quarter hour,
+  `Africa/Monrovia`'s offset with a seconds field, `Pacific/Apia`'s missing day,
+  `Australia/Lord_Howe`'s half hour, `Australia/Sydney` across the new year and the 2008 rule
+  change, and a million `RDATE` transitions.
+- Five diagnostic codes the lenses found the workspace had no way to say, with their golden-list
+  rows: `time-zone-without-transitions`, `time-zone-before-known-transitions`,
+  `vtimezone-components-truncated` on `Severity::LimitReached`, `vtimezone-observance-unreadable`
+  and `exdate-zone-unknown`.
+- `Diagnostic` can name what it is about. `Subject` is a bounded inline name and
+  `Diagnostic::about` attaches one, so three `TZID` parameters nothing defines are three
+  diagnostics a caller can tell apart rather than three equal values.
+- `ical_recur::RecurrenceInput::admitting` takes the caller's own second gate on a cadence key,
+  asked after the window and before `COUNT`, which is the order ADR 0011 states and the first
+  time either crate could compose the two. `ical_tz::ZonedSeries::admits` is the zone half of it.
+- `ical_recur::RecurrenceRule::with_limit` substitutes a projected bound into a rule read from a
+  file, which is what a zoned series' `Z`-terminated `UNTIL` needs and used to require rebuilding
+  the rule by hand. `ical_tz::ZonedSeries::real_anchor` is the absolute-cadence anchor for
+  `FREQ=HOURLY` and finer, and `ical_tz::WallClockShift::across` measures a move between two
+  cadence keys rather than between two instants the seam never carries.
+- `ical_tz::VtimezoneSet::definitions` keeps every reading of one identifier reachable, and
+  `ical_recur::OverrideSet::collisions` counts the overrides a repeated cadence key shadowed.
 
 ### Fixed
 
+- A zone rule stopped being consulted once four dated transitions stood between it and the
+  query, so a `Europe/Berlin` definition restating two years of its own transitions as `RDATE`
+  lines answered noon on the first of July as CET — an hour wrong, with `AnswerBasis::Computed`
+  and no diagnostic. Every rule a definition carries is now asked about every query, and a rule
+  that fires rarely is probed back sixty-four years rather than three, which is what
+  `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` needs to be found from the year after it fires.
+- A zone with two transitions in one day reported seventeen hours of ordinary wall clock as
+  local times that never happened, because the candidate offsets were read at the two ends of a
+  two-day window and the offset governing the middle of it was never one of them. The window is
+  walked now, and a gap is answered from the transition that sprang over the queried wall clock
+  rather than from whichever transition the far end of the window held — which is what
+  `gap_end`, `offset_before` and section 3.3.5's `shifted` reading each have to come from.
+- A transition table is ordered by the instant each observance begins rather than by the wall
+  clock its `DTSTART` spells. Two observances declared on one wall clock used to resolve by the
+  order the producer wrote them in, an hour apart, and a `TZOFFSETFROM` further east than the
+  previous observance's left the binary search placing a query among onsets that did not ascend.
+- A `VTIMEZONE` that exists and carries no usable observance is no longer indistinguishable from
+  a zone nobody defined. It answers `LocalResolution::Undetermined` rather than `None`,
+  `ZoneSource::recognizes` is the question `offset_at` cannot answer, and
+  `CombinedZoneSource::report` no longer claims `unknown-time-zone` — a violation about a zone
+  the file supplies — for one.
+- A table's early end is labeled. A definition whose `RDATE` lines begin in 2027 answered July
+  2020 with its earliest `TZOFFSETFROM` extended backwards forever and called it computed;
+  `AnswerBasis::BeforeKnownTransitions` says so. And `coverage_end` is `None` only when every
+  side of a definition repeats forever, so a daylight rule that runs on beside standard onsets
+  that stop in 2029 no longer claims to know what 2031 does.
+- A second definition of one `TZID` is kept beside the first rather than dropped, so an empty
+  placeholder `VTIMEZONE` written above a full definition can no longer erase it, and both
+  readings of a file that states two stay reachable.
+- A definition the caller's own zone-count bound turned back is reported as that, naming the
+  zone, and the identifiers it declares are no longer reported as identifiers the calendar never
+  defined.
+- An observance whose required properties are all present and whose values cannot be read —
+  `TZOFFSETTO:+9999`, or a `DTSTART` written as a `DATE` — is reported under
+  `vtimezone-observance-unreadable`. `Component::audit` sees a property that is there and the
+  reader was deferring to it, so both files produced a zone in the set that answered nothing and
+  no code from anybody.
+- A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes is kept as the real
+  instant it names and reported under `exdate-zone-unknown`. It used to be dropped in silence,
+  which is the one outcome that layer says is indefensible.
+- Two overrides naming one cadence key are ranked by file order and counted rather than refusing
+  the whole series. The two halves of the hour a zone repeats are one wall clock, so a zoned
+  series produces the collision without anybody making a mistake, and `InputError::Duplicated`
+  cost such an event every occurrence it had.
 - The last period of every cadence existed and was being deleted. `PeriodWalk` computed each
   period's exclusive upper edge and refused the period when only that edge left the calendar, so
   `FREQ=DAILY` from 9999-12-28 stopped on the 30th, `FREQ=YEARLY` lost the year 9999, and the
@@ -191,6 +259,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `results()` adapter is withdrawn rather than deferred, and the open dedup case the ADR filed
   without an answer is closed — an `RDATE`-added instant and a diff-moved one that collide are
   both emitted.
+- `max_absolute_shift`'s documentation called its result a count of elapsed seconds, and no
+  timeline makes that true: for a zoned series both instants an override carries are on the
+  series' own wall clock, so the number is a wall-clock count and already exact, and
+  `extra_widening`'s shortfall on that timeline is always zero. Both docs say which timeline
+  they count now, and `WallClockShift::across` is where the two readings of one move are held
+  apart. ADR 0002 amendment 15 records the correction.
+- `ZonedSeries::actual` is documented as resolving the wall clock it is handed rather than "the
+  instant the occurrence at cadence key `key` actually happens at", which was false for every
+  occurrence a `RANGE=THISANDFUTURE` override moved. What to pass is `Occurrence::start`.
+- `VtimezoneSet::len` counts identifiers rather than definitions, and `VtimezoneSet::table`
+  answers with the first definition carrying a transition rather than the first definition.
+- ADR 0003 carries thirteen amendments, ADR 0011 three, ADR 0002 sixteen and ADR 0009 one, each
+  written because an adversarial case found the sentence above it wrong rather than unbuilt.
 - The purity gate reads the package a dependency links rather than the key it was written
   under. A `package = "..."` rename defeated every leg of the old gate; it is now a violation
   in both the inline and the sub-table spelling, alongside a dependency taken from a registry

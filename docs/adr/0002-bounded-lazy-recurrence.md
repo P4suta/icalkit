@@ -327,3 +327,31 @@ does under all five forbidding frequencies; the other three ecosystem engines we
 for this milestone and that gap is recorded rather than papered over. The decoder reports the
 construct on `DiagnosticCode::RecurrenceRulePartOutOfRange`, because a rule the author and this
 crate read differently is exactly what `docs/adr/0009` says must not be silent.
+
+**14a. M2 built the seam this document's siblings depend on, and two more sentences here did not
+survive it.** Both have a case in `crates/ical-conform/tests/break_tz_seam.rs`.
+
+**15. `max_absolute_shift` counts the timeline the caller's own instants are on, and there is no
+second half to add to it.** The shipped documentation called the number a count of *elapsed*
+seconds — "the whole of the move for a floating or UTC series and only part of it for a zoned
+one" — with `ical_tz::extra_widening` there to give back what an elapsed count could not see.
+That is a reading of nothing. This crate differences two instants an override carries, and for a
+zoned series `ical_tz::seam` puts both of them on the series' own wall clock projected onto UTC:
+the difference is a wall-clock count, the widening it gives is already exact for the wall-clock
+move that gets propagated, and the shortfall `extra_widening` reports on that timeline is always
+zero. On the real timeline the two instants are not the ones an override carries at all. The
+function is unchanged and its documentation now says which timeline it counts;
+`ical_tz::WallClockShift::across` is where the two readings of one move are held apart, by
+converting two cadence keys into the real instants they name before measuring.
+
+**16. Two overrides naming one instant are ranked by file order and counted, not refused.**
+`OverrideSet::new` answered `InputError::Duplicated`, on the ground that two edits of one instant
+have no defined precedence — which is true, and cost more than it was worth. A zoned series
+produces the shape without anybody making a mistake: the two halves of the hour a zone repeats
+are one wall clock and therefore one cadence key, so `RECURRENCE-ID:20261101T053000Z` and
+`RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants an hour apart that
+collide, and refusing the input lost not the second override but every occurrence of the event.
+The earlier entry applies, `OverrideSet::collisions` reports how many were shadowed, and the
+constructor still refuses a list that descends. The preference is stated rather than silent,
+which is the property this crate is arranged around; that a fold cannot be told apart on the
+nominal timeline at all is a limit of the seam and is recorded in `docs/adr/0011`.

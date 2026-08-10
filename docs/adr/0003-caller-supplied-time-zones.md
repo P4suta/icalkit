@@ -208,3 +208,101 @@ code names a zone-count refusal, so a calendar declaring more zones than the bou
 the ones that fit. ADR-0010 says a bound nobody charges is decoration; this is its sibling, a
 charge nobody reports, and it is recorded here rather than closed with a code invented during
 integration.
+
+**6a. Four adversarial lenses were run against the built crate — the transitions, the sources,
+the seam with `ical-recur`, and the bounds — and amendments 7 through 12 are the decisions they
+forced.** Each has a case in `crates/ical-conform/tests/break_tz_*.rs` that failed before the
+fix and passes after it, and none was reached by weakening what a case asserts.
+
+**7. `resolve` answers something for a definition that exists and holds nothing, and
+recognition is a question of its own.** The Mechanism above says a source that does not
+recognize an identifier returns `None`, "that is what the `Option` is for", and `answer.rs`
+restated it as "`None` for exactly one condition". A `VTIMEZONE` with no usable observance —
+which RFC 5545 section 3.6.5 forbids and exporters ship — made that claim false the moment it
+was filed: the table recognized its own `TZID` and answered `None` to every question, so a
+calendar that declared a zone and a calendar that never mentioned one arrived as one fact, and
+the pair reported `unknown-time-zone` at `Severity::Violation` about a zone the file supplies.
+`LocalResolution::Undetermined` is what such a table answers with now, and it invents no offset:
+it is a larger claim than silence and a smaller one than UTC.
+
+The other direction cannot be fixed that way and is not. An `OffsetAnswer` is an offset, and
+"recognized, holding nothing" has nowhere to go in one; filling the field with UTC is exactly
+the invention this ADR exists to refuse. So `ZoneSource::recognizes` is a third method, with a
+provided implementation that asks the other two, and `PolicyOutcome::Undetermined` is the pair's
+answer where a source knows the identifier and neither could answer. `unknown-time-zone` now
+means what it says.
+
+**8. A table has two ends, and `AnswerBasis` states both.** Amendment 5 and the Decision are
+written about a source asked *past* the last transition it knows. A `VTIMEZONE` whose `RDATE`
+lines run 2027 through 2029 answers July 2020 by extending its earliest observance's
+`TZOFFSETFROM` backwards forever — `America/New_York` was on `-04:00` that July and such a table
+says `-05:00` — and that answer was `Computed`, indistinguishable from one the file had data
+for. `AnswerBasis::BeforeKnownTransitions(CivilDate)` carries the first date the source knows,
+`TransitionTable::coverage_start` is where it comes from, and
+`time-zone-before-known-transitions` is the code it travels on.
+
+Coverage at the far end is also narrower than it was. A single endless rule used to make a whole
+table claim to know the future, so a definition whose daylight rule runs forever and whose
+standard onsets are three `RDATE` lines ending in 2029 answered midwinter 2031 with permanent
+summer time and called it computed. `coverage_end` is `None` only when *every* side of the
+definition — `STANDARD` against `DAYLIGHT` — repeats forever, because a zone that cannot say
+when its summer ends does not know its own future whatever its other half states.
+
+**9. Two definitions of one identifier both stay in the set, and an empty one may not shadow a
+full one.** This ADR's whole subject is that where two sources disagree both readings stay
+reachable; a calendar declaring one `TZID` twice is that case inside one file, and
+`read_calendar_zones` dropped the second on the floor after reading its code. A placeholder
+`VTIMEZONE` written above the real definition therefore erased a zone the file states in full.
+`VtimezoneSet` now holds both in file order, `VtimezoneSet::definitions` is where a caller takes
+the other reading, `VtimezoneSet::len` counts identifiers rather than definitions, and
+`VtimezoneSet::table` answers with the first definition that carries a transition — a preference
+stated on the accessor rather than made silently by insertion order.
+
+**10. Every diagnostic about a zone names the zone.** "Every result says which source produced
+it" was implemented for answers and not for reports: three `TZID` parameters nothing defines
+produced three `Diagnostic` values equal to each other, which tells a caller that something is
+missing and not what to go and find. A `Location` cannot say it — a component owns unfolded
+octets and has no span back into the caller's buffer — so `Diagnostic` carries a bounded inline
+`Subject`, and `missing-time-zone-definition`, `duplicate-time-zone-identifier`,
+`vtimezone-without-observance` and `vtimezone-components-truncated` all name their zone. The
+cost is stated rather than hidden: every `Diagnostic` in the workspace is `Subject::CAPACITY`
+octets larger whether it carries one or not, which is what a `Copy` diagnostic that allocates
+nothing costs.
+
+**11. Amendment 6 is closed: the zone-count refusal has a code.** A charge nobody reports was
+recorded there as a known hole; M2 found what the silence costs. A definition the caller's own
+bound turned back left the identifiers it declares looking exactly like identifiers the calendar
+never wrote, so `missing-time-zone-definition` — a violation, about the file — was reported for
+a loss the caller's own policy caused. `vtimezone-components-truncated` says what happened, at
+`Severity::LimitReached`, naming each definition refused, and the undefined-identifier walk
+excludes them.
+
+**12. An observance whose required value is present and unreadable is this crate's to report.**
+`reader.rs` delegated every unreadable required value to `Component::audit`'s reading of section
+3.6, which is right for a property that is *absent* and answers nothing about one that is there
+and unusable. `TZOFFSETTO:+9999` is refused by the value decoder and counted by the audit;
+`DTSTART;VALUE=DATE` on an observance carries no hour for a transition to happen at. Both left a
+`VTIMEZONE` in the set holding nothing and answering nothing, with no code from anybody.
+`vtimezone-observance-unreadable` is emitted where every required property is present and the
+observance still states no transition, so one fault never earns two codes.
+
+**13. What a lookup costs is stated again, because the transitions lens changed it.** The
+crate's own prose said a resolution was "logarithmic in the table and constant in the rules",
+and both halves were bought by scanning only the last four observances admitted before a query.
+Four `RDATE` lines — two years of a zone that moves twice a year — filled that window, and the
+rules beside them stopped being consulted at all: `Europe/Berlin` answered CET on the first of
+July, an hour wrong, with `AnswerBasis::Computed` and no diagnostic. A rule is in force from its
+own `DTSTART` until something later supersedes it, so *every* rule a definition carries is now
+asked about every query, and a rule that fires rarely is probed back sixty-four years rather
+than three, which is the widest gap `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` can produce.
+
+A lookup is therefore logarithmic in the dated transitions and linear in the *rules*, of which a
+definition carries a handful. Two further costs are named rather than hidden. The candidate
+offsets are taken from every era inside one day either side of the query rather than from its
+two ends, because a definition with two transitions in one day has a middle offset that governs
+seventeen hours and was never considered — which reported an ordinary lunchtime as a local time
+that never happened. Walking those transitions allocates a small vector on the days a zone moves
+and nothing on every other day. And the table is ordered by the instant each observance
+*begins* rather than by the wall clock its `DTSTART` spells, which is what makes the search's
+own predicate monotone and what stops two observances declared on one wall clock from resolving
+by the order the producer happened to write them in.

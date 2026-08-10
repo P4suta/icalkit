@@ -105,13 +105,33 @@ onwards. All six questions M1 left open are closed with a test each, and four of
 golden-listed code behind that no emitter had before: `recurrence-until-not-utc`,
 `exdate-value-type-mismatch`, `override-matches-no-instance` and `time-zone-coverage-exhausted`.
 
-Two things are known and named. `AnswerBasis` says an answer continued a final observance and
-from which date, but what a caller should do about a continuation six years wide as against one
-a day wide is still nobody's decision, exactly as ADR 0003 left it — the conformance case pins
-the honest version, where an `RDATE` table ending in 2029 answers June 2035 as CET and real
-Berlin is on CEST. And `VtimezoneSet::insert` charges a zone-count bound that no code reports,
-so a calendar declaring more zones than the bound silently keeps the ones that fit; the doc
-comment saying otherwise and the golden list disagree, and M3 owes the decision.
+Four adversarial lenses — the transitions, the sources, the seam, and the bounds — were then run
+against the built crate, and what they found is in `crates/ical-conform/tests/break_tz_*.rs`,
+one case per finding, each failing before the fix. Six were wrong answers: a rule stopped being
+consulted once four dated transitions stood between it and the query, so `Europe/Berlin`
+answered CET on the first of July; a rule that fires rarely was asked about three years and not
+the twenty-eight it needs; a zone with two transitions in one day reported seventeen hours of
+ordinary wall clock as times that never happened, and answered the two gaps it does have with
+the other one's edges; and two observances declared on one wall clock resolved by the order the
+producer wrote them in. Five were losses of provenance or of a reading: an empty definition was
+indistinguishable from an undefined zone and was reported as one nobody supplied, a table's
+early end was unlabeled, a second definition of one identifier was dropped, a zone the caller's
+own bound refused was reported as one the file never defined, and every diagnostic about a zone
+was anonymous. Eleven amendments to ADR 0003, two to ADR 0002, three to ADR 0011 and one to
+ADR 0009 record the claims that did not survive; five codes are new — `time-zone-without-transitions`,
+`time-zone-before-known-transitions`, `vtimezone-components-truncated`,
+`vtimezone-observance-unreadable` and `exdate-zone-unknown`.
+
+Four things are known and named. `AnswerBasis` says an answer continued an observance and from
+which date at either end, but what a caller should do about a continuation six years wide as
+against one a day wide is still nobody's decision, exactly as ADR 0003 left it. The projection
+onto a zoned series' own wall clock is not injective across the hour a zone repeats, so two
+`RECURRENCE-ID`s inside a fold collide on one cadence key: the earlier applies, the collision is
+counted, and closing it would need a cadence key that carries a fold side, which no RFC defines.
+`COUNT` composes with the zone only when a caller states the gate, because the other composition
+is what RFC 5545 section 3.8.5.3 forces for a `DTSTART` in a gap. And a `Z`-terminated `EXDATE`
+on a series whose `TZID` nothing defines cannot be placed at all — it is kept as the real instant
+it names and reported, and the occurrence stays.
 
 ## M3 — Scheduling
 
