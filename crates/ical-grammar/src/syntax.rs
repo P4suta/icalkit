@@ -151,6 +151,26 @@ impl LineLayout {
         self.refold = true;
     }
 
+    /// Give this line the terminator RFC 5545 section 3.1 requires, if it carried none.
+    ///
+    /// Answers whether one was added, so a caller can say that it did rather than leave the
+    /// octet unexplained. A line that already ends somehow keeps the terminator it arrived
+    /// with, bare `LF` and bare `CR` included: which one a producer used is a diagnostic, not
+    /// something to correct.
+    ///
+    /// This is the one place an octet is added to a line nobody asked to change, and it exists
+    /// because a final line often arrives with no terminator and stays that way — until
+    /// something is written after it. Two content lines with nothing between them are one
+    /// content line, so the moment a line stops being last, section 3.1 requires the octets
+    /// that make it a line at all.
+    pub fn terminate_with(&mut self, ending: LineEnding) -> bool {
+        if self.ending.is_some() {
+            return false;
+        }
+        self.ending = Some(ending);
+        true
+    }
+
     /// Where the producer folded, in order. Empty once the line is marked for refolding.
     #[must_use]
     pub fn folds(&self) -> &[FoldPoint] {
@@ -231,5 +251,26 @@ mod tests {
         let layout = LineLayout::preserved(vec![], None, false);
         assert!(!layout.has_separator());
         assert_eq!(layout.ending(), None);
+    }
+
+    /// A terminator is added only where there was none, and the irregular ones are kept as
+    /// they arrived: which terminator a producer wrote is reported, never repaired.
+    #[test]
+    fn a_line_that_stops_being_last_gains_the_terminator_and_no_other_line_does() {
+        let mut unterminated = LineLayout::preserved(vec![], None, true);
+        assert!(unterminated.terminate_with(LineEnding::CANONICAL));
+        assert_eq!(unterminated.ending(), Some(LineEnding::CrLf));
+        assert!(
+            !unterminated.terminate_with(LineEnding::CANONICAL),
+            "a line that already ends is not ended twice"
+        );
+
+        let mut bare = LineLayout::preserved(vec![], Some(LineEnding::Lf), true);
+        assert!(!bare.terminate_with(LineEnding::CANONICAL));
+        assert_eq!(
+            bare.ending(),
+            Some(LineEnding::Lf),
+            "a bare LF is a diagnostic and not something to correct"
+        );
     }
 }

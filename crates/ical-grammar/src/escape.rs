@@ -351,6 +351,30 @@ pub fn parameter_is_representable(bytes: &[u8]) -> bool {
         .any(|octet| *octet == b'"' || is_control_octet(*octet))
 }
 
+/// The octets that end a section 3.2 parameter name, whatever else surrounds them.
+///
+/// Each one hands the rest of the name to something else: `=` starts the value, `;` starts the
+/// next parameter, `:` ends the header, `,` separates the values of a multi-valued parameter,
+/// and a `DQUOTE` opens a quoted string. A name carrying any of them is a name the reader
+/// would give back in pieces.
+pub const PARAMETER_NAME_DELIMITERS: [u8; 5] = *b"=;:,\"";
+
+/// Whether section 3.2 can write `bytes` as a parameter name at all.
+///
+/// Narrower than section 3.2's `param-name`, which is `iana-token / x-name` and admits only
+/// `ALPHA`, `DIGIT` and `-`. Producers write `_` and `.` in vendor parameter names and this
+/// crate reads them back unchanged, so refusing them on the write side would refuse a name
+/// that survives a round trip. What is refused instead is the narrower and mechanical claim:
+/// a name that would not be read back as the same name. The empty name is one of those — it
+/// reads back as a parameter that is not there.
+#[must_use]
+pub fn parameter_name_is_representable(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && !bytes
+            .iter()
+            .any(|octet| PARAMETER_NAME_DELIMITERS.contains(octet) || is_control_octet(*octet))
+}
+
 /// Whether `octet` is one of section 3.1's `CONTROL` octets.
 ///
 /// `HTAB` is deliberately outside the set: section 3.1 counts it as whitespace, and a
@@ -393,8 +417,9 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        PARAMETER_MUST_QUOTE, ParameterQuoting, TEXT_ESCAPES, TEXT_MUST_ESCAPE, escape_text,
-        escape_text_into, parameter_is_representable, parameter_needs_quoting, quote_parameter,
+        PARAMETER_MUST_QUOTE, PARAMETER_NAME_DELIMITERS, ParameterQuoting, TEXT_ESCAPES,
+        TEXT_MUST_ESCAPE, escape_text, escape_text_into, parameter_is_representable,
+        parameter_name_is_representable, parameter_needs_quoting, quote_parameter,
         quote_parameter_into, text_escape_meaning, text_escape_spelling, text_needs_escaping,
         text_needs_unescaping, unescape_text, unescape_text_into, unquote_parameter,
     };
@@ -607,5 +632,21 @@ mod tests {
 
         // Named, not refused: the octets still come back out.
         assert_eq!(quote_parameter(b"say \"hi\"").as_ref(), b"say \"hi\"");
+    }
+
+    /// A name is representable when the reader would give it back whole. Every delimiter that
+    /// hands the rest of the name to something else is refused; the vendor spellings producers
+    /// actually write are not, because those do come back.
+    #[test]
+    fn a_parameter_name_that_would_not_read_back_whole_is_named_as_unwritable() {
+        assert!(parameter_name_is_representable(b"TZID"));
+        assert!(parameter_name_is_representable(b"X-VENDOR_FLAG.2"));
+        assert!(!parameter_name_is_representable(b""));
+        for octet in PARAMETER_NAME_DELIMITERS {
+            let name = [b'X', octet, b'A'];
+            assert!(!parameter_name_is_representable(&name), "{octet:?}");
+        }
+        assert!(!parameter_name_is_representable(b"X\r\nATTENDEE"));
+        assert!(!parameter_name_is_representable(b"X\x07"));
     }
 }

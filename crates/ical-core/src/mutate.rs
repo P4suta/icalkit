@@ -35,7 +35,10 @@
 
 use alloc::vec::Vec;
 
-use ical_grammar::{ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token};
+use ical_grammar::{
+    ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token,
+    parameter_is_representable, parameter_name_is_representable, quote_parameter_into,
+};
 
 use crate::change::{ParameterEdit, ProposedChange};
 use crate::gregorian::DateTimeValue;
@@ -79,16 +82,55 @@ fn refuse_oversized_value(
     Ok(())
 }
 
+/// Refuse an edit RFC 5545 section 3.2 has no way to write back as the edit that was made.
+///
+/// A [`ParameterEdit`] carries a *value*, not the octets of a line, so writing one means
+/// choosing its section 3.2 spelling — and three shapes have no spelling at all. A `DQUOTE`
+/// is excluded from `QSAFE-CHAR` and section 3.2 defines no escape that would return it, so a
+/// quoted value carrying one reads back as something shorter with the rest of the line
+/// attached. A control character ends the physical line outright, which is how a parameter
+/// assignment becomes a second `ATTENDEE` — the same injection
+/// [`PropertyMut::set_raw`] exists to refuse, arriving through the channel `ical-itip` applies
+/// an off-the-wire transition through. And a name carrying a delimiter is a name the reader
+/// hands back in pieces.
+///
+/// The other shapes are written rather than refused: `:` `;` and `,` are excluded from
+/// `SAFE-CHAR` and included in `QSAFE-CHAR`, so [`quote_parameter_into`] puts them inside a
+/// `DQUOTE` pair and the value survives. Refusing those would refuse
+/// `CN="Doe, John"`, which every client in the corpus writes.
+fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError> {
+    for entry in edits {
+        if !parameter_name_is_representable(entry.name()) {
+            return Err(MutationError::NotRepresentable);
+        }
+        if entry
+            .value()
+            .is_some_and(|held| !parameter_is_representable(held))
+        {
+            return Err(MutationError::NotRepresentable);
+        }
+    }
+    Ok(())
+}
+
 /// Assign `value` to the parameter `name`, keeping the position the line already gave it.
 ///
 /// In place rather than remove-and-append, because where a parameter sits on the line is
 /// something its producer chose and an assignment is about the value. Any further parameter of
 /// the same name goes: one that stayed would still be on the line and still be read, so an
 /// assignment that left it there would not be one.
+///
+/// The value is stored in the form section 3.2 writes it in, `DQUOTE`s included, because that
+/// is the form the tree stores for a value that was read: a parameter keeps the quotes its
+/// producer wrote, so a parameter this crate writes has to carry the quotes its value needs.
+/// Storing the bare octets instead would put a `:` on the wire unquoted and the next read
+/// would end the header at it.
 fn assign_parameter(parameters: &mut Vec<Parameter>, name: &[u8], value: &[u8]) {
     let at = parameters.iter().position(|held| held.is_named(name));
     parameters.retain(|held| !held.is_named(name));
-    let written = Parameter::new(RawText::from_bytes(name), RawText::from_bytes(value));
+    let mut spelled = Vec::new();
+    quote_parameter_into(value, &mut spelled);
+    let written = Parameter::new(RawText::from_bytes(name), RawText::from_vec(spelled));
     match at {
         // Every parameter before the first match survived the retain, so the recorded index
         // is still a position this vector has.
@@ -98,6 +140,10 @@ fn assign_parameter(parameters: &mut Vec<Parameter>, name: &[u8], value: &[u8]) 
 }
 
 /// Apply one ordered list of parameter edits, leaving every other parameter where it was.
+///
+/// The caller has already run [`refuse_unwritable_edits`] over the whole list, which is what
+/// makes this total: an edit list is applied entirely or not at all, and a property is never
+/// left carrying the first three edits of five.
 fn apply_parameter_edits(parameters: &mut Vec<Parameter>, edits: &[ParameterEdit]) {
     for entry in edits {
         match entry.value() {
@@ -253,6 +299,12 @@ impl<T: EncodeValue> PropertyMut<'_, T> {
 
         let mut coupled: Vec<ParameterEdit> = Vec::new();
         value.coupled_parameters(&mut coupled);
+        // A coupled parameter is the value's own answer rather than the caller's, so this
+        // refusal is a claim about a value type rather than about untrusted octets — a `TZID`
+        // carrying a `DQUOTE` is a zone identifier no line could name. It is checked here
+        // anyway, and before anything is written, so that a value type added later cannot make
+        // a property half written by being wrong about its own parameters.
+        refuse_unwritable_edits(&coupled)?;
 
         let property = self.property_mut();
         apply_parameter_edits(property.edit_parameters(), &coupled);
@@ -307,6 +359,10 @@ impl Component {
                 Ok(())
             },
             ProposedChange::SetParameters(edits) => {
+                // Refused before the property is reached, so a refused change leaves the
+                // component exactly as it was — layout included, since asking a property for
+                // its parameters is itself what discards the recorded folds.
+                refuse_unwritable_edits(edits)?;
                 let property = self.property_with_id_mut(id).ok_or(MutationError::Absent)?;
                 // The value's text is untouched, which is the whole reason this variant
                 // exists. The line's layout goes anyway, because the parameters were part of
@@ -356,6 +412,10 @@ impl Component {
     /// been read and rebuilt since. The terminator the caller wrote is kept, and a caller who
     /// wrote none gets the one RFC 5545 section 3.1 requires — a line with no terminator at
     /// all would run into whatever follows it.
+    ///
+    /// The line it is inserted *after* needs the same thing, for the same reason, and that is
+    /// the one octet an addition writes outside the line it added. See
+    /// [`Component::terminate_line_above`].
     fn insert_after_properties(&mut self, line: ParsedLine) {
         let layout = LineLayout::canonical(line.ending.unwrap_or(LineEnding::CANONICAL));
         let property = Property::new(
@@ -364,14 +424,45 @@ impl Component {
             RawText::from_vec(line.value),
             layout,
         );
-        let items = self.items_mut();
         // The last property's index counted from the end; one past it is where a property
         // goes, and `0` when this component holds no property yet.
-        let at = items
+        let at = self
+            .items()
             .iter()
             .rposition(|entry| entry.as_property().is_some())
             .map_or(0, |index| index.saturating_add(1));
-        items.insert(at, Item::Property(property));
+        self.terminate_line_above(at);
+        self.items_mut().insert(at, Item::Property(property));
+    }
+
+    /// Give the line that will sit above position `at` the terminator section 3.1 requires.
+    ///
+    /// A final line often arrives with no terminator, and this crate writes it back with none,
+    /// because appending one would add an octet the file did not have. That reasoning holds
+    /// for exactly as long as the line is last. Two content lines with nothing between them
+    /// are one content line: written unchanged, the property above would swallow the addition,
+    /// the addition would not exist on the next read, and the property above would come back
+    /// with the addition's octets glued to its value. So the terminator is written at the
+    /// moment the insertion creates the need for it, and never at any other moment.
+    ///
+    /// This is the one octet a scoped write puts outside the property it names, and it is not
+    /// the rewrite `docs/adr/0001` forbids: the line above keeps its name, its parameters, its
+    /// value and its position, and what it gains is the delimiter that makes it a line rather
+    /// than the first half of one.
+    ///
+    /// The entry above an insertion is always a property, because `at` is one past the last
+    /// property this component holds; when there is no property at all, `at` is zero and the
+    /// line above is this component's own `BEGIN`.
+    fn terminate_line_above(&mut self, at: usize) {
+        let ending = LineEnding::CANONICAL;
+        let above = at
+            .checked_sub(1)
+            .and_then(|index| self.items_mut().get_mut(index))
+            .and_then(Item::as_property_mut);
+        match above {
+            Some(property) => property.terminate_line(ending),
+            None => self.begin_mut().terminate_line(ending),
+        };
     }
 
     /// Remove every property directly inside this component with the identity `id`.
@@ -773,6 +864,176 @@ mod tests {
             vec![(&b"RANGE"[..], &b"THISANDFUTURE"[..])]
         );
         assert_eq!(written.value_text().as_bytes(), b"20260815T090000");
+    }
+
+    /// RFC 5545 section 3.2 excludes `:` `;` and `,` from `SAFE-CHAR` and includes them in
+    /// `QSAFE-CHAR`, so a value carrying one is written inside a `DQUOTE` pair. Unquoted, the
+    /// `:` would end the header and the value's own text would move to the parameter side —
+    /// which is the one thing `SetParameters` exists to promise it will not do.
+    #[test]
+    fn a_parameter_value_the_grammar_cannot_write_bare_is_written_quoted() {
+        let cases: [(&[u8], &[u8]); 5] = [
+            (b"a:b", b"\"a:b\""),
+            (b"a;b", b"\"a;b\""),
+            (b"Doe, John", b"\"Doe, John\""),
+            (b"THISANDFUTURE", b"THISANDFUTURE"),
+            (b"W. Europe Standard Time", b"W. Europe Standard Time"),
+        ];
+        for (assigned, spelled) in cases {
+            let mut component = event(vec![Item::Property(decorated(
+                b"SUMMARY",
+                &[(b"X-STATE", b"old")],
+                b"Lunch",
+            ))]);
+            let change =
+                ProposedChange::SetParameters(vec![ParameterEdit::set(b"X-STATE", assigned)]);
+            assert_eq!(
+                component.apply(&PropertyId::SUMMARY, &change, Limits::DEFAULT),
+                Ok(())
+            );
+            let written = component.items()[0]
+                .as_property()
+                .expect("still a property");
+            assert_eq!(parameters_of(written), vec![(&b"X-STATE"[..], spelled)]);
+            assert_eq!(
+                written.value_text().as_bytes(),
+                b"Lunch",
+                "the value's text is what this variant promised not to touch"
+            );
+        }
+    }
+
+    /// The shapes section 3.2 has no spelling for. Each leaves the component exactly as it
+    /// was, because the refusal runs over the whole list before the property is reached.
+    #[test]
+    fn a_parameter_edit_the_grammar_cannot_write_at_all_is_refused_and_writes_nothing() {
+        let refused: [ParameterEdit; 6] = [
+            // The injection `set_raw` refuses, arriving on the parameter channel instead.
+            ParameterEdit::set(b"X-STATE", b"busy\r\nATTENDEE:mailto:eve@example.test"),
+            // `QSAFE-CHAR` excludes `DQUOTE` and section 3.2 defines no escape for it.
+            ParameterEdit::set(b"X-STATE", b"say \"hi\""),
+            ParameterEdit::set(b"X-STATE", b"bell\x07"),
+            ParameterEdit::set(b"X-A:B", b"busy"),
+            ParameterEdit::set(b"", b"busy"),
+            ParameterEdit::remove(b"X;A"),
+        ];
+        for attempt in refused {
+            // A preserved layout rather than `decorated`'s canonical one, so that "the layout
+            // survived" is an observation and not a tautology.
+            let mut component = event(vec![Item::Property(Property::new(
+                RawText::from_bytes(b"SUMMARY"),
+                vec![Parameter::new(
+                    RawText::from_bytes(b"X-STATE"),
+                    RawText::from_bytes(b"old"),
+                )],
+                RawText::from_bytes(b"Lunch"),
+                LineLayout::preserved(Vec::new(), Some(LineEnding::CrLf), true),
+            ))]);
+            let change = ProposedChange::SetParameters(vec![
+                ParameterEdit::set(b"X-OK", b"kept"),
+                attempt.clone(),
+            ]);
+            assert_eq!(
+                component.apply(&PropertyId::SUMMARY, &change, Limits::DEFAULT),
+                Err(MutationError::NotRepresentable),
+                "{attempt:?}"
+            );
+            let kept = component.items()[0]
+                .as_property()
+                .expect("still a property");
+            assert_eq!(
+                parameters_of(kept),
+                vec![(&b"X-STATE"[..], &b"old"[..])],
+                "the edit before the refused one was not applied either"
+            );
+            assert!(
+                !kept.layout().is_refolded(),
+                "a refused change does not even discard the layout"
+            );
+        }
+    }
+
+    /// An addition after a line that carried no terminator gives that line the terminator
+    /// section 3.1 requires, because a line with something written after it is no longer last.
+    #[test]
+    fn an_addition_terminates_the_line_it_is_written_after() {
+        let unterminated = Property::new(
+            RawText::from_bytes(b"SUMMARY"),
+            Vec::new(),
+            RawText::from_bytes(b"Lunch"),
+            LineLayout::preserved(Vec::new(), None, true),
+        );
+        let mut component = event(vec![Item::Property(unterminated)]);
+        let change = ProposedChange::Add(RawText::from_bytes(b"COMMENT:added\r\n"));
+        assert_eq!(
+            component.apply(&PropertyId::COMMENT, &change, Limits::DEFAULT),
+            Ok(())
+        );
+
+        let above = component.items()[0]
+            .as_property()
+            .expect("still a property");
+        assert_eq!(
+            above.layout().ending(),
+            Some(LineEnding::CrLf),
+            "the line above stopped being last and gained the octets that make it a line"
+        );
+        assert_eq!(
+            above.value_text().as_bytes(),
+            b"Lunch",
+            "and nothing else about it moved"
+        );
+        assert!(
+            !above.layout().is_refolded(),
+            "a terminator is not a fold, and the recorded folds are not a write's to discard"
+        );
+    }
+
+    /// A terminator already there is left alone, bare `LF` included: which one a producer
+    /// wrote is a diagnostic about the file rather than something an addition corrects.
+    #[test]
+    fn an_addition_leaves_the_terminator_the_line_above_already_had() {
+        let mut component = event(vec![Item::Property(Property::new(
+            RawText::from_bytes(b"SUMMARY"),
+            Vec::new(),
+            RawText::from_bytes(b"Lunch"),
+            LineLayout::preserved(Vec::new(), Some(LineEnding::Lf), true),
+        ))]);
+        let change = ProposedChange::Add(RawText::from_bytes(b"COMMENT:added\r\n"));
+        assert_eq!(
+            component.apply(&PropertyId::COMMENT, &change, Limits::DEFAULT),
+            Ok(())
+        );
+        assert_eq!(
+            component.items()[0]
+                .as_property()
+                .expect("still a property")
+                .layout()
+                .ending(),
+            Some(LineEnding::Lf)
+        );
+    }
+
+    /// With no property to sit after, the addition sits after the `BEGIN`, and that is the
+    /// line the same rule applies to.
+    #[test]
+    fn an_addition_into_a_component_with_no_properties_terminates_the_begin_line() {
+        let opening = Boundary::new(
+            RawText::from_bytes(b"BEGIN"),
+            RawText::from_bytes(b"VEVENT"),
+            LineLayout::preserved(Vec::new(), None, true),
+        );
+        let mut component = Component::new(opening, Vec::new(), None);
+        let change = ProposedChange::Add(RawText::from_bytes(b"COMMENT:added\r\n"));
+        assert_eq!(
+            component.apply(&PropertyId::COMMENT, &change, Limits::DEFAULT),
+            Ok(())
+        );
+        assert_eq!(
+            component.begin().layout().ending(),
+            Some(LineEnding::CrLf),
+            "the BEGIN line stopped being last too"
+        );
     }
 
     /// An addition goes after the properties and before the subcomponents, and nothing already

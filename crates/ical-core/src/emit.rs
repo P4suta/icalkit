@@ -28,11 +28,12 @@
 //! read and rewriting it here would turn a diagnostic into a repair (`docs/adr/0009`).
 
 use alloc::vec::Vec;
+use core::{mem, slice};
 
 use ical_grammar::{FoldPoint, LineEnding, LineLayout};
 
 use crate::output::Writer;
-use crate::tree::{Boundary, Component, Document, Item, Property};
+use crate::tree::{Boundary, Document, Item, Property};
 
 /// Octets of line content this crate puts on one physical line when it folds a line itself.
 ///
@@ -73,33 +74,49 @@ impl Document {
     }
 }
 
-/// Write each entry in order, whichever kind it is.
-fn write_items<W: Writer + ?Sized>(items: &[Item], sink: &mut W) -> Result<(), W::Error> {
-    for entry in items {
-        match entry {
-            Item::Property(property) => write_property(property, sink)?,
-            Item::Component(component) => write_component(component, sink)?,
-        }
-    }
-    Ok(())
+/// A component whose `BEGIN` has been written and whose entries are still being walked.
+struct OpenComponent<'a> {
+    /// The entries of the component *above* this one, not yet reached.
+    rest: slice::Iter<'a, Item>,
+    /// The `END` line to write once this component's entries run out, if one ever arrived.
+    end: Option<&'a Boundary>,
 }
 
-/// Write a component: its `BEGIN` line, its entries, and its `END` line if one ever arrived.
+/// Write each entry in order, whichever kind it is.
 ///
-/// Nesting is walked by recursion rather than an explicit stack, because an explicit stack
-/// would allocate and this function is not allowed to (`docs/adr/0007`). Depth is bounded
-/// where the tree is built, by `Limits::max_component_depth`, so a document read through
-/// `Document::parse` cannot reach here deep enough to matter.
-fn write_component<W: Writer + ?Sized>(
-    component: &Component,
-    sink: &mut W,
-) -> Result<(), W::Error> {
-    write_boundary(component.begin(), sink)?;
-    write_items(component.items(), sink)?;
-    if let Some(closing) = component.end() {
-        write_boundary(closing, sink)?;
+/// Nesting is walked with an explicit stack rather than by recursion. Recursion here was
+/// justified by the depth bound the tree is built under, and that bound is
+/// `Limits::max_component_depth` — a `u16` a caller raises through a public builder, while the
+/// stack gives out several thousand frames sooner. Sixteen thousand nested components then
+/// parse cleanly and abort the process on the way out, which is not a failure a caller can
+/// catch or a server can survive. The stack this allocates is one entry per open component,
+/// which is memory the tree it is walking already holds (`docs/adr/0007`).
+fn write_items<W: Writer + ?Sized>(items: &[Item], sink: &mut W) -> Result<(), W::Error> {
+    let mut open: Vec<OpenComponent<'_>> = Vec::new();
+    let mut cursor = items.iter();
+    loop {
+        let Some(entry) = cursor.next() else {
+            // This component's entries are done: close it and carry on where its parent was.
+            let Some(finished) = open.pop() else {
+                return Ok(());
+            };
+            if let Some(closing) = finished.end {
+                write_boundary(closing, sink)?;
+            }
+            cursor = finished.rest;
+            continue;
+        };
+        match entry {
+            Item::Property(property) => write_property(property, sink)?,
+            Item::Component(component) => {
+                write_boundary(component.begin(), sink)?;
+                open.push(OpenComponent {
+                    rest: mem::replace(&mut cursor, component.items().iter()),
+                    end: component.end(),
+                });
+            },
+        }
     }
-    Ok(())
 }
 
 /// Write one `BEGIN` or `END` line in the spelling and the case it arrived in.
@@ -728,6 +745,48 @@ mod tests {
         want.extend_from_slice(b"\r\n");
 
         assert_eq!(written, want);
+    }
+
+    /// Nesting far past what any stack would survive being recursed over.
+    ///
+    /// `Limits::max_component_depth` is a `u16` the caller raises through a public builder, so
+    /// a tree this deep is one the reader will build when it is asked to. Walking it by
+    /// recursion aborts the process — not a panic, so no caller catches it and no sibling test
+    /// in the same binary survives it. Both the walk and the teardown are asserted here,
+    /// because the teardown is the one that fires even for a caller that never serializes.
+    ///
+    /// Built from the inside out, since a helper that nested by recursion would abort in the
+    /// test rather than in the code under test.
+    #[test]
+    fn a_tree_nested_far_deeper_than_the_stack_is_written_and_dropped_without_recursing() {
+        const DEPTH: usize = 20_000;
+
+        let mut innermost = Component::new(
+            boundary(b"BEGIN", b"X"),
+            vec![plain(b"UID", b"1")],
+            Some(boundary(b"END", b"X")),
+        );
+        for _ in 1..DEPTH {
+            innermost = Component::new(
+                boundary(b"BEGIN", b"X"),
+                vec![Item::Component(innermost)],
+                Some(boundary(b"END", b"X")),
+            );
+        }
+        let document = Document::new(vec![Item::Component(innermost)]);
+
+        let mut want = Vec::new();
+        for _ in 0..DEPTH {
+            want.extend_from_slice(b"BEGIN:X\r\n");
+        }
+        want.extend_from_slice(b"UID:1\r\n");
+        for _ in 0..DEPTH {
+            want.extend_from_slice(b"END:X\r\n");
+        }
+        assert_eq!(document.to_bytes(), want);
+        // The drop that runs when `document` leaves this scope is the second half of the
+        // claim, and it is asserted by this test returning at all.
+        drop(document);
     }
 
     #[test]

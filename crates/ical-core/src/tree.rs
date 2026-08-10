@@ -23,9 +23,9 @@
 //! `BEGIN:VEVENT` serializes back in the case it was written.
 
 use alloc::vec::Vec;
-use core::slice;
+use core::{mem, slice};
 
-use ical_grammar::LineLayout;
+use ical_grammar::{LineEnding, LineLayout};
 
 use crate::ident::PropertyId;
 use crate::octets::RawText;
@@ -71,6 +71,14 @@ impl Boundary {
     #[must_use]
     pub fn layout(&self) -> &LineLayout {
         &self.layout
+    }
+
+    /// Give this line the terminator RFC 5545 section 3.1 requires, if it carried none.
+    ///
+    /// Crate-private for the same reason the property setters below are: the only caller is
+    /// the insertion in `mutate`, which is where a line stops being the last one.
+    pub(crate) fn terminate_line(&mut self, ending: LineEnding) -> bool {
+        self.layout.terminate_with(ending)
     }
 }
 
@@ -239,13 +247,26 @@ impl Property {
     /// The layout goes because the folds were positions into text that no longer exists.
     /// Nothing outside this property is touched, which is what lets every other line in the
     /// component still serialize octet for octet.
-    pub fn set_value_text(&mut self, value_text: RawText) {
+    ///
+    /// Crate-private, and that is the whole of what makes
+    /// [`PropertyMut::set_raw`](crate::PropertyMut::set_raw)'s refusal true rather than
+    /// customary. The refusal is documented as "the one place this crate rejects caller input
+    /// outright", which is a claim about the *only* door and not about one of several: a
+    /// setter beside it that checks nothing lets a `SUMMARY` taken from a web form carry its
+    /// own `CRLF` into the file, and the octets come back on the next read as a second
+    /// property nobody added. A check repeated here would close that one door and leave
+    /// [`Property::edit_parameters`] open, since a handed-out `&mut Vec` cannot be checked at
+    /// all once it is handed out. Privacy closes all three at once.
+    pub(crate) fn set_value_text(&mut self, value_text: RawText) {
         self.value_text = value_text;
         self.layout.mark_refolded();
     }
 
     /// Replace the property name, discarding this line's recorded fold layout.
-    pub fn set_name(&mut self, name: RawText) {
+    ///
+    /// Crate-private, for the reason [`Property::set_value_text`] gives: a name carrying a `:`
+    /// or a `;` splits one line into two exactly as a value carrying a terminator does.
+    pub(crate) fn set_name(&mut self, name: RawText) {
         self.name = name;
         self.layout.mark_refolded();
     }
@@ -254,9 +275,21 @@ impl Property {
     ///
     /// The layout goes for the whole line rather than for the parameters alone, because the
     /// parameters are part of the line the folds were positions into.
-    pub fn edit_parameters(&mut self) -> &mut Vec<Parameter> {
+    ///
+    /// Crate-private, for the reason [`Property::set_value_text`] gives, and more sharply: a
+    /// `&mut Vec` handed to a caller is a door no check can stand in front of, because the
+    /// caller writes through it after the check would have run. The public way to change
+    /// parameters is [`Component::apply`](crate::Component::apply) with
+    /// [`ProposedChange::SetParameters`](crate::ProposedChange::SetParameters), which refuses
+    /// what section 3.2 has no way to write.
+    pub(crate) fn edit_parameters(&mut self) -> &mut Vec<Parameter> {
         self.layout.mark_refolded();
         &mut self.parameters
+    }
+
+    /// Give this line the terminator RFC 5545 section 3.1 requires, if it carried none.
+    pub(crate) fn terminate_line(&mut self, ending: LineEnding) -> bool {
+        self.layout.terminate_with(ending)
     }
 }
 
@@ -364,6 +397,15 @@ impl Component {
         &self.begin
     }
 
+    /// The `BEGIN` line, for the one edit that reaches it.
+    ///
+    /// Crate-private and deliberately not a general handle on the boundary: the only caller is
+    /// the insertion in `mutate`, which has to terminate whatever line will sit above the
+    /// property it adds — and for a component with no properties yet, that line is this one.
+    pub(crate) fn begin_mut(&mut self) -> &mut Boundary {
+        &mut self.begin
+    }
+
     /// The `END` line, absent when it never arrived.
     #[must_use]
     pub fn end(&self) -> Option<&Boundary> {
@@ -427,6 +469,31 @@ impl Component {
     /// The components directly inside this component, in order, mutably.
     pub fn components_mut(&mut self) -> impl Iterator<Item = &mut Self> {
         self.items.iter_mut().filter_map(Item::as_component_mut)
+    }
+}
+
+impl Drop for Component {
+    /// Dismantle the nesting iteratively rather than letting the derived drop recurse.
+    ///
+    /// A derived `Drop` walks a component tree by recursion, one stack frame per level, and
+    /// the depth of that tree is `Limits::max_component_depth` — a `u16` a caller sets through
+    /// a public builder. Sixteen thousand `BEGIN` lines therefore parse cleanly under a raised
+    /// policy and take the process down when the tree leaves scope. A stack overflow is an
+    /// abort and not an unwind: no `catch_unwind` sees it, and a server that parsed an
+    /// untrusted attachment loses the process rather than the request.
+    ///
+    /// So the entries are moved into one flat worklist and dropped from there. A nested
+    /// component's own entries are taken out of it *before* it is dropped, so the drop that
+    /// runs on it finds nothing left to walk and the recursion is two frames deep whatever the
+    /// nesting was. The worklist is the vector the entries already lived in, taken rather than
+    /// allocated, so an ordinary component costs this nothing.
+    fn drop(&mut self) {
+        let mut pending = mem::take(&mut self.items);
+        while let Some(entry) = pending.pop() {
+            if let Item::Component(mut nested) = entry {
+                pending.append(&mut nested.items);
+            }
+        }
     }
 }
 
