@@ -8,6 +8,7 @@ version = "0.0.0"
 dependencies = [
  "ical-core",
  "ical-recur",
+ "ical-tz",
 ]
 
 [[package]]
@@ -39,6 +40,9 @@ dependencies = [
 [[package]]
 name = "ical-tz"
 version = "0.0.0"
+dependencies = [
+ "ical-core",
+]
 
 [[package]]
 name = "xtask"

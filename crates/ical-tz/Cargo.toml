@@ -16,5 +16,16 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[dependencies]
+ical-core = { path = "../ical-core", version = "0.0.0" }
+
+[features]
+default = ["vtimezone"]
+# The VTIMEZONE half: the observance model, the transition table, and the zone source over
+# one. With it off the crate is the trait, the answer types, the identifier and the
+# combinator -- the surface a caller needs when the only zone data in play is its own
+# (docs/design/ical-tz-api.md).
+vtimezone = []
+
 [lints]
 workspace = true
