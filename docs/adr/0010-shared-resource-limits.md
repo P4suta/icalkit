@@ -84,6 +84,18 @@ per-line ceiling is bounded per line and unbounded in aggregate, which is this A
 turned on a field it did not have. What that says about the rest of the list is that a dimension
 is missing until something counts it, and reading the list is not how the next one will be found.
 
+"Exhaustion is reported as itself" turned out to need one more sentence than it had, and M1's
+conformance sweep supplied it. A ledger reports exhaustion through `Meter::is_exhausted`, and
+that flag was set only by the octet budget — so the two dimensions a recurrence search actually
+stops at, `candidates_per_period` and `occurrences_per_search`, refused a charge and left the
+ledger reading clean. A caller holding the meter after the search was told the truncated answer
+was whole, which is the failure this paragraph names, reached through the one report that was
+supposed to survive being collected through an adapter. Every bound the ledger keeps latches it
+now. The aggregate consequence is the one this ADR argues for rather than an accident: a runaway
+period in one series of a fan-out ends the fan-out, and a caller that wants each series bounded
+on its own gives each its own meter — which is the same visible act, in the other direction, that
+`!Copy` plus `!Default` exists to make visible.
+
 The DAV field list is not proven complete. Bytes, element count, and depth do not bound entity
 expansion, attribute count per element, or namespace declarations, so a small inbound body can
 still expand into unbounded work through a dimension none of these fields counts. Whether that

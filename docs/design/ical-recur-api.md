@@ -228,7 +228,9 @@ impl BudgetExhausted {
 impl core::error::Error for BudgetExhausted {}
 
 #[non_exhaustive]
-pub enum SearchOutcome { Pending, RuleEnded, WindowEnded, BudgetExhausted(BudgetExhausted) }
+pub enum SearchOutcome {
+    Pending, RuleEnded, WindowEnded, CalendarEnded, BudgetExhausted(BudgetExhausted),
+}
 
 pub struct RuleCursorState { /* opaque */ }
 pub struct SearchCursor { /* private */ }
@@ -599,7 +601,17 @@ that wants start-only admission can express it rather than having to derive it.
 because DP-09's stress testing was right that one report is not enough, and `SearchOutcome` is
 the third. Three reports of one fact is a design that admits its primary mechanism is leaky.
 `.count()` on an exhausted search still returns a number inflated by its terminal step, and
-nothing here prevents that.
+nothing here prevents that. M1's conformance sweep found that the second report was carrying
+only the octet ledger, so a search stopped by `Limits::candidates_per_period` or by
+`Limits::occurrences_per_search` left `meter.is_exhausted()` reading clean beside a truncated
+answer; every bound the ledger keeps latches it now, at the price that one runaway series in a
+fan-out over a shared meter stops the fan-out rather than being paid for by the ones after it.
+
+`SearchOutcome::CalendarEnded` is the fourth terminal state and the one nothing above predicted.
+A rule with neither `COUNT` nor `UNTIL` does not end; the four-digit year of RFC 5545 section
+3.3.4 does. That answer is complete — nothing a second search could reach is missing — and it is
+not `RuleEnded`, which is a claim about the rule that would be false. It carries
+`DiagnosticCode::RecurrenceCalendarEnded` so a caller that kept only the sink still learns it.
 
 `OverrideProvenance` is one tag where three facts sometimes apply. An `RDATE`-added instant
 that an exact-match override also modifies reports `ExactMatch`, and the `RDATE` origin is lost

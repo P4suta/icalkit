@@ -80,6 +80,50 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   away, which is a different fact.
 - The recurrence dimensions of the shared policy: `Limits::occurrences_per_search`,
   `rdate_entries` and `exdate_entries`, and the `Meter` charges behind them.
+- Four adversarial lenses against the expansion engine, landed as conformance cases addressed
+  to the sentences they come from: `break_recur_rfc.rs` (the RFC's own worked answers asked
+  through windows that open partway into them, and its expand/limit table cell by cell),
+  `break_recur_budget.rs`, `break_recur_set.rs` and `break_recur_calendar.rs`. Eleven of their
+  cases failed against the engine as built; each is fixed below and none was made to pass by
+  weakening what it asserts.
+- `SearchOutcome::CalendarEnded` and `DiagnosticCode::RecurrenceCalendarEnded`, for a rule with
+  neither `COUNT` nor `UNTIL` that reaches the end of the four-digit year RFC 5545 section 3.3.4
+  writes. The answer is complete — there is no more calendar — and it is not `RuleEnded`, which
+  would be a false claim about the rule.
+
+### Fixed
+
+- The last period of every cadence existed and was being deleted. `PeriodWalk` computed each
+  period's exclusive upper edge and refused the period when only that edge left the calendar, so
+  `FREQ=DAILY` from 9999-12-28 stopped on the 30th, `FREQ=YEARLY` lost the year 9999, and the
+  same held for the other five frequencies — although every instant in those periods is
+  representable and the RFC writes them. The edge was read nowhere outside the walk's own tests;
+  a period carries its anchor now.
+- An `EXDATE` landing on an `RDATE` could erase occurrences it did not name. The merge documents
+  a three-call protocol — `is_drained`, `takes_rule_key`, `step` — and the search called only
+  `step`, reading its `None` both as "the series is over" and as "the offered rule key was
+  consumed". So an exclusion on an addition deleted the rule instance after it, `DTSTART`
+  included, having already spent its `COUNT`; and an exclusion on the head of an `RDATE` tail
+  discarded every addition behind it.
+- `BYWEEKNO` under `FREQ=YEARLY` expands a period to the weeks of its *week-numbering* year
+  rather than filtering the days of its calendar year. The two readings partition the same union,
+  so they differ only where a period is skipped, a `BYSETPOS` selects, or a year's week count is
+  asked about — and there the old one attributed week 1 of 2020 (which begins 2019-12-30) to the
+  2019 period, emitted a week 53 in years that have none, and let `BYSETPOS=1` over week one
+  select January 1st.
+- `BudgetExhausted::candidates_spent` reports what the search charged rather than what expansion
+  handed back. A period refused while filling had paid for every candidate it generated and
+  reported none of them, and a rule that produces an instance in no period spent its whole budget
+  and reported zero — telling a caller deciding whether to retry that it got nowhere at the
+  moment it needed to hear the opposite.
+- `Meter::is_exhausted` latches for every bound the ledger keeps. It carried the octet budget
+  alone, so a search stopped by `Limits::candidates_per_period` or `occurrences_per_search` left
+  the caller's own meter — ADR 0002's most durable report of a truncated answer — reading clean.
+- A `BYDAY` ordinal under a frequency RFC 5545 section 3.3.10 forbids one under is ignored and
+  its weekday kept, under all five such frequencies. `FREQ=WEEKLY` alone used to resolve it
+  inside a scope one week wide, where `BYDAY=2TU` matched nothing and silently emptied the entire
+  series while `BYDAY=1TU` worked. The decoder now reports the construct on
+  `recurrence-rule-part-out-of-range`.
 
 ### Changed
 
@@ -91,8 +135,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an hourly one and a day of `FREQ=SECONDLY`, and refuses a year of `FREQ=MINUTELY` and a week
   of `FREQ=SECONDLY`, which are policies rather than defaults. The workload table is asserted
   against the shipped constant.
-- ADR 0002 carries eight amendments, each written because M1 found the sentence above it wrong
-  rather than merely unbuilt. The largest: the `Item = Result<Occurrence, BudgetExhausted>` the
+- `Limits::DEFAULT.occurrences_per_search` is 262,144 rather than 65,536. A whole day of
+  `FREQ=SECONDLY` is 86,400 occurrences and the candidate calibration admits it, so the
+  retention bound was refusing a workload the budget beside it had already agreed to pay for —
+  the same "two round numbers, one of them wrong" defect the candidate budget was fixed for.
+- ADR 0002 carries fourteen amendments, each written because M1 found the sentence above it
+  wrong rather than merely unbuilt. The largest: the `Item = Result<Occurrence, BudgetExhausted>` the
   ADR first committed to does not deliver its own guarantee, because `Result`'s `IntoIterator`
   makes `search.flatten()` discard every terminal marker; what shipped is a crate-owned
   `SearchStep` enum, the caller's latching `Meter`, and `RecurrenceSearch::outcome()`. Also

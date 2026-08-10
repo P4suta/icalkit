@@ -50,11 +50,27 @@ non-time property, and an instant present in both an `EXDATE` and an override ta
 
 **Met.** All forty-two worked examples of RFC 5545 section 3.8.5.3 are a table test in
 `ical-conform`, with the expected column transcribed from the RFC. The item type ADR 0002
-committed to did not survive contact with `Iterator`, and eight sentences of that ADR are
-amended rather than reinterpreted; the amendments are the record of what shipped. Two things
-are known and named: emission is ordered by cadence key rather than by effective start, and the
-period walk's own vocabulary is on the public surface as an integration artifact and is
-expected to narrow.
+committed to did not survive contact with `Iterator`, and fourteen sentences of that ADR are
+now amended rather than reinterpreted; the amendments are the record of what shipped.
+
+Six of those amendments are what four adversarial lenses — the RFC's own answers, the budget,
+`RDATE`/`EXDATE`/override composition, and the Gregorian calendar — found in the built engine,
+and each has a case in `crates/ical-conform/tests/break_recur_*.rs` that failed before the fix.
+They were: a meter that reported exhaustion for its octet budget alone, so a search stopped by
+either recurrence ceiling left the durable report reading clean; a terminal report that counted
+what expansion returned rather than what it charged, so the two rules that spend a budget
+without producing anything reported spending nothing; an engine that inferred from the merge's
+silence which source a step had consumed, so one `EXDATE` on an `RDATE` could erase the rule
+instance after it and an unbounded tail besides; a period walk that deleted the last period of
+every cadence to satisfy an upper edge nothing read; a `BYWEEKNO` read as a filter over the
+calendar year rather than an expansion of the week-numbering one; and a `BYDAY` ordinal answered
+two ways under the frequencies that forbid one, the quieter of which emptied a whole series.
+
+Three things are known and named: emission is ordered by cadence key rather than by effective
+start; the period walk's own vocabulary is on the public surface as an integration artifact and
+is expected to narrow; and `UNTIL` is compared on the timeline the caller resolved, which is the
+right answer for a crate that holds no zone and is why M2 owns the question of what a floating
+`UNTIL` against a zoned `DTSTART` means.
 
 ## M2 — Time zones
 

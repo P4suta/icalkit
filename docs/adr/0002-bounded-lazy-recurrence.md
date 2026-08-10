@@ -243,3 +243,87 @@ freezing its encoding would freeze the expansion algorithm — and a resumed sea
 period behind the last it yielded, skipping by cadence key what it already produced, so no
 candidate inside a half-read period is lost. `BYSETPOS` selects from a period that was charged
 as it filled, so a negative position cannot do unbounded uncharged work inside one `next()`.
+
+**8a. Four adversarial lenses were run against the built engine, and what follows is what they
+found.** Amendments 9 through 14 are the decisions those findings forced. Each has a case in
+`crates/ical-conform/tests/break_recur_*.rs` written before the fix and passing after it, and
+none of them was reached by weakening what the case asserts.
+
+**9. Exhaustion latches on every bound the ledger keeps, not only on the octet budget.** "The
+caller's own `Meter`, whose exhaustion flag latches and outlives every combinator applied to the
+iterator" was true of `Limits::max_input_bytes` and false of the two bounds a recurrence search
+actually stops at: `Meter::try_charge_candidate` refused against `candidates_per_period` and
+`try_charge_occurrence` refused against `occurrences_per_search`, and neither touched the flag.
+A search terminated by either therefore left the second of the three reports reading clean beside
+a truncated answer — the exact state this ADR's item type exists to prevent, reached through the
+report that was supposed to be the durable one. All three refusals latch now. The cost is stated
+rather than hidden: one runaway series in a fan-out over a shared meter now stops the fan-out,
+loudly, instead of every later search paying for it, and a caller wanting per-series isolation
+gives each series its own ledger — which is the same choice `docs/adr/0010` already names.
+
+Related, and the second half of the same finding: `Limits::DEFAULT.occurrences_per_search` was
+65,536 while the candidate calibration in amendment 7 admits a whole day of `FREQ=SECONDLY`,
+which is 86,400 occurrences. A retention bound below the largest workload the candidate budget
+pays for is the "two round numbers, one of them wrong" defect amendment 7 fixed one dimension of.
+It is 262,144, the same four maximal periods.
+
+**10. The terminal report counts what was charged, not what came back.**
+`BudgetExhausted::candidates_spent` exists "because a caller deciding whether to retry with a
+larger budget needs to know it was close rather than nowhere", and the engine was accumulating
+the size of each *successfully expanded* period. A period refused while filling returns no set
+and has still paid for everything it generated, and a rule that produces an instance in no
+period — `FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30`, the rule `accounting.rs` holds up as the one a
+per-emission budget cannot see — produces no sets at all and spends the whole budget. Both
+reported zero. The count is now the difference between two readings of the ledger's own
+cumulative candidate count, which is exact because a search borrows that ledger exclusively and
+because it does not care which code path did the charging.
+
+**11. A window admits an occurrence only after the merge has said which source it consumed.**
+The merge documents a three-call protocol — `is_drained`, then `takes_rule_key`, then `step` —
+and the engine called only `step`, inferring both other answers from its silence. `Merge::step`
+answers `None` both for a candidate an `EXDATE` removed and for no candidate at all, so the two
+inferences failed in opposite directions: an offered rule key that an earlier `RDATE` preempted
+was retired although nothing consumed it, deleting the instance after the exclusion — including
+`DTSTART` itself — and an `RDATE` tail whose head was excluded was read as the end of the whole
+series, discarding every addition after it. One `EXDATE` landing on any `RDATE` but the last
+could erase an unbounded number of occurrences, and a `COUNT` had already been spent on each.
+The engine asks all three questions, in that order.
+
+**12. The calendar ending is a fourth terminal state, and it is not the rule ending.** Two
+findings met here. `PeriodWalk` computed each period's exclusive upper edge and refused the whole
+period when only that edge left the calendar, so the last period of every cadence was deleted —
+`FREQ=DAILY` from 9999-12-28 lost December 31st, `FREQ=YEARLY` lost the year 9999, and so on for
+all seven frequencies — although every instant in those periods is representable and RFC 5545
+section 3.3.4 writes them. The edge was read nowhere: `byparts::expand_period`'s own contract is
+that a period "is read for its anchor alone". `Period` carries an anchor now and the field is
+gone. Second, when the walk does run dry the search was reporting `SearchOutcome::RuleEnded`,
+which is documented as "the rule reached its `COUNT` or its `UNTIL`" and is false for a rule with
+neither. `SearchOutcome::CalendarEnded` is that answer, `DiagnosticCode::RecurrenceCalendarEnded`
+carries it to a caller that kept only the sink, and it reports `is_complete() == true` — nothing
+a second search could reach is missing, because there is no more calendar. Complete and
+`RuleEnded` are different questions and the caller is now able to ask each.
+
+**13. `BYWEEKNO` expands a yearly period to the weeks of its *week-numbering* year.** The engine
+read it as a filter over the days of the calendar year, comparing each day's own week-year
+number and never asking whether that year was the period's. The two readings partition the same
+union, which is why the RFC's own week-20 example and every rule with `INTERVAL=1` and no
+`BYSETPOS` agree under both — and why this survived until a lens skipped a period. They disagree
+wherever a period is skipped, a set is selected from, or a year's week count is asked about:
+week one of 2020 begins on Monday 2019-12-30, which an every-other-year rule anchored in 2018
+must name and which the old reading attributed to the 2019 period the interval skips. Week-year
+extents tile the timeline exactly as calendar years do, so candidates still ascend across
+periods and nothing else in the engine had to learn about it.
+
+**14. A `BYDAY` ordinal under a frequency that forbids one is ignored and reported.** Section
+3.3.10 says the numeric form "MUST NOT be specified when the `FREQ` rule part is not set to
+`MONTHLY` or `YEARLY`" and gives no reading for a file that carries one anyway, so this is a
+divergence rather than a defect — but the engine was answering it two ways. Under `DAILY` and
+`HOURLY` the ordinal was ignored and the weekday kept; under `WEEKLY`, whose cell prints `Expand`
+rather than `Limit`, it was resolved inside a scope one week wide, so `BYDAY=1TU` worked while
+`BYDAY=2TU` silently produced an empty recurrence set — `DTSTART` included — with no diagnostic
+at all. The permitted answers are: ignore the ordinal and keep the weekday; honor it in some
+invented scope; or refuse the part. Ignoring is what python-dateutil does and what this crate now
+does under all five forbidding frequencies; the other three ecosystem engines were not measured
+for this milestone and that gap is recorded rather than papered over. The decoder reports the
+construct on `DiagnosticCode::RecurrenceRulePartOutOfRange`, because a rule the author and this
+crate read differently is exactly what `docs/adr/0009` says must not be silent.
