@@ -53,14 +53,22 @@
 //! `resume_at(dtstart, rule, n)` and `n` calls to `next` agree by construction instead of by
 //! argument.
 //!
+//! # A period is named by where it begins, and by nothing else
+//!
+//! A period carries its anchor alone. It spans one `FREQ` unit, and every consumer that needs
+//! that span recomputes it from the anchor and the frequency — `byparts::expand_period` says so
+//! itself, that a period "is read for its anchor alone". A stored upper edge was therefore a
+//! field nothing read, and storing it cost the last period of the calendar: the daily period
+//! anchored 9999-12-31 would end on 10000-01-01, which RFC 5545 section 3.3.4 cannot write, so
+//! requiring both bounds to exist deleted a period whose every instance is representable and
+//! legal. The RFC's own answer for `FREQ=DAILY` from 9999-12-28 includes December 31st.
+//!
 //! # Where the walk ends
 //!
-//! At `None`, when the next period is not one the calendar can express: RFC 5545 section 3.3.4
-//! writes a four-digit year, so there is no year 10000 to anchor in — and none to end in
-//! either, which costs the last period of the year 9999, whose end would be 10000-01-01. Both
-//! bounds have to exist for a half-open period to exist. Saturating instead would report a
-//! period no file can name, and repeating the final anchor forever would hang the search that
-//! `docs/adr/0002`'s budget exists to bound.
+//! At `None`, when the next period's *anchor* is not one the calendar can express: there is no
+//! year 10000 to anchor in. Saturating instead would report a period no file can name, and
+//! repeating the final anchor forever would hang the search that `docs/adr/0002`'s budget
+//! exists to bound.
 
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
@@ -115,16 +123,16 @@ const fn cadence(freq: Freq) -> Cadence {
     }
 }
 
-/// One period of the base cadence: half-open, `anchor` included and `end` excluded.
+/// One period of the base cadence, named by where it begins.
 ///
-/// Half-open for the reason [`crate::search::Window`] is: consecutive periods tile the timeline
-/// without overlapping, so no instant belongs to two of them and none falls between two.
+/// Consecutive periods tile the timeline without overlapping — no instant belongs to two of
+/// them and none falls between two — so the anchor of the next period is where this one ends
+/// and there is nothing for a second field to hold. The span itself is one `FREQ` unit and is
+/// recomputed from the anchor wherever it is needed, which is the expansion and nowhere else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Period {
     /// Where the period begins.
     anchor: CivilDateTime,
-    /// The first local date and time past it.
-    end: CivilDateTime,
 }
 
 impl Period {
@@ -132,12 +140,6 @@ impl Period {
     #[must_use]
     pub const fn anchor(self) -> CivilDateTime {
         self.anchor
-    }
-
-    /// The first local date and time past the period.
-    #[must_use]
-    pub const fn end(self) -> CivilDateTime {
-        self.end
     }
 }
 
@@ -196,13 +198,18 @@ impl PeriodWalk {
     }
 
     /// The period at `index`, or `None` when it is not one this calendar can express.
+    ///
+    /// Expressible is a claim about the anchor and never about the edge past it. A period whose
+    /// anchor is a date RFC 5545 section 3.3.4 can write holds only instants at or after that
+    /// anchor, and every one of them is representable however far the following anchor would
+    /// be — which is why the year 9999 has a yearly period and its December 31st has a daily
+    /// one.
     fn period_at(&self, index: u64) -> Option<Period> {
         let steps = i64::try_from(index)
             .ok()?
             .checked_mul(i64::from(self.interval.get()))?;
         let anchor = advance(self.origin?, self.cadence, steps)?;
-        let end = advance(anchor, self.cadence, 1)?;
-        Some(Period { anchor, end })
+        Some(Period { anchor })
     }
 }
 
@@ -364,24 +371,30 @@ mod tests {
             .collect()
     }
 
-    /// How many days a period covers, which is what tells a leap year from a common one.
-    fn span_in_days(period: Period) -> i64 {
-        let opens = period.anchor().date().days_from_epoch().unwrap();
-        let closes = period.end().date().days_from_epoch().unwrap();
-        closes.checked_sub(opens).unwrap()
-    }
-
-    /// How many days each of the first `count` periods of a walk covers.
+    /// How many days separate each of the first `count` anchors of a walk from the next.
+    ///
+    /// Measured between two anchors rather than read off a stored upper edge, because a period
+    /// carries none: consecutive periods tile the timeline, so at `INTERVAL=1` the next anchor
+    /// *is* where this period ends, and the difference is what tells a leap year from a common
+    /// one.
     fn spans_of(dtstart: CivilDateTime, rule: &RecurrenceRule, count: usize) -> Vec<i64> {
-        PeriodWalk::new(dtstart, rule)
-            .take(count)
-            .map(span_in_days)
+        let anchors = anchors_of(dtstart, rule, count.saturating_add(1));
+        anchors
+            .windows(2)
+            .map(|pair| {
+                let opens = pair[0].date().days_from_epoch().unwrap();
+                let closes = pair[1].date().days_from_epoch().unwrap();
+                closes.checked_sub(opens).unwrap()
+            })
             .collect()
     }
 
     /// One `DTSTART`, seven frequencies: the period holding it begins where that frequency's
-    /// span begins and ends one span later, and never at `DTSTART` itself unless `DTSTART` is
-    /// already on the boundary.
+    /// span begins and never at `DTSTART` itself unless `DTSTART` is already on the boundary,
+    /// and the period after it begins one span later.
+    ///
+    /// The second column is asserted through the next anchor rather than through an upper edge
+    /// the period no longer carries, which is the same claim seen from the side that tiles.
     #[test]
     fn the_period_holding_a_dtstart_begins_where_its_frequency_begins() {
         // A Wednesday, at a time of day that is on no boundary at all.
@@ -409,9 +422,7 @@ mod tests {
         ];
         for (freq, opens, closes) in cases {
             let rule = walk_rule(freq, 1, Weekday::Monday);
-            let first = PeriodWalk::new(dtstart, &rule).next().unwrap();
-            assert_eq!(first.anchor(), opens);
-            assert_eq!(first.end(), closes);
+            assert_eq!(anchors_of(dtstart, &rule, 2), vec![opens, closes]);
         }
     }
 
@@ -435,15 +446,19 @@ mod tests {
         ];
         assert_eq!(anchors_of(dtstart, &rule, 8), expected);
 
-        // The second period is the whole of February and not one day of it.
+        // The second period is the whole of February and not one day of it: it opens on the
+        // 1st, the period after it opens on March 1st, and the 28 days between are February's.
         let february = PeriodWalk::new(dtstart, &rule).nth(1).unwrap();
         assert_eq!(february.anchor(), day_start(2026, 2, 1));
-        assert_eq!(february.end(), day_start(2026, 3, 1));
-        assert_eq!(span_in_days(february), 28);
+        assert_eq!(spans_of(dtstart, &rule, 2), vec![31_i64, 28]);
     }
 
-    /// `INTERVAL` moves the anchors apart and leaves the origin where it was, and a period
-    /// stays one `FREQ` unit wide however large it is.
+    /// `INTERVAL` moves the anchors apart and leaves the origin where it was.
+    ///
+    /// That a period stays one `FREQ` unit wide however large the interval is no longer a claim
+    /// this file can check — a period carries an anchor and the width belongs to
+    /// `byparts::period_extent`, which asserts it against the days a skipped-over month
+    /// contributes.
     #[test]
     fn an_interval_separates_anchors_without_widening_a_period() {
         let dtstart = at(2026, 1, 31, 9, 0, 0);
@@ -459,8 +474,6 @@ mod tests {
             day_start(2027, 3, 1),
         ];
         assert_eq!(anchors_of(dtstart, &rule, 8), expected);
-        let first = PeriodWalk::new(dtstart, &rule).next().unwrap();
-        assert_eq!(first.end(), day_start(2026, 2, 1));
     }
 
     /// Every `WKST` the RFC admits, against one `DTSTART` that is none of them.
@@ -548,9 +561,6 @@ mod tests {
                 .unwrap();
             let opens = period.anchor().at_offset(utc).unwrap();
             assert_eq!(opens.unix_seconds(), elapsed);
-            // One second wide however far apart the anchors are.
-            let closes = period.end().at_offset(utc).unwrap();
-            assert_eq!(closes.unix_seconds(), elapsed.checked_add(1).unwrap());
         }
     }
 
@@ -606,14 +616,22 @@ mod tests {
         );
     }
 
-    /// The end of the walk, which is the end of the calendar RFC 5545 section 3.3.4 can write.
-    /// A period of the year 9999 would end on 10000-01-01, so the year 9999 has no yearly
-    /// period and its December has no monthly one, and both walks say so by stopping rather
-    /// than by saturating.
+    /// The end of the walk, which is the last anchor RFC 5545 section 3.3.4 can write.
+    ///
+    /// The year 9999 has a yearly period and its December has a monthly one, because both
+    /// anchors are dates a file can name and every instant they hold is representable. What
+    /// does not exist is the period after each, whose anchor would fall in the year 10000, and
+    /// both walks say so by stopping rather than by saturating. Requiring an upper edge instead
+    /// deleted these two periods and every instance in them, which RFC 5545 section 3.8.5.3's
+    /// own reading of a `FREQ=YEARLY` rule contradicts.
     #[test]
     fn a_walk_stops_where_the_writable_calendar_stops() {
         let yearly = walk_rule(Freq::Yearly, 1, Weekday::Monday);
         let mut last_year = PeriodWalk::new(at(9999, 6, 15, 0, 0, 0), &yearly);
+        assert_eq!(
+            last_year.next().map(Period::anchor),
+            Some(day_start(9999, 1, 1))
+        );
         assert_eq!(last_year.next(), None);
         assert_eq!(last_year.next(), None);
 
@@ -621,10 +639,32 @@ mod tests {
         let mut last_months = PeriodWalk::new(at(9999, 11, 15, 0, 0, 0), &monthly);
         let november = last_months.next().unwrap();
         assert_eq!(november.anchor(), day_start(9999, 11, 1));
-        assert_eq!(november.end(), day_start(9999, 12, 1));
+        let december = last_months.next().unwrap();
+        assert_eq!(december.anchor(), day_start(9999, 12, 1));
         assert_eq!(last_months.next(), None);
         // `FusedIterator` is a promise, so asking again is defined and answers the same.
         assert_eq!(last_months.next(), None);
+    }
+
+    /// The last day, hour, minute and second of the calendar each have a period of their own.
+    ///
+    /// One assertion per sub-monthly cadence, because the defect this replaces dropped every
+    /// one of them: the daily period anchored 9999-12-31 would have ended on 10000-01-01, and
+    /// so would the hourly one anchored at 23:00 and the secondly one at 23:59:59.
+    #[test]
+    fn the_last_period_of_each_cadence_exists_although_nothing_follows_it() {
+        let cases: [(Freq, CivilDateTime); 4] = [
+            (Freq::Daily, day_start(9999, 12, 31)),
+            (Freq::Hourly, at(9999, 12, 31, 23, 0, 0)),
+            (Freq::Minutely, at(9999, 12, 31, 23, 59, 0)),
+            (Freq::Secondly, at(9999, 12, 31, 23, 59, 59)),
+        ];
+        for (freq, last) in cases {
+            let rule = walk_rule(freq, 1, Weekday::Monday);
+            let mut walk = PeriodWalk::new(last, &rule);
+            assert_eq!(walk.next().map(Period::anchor), Some(last), "{freq:?}");
+            assert_eq!(walk.next(), None, "{freq:?}");
+        }
     }
 
     /// The other end. 0000-01-01 is a Saturday, so a Monday-start week begins five days before
@@ -639,9 +679,10 @@ mod tests {
         assert_eq!(empty.next(), None);
 
         let from_saturday = walk_rule(Freq::Weekly, 1, Weekday::Saturday);
-        let first = PeriodWalk::new(dtstart, &from_saturday).next().unwrap();
-        assert_eq!(first.anchor(), day_start(0, 1, 1));
-        assert_eq!(first.end(), day_start(0, 1, 8));
+        assert_eq!(
+            anchors_of(dtstart, &from_saturday, 2),
+            vec![day_start(0, 1, 1), day_start(0, 1, 8)]
+        );
     }
 
     /// Resuming and walking are the same sequence, because both are computed from the origin.
@@ -689,8 +730,9 @@ mod tests {
     fn a_leap_second_dtstart_anchors_on_the_second_before_it() {
         let dtstart = at(2026, 6, 30, 23, 59, 60);
         let rule = walk_rule(Freq::Secondly, 1, Weekday::Monday);
-        let first = PeriodWalk::new(dtstart, &rule).next().unwrap();
-        assert_eq!(first.anchor(), at(2026, 6, 30, 23, 59, 59));
-        assert_eq!(first.end(), day_start(2026, 7, 1));
+        assert_eq!(
+            anchors_of(dtstart, &rule, 2),
+            vec![at(2026, 6, 30, 23, 59, 59), day_start(2026, 7, 1)]
+        );
     }
 }

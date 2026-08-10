@@ -237,9 +237,7 @@ impl<'a> Occurrence<'a> {
                 winner = Some(*change);
             }
         }
-        if let Some(exact) = self.exact
-            && let Some(change) = exact.diff().get(id)
-        {
+        if let Some(change) = self.exact.and_then(|exact| exact.diff().get(id)) {
             winner = Some(*change);
         }
         winner
@@ -349,15 +347,30 @@ pub enum SearchOutcome {
     RuleEnded,
     /// The window ended. The rule may well continue past it.
     WindowEnded,
+    /// The calendar ended: the rule would continue, and RFC 5545 cannot write where.
+    ///
+    /// Section 3.3.4 writes a four-digit year, so the recurrence set of a rule with no `COUNT`
+    /// and no `UNTIL` stops at 9999-12-31T23:59:59 whatever the window asked for. Complete, and
+    /// deliberately not [`SearchOutcome::RuleEnded`]: every instance the calendar can express
+    /// was produced, and the rule nonetheless reached neither its `COUNT` nor its `UNTIL`, so a
+    /// caller told "the rule ended" would be told something false about the rule.
+    CalendarEnded,
     /// The candidate budget ran out. This is the only outcome that means "incomplete".
     BudgetExhausted(BudgetExhausted),
 }
 
 impl SearchOutcome {
     /// Whether the answer is complete for the window that was asked about.
+    ///
+    /// [`SearchOutcome::CalendarEnded`] is complete: what stopped the search is the end of the
+    /// timeline RFC 5545 can name, so nothing a second search could find is missing from the
+    /// answer. What it is not is a fact about the rule, which is why it is its own variant.
     #[must_use]
     pub const fn is_complete(self) -> bool {
-        matches!(self, Self::RuleEnded | Self::WindowEnded)
+        matches!(
+            self,
+            Self::RuleEnded | Self::WindowEnded | Self::CalendarEnded
+        )
     }
 }
 
@@ -436,7 +449,18 @@ mod tests {
     fn only_budget_exhaustion_means_the_answer_is_incomplete() {
         assert!(SearchOutcome::RuleEnded.is_complete());
         assert!(SearchOutcome::WindowEnded.is_complete());
+        assert!(SearchOutcome::CalendarEnded.is_complete());
         assert!(!SearchOutcome::Pending.is_complete());
         assert!(!SearchOutcome::BudgetExhausted(BudgetExhausted::new(at(0), 1)).is_complete());
+    }
+
+    /// The end of the calendar and the end of the rule are different answers.
+    ///
+    /// Both are complete and only one of them is a claim about the rule, so a caller asking
+    /// "did this rule finish?" has to be able to tell them apart.
+    #[test]
+    fn the_calendar_ending_is_not_the_rule_ending() {
+        assert_ne!(SearchOutcome::CalendarEnded, SearchOutcome::RuleEnded);
+        assert_ne!(SearchOutcome::CalendarEnded, SearchOutcome::WindowEnded);
     }
 }

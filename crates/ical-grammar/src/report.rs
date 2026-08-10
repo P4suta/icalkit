@@ -143,6 +143,15 @@ pub enum DiagnosticCode {
     /// Reported so that "cut short at the limit" and "the rule ended at `UNTIL`" are
     /// different answers; the second would otherwise arrive dressed as the first.
     RecurrenceBudgetExhausted,
+    /// A recurrence search reached the end of the calendar RFC 5545 section 3.3.4 can write
+    /// while the rule it was expanding had reached neither its `COUNT` nor its `UNTIL`.
+    ///
+    /// A note rather than a violation: the file is legal, the answer holds every instance the
+    /// calendar can express, and nothing was dropped. What it says is that the series stopped
+    /// for a reason outside the rule, so a caller resuming past 9999-12-31 gets nothing however
+    /// far it asks — the one terminal state that neither the rule, the window nor the budget
+    /// explains.
+    RecurrenceCalendarEnded,
     /// A recurrence rule generated an instance whose date does not exist, so it was
     /// filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one.
     NonexistentRecurrenceInstance,
@@ -270,6 +279,7 @@ impl DiagnosticCode {
             Self::PropertyNotAllowedHere => "property-not-allowed-here",
             Self::MutuallyExclusiveProperties => "mutually-exclusive-properties",
             Self::RecurrenceBudgetExhausted => "recurrence-budget-exhausted",
+            Self::RecurrenceCalendarEnded => "recurrence-calendar-ended",
             Self::NonexistentRecurrenceInstance => "nonexistent-recurrence-instance",
             Self::MalformedRecurrenceRule => "malformed-recurrence-rule",
             Self::DuplicateRecurrenceRulePart => "duplicate-recurrence-rule-part",

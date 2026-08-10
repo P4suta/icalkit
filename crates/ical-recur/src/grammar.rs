@@ -652,7 +652,45 @@ pub fn parse_recur<S: DiagnosticSink + ?Sized>(
     let collected = collect_parts(value_text, meter, sink);
     let freq = resolve_freq(&collected, meter, sink)?;
     let builder = apply_collected(freq, &collected, meter, sink);
-    finish(builder, meter, sink)
+    let rule = finish(builder, meter, sink)?;
+    report_forbidden_ordinals(&rule, meter, sink);
+    Ok(rule)
+}
+
+/// Report a `BYDAY` ordinal under a frequency RFC 5545 section 3.3.10 forbids one under.
+///
+/// "The BYDAY rule part MUST NOT be specified with a numeric value when the FREQ rule part is
+/// not set to MONTHLY or YEARLY." The entry itself is kept and the ordinal is ignored, which is
+/// what the expansion does under all five of those frequencies: the entry still names its
+/// weekday, and that is all the rule can be read to have meant. Reported rather than honored
+/// silently, because the other readings are not equivalent — resolving `2TU` inside a week names
+/// no day at all, and a rule that quietly expands to nothing is the silence `docs/adr/0009`
+/// forbids. It travels on the code a part out of its stated range travels on, since an ordinal
+/// is exactly a value outside the range this frequency gives `BYDAY`.
+///
+/// Asked of the built rule rather than of the text, so the answer does not depend on whether
+/// `FREQ` was written before `BYDAY`.
+fn report_forbidden_ordinals<S: DiagnosticSink + ?Sized>(
+    rule: &RecurrenceRule,
+    meter: &mut Meter,
+    sink: &mut S,
+) {
+    if matches!(rule.freq(), Freq::Monthly | Freq::Yearly) {
+        return;
+    }
+    if rule
+        .by_day()
+        .as_slice()
+        .iter()
+        .any(|entry| entry.ordinal().is_some())
+    {
+        report(
+            sink,
+            meter,
+            DiagnosticCode::RecurrenceRulePartOutOfRange,
+            Severity::Violation,
+        );
+    }
 }
 
 /// Offer `code` to `sink`, charging a refusal to `meter`.
@@ -1041,6 +1079,49 @@ mod tests {
                 core::str::from_utf8(text).unwrap()
             );
         }
+    }
+
+    /// A `BYDAY` ordinal is reported wherever section 3.3.10 forbids one, and kept.
+    ///
+    /// "The BYDAY rule part MUST NOT be specified with a numeric value when the FREQ rule part
+    /// is not set to MONTHLY or YEARLY." The rule survives with its weekday — the expansion
+    /// ignores the ordinal — and the violation travels, because a rule read one way by this
+    /// crate and another way by the file's author is exactly what a diagnostic is for. The two
+    /// frequencies that permit an ordinal report nothing.
+    #[test]
+    fn a_weekday_ordinal_is_reported_under_every_frequency_that_forbids_one() {
+        let forbidding: [&[u8]; 5] = [
+            b"FREQ=SECONDLY;BYDAY=2TU",
+            b"FREQ=MINUTELY;BYDAY=2TU",
+            b"FREQ=HOURLY;BYDAY=2TU",
+            b"FREQ=DAILY;BYDAY=2TU",
+            b"FREQ=WEEKLY;BYDAY=2TU",
+        ];
+        for text in forbidding {
+            let (rule, codes) = lenient(text);
+            assert!(rule.is_ok(), "the weekday is kept");
+            assert_eq!(
+                codes,
+                [DiagnosticCode::RecurrenceRulePartOutOfRange],
+                "{}",
+                core::str::from_utf8(text).unwrap()
+            );
+        }
+
+        for text in [
+            b"FREQ=MONTHLY;BYDAY=2TU".as_slice(),
+            b"FREQ=YEARLY;BYDAY=2TU",
+        ] {
+            let (rule, codes) = lenient(text);
+            assert!(rule.is_ok());
+            assert!(
+                codes.is_empty(),
+                "an ordinal is what these two frequencies are for"
+            );
+        }
+
+        let (_, plain) = lenient(b"FREQ=WEEKLY;BYDAY=TU");
+        assert!(plain.is_empty(), "an ordinal is the whole of the complaint");
     }
 
     /// Every value the RFC prints reads clean, and both readings agree on all of them.

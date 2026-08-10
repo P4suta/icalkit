@@ -194,7 +194,10 @@ impl Limits {
         max_component_depth: 32,
         max_items: 100_000,
         candidates_per_period: 65_536,
-        occurrences_per_search: 65_536,
+        // Four times the period ceiling, which is where `ical-recur`'s own workload table puts
+        // the candidate budget: a day of `FREQ=SECONDLY` is 86,400 occurrences, and a retention
+        // bound under that refuses a workload the candidate calibration admits.
+        occurrences_per_search: 262_144,
         rdate_entries: 4096,
         exdate_entries: 4096,
         override_entries: 4096,
@@ -284,6 +287,12 @@ impl Limits {
     /// collecting them *retains*, and a rule that matches on every candidate spends the first
     /// bound at exactly the rate it spends this one while a rule that matches rarely does not.
     /// A caller rendering one month wants both, and neither implies the other.
+    ///
+    /// Its default has to sit at or above the largest workload the candidate budget admits, or
+    /// the calibration behind that budget is a fiction: a whole day of `FREQ=SECONDLY` is
+    /// 86,400 candidates and 86,400 occurrences, and a retention bound below it would cut off a
+    /// search whose every candidate the budget had already agreed to pay for. The two are
+    /// different costs and the smaller of them still has to reach the same workload.
     #[must_use]
     pub const fn occurrences_per_search(self) -> u32 {
         self.occurrences_per_search
@@ -528,8 +537,19 @@ impl Default for Limits {
 
 /// The caller's running ledger of work already done under a [`Limits`] policy.
 ///
-/// Exhaustion latches: once the budget is crossed, every later charge fails, so a caller
-/// that ignores one `false` cannot spend its way back into a clean answer.
+/// Exhaustion latches: once any bound this ledger keeps has refused a charge, every later
+/// charge fails, so a caller that ignores one `false` cannot spend its way back into a clean
+/// answer. *Any* bound, not only the octet budget: a recurrence search terminated by
+/// `Limits::candidates_per_period` or by `Limits::occurrences_per_search` has stopped short of
+/// the answer it was asked for, and [`Meter::is_exhausted`] is the report of that fact which
+/// `docs/adr/0002` says outlives every combinator applied to the iterator. A per-period ceiling
+/// that refused without latching left that report reading clean beside a truncated answer,
+/// which is the one shape the ADR exists to prevent.
+///
+/// The cost is deliberate and is the shape `docs/adr/0010` argues for: one hostile series in a
+/// fan-out over a shared ledger stops the fan-out, loudly, rather than letting every later
+/// search pay for it. A caller that wants one series' cost isolated from the next gives each
+/// its own ledger, which is the same choice that ADR names about aggregate bounding.
 ///
 /// Three shapes over one accounting, rather than three accountings. [`Meter::charge`]
 /// returns `bool` because a recurrence search needs a budget breach to be a reported outcome
@@ -555,6 +575,12 @@ pub struct Meter {
     elements: u32,
     /// Recurrence candidates generated inside the period currently open.
     candidates: u32,
+    /// Recurrence candidates charged so far, across every period and every search.
+    ///
+    /// Never reset, unlike `candidates`, and counted apart from `spent` because that number
+    /// also holds the octets of whatever was parsed under the same ledger. It is what lets a
+    /// search report the candidates *it* paid for as a difference between two readings.
+    candidates_charged: u64,
     /// Occurrences emitted so far by every search this ledger has served.
     occurrences: u32,
     /// `RDATE` instants admitted so far.
@@ -591,6 +617,7 @@ impl Meter {
             element_depth: 0,
             elements: 0,
             candidates: 0,
+            candidates_charged: 0,
             occurrences: 0,
             rdates: 0,
             exdates: 0,
@@ -717,19 +744,30 @@ impl Meter {
     /// never reset, so a rule that matches rarely and walks years between hits spends the
     /// caller's whole budget rather than one period's, which is the case a bound charged per
     /// *emitted* occurrence never sees at all.
+    /// The refusal latches, for the reason the type's own documentation gives: a search
+    /// stopped by the per-period ceiling has produced a truncated answer, and a ledger still
+    /// reading clean beside one is the report `docs/adr/0002` promised and did not deliver.
     pub fn try_charge_candidate(&mut self) -> Result<(), LimitExceeded> {
         let next = self.candidates.saturating_add(1);
         if next > self.limits.candidates_per_period {
+            self.exhausted = true;
             return Err(LimitExceeded::Candidates);
         }
         self.candidates = next;
-        self.try_charge(1)
+        self.try_charge(1)?;
+        self.candidates_charged = self.candidates_charged.saturating_add(1);
+        Ok(())
     }
 
     /// Charge one emitted occurrence.
+    ///
+    /// Latching for the same reason [`Meter::try_charge_candidate`] does: a search cut off at
+    /// `Limits::occurrences_per_search` answered less than it was asked, and the caller's
+    /// ledger is the report of that which survives being collected through an adapter.
     pub fn try_charge_occurrence(&mut self) -> Result<(), LimitExceeded> {
         let next = self.occurrences.saturating_add(1);
         if next > self.limits.occurrences_per_search {
+            self.exhausted = true;
             return Err(LimitExceeded::Occurrences);
         }
         self.occurrences = next;
@@ -772,6 +810,17 @@ impl Meter {
         self.candidates
     }
 
+    /// Recurrence candidates charged so far, across every period and every search.
+    ///
+    /// Monotone and never reset, so one search's own cost is the difference between this
+    /// reading before it began and after it stopped. That difference is what a terminal report
+    /// carries, and it is exact because a search holds this ledger exclusively for as long as
+    /// it runs.
+    #[must_use]
+    pub const fn candidates_charged(&self) -> u64 {
+        self.candidates_charged
+    }
+
     /// Occurrences emitted so far under this ledger.
     #[must_use]
     pub const fn occurrences(&self) -> u32 {
@@ -794,7 +843,12 @@ impl Meter {
         self.dropped
     }
 
-    /// Whether the octet budget has been crossed.
+    /// Whether any bound this ledger keeps has refused a charge.
+    ///
+    /// The octet budget, the per-period recurrence ceiling, and the per-search occurrence
+    /// ceiling all latch it. One flag rather than three because what a caller asks this
+    /// question for is "is what I am holding the whole answer", and every one of the three
+    /// answers that question the same way.
     #[must_use]
     pub const fn is_exhausted(&self) -> bool {
         self.exhausted
@@ -1096,19 +1150,64 @@ mod tests {
         meter.open_period();
         assert_eq!(meter.try_charge_candidate(), Ok(()));
         assert_eq!(meter.try_charge_candidate(), Ok(()));
+
+        meter.open_period();
+        assert_eq!(
+            meter.candidates_in_period(),
+            0,
+            "a new period buys a new ceiling"
+        );
+        assert_eq!(meter.try_charge_candidate(), Ok(()));
+        assert_eq!(
+            meter.try_charge_candidate(),
+            Err(LimitExceeded::Budget),
+            "and no new budget: the fourth candidate crosses a ledger of three"
+        );
+        assert!(meter.is_exhausted());
+        assert_eq!(meter.candidates_charged(), 3, "successful charges only");
+    }
+
+    /// A period ceiling ends the ledger it refused inside, and not only that period.
+    ///
+    /// The ceiling refuses before the octet budget is touched, so for a while a recurrence
+    /// search terminated by it left this flag reading clean — a truncated answer beside a
+    /// ledger claiming nothing had been cut short, which is the state `docs/adr/0002` names as
+    /// the reason the meter is one of its three reports. The cost is that one runaway period in
+    /// a fan-out stops the fan-out; a caller wanting one series' cost isolated gives each
+    /// series a ledger of its own.
+    #[test]
+    fn a_period_ceiling_latches_the_ledger_rather_than_only_the_period() {
+        let limits = Limits::DEFAULT.with_candidates_per_period(2);
+        let mut meter = Meter::with_budget(limits, 1024);
+        meter.open_period();
+        assert_eq!(meter.try_charge_candidate(), Ok(()));
+        assert_eq!(meter.try_charge_candidate(), Ok(()));
         assert_eq!(
             meter.try_charge_candidate(),
             Err(LimitExceeded::Candidates),
             "the third candidate in one period crosses that period's ceiling"
         );
-
+        assert!(
+            meter.is_exhausted(),
+            "the report that outlives every combinator has to know the search stopped short"
+        );
         meter.open_period();
-        assert_eq!(meter.candidates_in_period(), 0);
-        assert_eq!(meter.try_charge_candidate(), Ok(()));
         assert_eq!(
             meter.try_charge_candidate(),
             Err(LimitExceeded::Budget),
-            "a new period buys a new ceiling and no new budget"
+            "and the latch outlives the period, against a ledger with octets to spare"
+        );
+    }
+
+    /// The occurrence ceiling latches the same way, for the same reason.
+    #[test]
+    fn an_occurrence_ceiling_latches_the_ledger_it_refused_inside() {
+        let limits = Limits::DEFAULT.with_occurrences_per_search(1);
+        let mut meter = Meter::with_budget(limits, 1024);
+        assert_eq!(meter.try_charge_occurrence(), Ok(()));
+        assert_eq!(
+            meter.try_charge_occurrence(),
+            Err(LimitExceeded::Occurrences)
         );
         assert!(meter.is_exhausted());
     }

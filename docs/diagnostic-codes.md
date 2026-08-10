@@ -30,7 +30,7 @@ has no outside dependencies" may not acquire one.
 
 ## Notes rather than violations
 
-Eight codes travel on `Severity::Note`, and each is a case where the input is legal and the
+Nine codes travel on `Severity::Note`, and each is a case where the input is legal and the
 caller still needs telling. RFC 6868 section 2 requires an undefined caret pair to be left
 exactly as it is. RFC 5545 section 3.2.20 permits a `VALUE` type this workspace has no decoder
 for, so not knowing one is a gap here rather than a fault in the file. Section 3.3.10 requires
@@ -38,7 +38,9 @@ a recurrence instance whose date does not exist to be ignored rather than moved.
 section 3.3.10 does not define is indistinguishable from one a later specification adds, and
 the rest of the rule still expands. An `EXDATE` colliding with a `RECURRENCE-ID` and an
 override moving a start out of the window it was generated in are both this project's stated
-precedence rather than anyone's violation. A local time that occurs twice does occur, and
+precedence rather than anyone's violation. A rule with neither `COUNT` nor `UNTIL` runs out of
+calendar at the end of 9999 because section 3.3.4 writes four digits, which is a complete answer
+the rule does not explain and the caller cannot get more of. A local time that occurs twice does occur, and
 choosing between the two is a caller's policy rather than a repair. Two zone sources that
 disagree are each internally consistent, and neither is the one that violated something. A
 caller enforcing strictness rejects on `Severity::Violation`, and would reject half the
@@ -106,6 +108,7 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | property-not-allowed-here | A component carried a property RFC 5545 section 3.6 does not define for it. | Violation | M0 |
 | mutually-exclusive-properties | A component carried two properties RFC 5545 section 3.6 does not allow together. | Violation | M0 |
 | recurrence-budget-exhausted | A recurrence search stopped at the candidate budget rather than at the rule's end. | LimitReached | M1 |
+| recurrence-calendar-ended | A recurrence search reached the end of the calendar RFC 5545 section 3.3.4 can write while the rule it was expanding had reached neither its `COUNT` nor its `UNTIL`. | Note | M1 |
 | nonexistent-recurrence-instance | A recurrence rule generated an instance whose date does not exist, so it was filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one. | Note | M1 |
 | malformed-recurrence-rule | A `RECUR` value did not match the grammar of RFC 5545 section 3.3.10. | Violation | M1 |
 | duplicate-recurrence-rule-part | A `RECUR` value named one rule part more than once, which RFC 5545 section 3.3.10 allows at most once. | Violation | M1 |

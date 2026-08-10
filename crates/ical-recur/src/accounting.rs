@@ -109,18 +109,25 @@
 //!                                          meter: &mut Meter, sink: &mut S) -> bool;
 //! pub struct Charges { /* private */ }
 //! impl Charges {
-//!     pub const fn new(origin: Instant) -> Self;
+//!     pub const fn new(origin: Instant, meter: &Meter) -> Self;
 //!     pub const fn mark_reached(&mut self, at: Instant);
 //!     pub fn open_period(&mut self, meter: &mut Meter);
 //!     pub fn candidate(&mut self, meter: &mut Meter) -> Result<(), BudgetExhausted>;
 //!     pub fn candidates(&mut self, count: u32, meter: &mut Meter) -> Result<(), BudgetExhausted>;
 //!     pub fn occurrence(&mut self, meter: &mut Meter) -> Result<(), BudgetExhausted>;
-//!     pub const fn spent(&self) -> u64;
+//!     pub fn spent(&self, meter: &Meter) -> u64;
 //!     pub const fn periods(&self) -> u64;
 //!     pub const fn reached(&self) -> Instant;
 //!     pub const fn exhausted(&self) -> Option<BudgetExhausted>;
 //! }
 //! ```
+//!
+//! [`Charges::new`] and [`Charges::spent`] take the ledger because the count they report is a
+//! difference between two of its readings rather than a tally kept beside it. Unit 3 charges
+//! `Meter::try_charge_candidate` directly as it fills a period — one charge site, which is
+//! `docs/adr/0002` amendment 7 — so a second counter here would be blind to every candidate a
+//! period paid for before being refused, and a search refused mid-period would report having
+//! generated nothing after generating a period's worth.
 //!
 //! Four items beyond the contract's four, and each is here because the contract's own text
 //! needs it. [`admit`] is the filter half of "generate widened, then filter back", and merge
@@ -249,10 +256,10 @@ where
 /// thousand times individually.
 ///
 /// It latches its own terminal state as well as reading the meter's. That is not redundant:
-/// `Limits::candidates_per_period` is refused *before* the shared ledger is touched, so a
-/// period that runs away leaves `Meter::is_exhausted` reading `false` while the search is over.
-/// [`Charges::exhausted`] is the answer that covers both, and it is what a
-/// `RecurrenceSearch::outcome` should be derived from rather than re-derived beside.
+/// this one carries the instant the search had reached and the count it had spent, which the
+/// meter has no field for. The meter latches too — every bound it keeps sets its own exhaustion
+/// flag, `Limits::candidates_per_period` included — so the two agree about *whether* a search
+/// stopped short and only this one can say where.
 ///
 /// What it cannot report is *which* dimension ran out, because [`BudgetExhausted`] has no field
 /// for one. A caller that needs to tell a period ceiling from a shared budget from an
@@ -262,8 +269,8 @@ where
 pub struct Charges {
     /// The furthest cadence key the search has reached, for the terminal report.
     reached: Instant,
-    /// Candidates charged successfully by this search.
-    candidates: u64,
+    /// What `meter.candidates_charged()` read when this search began.
+    opened_at: u64,
     /// Periods this search has opened, which is the number that tunes a period ceiling.
     periods: u64,
     /// The terminal state, once there is one. Latched.
@@ -271,17 +278,23 @@ pub struct Charges {
 }
 
 impl Charges {
-    /// A fresh set of charges for a search positioned at `origin`.
+    /// A fresh set of charges for a search positioned at `origin`, over `meter`.
     ///
     /// `origin` is where the search reports having reached before it has reached anything —
     /// its `DTSTART`, or the resume point a `SearchCursor` carried. A terminal state produced
     /// before the first [`Charges::mark_reached`] names that instant, which is truthful: the
     /// search got no further.
+    ///
+    /// The meter is read rather than charged. A search's own cost is the difference between
+    /// the ledger's candidate count now and when it stops, and taking it that way is what makes
+    /// the number true whichever code path did the charging: unit 3 charges the meter directly
+    /// as it fills a period, so a count kept here in parallel would miss exactly the candidates
+    /// a refused period had already paid for.
     #[must_use]
-    pub const fn new(origin: Instant) -> Self {
+    pub const fn new(origin: Instant, meter: &Meter) -> Self {
         Self {
             reached: origin,
-            candidates: 0,
+            opened_at: meter.candidates_charged(),
             periods: 0,
             terminal: None,
         }
@@ -317,9 +330,8 @@ impl Charges {
             return Err(terminal);
         }
         if meter.try_charge_candidate().is_err() {
-            return Err(self.latch());
+            return Err(self.latch(meter));
         }
-        self.candidates = self.candidates.saturating_add(1);
         Ok(())
     }
 
@@ -351,15 +363,15 @@ impl Charges {
             return Err(terminal);
         }
         if meter.try_charge_occurrence().is_err() {
-            return Err(self.latch());
+            return Err(self.latch(meter));
         }
         Ok(())
     }
 
-    /// Candidates this search has paid for.
+    /// Candidates this search has paid for, read off the ledger they were paid to.
     #[must_use]
-    pub const fn spent(&self) -> u64 {
-        self.candidates
+    pub fn spent(&self, meter: &Meter) -> u64 {
+        meter.candidates_charged().saturating_sub(self.opened_at)
     }
 
     /// Periods this search has opened.
@@ -385,8 +397,8 @@ impl Charges {
     }
 
     /// Record and return the terminal state for a refused charge.
-    fn latch(&mut self) -> BudgetExhausted {
-        let terminal = BudgetExhausted::new(self.reached, self.candidates);
+    fn latch(&mut self, meter: &Meter) -> BudgetExhausted {
+        let terminal = BudgetExhausted::new(self.reached, self.spent(meter));
         self.terminal = Some(terminal);
         terminal
     }
@@ -458,7 +470,7 @@ mod tests {
     fn a_rule_that_emits_nothing_exhausts_a_budget_no_emission_would_ever_spend() {
         const BUDGET: u64 = 64;
         let mut ledger = Meter::with_budget(Limits::DEFAULT, BUDGET);
-        let mut charges = Charges::new(at(FEB_29_2024));
+        let mut charges = Charges::new(at(FEB_29_2024), &ledger);
         let mut walked = 0_u64;
         let mut terminal = None;
 
@@ -477,7 +489,7 @@ mod tests {
         let stopped = terminal.unwrap();
         assert_eq!(walked, BUDGET, "the walk stopped where the budget did");
         assert_eq!(stopped.candidates_spent(), BUDGET);
-        assert_eq!(charges.spent(), BUDGET);
+        assert_eq!(charges.spent(&ledger), BUDGET);
         assert_eq!(
             ledger.occurrences(),
             0,
@@ -501,12 +513,18 @@ mod tests {
     /// position `-1` can be known. Charging the one selected instance instead would price a
     /// year of work at one candidate, which the second half of this test shows costing nothing
     /// at all.
+    ///
+    /// The refusal is also asserted to reach the caller's own ledger. A period ceiling refuses
+    /// before the octet budget is touched, and for a while that meant a search terminated by it
+    /// left `Meter::is_exhausted` reading clean — the second of `docs/adr/0002`'s three reports
+    /// contradicting the first. It latches now, and the assertion is here rather than only in
+    /// `ical-conform` because this file is where the earlier claim was written down.
     #[test]
     fn a_negative_by_set_pos_period_is_charged_before_selection_and_not_after() {
         const CEILING: u32 = 1024;
         let limits = Limits::DEFAULT.with_candidates_per_period(CEILING);
         let mut ledger = Meter::with_budget(limits, 1_000_000);
-        let mut charges = Charges::new(at(JAN_1_2024));
+        let mut charges = Charges::new(at(JAN_1_2024), &ledger);
 
         charges.open_period(&mut ledger);
         let stopped = charges.candidates(4096, &mut ledger).unwrap_err();
@@ -519,18 +537,18 @@ mod tests {
             "the period was refused while filling, so nothing reached selection"
         );
         assert!(
-            !ledger.is_exhausted(),
-            "a period ceiling refuses before it touches the shared ledger, which is why the \
-             terminal state is latched here as well as there"
+            ledger.is_exhausted(),
+            "a period ceiling ends the search, and the report that outlives every combinator \
+             has to say so"
         );
 
         // What a charge levied after selection would have cost for the same period.
         let mut after = Meter::with_budget(limits, 1_000_000);
-        let mut per_emission = Charges::new(at(JAN_1_2024));
+        let mut per_emission = Charges::new(at(JAN_1_2024), &after);
         per_emission.open_period(&mut after);
         assert_eq!(per_emission.occurrence(&mut after), Ok(()));
         assert_eq!(
-            per_emission.spent(),
+            per_emission.spent(&after),
             0,
             "one emitted instance, and a year of candidates charged to nobody"
         );
@@ -551,7 +569,7 @@ mod tests {
         let mut ledger = Meter::with_budget(Limits::DEFAULT, BUDGET);
         let mut completed = 0_u32;
         for _ in 0..SEARCHES {
-            let mut charges = Charges::new(at(JAN_1_2024));
+            let mut charges = Charges::new(at(JAN_1_2024), &ledger);
             charges.open_period(&mut ledger);
             if charges.candidates(PER_SEARCH, &mut ledger).is_ok() {
                 completed = completed.saturating_add(1);
@@ -566,7 +584,7 @@ mod tests {
         let mut finished = 0_u32;
         for _ in 0..SEARCHES {
             let mut fresh = Meter::with_budget(Limits::DEFAULT, BUDGET);
-            let mut charges = Charges::new(at(JAN_1_2024));
+            let mut charges = Charges::new(at(JAN_1_2024), &fresh);
             charges.open_period(&mut fresh);
             if charges.candidates(PER_SEARCH, &mut fresh).is_ok() {
                 finished = finished.saturating_add(1);

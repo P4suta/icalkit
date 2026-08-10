@@ -102,6 +102,9 @@ const TIME_PARTS: [RulePart; 3] = [RulePart::Hour, RulePart::Minute, RulePart::S
 /// Days in a week, which is the stride every weekday ordinal counts in.
 const DAYS_PER_WEEK: u32 = 7;
 
+/// The same stride, in the width a count of days in a period is kept in.
+const DAYS_PER_WEEK_U16: u16 = 7;
+
 /// One period's candidates, ascending and deduplicated.
 ///
 /// Ascending because RFC 5545 section 3.3.10 counts `BYSETPOS` positions in chronological
@@ -170,7 +173,7 @@ pub fn expand_period<S: DiagnosticSink + ?Sized>(
 ) -> Result<CandidateSet, LimitExceeded> {
     let anchor = period.anchor();
     let present = rule.parts_present();
-    let mut days = period_days(rule.freq(), rule.wkst(), anchor.date(), meter)?;
+    let mut days = period_days(rule, present, anchor.date(), meter)?;
     apply_date_parts(&mut days, rule, present, anchor, meter, sink)?;
     if !has_expanding_day_part(rule, present) {
         // Nothing expanded at the granularity of a day, so section 3.3.10's fallback stands
@@ -270,16 +273,16 @@ fn has_expanding_day_part(rule: &RecurrenceRule, present: PartsPresent) -> bool 
 
 /// Every date the period covers, charged as it is enumerated.
 ///
-/// At most 366 dates, and charged one candidate each. The enumeration is deliberately not
+/// At most 371 dates, and charged one candidate each. The enumeration is deliberately not
 /// narrowed by what the rule is about to ask for: the charge is what bounds the work, so work
 /// that is done has to be charged even when the rule rejects all of it.
 fn period_days(
-    freq: Freq,
-    wkst: Weekday,
+    rule: &RecurrenceRule,
+    present: PartsPresent,
     anchor: CivilDate,
     meter: &mut Meter,
 ) -> Result<Vec<CivilDate>, LimitExceeded> {
-    let (start, length) = period_extent(Span::of(freq), wkst, anchor);
+    let (start, length) = day_extent(rule, present, anchor);
     let mut days = Vec::new();
     for offset in 0..length {
         // A period at the very end of the years RFC 5545 section 3.3.4 can write runs off the
@@ -291,6 +294,51 @@ fn period_days(
         days.push(date);
     }
     Ok(days)
+}
+
+/// Where the days this period contributes begin, and how many there are.
+///
+/// The frequency's own span, except under an expanding `BYWEEKNO` — which the table prints for
+/// `FREQ=YEARLY` and for nothing else. There, section 3.3.10 expands the period to *the weeks
+/// of that year*, and a week-numbering year is not a calendar year: week one of 2020 begins on
+/// Monday December 30th 2019, and week 53 of 2014 runs to January 3rd 2015. Enumerating the
+/// calendar year instead attributes each of those days to the neighboring period, which is
+/// invisible at `INTERVAL=1` — the two readings partition the same union — and wrong the moment
+/// a period is skipped or a `BYSETPOS` selects within one.
+///
+/// Week-numbering years tile the timeline exactly as calendar years do, each beginning where
+/// the last ended, so two periods still never offer the same day and candidates still ascend
+/// across periods.
+fn day_extent(rule: &RecurrenceRule, present: PartsPresent, anchor: CivilDate) -> (CivilDate, u16) {
+    let expands_weeks =
+        rule.has_part(RulePart::WeekNo) && effect(rule.freq(), RulePart::WeekNo, present).expands();
+    let named = expands_weeks
+        .then(|| week_year_extent(anchor.year(), rule.wkst()))
+        .flatten();
+    named.unwrap_or_else(|| period_extent(Span::of(rule.freq()), rule.wkst(), anchor))
+}
+
+/// Where week-numbering year `year` begins, and how many days it holds.
+///
+/// `None` at the edges of the calendar, where the week before or the week after is not a date
+/// RFC 5545 section 3.3.4 can write; the calendar year is used there, which is the same set of
+/// days give or take the three at each end that no year can number.
+fn week_year_extent(year: u16, wkst: Weekday) -> Option<(CivilDate, u16)> {
+    let start = week_one_start(year, wkst)?;
+    let weeks = weeks_in_week_year(year, wkst)?;
+    let length = u16::from(weeks).checked_mul(DAYS_PER_WEEK_U16)?;
+    Some((start, length))
+}
+
+/// The first day of week one of `year`, counting weeks from `wkst`.
+///
+/// A week belongs to the year holding four or more of its days, so week one is the week holding
+/// January 4th: whichever weekday that date falls on, the week containing it has at least four
+/// days in the year and the week before it has at most three.
+fn week_one_start(year: u16, wkst: Weekday) -> Option<CivilDate> {
+    let fourth = CivilDate::from_ymd(year, 1, 4)?;
+    let offset = i64::from(week_offset(fourth.weekday()?, wkst));
+    fourth.checked_add_days(offset.checked_neg()?)
 }
 
 /// Where the period holding `anchor` starts, and how many days it holds.
@@ -356,9 +404,21 @@ fn apply_date_parts<S: DiagnosticSink + ?Sized>(
 /// The limiting ones do not: the RFC prints `Limit` for `BYDAY` exactly when a day-naming part
 /// is already present, and says nothing about what an ordinal would then mean. Rather than
 /// invent an answer, this asks the same two notes what they would have said had those parts
-/// been absent — which is the scope the RFC itself derives from the remaining parts, and which
-/// stays `None` for the frequencies where section 3.3.10 forbids an ordinal outright.
+/// been absent — which is the scope the RFC itself derives from the remaining parts.
+///
+/// Section 3.3.10 forbids an ordinal outright wherever `FREQ` is neither `MONTHLY` nor
+/// `YEARLY`, and one answer covers all five of those frequencies: none. An ordinal in a rule
+/// that may not carry one is ignored and its weekday kept, which is all such an entry can be
+/// read to have meant. The alternative was worse in exactly one cell — `FREQ=WEEKLY` prints
+/// `Expand` rather than `Limit`, so a scope one week wide came back from the table and resolved
+/// `BYDAY=2TU` against a run of one, silently emptying the whole series including `DTSTART`
+/// while `BYDAY=1TU` worked. Same forbidden construct, two answers, and the quiet one lost
+/// everything; the decoder reports the construct on
+/// [`DiagnosticCode::RecurrenceRulePartOutOfRange`] so it is not merely tolerated.
 fn weekday_scope(freq: Freq, present: PartsPresent) -> Option<WeekdayScope> {
+    if !matches!(freq, Freq::Monthly | Freq::Yearly) {
+        return None;
+    }
     match effect(freq, RulePart::Day, present) {
         PartEffect::ExpandWeekdays(scope) => Some(scope),
         PartEffect::Limit => scope_without_day_parts(freq, present),
@@ -423,10 +483,11 @@ fn year_day_matches(date: CivilDate, values: &[i16]) -> bool {
 
 /// Whether the week holding `date` is one of the weeks `BYWEEKNO` names.
 ///
-/// The comparison is against the number of the week `date` belongs to, whichever calendar year
-/// numbers that week. A week straddling New Year belongs to the year holding four of its days,
-/// so week one of 2019 begins on December 31st of 2018; requiring the week's year to equal the
-/// period's would drop that Monday out of both periods and lose the occurrence entirely.
+/// The comparison is against the number of the week `date` belongs to, and it needs no second
+/// question about which year numbers that week: [`day_extent`] already offered this period the
+/// days of *its own* week-numbering year, so every date reaching here is numbered by the period
+/// it came from. A negative value counts back through that year's own 52 or 53 weeks, which is
+/// why the length is asked of the week year and never of the calendar one.
 fn week_no_matches(date: CivilDate, values: &[i8], wkst: Weekday) -> bool {
     let Some((week_year, number)) = week_of(date, wkst) else {
         return false;
@@ -1319,11 +1380,16 @@ mod tests {
         );
     }
 
-    /// The year boundary. Week one of 2019 begins on Monday December 31st of 2018, so a rule
-    /// naming it lands in the calendar year before the one that numbers the week; comparing
-    /// the week's own year against the period's would lose that Monday from both periods.
+    /// The year boundary, which is where a week and a calendar year come apart.
+    ///
+    /// `BYWEEKNO` is `Expand` under `FREQ=YEARLY`, so period Y expands to week one *of year Y*
+    /// — and week one of 2019 begins on Monday December 31st of 2018, which is a day of the
+    /// calendar year before the one that numbers it. Each period therefore contributes exactly
+    /// one Monday and no period contributes another's: the union is the same either way, which
+    /// is why reading `BYWEEKNO` as a filter over the calendar year's own days survives every
+    /// rule with `INTERVAL=1` and no `BYSETPOS`, and is wrong for every rule with either.
     #[test]
-    fn a_week_straddling_new_year_is_not_lost_between_two_periods() {
+    fn a_week_straddling_new_year_belongs_to_the_year_that_numbers_it() {
         let rule = RecurrenceRuleBuilder::new(Freq::Yearly)
             .by_week_no(ByList::from_slice(&[1_i8]))
             .by_day(ByList::from_slice(&[weekday(None, Weekday::Monday)]))
@@ -1332,14 +1398,114 @@ mod tests {
         let start = stamp(2018, 1, 1, 9, 0);
         assert_eq!(
             candidates(&rule, start, 0),
-            expected(&[(2018, 1, 1, 9, 0), (2018, 12, 31, 9, 0)]),
-            "2018 opens on its own week one and closes on 2019's, and both are week one"
+            expected(&[(2018, 1, 1, 9, 0)]),
+            "week one of 2018 opens on January 1st, and December 31st is week one of 2019"
         );
         assert_eq!(
             candidates(&rule, start, 1),
-            expected(&[(2019, 12, 30, 9, 0)]),
-            "2019's own week one began in December 2018 and was counted there"
+            expected(&[(2018, 12, 31, 9, 0)]),
+            "week one of 2019 begins in December 2018 and belongs to the 2019 period"
         );
+        assert_eq!(
+            candidates(&rule, start, 2),
+            expected(&[(2019, 12, 30, 9, 0)]),
+            "and week one of 2020 begins in December 2019"
+        );
+    }
+
+    /// Week 53 exists only in the years that have one, and its days may fall in the next.
+    ///
+    /// The other half of the same mechanism. Under `WKST=SU` the week-numbering year 2014 runs
+    /// to Saturday January 3rd 2015, so week 53 of 2014 holds days of calendar 2015 — and 2015
+    /// itself holds 52 weeks, so `BYWEEKNO=53` names nothing at all in its period even though
+    /// January 1st 2015 carries the number 53.
+    #[test]
+    fn week_fifty_three_belongs_to_the_year_that_has_one() {
+        let rule = RecurrenceRuleBuilder::new(Freq::Yearly)
+            .by_week_no(ByList::from_slice(&[53_i8]))
+            .by_day(ByList::from_slice(&[
+                weekday(None, Weekday::Monday),
+                weekday(None, Weekday::Thursday),
+            ]))
+            .wkst(Weekday::Sunday)
+            .build()
+            .unwrap();
+        let start = stamp(2014, 12, 29, 9, 0);
+        assert_eq!(
+            candidates(&rule, start, 0),
+            expected(&[(2014, 12, 29, 9, 0), (2015, 1, 1, 9, 0)]),
+            "week 53 of 2014 runs from December 28th into January 3rd"
+        );
+        assert!(
+            candidates(&rule, start, 1).is_empty(),
+            "2015 has 52 weeks under WKST=SU, so its period names no week 53"
+        );
+    }
+
+    /// A period is one `FREQ` unit wide however far apart `INTERVAL` puts two of them.
+    ///
+    /// The period walk carries an anchor and no upper edge, so the width a period contributes
+    /// is this unit's answer alone. `FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=1,-1` skips February,
+    /// and the period after January must offer March's two days and neither of February's — a
+    /// period two months wide would put February's candidates where `BYSETPOS` would then
+    /// select the wrong one of them.
+    #[test]
+    fn an_interval_that_skips_a_period_leaves_the_one_it_lands_on_the_same_width() {
+        let rule = RecurrenceRuleBuilder::new(Freq::Monthly)
+            .interval(NonZeroU32::new(2).unwrap())
+            .by_month_day(ByList::from_slice(&[1_i8, -1]))
+            .build()
+            .unwrap();
+        let start = stamp(2026, 1, 15, 9, 0);
+        assert_eq!(
+            candidates(&rule, start, 0),
+            expected(&[(2026, 1, 1, 9, 0), (2026, 1, 31, 9, 0)])
+        );
+        assert_eq!(
+            candidates(&rule, start, 1),
+            expected(&[(2026, 3, 1, 9, 0), (2026, 3, 31, 9, 0)]),
+            "the period after January is March alone, and February is not folded into it"
+        );
+    }
+
+    /// A `BYDAY` ordinal under a frequency that forbids one names its weekday and nothing more.
+    ///
+    /// RFC 5545 section 3.3.10 forbids the numeric form wherever `FREQ` is neither `MONTHLY`
+    /// nor `YEARLY`, and gives no reading for a file that carries one anyway. All five of those
+    /// frequencies answer the same way here — the weekday is kept and the ordinal ignored —
+    /// because the alternative was that `FREQ=WEEKLY` resolved the ordinal inside a scope one
+    /// week wide, where `2TU` matched nothing and silently emptied the entire series while
+    /// `1TU` worked.
+    #[test]
+    fn a_forbidden_weekday_ordinal_keeps_its_weekday_under_every_frequency_that_forbids_one() {
+        let start = stamp(2026, 8, 3, 9, 0);
+        for ordinal in [1_i8, 2, -1, -2] {
+            let weekly = RecurrenceRuleBuilder::new(Freq::Weekly)
+                .by_day(ByList::from_slice(&[weekday(
+                    Some(ordinal),
+                    Weekday::Tuesday,
+                )]))
+                .build()
+                .unwrap();
+            assert_eq!(
+                candidates(&weekly, start, 0),
+                expected(&[(2026, 8, 4, 9, 0)]),
+                "the Tuesday of the week beginning 2026-08-03, whatever ordinal was written"
+            );
+
+            let daily = RecurrenceRuleBuilder::new(Freq::Daily)
+                .by_day(ByList::from_slice(&[weekday(
+                    Some(ordinal),
+                    Weekday::Monday,
+                )]))
+                .build()
+                .unwrap();
+            assert_eq!(
+                candidates(&daily, start, 0),
+                expected(&[(2026, 8, 3, 9, 0)]),
+                "and a daily rule answers the same way, which is the point"
+            );
+        }
     }
 
     /// `WKST` moves the week a weekly period covers, which is what makes two rules differing

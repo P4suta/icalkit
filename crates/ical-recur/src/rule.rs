@@ -231,9 +231,9 @@ impl WeekdayNum {
     /// A `BYDAY` entry, or `None` when the ordinal is outside ±53.
     #[must_use]
     pub fn new(ordinal: Option<NonZeroI8>, weekday: Weekday) -> Option<Self> {
-        if let Some(count) = ordinal
-            && count.get().unsigned_abs() > Self::MAX_ORDINAL.unsigned_abs()
-        {
+        let too_far = ordinal
+            .is_some_and(|count| count.get().unsigned_abs() > Self::MAX_ORDINAL.unsigned_abs());
+        if too_far {
             return None;
         }
         Some(Self { ordinal, weekday })
