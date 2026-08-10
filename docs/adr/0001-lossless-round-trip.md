@@ -236,3 +236,16 @@ needs the section 3.3.10 grammar `ical-recur` owns, so it belongs to M1. Section
 The audit was already advisory and already "a finite list against an infinite problem"; what
 this amendment adds is which finite list, so that a reader of `schema.rs` is not deferred onto
 an audit that does not make the claim.
+
+**5. There is a second write door, and it addresses an occurrence.** Amendment 2 and the
+paragraphs above are stated over `Component::apply`, whose four variants each reach every
+property carrying the identity they name. That is the right rule for a caller naming an
+identity and it is not a rule about occurrences, which are a different address and now have
+`Component::apply_to_occurrence(&PropertyId, usize, &ProposedChange, Limits)`. Every refusal
+this document names still stands in front of it — the component-boundary refusal, the
+control-character refusal, the per-value ceiling, the parameter spelling of amendment 3 — and
+it shares `Component::apply`'s own reader, so a replacement is read as the content line it is.
+The one rule it adds is about `ProposedChange::Add`, which has no occurrence yet: its index
+must be the append position, since an addition landing elsewhere would renumber every
+occurrence after it and make a transition keyed on those numbers mean something else.
+`ical-itip` needs this and nobody else does, which is the honest description of why it exists.

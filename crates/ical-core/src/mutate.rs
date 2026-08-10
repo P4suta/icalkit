@@ -163,6 +163,19 @@ fn spelled_parameter(name: &[u8], value: &[u8]) -> Parameter {
     Parameter::new(RawText::from_bytes(name), RawText::from_vec(spelled))
 }
 
+/// Write `line` over `property` — name, parameters and value together.
+///
+/// Every parameter goes, including ones the replacement did not mention: a replacement states a
+/// whole content line, so a parameter it left out is one it does not have. The narrower edit
+/// that keeps them is [`ProposedChange::SetParameters`].
+fn write_whole_line(property: &mut Property, line: &ParsedLine) {
+    property.set_name(RawText::from_bytes(&line.name));
+    let parameters = property.edit_parameters();
+    parameters.clear();
+    parameters.extend(line.parameters.iter().cloned());
+    property.set_value_text(RawText::from_bytes(&line.value));
+}
+
 impl Parameter {
     /// A parameter a caller is assembling, refused where nothing can write it.
     ///
@@ -543,6 +556,113 @@ impl Component {
         }
     }
 
+    /// Apply one described change to the `index`th property `id` names, counted from zero.
+    ///
+    /// The occurrence-addressed door beside [`Component::apply`]'s identity-addressed one, and
+    /// the address a scheduling message needs: RFC 5546 changes one `ATTENDEE` among many, and
+    /// an identity-addressed write would answer for every attendee on the list.
+    ///
+    /// [`Component::apply`]'s rule — a replacement writes every occurrence, a parameter edit
+    /// reaches every occurrence, a removal takes every occurrence — is the right rule for a
+    /// caller naming an *identity*, because a half-applied change there would leave one
+    /// identity carrying two values with no way to see that it half happened. It is not an
+    /// argument against naming an *occurrence*, which is a different question and gets a
+    /// different door rather than a widened one. Nothing else differs: the vocabulary is the
+    /// same [`ProposedChange`], the octets go through the same content-line reader, and the
+    /// same refusals stand in front of the same writes.
+    ///
+    /// [`ProposedChange::Add`] has no occurrence to name yet, so `index` is where the addition
+    /// lands and must equal the number of occurrences already present — the append position.
+    /// Any other index is [`MutationError::Absent`], because an addition that landed somewhere
+    /// other than where it was addressed would renumber every occurrence after it.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Component::apply`] reports, and [`MutationError::Absent`] when this
+    /// component holds fewer than `index + 1` properties named `id`.
+    pub fn apply_to_occurrence(
+        &mut self,
+        id: &PropertyId,
+        index: usize,
+        change: &ProposedChange,
+        limits: Limits,
+    ) -> Result<(), MutationError> {
+        match change {
+            ProposedChange::Add(addition) => {
+                refuse_component_boundary(id.as_bytes())?;
+                if index != self.occurrence_count(id) {
+                    return Err(MutationError::Absent);
+                }
+                let line = read_named_line(id, addition.as_bytes(), limits)?;
+                self.insert_after_properties(line);
+                Ok(())
+            },
+            ProposedChange::Replace(replacement) => {
+                refuse_component_boundary(id.as_bytes())?;
+                let line = read_named_line(id, replacement.as_bytes(), limits)?;
+                let property = self.occurrence_mut(id, index)?;
+                write_whole_line(property, &line);
+                Ok(())
+            },
+            ProposedChange::SetParameters(edits) => {
+                refuse_component_boundary(id.as_bytes())?;
+                // Refused before the property is reached, so a refused change leaves the
+                // component exactly as it was, for the reason `Component::apply` gives.
+                refuse_unwritable_edits(edits)?;
+                let property = self.occurrence_mut(id, index)?;
+                apply_parameter_edits(property.edit_parameters(), edits);
+                Ok(())
+            },
+            // No boundary refusal, for the reason `Component::apply` gives: removing a line is
+            // not authoring one.
+            ProposedChange::Remove => {
+                let at = self
+                    .occurrence_position(id, index)
+                    .ok_or(MutationError::Absent)?;
+                self.items_mut().remove(at);
+                Ok(())
+            },
+        }
+    }
+
+    /// How many properties directly inside this component carry the identity `id`.
+    fn occurrence_count(&self, id: &PropertyId) -> usize {
+        self.properties().filter(|item| item.has_id(id)).count()
+    }
+
+    /// Where in `items` the `index`th property named `id` sits, counted from zero.
+    ///
+    /// Over the direct items only, as every other reading and writing path here is: a
+    /// `DTSTART` inside a `VALARM` belongs to the alarm, and counting it would make the same
+    /// occurrence number address two different lines depending on what is nested.
+    fn occurrence_position(&self, id: &PropertyId, index: usize) -> Option<usize> {
+        self.items()
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry
+                    .as_property()
+                    .is_some_and(|property| property.has_id(id))
+            })
+            .map(|(at, _)| at)
+            .nth(index)
+    }
+
+    /// The `index`th property named `id`, mutably.
+    fn occurrence_mut(
+        &mut self,
+        id: &PropertyId,
+        index: usize,
+    ) -> Result<&mut Property, MutationError> {
+        let at = self
+            .occurrence_position(id, index)
+            .ok_or(MutationError::Absent)?;
+        self.items_mut()
+            .get_mut(at)
+            .and_then(Item::as_property_mut)
+            .ok_or(MutationError::Absent)
+    }
+
     /// Run `act` over every property directly inside this component with the identity `id`,
     /// answering whether there was one.
     ///
@@ -580,14 +700,7 @@ impl Component {
     /// Write `line` over every property `id` names — name, parameters and value together.
     fn overwrite(&mut self, id: &PropertyId, line: &ParsedLine) -> Result<(), MutationError> {
         let reached = self.for_each_property_with_id(id, |property| {
-            property.set_name(RawText::from_bytes(&line.name));
-            let parameters = property.edit_parameters();
-            // Every parameter goes, including ones the replacement did not mention: a
-            // replacement states a whole content line, so a parameter it left out is one it
-            // does not have. The narrower edit that keeps them is `SetParameters`.
-            parameters.clear();
-            parameters.extend(line.parameters.iter().cloned());
-            property.set_value_text(RawText::from_bytes(&line.value));
+            write_whole_line(property, line);
         });
         if reached {
             Ok(())
@@ -1313,6 +1426,87 @@ mod tests {
             ),
             Err(MutationError::Absent)
         );
+    }
+
+    /// The occurrence-addressed door reaches one line of a repeated name and leaves its
+    /// namesakes alone, which is the whole reason it exists beside the identity-addressed one.
+    ///
+    /// Three `ATTENDEE` lines, the way a `REPLY` finds them. `Component::apply` would answer
+    /// for all three; this answers for the second and the other two come back byte for byte.
+    #[test]
+    fn an_occurrence_addressed_write_reaches_one_line_of_a_repeated_name() {
+        let attendee = |address: &[u8]| {
+            Item::Property(decorated(
+                b"ATTENDEE",
+                &[(&b"PARTSTAT"[..], &b"NEEDS-ACTION"[..])],
+                address,
+            ))
+        };
+        let mut component = event(vec![
+            attendee(b"mailto:ann@example.com"),
+            attendee(b"mailto:bo@example.com"),
+            attendee(b"mailto:cy@example.com"),
+        ]);
+
+        let answered =
+            ProposedChange::SetParameters(vec![ParameterEdit::set(b"PARTSTAT", b"ACCEPTED")]);
+        assert_eq!(
+            component.apply_to_occurrence(&PropertyId::ATTENDEE, 1, &answered, Limits::DEFAULT),
+            Ok(())
+        );
+
+        let answers: Vec<&[u8]> = component
+            .properties()
+            .map(|property| property.parameters()[0].value().as_bytes())
+            .collect();
+        assert_eq!(
+            answers,
+            vec![&b"NEEDS-ACTION"[..], &b"ACCEPTED"[..], &b"NEEDS-ACTION"[..]],
+            "one attendee answered and the other two did not"
+        );
+
+        assert_eq!(
+            component.apply_to_occurrence(&PropertyId::ATTENDEE, 3, &answered, Limits::DEFAULT),
+            Err(MutationError::Absent),
+            "there is no fourth attendee to answer for"
+        );
+    }
+
+    /// An addition names the position it lands in, and any other position is refused rather
+    /// than quietly appended somewhere that renumbers everything after it.
+    #[test]
+    fn an_occurrence_addressed_addition_must_name_the_append_position() {
+        let mut component = event(vec![Item::Property(folded(
+            b"ATTENDEE",
+            b"mailto:ann@example.com",
+        ))]);
+        let added = ProposedChange::Add(RawText::from_bytes(b"ATTENDEE:mailto:bo@example.com"));
+        assert_eq!(
+            component.apply_to_occurrence(&PropertyId::ATTENDEE, 0, &added, Limits::DEFAULT),
+            Err(MutationError::Absent),
+            "occurrence zero is taken, so an addition there would renumber the one that is"
+        );
+        assert_eq!(
+            component.apply_to_occurrence(&PropertyId::ATTENDEE, 1, &added, Limits::DEFAULT),
+            Ok(())
+        );
+        assert_eq!(component.properties().count(), 2);
+
+        // And a removal takes exactly the one it names, not every namesake.
+        assert_eq!(
+            component.apply_to_occurrence(
+                &PropertyId::ATTENDEE,
+                0,
+                &ProposedChange::Remove,
+                Limits::DEFAULT
+            ),
+            Ok(())
+        );
+        let left: Vec<&[u8]> = component
+            .properties()
+            .map(|property| property.value_text().as_bytes())
+            .collect();
+        assert_eq!(left, vec![&b"mailto:bo@example.com"[..]]);
     }
 
     /// A change addressed to a property the component does not carry is absence, whichever
