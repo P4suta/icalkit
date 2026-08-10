@@ -34,7 +34,7 @@ So: **the civil-time primitives are defined in `ical-core` and re-exported by `i
 which owns their specification.** `CivilDate`, `CivilTime`, `CivilDateTime`, `Instant`,
 `UtcOffset`, `Duration`, `Weekday` and `MonthAddOutcome` are declared by ADR-0011 (this
 crate's ADR) and compiled into `ical-core` (the shared root). Everything zone-shaped —
-`ZoneSource`, `ZoneAnswer`, `LocalResolution`, `ZoneProvenance`, `Coverage`,
+`ZoneSource`, `ZoneAnswer`, `LocalResolution`, `ZoneProvenance`, `AnswerBasis`,
 `CombinedZoneSource`, `PolicyOutcome`, `Tzid`, `Observance`, `YearlyRule`,
 `TransitionTable`, `VtimezoneSet` — is `ical-tz`'s and appears nowhere else. In the skeleton
 the `ical-core` half sits in a module named `upstream` purely so the file compiles alone;
@@ -51,6 +51,13 @@ pub trait ZoneSource {
 }
 ```
 
+Two methods, not one, and the second is not a convenience. `resolve` goes from a wall clock to
+an instant and is the hard direction, because a wall clock can name two instants or none.
+`offset_at` goes the other way, where every instant has exactly one offset, and it is what a
+caller needs to read a `Z`-terminated `UNTIL`, a `RECURRENCE-ID` or an override's own ends back
+onto the clock the series is written in. A crate with only the first cannot project anything
+into a zone, only out of one.
+
 Object-safe by construction — `&self` in, an owned answer out, no generic parameter, no
 associated type — because combining an embedded `VTIMEZONE` with an IANA database is a
 runtime wiring choice made once, not a compile-time one. No `Send`/`Sync` bound: a server
@@ -59,7 +66,7 @@ and an embedded caller that wants no vtable is free to hold the concrete type in
 
 The invariant that carries the most weight is on the return type. **`None` means exactly one
 thing: this source does not recognize this identifier.** It never means "recognized, but I
-have no data for that time" — that is `Coverage`'s job — and it never licenses an
+have no data for that time" — that is `AnswerBasis`'s job — and it never licenses an
 implementation to invent an answer. A source handed `W. Europe Standard Time` with no CLDR
 table returns `None` and lets the hole be visible, which is what stops the alias mapping
 from becoming a fallback chain buried inside somebody's `impl`.
@@ -72,54 +79,83 @@ this pair, so nothing is lost at the seam.
 ### The three states of a local time
 
 ```rust
+pub struct Reading { pub instant: Instant, pub offset: UtcOffset, pub daylight: bool }
+
 #[non_exhaustive]
 pub enum LocalResolution {
-    Single    { instant: Instant, offset: UtcOffset, daylight: bool },
-    Ambiguous { first: Instant, first_offset: UtcOffset,
-                second: Instant, second_offset: UtcOffset },
-    Gap       { gap_start: Instant, gap_end: Instant,
-                offset_before: UtcOffset, offset_after: UtcOffset, shifted: Instant },
+    Unique      { reading: Reading },
+    Ambiguous   { earlier: Reading, later: Reading },
+    Nonexistent { gap_start: Instant, gap_end: Instant,
+                  offset_before: UtcOffset, offset_after: UtcOffset, shifted: Instant },
 }
+
+impl LocalResolution {
+    pub const fn unambiguous(self) -> Option<Instant>;
+    pub const fn earliest(self) -> Option<Instant>;
+    pub const fn pick(self, gaps: GapPolicy, folds: FoldPolicy) -> Option<Instant>;
+    pub const fn diagnostic_code(self) -> Option<DiagnosticCode>;
+}
+
+#[non_exhaustive] pub enum GapPolicy  { Skip, ShiftForward, ClampToTransition }
+#[non_exhaustive] pub enum FoldPolicy { Earlier, Later }
 ```
 
-Invariants: `Single` is the only variant `unambiguous()` returns from; `Ambiguous.first <
-Ambiguous.second` always, and `first_offset != second_offset`; `Gap.gap_start <
-Gap.gap_end`, `offset_before != offset_after`, and `shifted` is the instant the queried
-local time denotes when read with `offset_before`.
+A `Reading` is the triple that never comes apart — an instant, the offset that produced it,
+and whether the observance in force is the zone's daylight one — so that a variant holding two
+of them cannot pair the second instant with the first offset. The daylight flag is read off
+`DAYLIGHT` against `STANDARD` and never inferred from which offset is larger, because
+`Australia/Lord_Howe` runs `+10:30` standard and `+11:00` daylight and Ireland's is inverted.
+
+Invariants: `Unique` is the only variant `unambiguous()` returns from; `Ambiguous.earlier <
+Ambiguous.later` always, and their offsets differ; `Nonexistent.gap_start < gap_end`,
+`offset_before != offset_after`, and `shifted` is the instant the queried local time denotes
+when read with `offset_before`.
 
 That last field is the crate's answer to an internal contradiction in RFC 5545 that a
 library is not entitled to settle. Section 3.3.10 says a recurrence instance falling on a
 nonexistent local time MUST be ignored; section 3.3.5 says an explicit `DATE-TIME` in a gap
 is read with the offset in force before it, which is what Google and Apple do in practice.
-`Gap` therefore hands the caller the material for both readings and picks neither: skip it,
-or take `shifted`. Deciding for the caller is how one participant's meeting moves an hour
-and another's does not.
+`Nonexistent` therefore hands the caller the material for both readings and picks neither: skip
+it, take `shifted`, or clamp to the transition. Deciding for the caller is how one participant's
+meeting moves an hour and another's does not.
+
+The three collapses are named once, on `pick`, rather than written out at each call site, so
+that two units cannot invent two conventions for the same fact. A gap has no width on the UTC
+timeline — the clock moves at a single instant — so `gap_end` is that instant, the first the new
+offset governs, and `gap_start` is the second before it; `GapPolicy::ClampToTransition` is the
+only reader of either and lands an occurrence as soon as it can happen.
 
 ### Provenance, and how much data stood behind an answer
 
 ```rust
-pub struct ZoneAnswer  { pub resolution: LocalResolution, pub source: ZoneProvenance }
-pub struct OffsetAnswer{ pub offset: UtcOffset, pub daylight: bool, pub source: ZoneProvenance }
-pub struct ZoneProvenance { pub source: SourceKind, pub coverage: Coverage }
+pub struct ZoneAnswer {
+    pub resolution: LocalResolution, pub source: ZoneProvenance, pub basis: AnswerBasis,
+}
+pub struct OffsetAnswer {
+    pub offset: UtcOffset, pub daylight: bool,
+    pub source: ZoneProvenance, pub basis: AnswerBasis,
+}
 
-#[non_exhaustive] pub enum SourceKind { EmbeddedVtimezone, CallerDatabase, FixedOffset }
-#[non_exhaustive] pub enum Coverage {
-    Covered,
-    Extrapolated { nearest_known: CivilDate },
+#[non_exhaustive] pub enum ZoneProvenance { EmbeddedVtimezone, CallerDatabase, FixedOffset }
+#[non_exhaustive] pub enum AnswerBasis {
+    Computed,
+    BeyondKnownTransitions(CivilDate),
 }
 ```
 
-`ZoneProvenance` and the answer structs have public fields and are not `#[non_exhaustive]`,
-because callers implement `ZoneSource` and must be able to construct them. The two enums are
-`#[non_exhaustive]`, so a new source kind or a new coverage class is not a breaking change.
+The answer structs have public fields and are not `#[non_exhaustive]`, because callers
+implement `ZoneSource` and must be able to construct them. The enums are `#[non_exhaustive]`,
+so a new source kind or a new basis is not a breaking change.
 
-`Coverage` exists because "which source answered" is not the same fact as "how much did that
-source actually know". A `VTIMEZONE` whose transitions are three `RDATE` lines through 2029,
-referenced by an event in 2035, has no data for 2035; continuing its last observance is a
-reasonable thing to do and a dishonest thing to do quietly. An extrapolated answer that
-happens to match a rule-derived one would otherwise read as confident corroboration by two
-independent sources, which is precisely the silent-fallback shape ADR-0003 rejects, moved
-from *which source won* to *how much the winner knew*.
+Provenance is a flat enum rather than a pair, because "which source answered" and "how much did
+that source actually know" are two facts and nesting the second inside the first invites a
+caller to read one and think it read both. `AnswerBasis` is the second fact. A `VTIMEZONE` whose
+transitions are three `RDATE` lines through 2029, referenced by an event in 2035, has no data
+for 2035; continuing its last observance is a reasonable thing to do and a dishonest thing to do
+quietly, so the answer carries `BeyondKnownTransitions(2029-10-28)` and the date it was last
+sure of. A continued answer that happens to match a rule-derived one would otherwise read as
+confident corroboration by two independent sources, which is precisely the silent-fallback shape
+ADR-0003 rejects, moved from *which source won* to *how much the winner knew*.
 
 ### Two sources, one stated policy
 
@@ -139,8 +175,29 @@ impl<'a, E: ZoneSource + ?Sized, F: ZoneSource + ?Sized> CombinedZoneSource<'a, 
     pub const fn new(embedded: &'a E, fallback: &'a F) -> Self;
     pub fn resolve(&self, tzid: &str, local: CivilDateTime) -> PolicyOutcome<ZoneAnswer>;
     pub fn offset_at(&self, tzid: &str, instant: Instant) -> PolicyOutcome<OffsetAnswer>;
+    pub fn report<D: DiagnosticSink + ?Sized>(
+        &self, outcome: PolicyOutcome<OffsetAnswer>, at: Instant,
+        meter: &mut Meter, sink: &mut D,
+    );
+}
+
+pub struct FixedOffsetSource { /* &'static str, UtcOffset, bool */ }
+impl FixedOffsetSource {
+    pub const fn new(tzid: &'static str, offset: UtcOffset, daylight: bool) -> Self;
 }
 ```
+
+Reporting is separate from asking because only the caller knows how often it wants to be told:
+one series resolved a thousand times against two sources that disagree is one fact, and a
+thousand diagnostics is not a report but a denial of service against whoever reads them. So
+`report` is a second call the caller makes where it wants the fact recorded, and it emits
+exactly two codes — `time-zone-source-disagreement` on `Disagreed` and `unknown-time-zone` on
+`Neither`. It deliberately does not emit `time-zone-coverage-exhausted`: that fact rides on each
+answer's own `AnswerBasis`, and one golden-listed code with two emitters is one code too many.
+
+`FixedOffsetSource` is the smallest honest `ZoneSource`: one identifier, one offset, always
+`Unique`, always `Computed`, `None` for any other identifier. It exists so that "the only zone
+data in play is the caller's own" is a wiring choice rather than a trait to hand-implement.
 
 Invariants: both sources are queried on every call, unconditionally, before the outcome is
 formed — there is no short circuit and no operand ordering that skips work. `Agreed` implies
@@ -159,54 +216,95 @@ than dyn-mandating: `CombinedZoneSource::new(&table, &tzdb)` monomorphizes, and
 ### `VTIMEZONE`, interpreted
 
 ```rust
-pub struct Observance {
-    pub start: CivilDateTime, pub offset_from: UtcOffset, pub offset_to: UtcOffset,
-    pub daylight: bool, pub rule: Option<YearlyRule>,
+pub struct Observance { /* accessors below */ }
+impl Observance {
+    pub const fn new(start: CivilDateTime, offset_from: UtcOffset, offset_to: UtcOffset,
+                     daylight: bool, rule: Option<YearlyRule>) -> Self;
+    pub const fn start(self) -> CivilDateTime;      // read against `offset_from`
+    pub const fn offset_from(self) -> UtcOffset;
+    pub const fn offset_to(self) -> UtcOffset;
+    pub const fn daylight(self) -> bool;
+    pub const fn rule(self) -> Option<YearlyRule>;
+    pub fn covered_through(self) -> Option<CivilDate>;
+    pub fn transition_in(self, year: u16) -> Option<CivilDateTime>;
 }
-pub struct YearlyRule {
-    pub month: u8, pub weekday: Weekday, pub week: NthWeek,
-    pub at: CivilTime, pub through: Option<CivilDate>,
+
+pub struct YearlyRule { /* month, RuleDay, CivilTime, Option<CivilDate> */ }
+impl YearlyRule {
+    pub const fn new(month: u8, day: RuleDay, at: CivilTime,
+                     through: Option<CivilDate>) -> Option<Self>;
+    pub fn applies_in(self, year: u16) -> bool;
+    pub fn occurrence_in(self, year: u16) -> Option<CivilDate>;
 }
-#[non_exhaustive] pub enum NthWeek { First, Second, Third, Fourth, Last }
 
-impl YearlyRule { pub fn occurrence_in(self, year: u16) -> Option<CivilDate>; }
+#[non_exhaustive] pub enum NthWeek { First, Second, Third, Fourth, Fifth, Last }
+#[non_exhaustive] pub enum RuleDay {
+    DayOfMonth(u8),
+    LastDayOfMonth,
+    Nth       { weekday: Weekday, week: NthWeek },
+    OnOrAfter { weekday: Weekday, day: u8 },
+    OnOrBefore{ weekday: Weekday, day: u8 },
+}
 
-pub struct TransitionTable { /* Box<str>, Vec<Observance>, bool */ }
+pub struct TransitionTable { /* Box<str>, Vec<Observance>, bool, Option<CivilDate> */ }
 impl TransitionTable {
-    pub fn new(tzid: Box<str>, observances: Vec<Observance>, limits: Limits) -> Self;
+    pub fn new<S: DiagnosticSink + ?Sized>(tzid: Box<str>, observances: Vec<Observance>,
+                                           meter: &mut Meter, sink: &mut S) -> Self;
     pub fn tzid(&self) -> Tzid<'_>;
     pub fn observances(&self) -> &[Observance];
-    pub fn is_truncated(&self) -> bool;
-    pub fn coverage_end(&self) -> Option<CivilDate>;
+    pub const fn is_truncated(&self) -> bool;
+    pub const fn coverage_end(&self) -> Option<CivilDate>;
+    pub fn observance_at(&self, instant: Instant) -> Option<Observance>;
+    pub fn observances_around(&self, local: CivilDateTime) -> LocalResolution;
 }
 
 pub struct VtimezoneSet { /* Vec<TransitionTable> */ }
 impl VtimezoneSet {
-    pub fn insert(&mut self, table: TransitionTable) -> Result<(), TransitionTable>;
+    pub fn insert(&mut self, table: TransitionTable, meter: &mut Meter)
+        -> Result<(), ZoneSetError>;
     pub fn table(&self, tzid: &str) -> Option<&TransitionTable>;
 }
+#[non_exhaustive] pub enum ZoneSetError { Duplicate(TransitionTable),
+                                          TooMany(TransitionTable, LimitExceeded) }
 
 pub trait ObservanceReader {
-    fn read_vtimezone(&self, limits: Limits, sink: &mut dyn DiagnosticSink,
+    fn read_vtimezone(&self, meter: &mut Meter, sink: &mut dyn DiagnosticSink,
                       out: &mut Vec<Observance>) -> Option<Box<str>>;
 }
+
+pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
+    calendar: &Component, meter: &mut Meter, sink: &mut S,
+) -> VtimezoneSet;
 ```
+
+The fields are private behind `const` accessors rather than public, because an `Observance`'s
+`start` is a wall clock read against `offset_from` and not against `offset_to`, and a struct
+literal is where a caller silently disagrees about which. `RuleDay` is a wider vocabulary than a
+weekday and an ordinal: `BYMONTHDAY` alone names a fixed day, and the `BYDAY` paired with a
+`BYMONTHDAY` *run* — `SU` with `8,9,10,11,12,13,14` — is the seven-day window every tzdata
+`Sun>=8` rule is exported as, which collapses to `OnOrAfter` and not to any `NthWeek`. `Fifth`
+and `Last` are separate because they differ in every month without five of that weekday, and a
+producer that wrote `BYDAY=5SU` meant the fifth.
 
 Invariants: `observances()` is sorted by `start` and its length never exceeds
 `Limits::max_vtimezone_observances`; `is_truncated()` is true exactly when observances were
-dropped to hold that line. `coverage_end()` returns `None` when some observance repeats by a
-rule with no `UNTIL` — that zone knows the future — and otherwise the last date backed by
-real data, which is the value that turns a later query into `Coverage::Extrapolated`.
-`YearlyRule::occurrence_in` is closed-form arithmetic over the weekday of the first of the
-month: no loop, no search, therefore no candidate budget and no way to make a lookup do
-unbounded work. `VtimezoneSet::insert` refuses a duplicate `TZID` by handing the table back,
-so a document that declares one zone twice is a reported fact rather than a lost definition.
+dropped to hold that line, and they are dropped from the end so the table's coverage ends
+earlier rather than acquiring a hole. `coverage_end()` returns `None` when some observance
+repeats by a rule with no `UNTIL` — that zone knows the future — and otherwise the last date
+backed by real data, which is the value that turns a later query into
+`AnswerBasis::BeyondKnownTransitions`. `occurrence_in` is closed-form arithmetic over the
+weekday of the first of the month: no loop, no search, therefore no candidate budget and no way
+to make a lookup do unbounded work. `VtimezoneSet::insert` refuses a duplicate `TZID` by handing
+the table back, so a document that declares one zone twice is a reported fact rather than a lost
+definition.
 
-`Limits` (DP-08) is a mandatory argument on construction, where untrusted input is read, and
-appears nowhere on the resolution path, because after construction the table is finite and
-rule evaluation is O(1). `ObservanceReader` is a trait rather than an inherent constructor
-for one reason: its body is real M2 work, and declaring a signature is honest where writing
-a stub would not be. `ical-tz` implements it for `ical-core`'s `Component`.
+The meter (DP-08, ADR-0010) is a mandatory argument on construction, where untrusted input is
+read, and appears nowhere on the resolution path, because after construction the table is finite
+and rule evaluation is O(1). `ObservanceReader` is a trait rather than an inherent constructor
+because the thing that holds a `VTIMEZONE` is `ical_core::Component` and a caller with its own
+representation should not have to build one; `ical-tz` implements it for `Component`, and
+`read_calendar_zones` is the whole-calendar walk over that implementation, which additionally
+reports a `TZID` referenced by an event that no `VTIMEZONE` defines.
 
 ### Identifiers
 
@@ -226,6 +324,92 @@ a globally unique identifier, which is the only rewriting RFC 5545 section 3.2.1
 it does not try to find `Europe/Berlin` inside `/mozilla.org/20050126_1/Europe/Berlin`,
 because that is a vendor convention and guessing at it is how a wrong zone gets applied
 confidently. Comparison and lookup are by exact bytes as written.
+
+### The seam with `ical-recur`
+
+Nothing in the surface above expands a rule, and `ical-recur` holds no zone. The timeline
+between them was left half-specified by M1 and is stated here, because getting it wrong puts
+every zoned series an hour out for half the year and nothing about the types would show it.
+
+```rust
+pub mod seam {
+    pub fn nominal(local: CivilDateTime) -> Option<Instant>;
+    pub fn wall_clock(nominal_instant: Instant) -> Option<CivilDateTime>;
+
+    pub struct LocalInterval { /* half-open, on the nominal timeline */ }
+    #[non_exhaustive] pub enum UntilReading     { Midnight, EndOfDay }
+    #[non_exhaustive] pub enum ExclusionReading { Instantaneous, WholeDay }
+    pub struct ResolutionPolicy { /* gaps, folds, until, exclusions */ }
+}
+
+pub struct ZonedSeries<'a, S: ?Sized> { /* &'a S, &'a str, ResolutionPolicy */ }
+impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
+    pub fn anchor(&self, dtstart: DateTimeValue<'_>) -> Option<Instant>;
+    pub fn to_nominal(&self, utc: Instant) -> Option<Instant>;
+    pub fn project_until<D: DiagnosticSink + ?Sized>(
+        &self, until: DateTimeValue<'_>, dtstart: DateTimeValue<'_>,
+        meter: &mut Meter, sink: &mut D,
+    ) -> Option<Instant>;
+    pub fn answer_for(&self, key: Instant) -> Option<ZoneAnswer>;
+    pub fn actual<D: DiagnosticSink + ?Sized>(
+        &self, key: Instant, meter: &mut Meter, sink: &mut D,
+    ) -> Option<Instant>;
+}
+
+pub struct ResolvedExclusions { /* Vec<Instant>, Vec<LocalInterval> */ }
+impl ResolvedExclusions {
+    pub fn read<S: ZoneSource + ?Sized, D: DiagnosticSink + ?Sized>(
+        series: &ZonedSeries<'_, S>, dtstart_kind: ValueType,
+        excluded: &[DateTimeValue<'_>], meter: &mut Meter, sink: &mut D,
+    ) -> Self;
+    pub fn instants(&self) -> &[Instant];
+    pub fn spans(&self) -> &[LocalInterval];
+    pub fn excludes(&self, key: Instant) -> bool;
+}
+
+pub struct WallClockShift { /* elapsed seconds, wall-clock seconds */ }
+impl WallClockShift {
+    pub fn measure<S: ZoneSource + ?Sized>(source: &S, tzid: &str,
+                                           from: Instant, to: Instant) -> Option<Self>;
+    pub const fn crossed_a_transition(self) -> bool;
+}
+pub fn extra_widening(shifts: &[WallClockShift]) -> i64;
+
+pub struct OrphanScan<'a> { /* &'a [Instant], Vec<bool> */ }
+impl<'a> OrphanScan<'a> {
+    pub fn new(recurrence_ids: &'a [Instant]) -> Self;
+    pub fn observe(&mut self, key: Instant);
+    pub fn finish<D: DiagnosticSink + ?Sized>(self, meter: &mut Meter, sink: &mut D) -> u32;
+}
+```
+
+**The timeline `ical-recur` walks for a zoned series is the series' own wall clock projected
+onto UTC, and not the UTC timeline.** Call a position on it *nominal*. `nominal` and
+`wall_clock` are that projection and its inverse; arithmetically each is the identity on the
+numbers, and the whole content of the contract is which of the two facts a given `Instant` is.
+Every instant crossing into the search — `DTSTART`, `UNTIL`, each `RDATE`, `EXDATE` and
+`RECURRENCE-ID` — is nominal, every cadence key coming back is nominal, and `actual` resolves
+each key against the zone one at a time, which is the only place a transition can be seen. A
+daily 09:00 series is then stable on the wall clock because the wall clock is what was
+generated; a caller that anchors at the real UTC instant and never re-resolves is exactly one
+transition's width out from the transition onwards, which `ical-conform` asserts as a number
+rather than leaving as a warning.
+
+Only two shapes need converting rather than reading: a `Z`-terminated value, which is a real
+instant and goes through `to_nominal`, and a `DATE`, which names a day rather than a moment and
+is read where `UntilReading` and `ExclusionReading` say. Those two policies exist because RFC
+5545 permits both readings of a mismatched value type and real clients ship both: an `UNTIL`
+written as a `DATE` against a date-time `DTSTART` drops the named day's instances at midnight
+and keeps them at end of day, and an `EXDATE` written as a `DATE` removes one instant under
+`Instantaneous` — usually none at all — and a whole day under `WholeDay`. The default of each is
+the conservative reading, and the choice is the caller's because neither is a repair.
+
+`WallClockShift` exists because `ical_recur::max_absolute_shift` widens the generation window by
+a count of *elapsed* seconds, and across a transition an override's wall-clock move and its
+elapsed move are different numbers. `extra_widening` reports the seconds that widening is short
+by, never fewer, so a zoned caller adds it rather than re-deriving it. `OrphanScan` closes the
+other side of the override question: a `RECURRENCE-ID` that names no generated instant is inert,
+and every other silent drop in this workspace has a code.
 
 ### The arithmetic this crate specifies (DP-12)
 
@@ -272,14 +456,14 @@ sign for the whole value, and no year or month field at all.
 | `Observance` offsets | 3.8.3.3, 3.8.3.4 `TZOFFSETFROM`/`TZOFFSETTO` | the transition |
 | `YearlyRule`, `NthWeek` | 3.8.5.3 `RRULE`, 3.3.10 `RECUR` (restricted) | rule-driven transitions |
 | `Observance` (one per date) | 3.8.5.2 `RDATE` | date-driven transitions |
-| `LocalResolution::Gap` / `Ambiguous` | 3.3.5 `DATE-TIME` form 3, 3.3.10 | the two awkward hours |
+| `LocalResolution::Nonexistent` / `Ambiguous` | 3.3.5 `DATE-TIME` form 3, 3.3.10 | the two awkward hours |
 | `CivilDate`, `CivilTime`, `CivilDateTime` | 3.3.4, 3.3.12, 3.3.5 | wall-clock values |
 | `Instant` | 3.3.5 `DATE-TIME` form 2 (UTC) | the timeline |
 | `UtcOffset` | 3.3.14 `UTC-OFFSET` | an offset |
 | `Duration` | 3.3.6 `DURATION` | a span, with no month field |
 | `MonthAddOutcome` | 3.3.10 (invalid instances) | month arithmetic that can fail |
 | `ZoneSource`, `ZoneAnswer` | — | ADR-0003: the source is the caller's |
-| `PolicyOutcome`, `Coverage`, `ZoneProvenance` | — | ADR-0003: disagreement is reported |
+| `PolicyOutcome`, `AnswerBasis`, `ZoneProvenance` | — | ADR-0003: disagreement is reported |
 
 The last two rows are deliberately blank on the left. RFC 5545 has nothing to say about
 where a zone definition comes from or what to do when two of them disagree, and pretending
@@ -294,7 +478,7 @@ otherwise would be citing an authority that does not exist.
   server mapping, decides.
 - **`CombinedZoneSource: ZoneSource`.** Convenient, and it would put a fallback chain right
   back inside an `impl` where nobody can see it.
-- **An error channel on `ZoneSource::resolve`.** `Option` plus `Coverage` plus
+- **An error channel on `ZoneSource::resolve`.** `Option` plus `AnswerBasis` plus
   `PolicyOutcome` already distinguish *unknown identifier*, *thin evidence* and *sources
   differ*. A `Result` would invite implementations to report all three as one.
 - **Depending on `ical-recur` to read `VTIMEZONE` rules,** and with it general `RRULE`
@@ -344,9 +528,7 @@ Every example below compiles against `skeletons/ical-tz.rs` as a downstream crat
 **Resolving a `DTSTART`, stating what to do about the two awkward hours.**
 
 ```rust
-use ical_tz::{CivilDateTime, Instant, LocalResolution, ZoneSource};
-
-pub enum GapPolicy { ShiftForward, Skip }
+use ical_tz::{CivilDateTime, FoldPolicy, GapPolicy, Instant, ZoneSource};
 
 pub fn start_instant(
     source: &dyn ZoneSource,
@@ -354,18 +536,10 @@ pub fn start_instant(
     local: CivilDateTime,
     gaps: GapPolicy,
 ) -> Option<Instant> {
-    let answer = source.resolve(tzid, local)?;
-    match answer.resolution {
-        LocalResolution::Single { instant, .. } => Some(instant),
-        // The hour repeated; a calendar shows the first one.
-        LocalResolution::Ambiguous { first, .. } => Some(first),
-        LocalResolution::Gap { shifted, .. } => match gaps {
-            GapPolicy::ShiftForward => Some(shifted), // RFC 5545 section 3.3.5
-            GapPolicy::Skip => None,                  // RFC 5545 section 3.3.10
-        },
-        // `LocalResolution` is `#[non_exhaustive]`; a later variant is not silently a gap.
-        _ => None,
-    }
+    // `pick` is the one place three states collapse into one instant, so two call sites in
+    // one program cannot disagree about what `ShiftForward` means. RFC 5545 section 3.3.5 is
+    // `ShiftForward`, section 3.3.10 is `Skip`, and the crate refuses to choose between them.
+    source.resolve(tzid, local)?.resolution.pick(gaps, FoldPolicy::Earlier)
 }
 ```
 
@@ -375,7 +549,7 @@ pub fn start_instant(
 use ical_tz::{CivilDateTime, CombinedZoneSource, Instant, PolicyOutcome, ZoneSource};
 
 pub enum ZoneNote {
-    Confident, AgreedButExtrapolated, Disagreement, SingleSource, Unresolvable,
+    Confident, AgreedButContinued, Disagreement, SingleSource, Unresolvable,
 }
 
 pub fn resolve_and_note(
@@ -387,10 +561,10 @@ pub fn resolve_and_note(
     let combined = CombinedZoneSource::new(embedded, fallback);
     match combined.resolve(tzid, local) {
         PolicyOutcome::Agreed { embedded: near, fallback: far } => {
-            let note = if near.source.coverage.is_extrapolated()
-                || far.source.coverage.is_extrapolated()
+            let note = if near.basis.is_beyond_known_transitions()
+                || far.basis.is_beyond_known_transitions()
             {
-                ZoneNote::AgreedButExtrapolated
+                ZoneNote::AgreedButContinued
             } else {
                 ZoneNote::Confident
             };
@@ -413,46 +587,52 @@ pub fn resolve_and_note(
 
 ```rust
 use ical_tz::{
-    CivilDate, CivilDateTime, CivilTime, Limits, NthWeek, Observance, TransitionTable,
+    CivilDate, CivilDateTime, CivilTime, Meter, NthWeek, Observance, RuleDay, TransitionTable,
     UtcOffset, Weekday, YearlyRule,
 };
 
-pub fn us_eastern(limits: Limits) -> Option<TransitionTable> {
+pub fn us_eastern<S: ical_core::DiagnosticSink + ?Sized>(
+    meter: &mut Meter,
+    sink: &mut S,
+) -> Option<TransitionTable> {
     let eastern = UtcOffset::from_seconds(-18_000)?;
     let daylight = UtcOffset::from_seconds(-14_400)?;
     let two_am = CivilTime::from_hms(2, 0, 0)?;
+    let second_sunday_of_march = RuleDay::Nth { weekday: Weekday::Sunday, week: NthWeek::Second };
+    let first_sunday_of_november = RuleDay::Nth { weekday: Weekday::Sunday, week: NthWeek::First };
     let observances = alloc::vec![
-        Observance {
-            start: CivilDateTime::new(CivilDate::from_ymd(2007, 3, 11)?, two_am),
-            offset_from: eastern,
-            offset_to: daylight,
-            daylight: true,
-            rule: Some(YearlyRule {
-                month: 3, weekday: Weekday::Sunday, week: NthWeek::Second,
-                at: two_am, through: None,
-            }),
-        },
-        Observance {
-            start: CivilDateTime::new(CivilDate::from_ymd(2007, 11, 4)?, two_am),
-            offset_from: daylight,
-            offset_to: eastern,
-            daylight: false,
-            rule: Some(YearlyRule {
-                month: 11, weekday: Weekday::Sunday, week: NthWeek::First,
-                at: two_am, through: None,
-            }),
-        },
+        Observance::new(
+            CivilDateTime::new(CivilDate::from_ymd(2007, 3, 11)?, two_am),
+            eastern,
+            daylight,
+            true,
+            YearlyRule::new(3, second_sunday_of_march, two_am, None),
+        ),
+        Observance::new(
+            CivilDateTime::new(CivilDate::from_ymd(2007, 11, 4)?, two_am),
+            daylight,
+            eastern,
+            false,
+            YearlyRule::new(11, first_sunday_of_november, two_am, None),
+        ),
     ];
     // `coverage_end()` on the result is `None`: both rules run on, so no answer this table
-    // ever gives will be marked `Extrapolated`.
-    Some(TransitionTable::new(alloc::boxed::Box::from("America/New_York"), observances, limits))
+    // ever gives will carry `AnswerBasis::BeyondKnownTransitions`.
+    Some(TransitionTable::new(
+        alloc::boxed::Box::from("America/New_York"),
+        observances,
+        meter,
+        sink,
+    ))
 }
 
 pub fn spring_forward(year: u16) -> Option<CivilDate> {
-    YearlyRule {
-        month: 3, weekday: Weekday::Sunday, week: NthWeek::Second,
-        at: CivilTime::midnight(), through: None,
-    }
+    YearlyRule::new(
+        3,
+        RuleDay::Nth { weekday: Weekday::Sunday, week: NthWeek::Second },
+        CivilTime::midnight(),
+        None,
+    )?
     .occurrence_in(year) // closed form: no search, no budget
 }
 ```
@@ -460,21 +640,22 @@ pub fn spring_forward(year: u16) -> Option<CivilDate> {
 **Normalizing an `EXDATE` list for `ical-recur` (DP-10, amendment (c)).**
 
 ```rust
-use alloc::vec::Vec;
-use ical_tz::{CivilDateTime, Instant, ZoneSource};
+use ical_core::{DateTimeValue, Meter, ValueType};
+use ical_tz::{ResolutionPolicy, ResolvedExclusions, ZoneSource, ZonedSeries};
 
-pub fn normalize_exdates(
-    source: &dyn ZoneSource,
+pub fn normalize_exdates<S: ZoneSource + ?Sized, D: ical_core::DiagnosticSink + ?Sized>(
+    source: &S,
     tzid: &str,
-    excluded: &[CivilDateTime],
-    out: &mut Vec<Instant>,
-) {
-    for local in excluded {
-        if let Some(instant) = start_instant(source, tzid, *local, GapPolicy::Skip) {
-            out.push(instant);
-        }
-    }
-    out.sort_unstable();
+    excluded: &[DateTimeValue<'_>],
+    meter: &mut Meter,
+    sink: &mut D,
+) -> ResolvedExclusions {
+    // The list `ical_recur::RecurrenceInput::new` takes is on the nominal timeline, sorted and
+    // deduplicated, because that constructor refuses anything else. A `DATE` among date-time
+    // values is a value-type mismatch that still excludes something, under whichever reading
+    // the policy states, and it is reported either way.
+    let series = ZonedSeries::new(source, tzid, ResolutionPolicy::DEFAULT);
+    ResolvedExclusions::read(&series, ValueType::DateTime, excluded, meter, sink)
 }
 ```
 
@@ -500,13 +681,13 @@ pub fn one_month_later(start: CivilDate) -> Reschedule {
 Three payloads are richer than the adopted amendments spell out. Variant and type names are
 unchanged, so a sibling crate matching on them still compiles; only the fields grew.
 
-1. `LocalResolution`'s variants carry their offsets, and `Gap` carries `shifted`. DP-11
-   pinned `{ Single(Instant), Ambiguous(Instant, Instant), Gap }`, which cannot express the
-   RFC 5545 section 3.3.5 reading at all, so a caller obeying 3.3.5 would have to re-derive
+1. `LocalResolution`'s variants carry their offsets, and `Nonexistent` carries `shifted`.
+   DP-11 pinned `{ Single(Instant), Ambiguous(Instant, Instant), Gap }`, which cannot express
+   the RFC 5545 section 3.3.5 reading at all, so a caller obeying 3.3.5 would have to re-derive
    it from a second query against a source that may not agree with the first.
-2. `ZoneProvenance` is a pair — kind and `Coverage` — rather than a bare source label. DP-11
+2. An answer carries a `basis` beside its `source` rather than a bare source label. DP-11
    pinned provenance as "which source produced it", which cannot distinguish a computed
-   answer from a clamp past the end of an `RDATE` list.
+   answer from a final observance continued past the end of an `RDATE` list.
 3. `PolicyOutcome::Agreed` keeps both answers instead of one. Collapsing them discards
    exactly the coverage asymmetry point 2 exists to surface.
 
@@ -525,17 +706,21 @@ The dyn indirection nobody measured is still unmeasured: `&dyn ZoneSource` costs
 hop per lookup on a Cortex-M-class target, and this design permits the concrete form but
 provides no evidence about which a real embedded caller should choose.
 
-Two gaps stay open with their names on them. First, `Coverage` reports *that* an answer was
-extrapolated, not *how far* — a source continued one day past its data and one continued six
-years, and they look alike to a caller unless it does the date arithmetic itself. Second,
+Two gaps stay open with their names on them. First, `AnswerBasis` reports *that* an answer
+continued a final observance and the date it was last sure of, but not what a caller should do
+about a continuation six years wide as against one a day wide; the arithmetic is available and
+the judgment is the caller's, and every caller will make it differently. Second,
 this crate makes termination possible but does not guarantee it: `YearlyRule::occurrence_in`
 never loops, but a caller searching for an instance that can never exist — `BYMONTH=2`
 paired with `BYMONTHDAY=30`, where `add_months` reports `Clamped` in every year forever — is
 relying on `ical-recur`'s candidate budget to stop, not on anything here. `MonthAddOutcome`
-carries `requested_day` so that caller can at least say why it gave up. And nothing in this
-document has yet been checked against real transition data; the whole disagreement mechanism
-rests on `LocalResolution` being right about actual folds and gaps, which is a test suite
-that does not exist yet, not a claim this design has earned.
+carries `requested_day` so that caller can at least say why it gave up.
+
+The third gap this section named — that nothing here had been checked against real transition
+data — is closed. `crates/ical-conform/tests/break_zones.rs` puts Europe/Berlin, both eras of
+`America/New_York`, `Australia/Lord_Howe`'s thirty-minute step and an `RDATE` table that runs
+out through the real surface, with every expectation transcribed from those zones' published
+rules rather than read off an answer this workspace gave.
 
 ## Open questions
 
@@ -569,3 +754,65 @@ They do not, and its decision text now says so: the crate graph makes `ical-recu
 leaves `ical-dav` depending on `ical-core` alone, so a primitive all three speak cannot live in
 one of them. What this crate owns is resolution — the whole of its subject and none of its
 vocabulary.
+
+## What M2 shipped
+
+The crate behind the surface above was built in M2 and is no longer a proposal. The blocks in
+"The public surface" carry the shipped shapes; this section carries what changed and why, and
+answers the five open questions.
+
+**The three states were renamed and given a `Reading`.** `Single`/`Gap` are `Unique` and
+`Nonexistent`, because `Single` reads as a count of sources rather than of instants and `Gap`
+names the zone's behavior rather than the wall clock's answer. More usefully, each reading is a
+struct rather than loose fields: an instant, its offset and its daylight flag travel together, so
+a variant holding two readings cannot pair the later instant with the earlier offset. `GapPolicy`
+gained a third arm, `ClampToTransition`, because the two the RFC argues about — skip it, or shift
+it — are not the two a calendar client offers, and "as soon as it can happen" is what a user
+means by moving a 02:30 meeting out of a gap.
+
+**Provenance is flat and the basis sits beside it.** `ZoneProvenance { source, coverage }` became
+the enum `ZoneProvenance` plus a separate `basis: AnswerBasis` field on each answer, as ADR-0003's
+own amended mechanism states. Nesting the second fact inside the first invited a caller to read
+`answer.source` and believe it had read both, which is the failure the pair exists to prevent.
+`Coverage::Extrapolated { nearest_known }` is `AnswerBasis::BeyondKnownTransitions(CivilDate)`:
+the same fact, named after what the source did rather than after a statistical operation it did
+not perform.
+
+**The five open questions are closed.** (1) The civil-time primitives are in `ical-core` and
+ADR-0011 says so; the graph has no cycle. (2) `CivilDateTime` on `resolve` stands, and
+`ical-core`'s `DateTimeValue` decomposes into it at exactly one place, `ZonedSeries::anchor`.
+(3) This crate emits thirteen golden-listed codes, of which two are named as this document
+proposed them: `vtimezone-rule-unsupported` and `duplicate-time-zone-identifier`.
+`ObservancesTruncated` shipped as `vtimezone-observances-truncated` on `Severity::LimitReached`
+and `NoObservanceDefined` as `vtimezone-without-observance`. `ZoneOffsetInvalid` was **not**
+taken: an observance whose `TZOFFSETFROM` or `TZOFFSETTO` cannot be read is `Component::audit`'s
+finding under section 3.6, and a second copy of that judgment here is a second place for the two
+to disagree. Five were already listed against M2 before a line of this crate was written —
+`unknown-time-zone`, `missing-time-zone-definition`, `ambiguous-local-time`,
+`nonexistent-local-time`, `time-zone-source-disagreement` — and four the milestone's agenda
+produced were added to the list with it: `time-zone-coverage-exhausted`,
+`recurrence-until-not-utc`, `exdate-value-type-mismatch` and `override-matches-no-instance`. (4) `Limits` is not passed at all:
+`Meter` carries it and one argument does both jobs, which is what ADR-0010 asks for anyway.
+(5) Left to `ical-itip`, unchanged: nothing in M2 forced the question.
+
+**`RuleDay` is wider than this document's `weekday` plus `week`.** A `VTIMEZONE`'s `RRULE` is
+written by producers, not by tzdata, and the shape they emit for `Sun>=8` is `BYDAY=SU` paired
+with a seven-day `BYMONTHDAY` run. Collapsing that onto an `NthWeek` is wrong in the months where
+the run does not begin on a week boundary, so the model carries the window as itself. `NthWeek`
+also gained `Fifth`, which differs from `Last` in exactly the months without five of that weekday
+and is what a producer writing `BYDAY=5SU` asked for.
+
+**The reader parses `RRULE` itself rather than depending on `ical-recur`.** The rejection above
+stands and is now load-bearing: `ical-tz` declares `ical-core` and nothing else, `just purity`
+enforces it, and the yearly subset the reader accepts is a few dozen lines. Anything outside it
+is `vtimezone-rule-unsupported` with the `DTSTART` still standing, which is a transition the
+table keeps rather than a definition it throws away.
+
+**One documented behavior is a gap rather than a decision.** `ZoneSetError::TooMany` hands back a
+table that did not fit under `Limits::max_vtimezone_components`, and its own doc says "a limit
+breach is already reported as itself by whoever charged the meter" — but the charge site is
+inside `VtimezoneSet::insert`, nothing reports it, and the golden list has no code for a
+zone-count refusal. A calendar declaring more zones than the bound silently keeps the ones that
+fit. That is the behavior `read_calendar_zones` documents and a test pins, and it is a smaller
+hole than inventing a ninth code during integration, but it is a hole: either the doc comment or
+the code list is wrong, and M3 should settle which.

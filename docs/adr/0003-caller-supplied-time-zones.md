@@ -135,3 +135,76 @@ default without being confirmed against section 3.6.5's observance-selection lan
 against what libical does. And the vtable cost of `&dyn ZoneSource` on Cortex-M-class
 hardware is unquantified — nobody benchmarked it — which is why the enum-dispatch escape
 above is offered per target rather than settled here.
+
+## Amendments
+
+M2 built the crate this decision governs, and four sentences of the Mechanism did not survive
+contact with it. Each is amended here rather than quietly reinterpreted, and each has a test in
+`ical-tz` or a conformance case in `crates/ical-conform/tests/break_zones.rs` behind it. The
+principle — no bundled data, no clock, the caller supplies the source, every answer names it,
+and a disagreement is a reported fact — is unchanged and was not challenged once.
+
+**1. The source trait has two methods, and the second is not a convenience.** The Mechanism
+above names only
+`fn resolve(&self, tzid: &str, local: DateTimeValue) -> Option<ZoneAnswer>`. What shipped is that
+method taking a `CivilDateTime` — the caller with the most resolutions to do is normalizing
+generated candidates that borrow from no property, so the value type would be a wrapper built and
+discarded per occurrence — beside
+`fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer>`. A source with only
+`resolve` can carry an instant *out* of a zone and cannot carry one *in*, so a `Z`-terminated
+`UNTIL`, a `RECURRENCE-ID` and an override's own two ends have no reading at all — and those are
+not exotic inputs, they are what every zoned series in the wild is written with. `OffsetAnswer`
+carries the same provenance and basis as `ZoneAnswer`, so the honesty requirement holds in both
+directions rather than only in the hard one.
+
+**2. `LocalResolution` is `{ Unique, Ambiguous, Nonexistent }` and each reading is a triple.**
+The shape this ADR pinned — `{ Single(Instant), Ambiguous(Instant, Instant), Gap }` — cannot
+express RFC 5545 section 3.3.5's reading of a wall clock inside a gap, so a caller obeying 3.3.5
+would have to re-derive it from a second query against a source that need not agree with the
+first. What shipped carries, per variant, an `Instant` with the `UtcOffset` that produced it and
+the daylight flag of the observance in force, and the gap variant additionally carries
+`offset_before`, `offset_after`, the transition's own edges and `shifted`. The daylight flag is
+read from `DAYLIGHT` against `STANDARD` and never inferred from which offset is larger, because
+`Australia/Lord_Howe` runs `+10:30` standard against `+11:00` daylight and a resolver comparing
+magnitudes answers it backwards.
+
+The instruction this ADR attached to that type — that it "must be verified against real
+transition data rather than merely shaped correctly" — is discharged. Europe/Berlin, both eras of
+`America/New_York`'s rules, `Australia/Lord_Howe`'s thirty-minute step and a `VTIMEZONE` whose
+`RDATE` lines run out are all read from committed `.ics` fixtures and asked about the two awkward
+hours, with every expected column transcribed from those zones' published rules.
+
+**3. `PolicyOutcome::Agreed` keeps both answers, and the enum is generic.** This ADR wrote
+`Agreed(ZoneAnswer)`. Collapsing the pair discards exactly the asymmetry `basis` was added to
+surface: agreement between two `Computed` answers and agreement between a `Computed` one and a
+`BeyondKnownTransitions` one are different facts, and a caller holding one answer cannot tell
+them apart. `Agreed { embedded, fallback }` and `Disagreed { embedded, fallback }` are therefore
+the same shape, and `PolicyOutcome<A = ZoneAnswer>` takes a type parameter so the same five
+variants serve `offset_at`. Reading the outcome down to one answer is `embedded_first`, a method
+with its preference written on its name.
+
+**4. Reporting a disagreement is a second call, not a side effect of asking.** This ADR says a
+disagreement is "a reported fact available to the caller" without saying who writes it down.
+`CombinedZoneSource::report` does, on a diagnostic sink and a meter the caller owns, because a
+single series resolved a thousand times against two sources that disagree is one fact and a
+thousand diagnostics is a denial of service against whoever reads them. Only the caller knows
+where that line is. `resolve` and `offset_at` still query both sources unconditionally every
+time; what is deferred is the writing down, not the asking.
+
+**5. What a caller should do with a `BeyondKnownTransitions` answer is still not decided, and
+one consequence of that is now visible.** The Consequences above call this out and it stands: the
+crate continues the final observance and says so, and refuses to prefer a source. `ical-conform`
+pins the resulting case with the honest label — an `RDATE` table ending in 2029, asked about June
+2035, answers CET, and real Berlin is on CEST in June, so the answer is defensibly wrong and the
+test comment says exactly that. What M2 adds is the fact traveling on a golden-listed code,
+`time-zone-coverage-exhausted`, so a caller that wants to act on it does not have to inspect a
+field it may not know exists. Whether "continue the last observance" is the right reading of
+section 3.6.5 is still unconfirmed against that section's observance-selection language and
+against libical, exactly as this ADR left it.
+
+**6. One bound is charged and reported by nobody.** `VtimezoneSet::insert` charges
+`Limits::max_vtimezone_components` and hands back the table that did not fit, but no golden-listed
+code names a zone-count refusal, so a calendar declaring more zones than the bound silently keeps
+the ones that fit. ADR-0010 says a bound nobody charges is decoration; this is its sibling, a
+charge nobody reports, and it is recorded here rather than closed with a code invented during
+integration.
