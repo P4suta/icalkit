@@ -25,6 +25,14 @@ a principle and left the mechanism to be inferred — what text is stored as, wh
 of, what an accessor hands back, what a mutation may touch — each of them satisfiable by a design
 that loses data.
 
+The second amendment of the same date closes a fifth, found by attacking the implementation rather
+than the prose: the write side. "A write reaches nothing else" was stated about the model and
+measured against the model, and three scoped writes turned out to reach past it in the *octets* —
+a parameter assignment carrying a terminator, a parameter value carrying a `:`, and an addition
+written after a line that had never been terminated. Two are refusals and one is a single octet
+this document now names rather than lets a reader discover; all three are in the Consequences
+below.
+
 ## Decision
 
 The parsed model preserves everything. Unknown properties, unknown parameters, unknown components,
@@ -127,6 +135,31 @@ survive untouched. Which parameters are derived, for which property, is one tran
 checked for completeness against the set of typed accessors. Converting a zoned `DTSTART` to a
 date therefore emits `DTSTART;VALUE=DATE:20260815` and drops the stale `TZID`, rather than the
 syntactically invalid pairing a value-only guard would leave behind.
+
+There is exactly one octet a scoped write puts outside the property it names, and naming it is
+cheaper than leaving a reader to find it. A final content line often arrives with no terminator,
+and it is written back with none, because appending one would add an octet the file did not have.
+That reasoning holds for as long as the line is last. An addition placed after it makes it not
+last, and RFC 5545 section 3.1 delimits content lines with `CRLF`: written unchanged, the two
+would serialize as one line, the addition would not exist on the next read, and the property above
+it would come back carrying the addition's octets glued to its value — which is data loss arriving
+through the mechanism this document exists to prevent it through. So the line above an insertion
+gains the terminator at the moment the insertion creates the need for it, and at no other moment;
+a terminator already there is kept as it is, bare `LF` and bare `CR` included. The alternative
+that keeps this document's sentence literally intact is to refuse the addition instead, which
+makes whether a calendar can be added to depend on a property of the file the caller did not
+choose and mostly cannot see. Both are recorded in `ical-conform` against section 3.1, and the
+line above keeps its name, its parameters, its value, and its position either way.
+
+The write side is also where "preserves everything" stops being the whole rule, because a value a
+caller hands over has no producer whose spelling to preserve. `PropertyMut::set_raw` refuses
+control characters, and that refusal is only true if it is the only door: every unchecked setter
+on `Property` is therefore crate-private, since a check repeated on each of them would still leave
+a handed-out `&mut Vec<Parameter>` that no check can stand in front of. A parameter value is
+written in the section 3.2 spelling its own octets require — quoted where `SAFE-CHAR` excludes
+what it carries, refused where `QSAFE-CHAR` has no spelling at all. Refusal on the way *in* would
+contradict this document; refusal on the way *out*, of octets that were never read from anywhere,
+costs it nothing.
 
 A calendar that violates the specification still parses, and the violation is reported as a
 diagnostic attached to the item rather than an error that discards the file. A caller that wants

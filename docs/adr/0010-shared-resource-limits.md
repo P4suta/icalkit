@@ -69,6 +69,21 @@ indexing a decade, and calibration belongs to whoever ships the first recurrence
 Relatedly, a 64-worker server has 64 times the aggregate ceiling, and nothing here answers a
 server that wants one global bound.
 
+Neither is the calendar field list, and the first gap was found by attacking the implementation
+rather than by reading this document. A content line folded across fifty thousand continuations
+crosses no field named above: it is one item, so `max_items` does not bind; its value is one octet,
+so `max_value_bytes` does not; its header is empty, so `max_header_bytes` does not; and the fold's
+terminator and continuation whitespace are neither a name, a parameter nor a value, which was all
+`charge_bytes` was ever handed — so `max_input_bytes` did not bind either, and a caller stating a
+sixty-four octet budget had sixteen megabytes read and several hundred retained on its behalf. The
+dimension that was missing is the one thing a fold costs: it is *kept*, one `FoldPoint` per fold,
+because the writer has to put it back. `GrammarLimits::max_folds_per_line` bounds what one line
+may retain, refused at the fold that crosses it, and each fold's octets are charged against the
+shared ledger so the same bound holds across a document of many lines. Both halves, because a
+per-line ceiling is bounded per line and unbounded in aggregate, which is this ADR's own argument
+turned on a field it did not have. What that says about the rest of the list is that a dimension
+is missing until something counts it, and reading the list is not how the next one will be found.
+
 The DAV field list is not proven complete. Bytes, element count, and depth do not bound entity
 expansion, attribute count per element, or namespace declarations, so a small inbound body can
 still expand into unbounded work through a dimension none of these fields counts. Whether that

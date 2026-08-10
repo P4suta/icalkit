@@ -291,8 +291,21 @@ not encode is readable and not writable, which is the honest answer for `Geo`.
 `set_raw` refuses control characters. RFC 5545 §3.1 excludes them from a value, and a caller that
 could write a bare `CRLF` into one could write a whole new content line after it: a `SUMMARY`
 taken from a web form becoming a second `ATTENDEE` is a real injection and not a theoretical one.
-This is the one place `ical-core` rejects caller input outright rather than diagnosing it, and it
-is a write-side check, so it costs the round-trip guarantee nothing.
+This is a write-side check, so it costs the round-trip guarantee nothing.
+
+Two corrections that the first attack pass on this crate forced, both about the word *the* in "the
+one place `ical-core` rejects caller input". First, it is a claim about the only door, so
+`Property`'s unchecked setters — `set_value_text`, `set_name`, `edit_parameters` — are
+crate-private. This document never listed them as public surface and the implementation had made
+all three `pub`, which put the identical injection one `items_mut()` away from any caller. A check
+repeated on each would have closed two of the three, since `edit_parameters` hands out a
+`&mut Vec<Parameter>` and no check stands in front of a reference after it is returned. Second,
+the value side was never the only channel: `ParameterEdit` carries a *value*, so writing one means
+choosing its §3.2 spelling, and there are two answers rather than one. A value carrying `:` `;` or
+`,` is written inside a `DQUOTE` pair, which `ical_grammar::quote_parameter` already knew how to
+do and nothing called; one carrying a `DQUOTE` or a control character has no §3.2 spelling at all
+(`parameter_is_representable`), and is `MutationError::NotRepresentable`. So there are two refusals
+and they are both write-side, both stated over octets that were never read from a file.
 
 The change vocabulary `ical-itip` reuses (DP-13) lives here rather than there:
 
@@ -355,7 +368,7 @@ DP-08 puts one `Limits` value in `ical-core` and a running meter everywhere. Bot
 every sibling reads the fields that concern it.
 
 ```rust
-pub struct GrammarLimits { /* max_header_bytes, max_parameters */ }
+pub struct GrammarLimits { /* max_header_bytes, max_parameters, max_folds_per_line */ }
 pub struct Limits { /* grammar, max_input_bytes, max_value_bytes, max_component_depth,
                       max_items, candidates_per_period, override_entries,
                       max_vtimezone_observances, max_vtimezone_components */ }
@@ -409,6 +422,7 @@ pub enum ParseError {           // no boundary left to recover to
     InputTooLarge { limit: u64 },  ValueTooLarge { limit: u32 },
     HeaderTooLarge { limit: u32 }, TooManyParameters { limit: u32 },
     TooManyItems { limit: u32 },   TooDeep { limit: u16 },
+    TooManyFolds { limit: u32 },
 }
 pub enum Severity { Note, Violation, LimitReached }
 pub enum DiagnosticCode { /* #[non_exhaustive], semver-stable, golden-listed */ }
