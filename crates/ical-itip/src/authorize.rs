@@ -1,0 +1,673 @@
+// SPDX-FileCopyrightText: 2026 icalkit contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Whether the party applying a message is entitled to the change it asks for.
+//!
+//! Specification: RFC 5546 section 1.3 (the two roles), section 2.1 (who a message is between),
+//! section 2.1.4 (`SEQUENCE`), section 2.1.5 (`DTSTAMP`), section 3 (per-method restrictions).
+//!
+//! Authorization is the first half of the semantics, not a layer above them. The positions
+//! where scheduling implementations have historically been exploited — a reply that moves a
+//! meeting, a reply from an address nobody invited, a stale `SEQUENCE` overwriting a newer
+//! one — are all positions where the message and the identity have to be judged together or
+//! not at all.
+//!
+//! # The gate, in order
+//!
+//! [`evaluate_message`] runs a fixed order and a denial names the first reason a caller can
+//! act on: **identity**, then **sender**, then **revision**, then **method conformance**, then
+//! **fields**. There is no partial success. A message that overreaches on one property is
+//! denied whole, because applying its permitted half would leave the caller holding a
+//! component no party ever described.
+//!
+//! # What survives the byte boundary, stated plainly
+//!
+//! ADR-0004 leaves this library no session, so a propose-then-confirm exchange crosses a
+//! request boundary. A wrapper whose only guarantee is "this crate built it" guarantees
+//! **nothing** across that boundary: encode it and a forged copy is indistinguishable from a
+//! genuine one, and the sealed constructor then attests to the transport rather than to the
+//! gate.
+//!
+//! So [`Authorization`] is not encodable, and that is enforced by a borrow rather than by a
+//! naming convention. It holds `&'a ItipMessage` and `&'a dyn ScheduledComponent`, so it
+//! cannot outlive either, cannot be stored in a session, and cannot be reconstructed from
+//! bytes — there is no owned form to reconstruct. A caller that tries to carry one across a
+//! request gets a compile error instead of a forgeable token, which is the whole of the
+//! improvement over a wrapper that would merely have been *documented* as unserializable.
+//! [`apply_transition`] then takes it **by value**, so a vetted transition is a single-use
+//! capability rather than something replayable against a second target.
+//!
+//! What that still does not prove is **freshness**. The borrowed state may be a snapshot the
+//! caller read minutes ago, and a genuine `Authorization` over a stale snapshot is wrong in a
+//! way no lifetime can see. Binding a transition to an `ETag` is ADR-0004 territory and
+//! undesigned. [`Commitment`] is the one value here designed to cross bytes, and it is
+//! deliberately not a capability: it carries **no authority**, it is compared only to cause a
+//! *refusal*, and its digest is a checksum rather than a MAC. An attacker who forges one gains
+//! exactly one thing — the ability to decline to be told that the target moved — and the gate
+//! below ran fresh either way. Nothing here should ever be changed to grant on a `Commitment`.
+
+use ical_core::{ComponentKind, Instant, PropertyId, ProposedChange};
+
+use crate::diff::{attendee_occurrence_of, describe_payload};
+use crate::identity::{MessageIdentity, Revision, Uid};
+use crate::message::ItipMessage;
+use crate::method::{ActorRole, Method};
+use crate::party::PartyId;
+use crate::state::{PropertyOccurrence, ScheduledComponent};
+use crate::table::{MethodRule, PriorState};
+use crate::transition::{
+    ApplyReport, FieldRule, ScheduleTarget, Transition, TransitionReason, field_rule,
+};
+
+/// Why a message was refused.
+///
+/// `#[non_exhaustive]`, so a caller's `match` keeps a `_` arm and a new refusal is not a major
+/// version. Every variant is a whole-message refusal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuthorizationDenied {
+    /// The message carries no payload about the component being judged.
+    UidMismatch,
+    /// The message names an instance the local copy does not have.
+    NoMatchingInstance,
+    /// The message names an instance nothing could tell from its neighbor.
+    ///
+    /// The two halves of a repeated hour are one cadence key, and a guess between them
+    /// cancels or moves somebody else's meeting. See [`crate::FoldSide`].
+    AmbiguousInstance,
+    /// The sender is on neither the attendee list nor the organizer line.
+    UnknownAttendee,
+    /// The sender is not the organizer this component names.
+    OrganizerMismatch,
+    /// RFC 5546 does not permit this party to send this method.
+    MethodForbidsSender(ActorRole),
+    /// The message's `SEQUENCE` was present and unreadable, so it has no revision.
+    SequenceUnreadable,
+    /// The message is an older revision than the one already held.
+    SequenceStale {
+        /// The `SEQUENCE` the caller already holds.
+        have: u32,
+    },
+    /// The message is the same revision with an older `DTSTAMP`.
+    DtstampStale {
+        /// The `DTSTAMP` the caller already holds.
+        have: Instant,
+    },
+    /// RFC 5546 does not permit this method to act on what the caller holds.
+    PriorStateForbidden(PriorState),
+    /// A `RECURRENCE-ID` reached further than this method may.
+    RangeNotPermitted,
+    /// The message states a property RFC 5546 forbids it, or one this sender may not change.
+    MethodForbidsField(PropertyOccurrence),
+    /// The message lacks a property RFC 5546 requires of it.
+    MethodRequiresField(PropertyId),
+    /// The message nests a component RFC 5546 forbids inside its payload.
+    ///
+    /// A [`ComponentKind`] rather than a [`PropertyOccurrence`] naming the same octets: a
+    /// nested `VALARM` is not a property, and a caller matching on this and looking the name up
+    /// among the payload's properties would find nothing there.
+    MethodForbidsComponent(ComponentKind),
+}
+
+/// A transition that has passed every gate, for this message against this state.
+///
+/// Sealed: no public constructor, no public field, no `From`, no `Default`, no `Clone`. It is
+/// `ical-itip`'s alone and not a generic `Authorized<T>` shared with `ical-core`, because a
+/// wrapper parametrized only on *what changed* would prove that some sealed constructor ran
+/// somewhere rather than that RFC 5546's checks ran for this value.
+///
+/// It borrows both inputs, which is what makes "not encodable" a property of the type rather
+/// than a promise in prose: see this module's own documentation for what that does and does
+/// not buy.
+#[derive(Debug)]
+pub struct Authorization<'a> {
+    /// The message the decision was made about.
+    message: &'a ItipMessage<'a>,
+    /// The state it was judged against.
+    current: &'a dyn ScheduledComponent,
+    /// What the actor turned out to be.
+    actor: ActorRole,
+    /// What the message is about.
+    identity: MessageIdentity,
+    /// What it would change.
+    transition: Transition,
+}
+
+impl<'a> Authorization<'a> {
+    /// The message this decision was made about.
+    #[must_use]
+    pub const fn message(&self) -> &'a ItipMessage<'a> {
+        self.message
+    }
+
+    /// The state it was judged against.
+    #[must_use]
+    pub const fn current(&self) -> &'a dyn ScheduledComponent {
+        self.current
+    }
+
+    /// What the actor turned out to be.
+    #[must_use]
+    pub const fn actor(&self) -> ActorRole {
+        self.actor
+    }
+
+    /// What the message is about.
+    #[must_use]
+    pub const fn identity(&self) -> &MessageIdentity {
+        &self.identity
+    }
+
+    /// What kind of change this is.
+    #[must_use]
+    pub const fn reason(&self) -> TransitionReason {
+        self.transition.reason()
+    }
+
+    /// What would change.
+    #[must_use]
+    pub const fn transition(&self) -> &Transition {
+        &self.transition
+    }
+
+    /// The transition, taken out of its authorization.
+    ///
+    /// What is left is inert, which is the point: a caller that wants to keep the description
+    /// after applying it keeps a value that cannot apply anything.
+    #[must_use]
+    pub fn into_transition(self) -> Transition {
+        self.transition
+    }
+
+    /// Whether this decision is about the same thing `commitment` recorded.
+    ///
+    /// Compared to *refuse*, never to grant: a caller confirming an action a user approved
+    /// asks this after re-evaluating, so that a target which moved in between is caught rather
+    /// than silently overwritten. Answering `true` grants nothing on its own.
+    #[must_use]
+    pub fn honors(&self, commitment: &Commitment) -> bool {
+        Commitment::of(self) == *commitment
+    }
+}
+
+/// What a user was shown, in a form that can cross a request boundary.
+///
+/// Carries **no authority**. It exists so that a confirm turn can notice that the thing being
+/// confirmed is no longer the thing that was described — a racing organizer update, a second
+/// message about the same identity — and refuse. Its digest is a non-cryptographic checksum
+/// and is not a MAC: an attacker who can choose one gains only the ability to skip that
+/// staleness refusal, and [`evaluate_message`] ran fresh regardless.
+///
+/// A `Commitment` is `Clone` and owns everything it holds, so a caller serializes it with
+/// whatever encoding it already has. This crate ships none, because shipping one would invite
+/// exactly the reading this paragraph exists to prevent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commitment {
+    /// What the message was about.
+    identity: MessageIdentity,
+    /// The revision the message carried.
+    offered: Revision,
+    /// The revision the state carried, absent when the caller held nothing readable.
+    held: Option<Revision>,
+    /// What kind of change was described.
+    reason: TransitionReason,
+    /// How many occurrences it touched.
+    changes: u32,
+    /// A checksum over those occurrences and their changes. Not a MAC.
+    digest: u64,
+}
+
+impl Commitment {
+    /// What `authorization` described, recorded so a later turn can notice a difference.
+    #[must_use]
+    pub fn of(authorization: &Authorization<'_>) -> Self {
+        let payload = authorization
+            .message
+            .payload_for(authorization.current)
+            .or_else(|| authorization.message.payload(0));
+        let offered = payload
+            .and_then(|component| Revision::read(component.sequence(), component.dtstamp()))
+            .unwrap_or_else(|| Revision::new(0, None));
+        Self {
+            identity: authorization.identity.clone(),
+            offered,
+            held: revision_of(authorization.current),
+            reason: authorization.transition.reason(),
+            changes: u32::try_from(authorization.transition.len()).unwrap_or(u32::MAX),
+            digest: digest_of(&authorization.transition),
+        }
+    }
+
+    /// What the message was about.
+    #[must_use]
+    pub const fn identity(&self) -> &MessageIdentity {
+        &self.identity
+    }
+
+    /// The revision the message carried.
+    #[must_use]
+    pub const fn offered(&self) -> Revision {
+        self.offered
+    }
+
+    /// The revision the state carried when the description was made.
+    #[must_use]
+    pub const fn held(&self) -> Option<Revision> {
+        self.held
+    }
+
+    /// What kind of change was described.
+    #[must_use]
+    pub const fn reason(&self) -> TransitionReason {
+        self.reason
+    }
+
+    /// How many occurrences it touched.
+    #[must_use]
+    pub const fn changes(&self) -> u32 {
+        self.changes
+    }
+
+    /// The checksum over those occurrences. Not a MAC; see this type's own documentation.
+    #[must_use]
+    pub const fn digest(&self) -> u64 {
+        self.digest
+    }
+}
+
+/// FNV-1a over every occurrence and change, in the order a transition iterates them.
+///
+/// Non-cryptographic on purpose and documented as such where it is used. It detects a target
+/// that moved between two turns, which is an accident rather than an adversary.
+fn digest_of(transition: &Transition) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    let mut eat = |octets: &[u8]| {
+        for octet in octets {
+            hash ^= u64::from(*octet);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+    for (at, change) in transition.changes() {
+        eat(at.name());
+        eat(&at.index().to_le_bytes());
+        match change {
+            ProposedChange::Add(line) => {
+                eat(b"+");
+                eat(line.as_bytes());
+            },
+            ProposedChange::Replace(line) => {
+                eat(b"=");
+                eat(line.as_bytes());
+            },
+            ProposedChange::SetParameters(edits) => {
+                eat(b"p");
+                for edit in edits {
+                    eat(edit.name());
+                    eat(edit.value().unwrap_or(b""));
+                }
+            },
+            ProposedChange::Remove => eat(b"-"),
+        }
+    }
+    hash
+}
+
+/// What `actor` is to `current`, or `None` when they are neither party to it.
+///
+/// The organizer line is consulted before the attendee list, because RFC 5546 section 1.3 lets
+/// one calendar user be both and the organizer's permissions are the wider ones.
+#[must_use]
+pub fn actor_role(current: &dyn ScheduledComponent, actor: PartyId<'_>) -> Option<ActorRole> {
+    if let Some(role) = current
+        .organizer()
+        .and_then(|party| party.role_of(actor, ActorRole::Organizer, ActorRole::OrganizerAgent))
+    {
+        return Some(role);
+    }
+    (0..current.attendee_count())
+        .find_map(|index| current.attendee(index).and_then(|who| who.role_of(actor)))
+}
+
+/// Which `ATTENDEE` of `current` is `who`, if any.
+#[must_use]
+pub fn attendee_index(current: &dyn ScheduledComponent, who: PartyId<'_>) -> Option<usize> {
+    (0..current.attendee_count()).find(|index| {
+        current
+            .attendee(*index)
+            .is_some_and(|found| found.party().is(who))
+    })
+}
+
+/// The revision `component` states, or `None` when its `SEQUENCE` could not be read.
+fn revision_of(component: &dyn ScheduledComponent) -> Option<Revision> {
+    Revision::read(component.sequence(), component.dtstamp())
+}
+
+/// Whether `current` is a component the caller actually holds.
+fn prior_state(current: &dyn ScheduledComponent) -> PriorState {
+    if current.uid().is_some() {
+        PriorState::Present
+    } else {
+        PriorState::Absent
+    }
+}
+
+/// Judge `message` against `current` on behalf of `actor`.
+///
+/// # Errors
+///
+/// [`AuthorizationDenied`], naming the first gate that refused. There is no partial success;
+/// see this module's own documentation for the order and for why.
+pub fn evaluate_message<'a>(
+    message: &'a ItipMessage<'a>,
+    current: &'a dyn ScheduledComponent,
+    actor: PartyId<'_>,
+) -> Result<Authorization<'a>, AuthorizationDenied> {
+    let constraints = message.rule();
+    let prior = prior_state(current);
+    if !constraints.permits_prior(prior) {
+        return Err(AuthorizationDenied::PriorStateForbidden(prior));
+    }
+    let payload = matching_payload(message, current, prior)?;
+    let role = sender_role(message, sender_state(current, payload, prior), actor)?;
+    if !constraints.presence_of(b"SEQUENCE").is_forbidden() {
+        check_revision(payload, current)?;
+    }
+    check_range(message.method(), payload)?;
+    check_conformance(constraints, payload)?;
+    check_nesting(constraints, payload)?;
+
+    let transition = describe_payload(message.method(), payload, current);
+    check_fields(&transition, current, role, actor)?;
+    Ok(Authorization {
+        message,
+        current,
+        actor: role,
+        identity: MessageIdentity::new(message.uid().clone(), payload.recurrence_id()),
+        transition,
+    })
+}
+
+/// The payload this message carries about `current`.
+///
+/// For a method acting on nothing the caller holds, the first payload is the one being
+/// created. Otherwise the identity has to match exactly: an ambiguous instance is a denial
+/// rather than a pick, which is what closes M2's repeated-hour question here.
+fn matching_payload<'a>(
+    message: &ItipMessage<'a>,
+    current: &dyn ScheduledComponent,
+    prior: PriorState,
+) -> Result<&'a dyn ScheduledComponent, AuthorizationDenied> {
+    if prior == PriorState::Absent {
+        return message.payload(0).ok_or(AuthorizationDenied::UidMismatch);
+    }
+    if !message
+        .uid()
+        .matches(&Uid::new(current.uid().unwrap_or(&[])))
+    {
+        return Err(AuthorizationDenied::UidMismatch);
+    }
+    if let Some(payload) = message.payload_for(current) {
+        return Ok(payload);
+    }
+    let target = MessageIdentity::new(message.uid().clone(), current.recurrence_id());
+    let ambiguous = (0..message.payload_count()).any(|index| {
+        message
+            .payload_identity(index)
+            .is_some_and(|identity| identity.matches(&target) == crate::InstanceMatch::Ambiguous)
+    });
+    if ambiguous {
+        Err(AuthorizationDenied::AmbiguousInstance)
+    } else {
+        Err(AuthorizationDenied::NoMatchingInstance)
+    }
+}
+
+/// Which component the sending party is looked up in.
+///
+/// The state the caller holds, whenever it holds one: an `ORGANIZER` line a recipient already
+/// has is the only statement about who runs this meeting that the sender did not write.
+///
+/// When the prior state is absent there is no such line, and the two methods RFC 5546 lets act
+/// on nothing — `PUBLISH` (section 3.2.1) and `REQUEST` (section 3.2.2) — exist precisely to
+/// arrive before the recipient has one. Looking the party up in the state would answer `None`
+/// for both, so an invitation could never be accepted and
+/// [`TransitionReason::Created`] could never be reached. So the payload answers instead, and
+/// what that costs is stated plainly: for a first message this gate proves that the actor the
+/// caller named is a party **the message names**, and nothing more. Whether that actor really
+/// sent it is the transport's answer — an authenticated CalDAV session, or the iMIP envelope
+/// checks in [`crate::imip`] — and `SECURITY.md` says so in the same words.
+const fn sender_state<'a>(
+    current: &'a dyn ScheduledComponent,
+    payload: &'a dyn ScheduledComponent,
+    prior: PriorState,
+) -> &'a dyn ScheduledComponent {
+    match prior {
+        PriorState::Present => current,
+        PriorState::Absent => payload,
+    }
+}
+
+/// What `actor` is, refused when RFC 5546 does not let that party send this method.
+fn sender_role(
+    message: &ItipMessage<'_>,
+    current: &dyn ScheduledComponent,
+    actor: PartyId<'_>,
+) -> Result<ActorRole, AuthorizationDenied> {
+    let role = actor_role(current, actor).ok_or({
+        if message.method().is_organizer_authored() {
+            AuthorizationDenied::OrganizerMismatch
+        } else {
+            AuthorizationDenied::UnknownAttendee
+        }
+    })?;
+    if role.satisfies(message.rule().sender()) {
+        Ok(role)
+    } else {
+        Err(AuthorizationDenied::MethodForbidsSender(role))
+    }
+}
+
+/// RFC 5546 sections 2.1.4 and 2.1.5: an older version never overwrites a newer one.
+///
+/// Run only for a method whose table admits a `SEQUENCE`, which is the caller's check above and
+/// not a special case here. Section 3.2.6's `REFRESH` table gives `SEQUENCE` the value `0`: a
+/// refresh asks for the latest version and states no version of its own, so reading one out of
+/// it yields the absent-is-zero reading and makes every refresh stale against every held
+/// revision above zero. A method that states no revision overwrites nothing, so there is
+/// nothing for these two sections to order.
+fn check_revision(
+    payload: &dyn ScheduledComponent,
+    current: &dyn ScheduledComponent,
+) -> Result<(), AuthorizationDenied> {
+    let offered = revision_of(payload).ok_or(AuthorizationDenied::SequenceUnreadable)?;
+    let Some(held) = revision_of(current) else {
+        // The caller's own copy has no readable revision, so there is nothing to be stale
+        // against. Refusing here would make an unreadable local `SEQUENCE` reject every
+        // message about it, which is a denial of service against the recipient.
+        return Ok(());
+    };
+    if !offered.is_stale_against(held) {
+        return Ok(());
+    }
+    if offered.sequence() < held.sequence() {
+        return Err(AuthorizationDenied::SequenceStale {
+            have: held.sequence(),
+        });
+    }
+    held.dtstamp().map_or(Ok(()), |have| {
+        Err(AuthorizationDenied::DtstampStale { have })
+    })
+}
+
+/// RFC 5546 section 3.2.3: a `REPLY` answers one instance, not every later one.
+fn check_range(
+    method: Method,
+    payload: &dyn ScheduledComponent,
+) -> Result<(), AuthorizationDenied> {
+    let reaching = payload
+        .recurrence_id()
+        .is_some_and(crate::InstanceRef::is_this_and_future);
+    if reaching && matches!(method, Method::Reply | Method::Refresh) {
+        return Err(AuthorizationDenied::RangeNotPermitted);
+    }
+    Ok(())
+}
+
+/// The transcribed section 3 table, evaluated against one payload.
+///
+/// Counted per name over the payload's own properties, so a `0` row is refused however many
+/// times it appears and a `1` row is refused when it appears twice. The `SUBCOMPONENTS` rows
+/// are read the same way by [`check_nesting`].
+///
+/// The `COMPONENTS` rows are deliberately **not** read here. They state which top-level
+/// components a message may carry, and [`crate::ItipMessage::read`] already refuses a second
+/// payload kind (`MixedPayloadKinds`) and a payload the tables never nest at the top level
+/// (`UnsupportedPayload`) — earlier than this gate and for the whole message rather than for
+/// one payload. A second reading here would be a weaker restatement of a refusal that already
+/// happened, and two gates over one rule are two places for the answer to drift.
+fn check_conformance(
+    constraints: MethodRule,
+    payload: &dyn ScheduledComponent,
+) -> Result<(), AuthorizationDenied> {
+    let mut counts: alloc::collections::BTreeMap<&[u8], usize> =
+        alloc::collections::BTreeMap::new();
+    for index in 0..payload.property_count() {
+        let Some(name) = payload.property_name(index) else {
+            continue;
+        };
+        if constraints.presence_of(name).is_forbidden() {
+            let seen = counts.get(name).copied().unwrap_or(0);
+            return Err(AuthorizationDenied::MethodForbidsField(
+                PropertyOccurrence::named(name, seen),
+            ));
+        }
+        let seen = counts.entry(name).or_insert(0);
+        *seen = seen.saturating_add(1);
+    }
+    for row in constraints.properties() {
+        if !row.presence().is_required() {
+            continue;
+        }
+        let seen = counts
+            .iter()
+            .find(|(name, _)| row.is_named(name))
+            .map_or(0, |(_, count)| *count);
+        if !row.presence().admits(seen) {
+            return Err(AuthorizationDenied::MethodRequiresField(
+                PropertyId::from_name(row.name()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The `SUBCOMPONENTS` rows of the same table, evaluated against the payload's own children.
+///
+/// Section 3.2.3 gives `VALARM` the value `0` for a `REPLY`, and an alarm arriving on an
+/// attendee's answer is a component the recipient's client will act on — which is why this is a
+/// refusal and not a diagnostic.
+///
+/// Only the forbidden direction, because there is nothing else to read: every `SUBCOMPONENTS`
+/// row RFC 5546 section 3 prints is `0` or `0+`, so no nested component is ever required. That
+/// is machine-checked below rather than trusted, so a row added later cannot slip past.
+///
+/// A child whose name this workspace has no schema for is not judged. `ComponentKind::from_name`
+/// answering `None` means "no schema" and never "not allowed" — its own words — so refusing on
+/// it would put a meaning into that answer that `ical-core` does not give it.
+fn check_nesting(
+    constraints: MethodRule,
+    payload: &dyn ScheduledComponent,
+) -> Result<(), AuthorizationDenied> {
+    for index in 0..payload.child_count() {
+        let Some(kind) = payload
+            .child(index)
+            .and_then(ScheduledComponent::component_kind)
+        else {
+            continue;
+        };
+        if constraints
+            .subcomponent_presence(kind.as_bytes())
+            .is_forbidden()
+        {
+            return Err(AuthorizationDenied::MethodForbidsComponent(kind));
+        }
+    }
+    Ok(())
+}
+
+/// Which of the described changes this sender is entitled to make.
+///
+/// An organizer-side actor may write anything the method's table admits. An attendee-side one
+/// may write only [`FieldRule::EitherParty`] properties and its own `ATTENDEE` line — which is
+/// the rule that stops a reply from moving a meeting, the first attack `SECURITY.md` names.
+fn check_fields(
+    transition: &Transition,
+    current: &dyn ScheduledComponent,
+    role: ActorRole,
+    actor: PartyId<'_>,
+) -> Result<(), AuthorizationDenied> {
+    if role.is_organizer_side() {
+        return Ok(());
+    }
+    let own = attendee_occurrence_of(current, actor);
+    for (at, _) in transition.changes() {
+        let permitted = match field_rule(at.name()) {
+            FieldRule::EitherParty => true,
+            FieldRule::AttendeeOwn => own.as_ref() == Some(at),
+            FieldRule::OrganizerOnly => false,
+        };
+        if !permitted {
+            return Err(AuthorizationDenied::MethodForbidsField(at.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Write an authorized transition to `target`, reporting what it took.
+///
+/// Takes the authorization **by value**, so a vetted transition is a single-use capability
+/// rather than something a caller can replay against a second target after the state it was
+/// vetted against has moved.
+#[must_use]
+pub fn apply_transition(
+    target: &mut dyn ScheduleTarget,
+    authorized: Authorization<'_>,
+) -> ApplyReport {
+    let mut report = ApplyReport::new();
+    // Consumed rather than borrowed, which is what makes the capability single-use: the
+    // description survives the call only if the caller asked for it back.
+    let transition = authorized.into_transition();
+    for (at, change) in transition.changes() {
+        match target.write_change(at, change) {
+            Ok(()) => report.note_applied(),
+            Err(reason) => report.note_rejected(at.clone(), reason),
+        }
+    }
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::table::RULES;
+
+    /// [`super::check_nesting`] reads only the forbidden direction of the `SUBCOMPONENTS` rows,
+    /// and that is only correct while no such row requires anything. Checked against the
+    /// transcribed tables rather than asserted in prose, so a row transcribed later from an RFC
+    /// that does require a nested component fails here instead of being quietly unenforced.
+    #[test]
+    fn no_transcribed_subcomponent_row_requires_a_nested_component() {
+        for rule in &RULES {
+            for row in rule.subcomponents() {
+                assert!(
+                    !row.presence().is_required(),
+                    "{} nests a required component, which the gate does not read",
+                    rule.section()
+                );
+            }
+        }
+    }
+}
