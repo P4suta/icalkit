@@ -318,6 +318,19 @@ impl<T> From<Vec<T>> for ByList<T> {
 /// it did not, and the instant beside it is the wall-clock reading *interpreted at UTC* —
 /// correct only if the caller resolved `DTSTART` the same way, which is exactly the
 /// normalization `docs/adr/0003` makes the caller's step.
+///
+/// M2 settled what that normalization is, and one sentence above is narrower than the answer.
+/// The timeline this crate walks for a **zoned** series is the series' own wall clock projected
+/// onto UTC, not the UTC timeline: `ical-tz` projects `DTSTART`, `UNTIL`, every `RDATE`,
+/// `EXDATE` and `RECURRENCE-ID` onto it before the search, and reads each cadence key back
+/// through the zone afterwards, which is what keeps a daily 09:00 series at 09:00 across a
+/// daylight saving transition. For a floating series and for a UTC series that projection is
+/// the identity and [`UntilClock::Utc`]'s reading above holds verbatim. For a zoned one it is
+/// not: the instant beside the variant is the projection, and the variant records that the
+/// *file* wrote `Z`. A `Z`-terminated `UNTIL` handed over unprojected cuts a zoned series off
+/// an hour early or late for half the year. `ical_tz::seam` states the contract in full, and a
+/// floating `UNTIL` against a zoned `DTSTART` now travels on
+/// `DiagnosticCode::RecurrenceUntilNotUtc` rather than only being named by this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UntilClock {
     /// The value carried a trailing `Z`, so it names a UTC instant outright.

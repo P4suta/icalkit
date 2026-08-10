@@ -72,6 +72,31 @@
 //!
 //! Not here: a time zone. `UNTIL` is compared on the timeline the caller resolved, which is
 //! what makes M2 a separate crate rather than a dependency.
+//!
+//! # The seam with `ical-tz`
+//!
+//! Which timeline that is was left half-specified by this crate and is settled by its sibling.
+//! For a series whose `DTSTART` is floating or UTC it is the UTC timeline and nothing more
+//! needs saying. For a **zoned** series it is the series' own wall clock projected onto UTC —
+//! call an instant on it *nominal* — and every instant crossing the seam in either direction is
+//! nominal: `DTSTART`, `UNTIL`, each `RDATE`, each `EXDATE` and each `RECURRENCE-ID` going in,
+//! and every cadence key coming out.
+//!
+//! That is what makes a zoned series wall-clock-stable. This crate's period walk preserves the
+//! civil fields it was handed, so a daily rule anchored at a nominal 09:00 emits a nominal 09:00
+//! every day of the year; `ical-tz` reads each key back into a wall clock and resolves *that*
+//! against the zone, which applies the offset in force on that particular day. A series anchored
+//! at a real UTC instant instead would drift by an hour the moment the zone moved, and the
+//! offsets cannot be applied here because this crate has no zone and is a sibling of the crate
+//! that does.
+//!
+//! Two obligations fall on the caller and neither is optional. A `Z`-terminated `UNTIL` on a
+//! zoned series has to be projected too — instant, then the zone's offset at it, then the wall
+//! clock, then back onto the nominal timeline — because it is a real UTC instant and the keys it
+//! is compared against are not. And a floating `UNTIL`, which is already nominal and needs no
+//! conversion at all, is a violation of RFC 5545 section 3.3.10 that carries a diagnostic.
+//! [`UntilClock`] names both cases from this side; `ical_tz::seam` states the contract from the
+//! other.
 
 #![no_std]
 
