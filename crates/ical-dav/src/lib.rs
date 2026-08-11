@@ -6,7 +6,7 @@
 //!
 //! Specification: RFC 4791, "Calendaring Extensions to WebDAV (CalDAV)"
 //! <https://www.rfc-editor.org/rfc/rfc4791>, over RFC 4918 (WebDAV), with RFC 6578 for
-//! collection synchronization.
+//! collection synchronization and RFC 6638 for the scheduling properties beside it.
 //!
 //! CalDAV is WebDAV with calendar semantics: `PROPFIND` and `REPORT` carrying XML bodies,
 //! `calendar-query` and `calendar-multiget` for asking which resources matter,
@@ -30,25 +30,125 @@
 //! instances of a recurring event fall inside it is recurrence work, which is why this
 //! crate depends on the model alone and a server combines it with `ical-recur`.
 //!
-//! The XML inside those requests and responses is this crate's own, not an outside
-//! dependency's: a tokenizer over the closed `DAV:` and CalDAV element vocabulary, resolving
-//! namespaces rather than matching prefixes, with no DTD, no external entities, and bounds
-//! checked on every event (see `docs/adr/0004`). `calendar-data` stays opaque and is parsed
-//! by `ical-core`.
+//! # Three things a reader should know before using it
 //!
-//! Reading a multi-status is incremental and holds one response at a time; writing one is
-//! incremental too. A `calendar-multiget` over forty thousand `href`s is a real request from
-//! both sides, so materializing the whole thing is one optional consumer of the decoder
-//! rather than the only way to read one, and the cap on that belongs to the caller's buffer
-//! and not to the wire format.
+//! **The XML is this crate's own, and it refuses more than it accepts.** A hand-rolled
+//! tokenizer over the closed `DAV:`, CalDAV and `CalendarServer` vocabulary, resolving
+//! namespaces rather than matching prefixes. There is no `DOCTYPE`, no entity declaration, no
+//! external entity, no processing instruction beyond the XML declaration, no encoding other
+//! than UTF-8, and no entity reference beyond the five XML 1.0 predefines. Each of those is a
+//! refusal rather than a gap, because a reader that is merely incomplete is safer than one
+//! that is accidentally complete (`SECURITY.md`, `docs/adr/0004`).
+//!
+//! **`calendar-data` keeps its line endings, and that is a stated departure from XML 1.0.**
+//! Section 2.11 of XML 1.0 requires every `CRLF` to be folded to `LF` before parsing, and RFC
+//! 5545 makes that same `CRLF` the syntax of a content line. Inside `CALDAV:calendar-data` and
+//! nowhere else, this reader hands back the octets as they arrived. The reasoning, the cost,
+//! and the caller's way out — [`TextPolicy`] — are on that type and in `docs/adr/0004`.
+//!
+//! **Nothing here is unbounded.** Every reading door takes the caller's `Limits` and a
+//! `&mut Meter`, every collection is a [`Bounded`] whose growth is a charged push, and the
+//! dimensions include the ones a body's size does not reach: response count, property count
+//! per response, `href` length, one element's character data, and the namespace bindings live
+//! at once (`docs/adr/0010`).
 //!
 //! # Status
 //!
-//! Bootstrap. Nothing is implemented yet; see `ROADMAP.md` (M4). The public surface is
-//! designed and compiled; `docs/design/ical-dav-api.md` carries it, including the one part
-//! that has never been proved — whether the incremental codec pair is expressible under
-//! `no_std` with no allocator on `thumbv7em-none-eabi`.
+//! The shared foundation is landed and tested: the failure channels, the byte sinks, the
+//! element vocabulary, the bounded collection, the character-data rules that resolve the
+//! line-ending collision, the protocol values, the request and response shapes, and the four
+//! codec traits. The tokenizer, the element writer, the per-body readers and writers, and the
+//! conditional-write binding are the units built on top of it; see `ROADMAP.md` (M4).
 
 #![no_std]
 
 extern crate alloc;
+
+mod bound;
+mod codec;
+mod element;
+mod failure;
+mod freshness;
+mod policy;
+mod read_request;
+mod read_response;
+mod reader;
+mod request;
+mod response;
+mod sink;
+mod text;
+mod value;
+mod write_request;
+mod write_response;
+mod writer;
+
+// The seven units built on the foundation above. Each creates exactly one file, declares it
+// here, and adds its own line to the re-export block at the end; nothing else in this file is
+// a shared edit. The files are absent rather than present and empty because `cargo shear`
+// refuses a module with no items, and a placeholder item to satisfy it would be padding.
+//
+// `reader.rs`         `XmlPull` over one body: an iterative state machine with an explicit
+//                     stack, the scoped prefix-binding stack `Namespace` resolution needs
+//                     charged through `Meter::try_bind_prefix`, and the refusals — DOCTYPE,
+//                     entity declaration, external entity, processing instruction, non-UTF-8
+//                     encoding, unbound prefix, mismatched tag, duplicate attribute,
+//                     truncation. Character data goes to `decode_text` under the mode
+//                     `TextMode::of` gives it, which this unit never chooses for itself.
+// `writer.rs`         The element writer: the XML declaration, the root's fixed `D:`, `C:` and
+//                     `CS:` declarations, `Namespace::write_prefix` plus a local name for every
+//                     element, `write_escaped_text` and `write_escaped_attribute` for content,
+//                     no CDATA ever, and an open-element stack so an unbalanced write cannot
+//                     be expressed.
+// `read_request.rs`   `ReadXml` for `PropFind`, `CalendarQuery`, `CalendarMultiget`,
+//                     `FreeBusyQuery`, `SyncCollection`, and the filter tree under them —
+//                     through the constructors those types already have, so a server decoding
+//                     a REPORT meets the refusals a client building one would.
+// `write_request.rs`  `WriteXml` for the same, plus the `YYYYMMDDTHHMMSSZ` a `time-range`
+//                     attribute carries, reported as `ValueError::TimeUnrepresentable` where
+//                     an instant has no such spelling rather than clamped to one that does.
+// `read_response.rs`  `MultiStatusReader` and `ResponseSource`: one `DavResponse` at a time,
+//                     each property into the `PropValue` its element earns, `CalendarPayload`
+//                     carrying the line-ending witness the decode produced, and
+//                     `PropValue::Unmodeled` rather than a discard for a value with no model.
+// `write_response.rs` `WriteXml` for `MultiStatus` and everything under it, plus the
+//                     incremental encoder a server pushes one response into at a time.
+// `freshness.rs`      `Revision`: the `ETag`, `schedule-tag` and sync token a caller read, and
+//                     the `Precondition` a conditional write must carry to land on that
+//                     revision. It holds no authority of its own; the freshness a caller gets
+//                     is the freshness the server enforces when it compares the `If-Match`.
+
+pub use crate::bound::Bounded;
+pub use crate::codec::{ReadXml, ResponseSource, WriteXml, XmlEvent, XmlPull};
+pub use crate::element::{ElementName, ElementSpec, Namespace, QName};
+pub use crate::failure::{DavError, SinkFull, SyntaxError, ValueError};
+pub use crate::policy::{DecodeContext, UnknownPolicy};
+#[cfg(feature = "sync-collection")]
+pub use crate::request::SyncCollection;
+pub use crate::request::{
+    CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
+    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, SyncLevel, TextMatch,
+    TimeRange,
+};
+pub use crate::response::{
+    CalendarPayload, DavProperty, DavResponse, ErrorBody, MultiStatus, PropStat, PropValue,
+    ResponseBody,
+};
+pub use crate::sink::{ByteSink, SliceSink};
+pub use crate::text::{
+    DecodedText, LineEndings, TextMode, TextPolicy, TextRun, decode_text, write_escaped_attribute,
+    write_escaped_text,
+};
+pub use crate::value::{
+    Depth, ETag, ExtensionName, Href, Precondition, Prefer, ResourceType, Status, SyncToken,
+};
+
+// Unit re-exports. One line per unit, appended by that unit and by nothing else.
+pub use crate::freshness::{
+    IF_SCHEDULE_TAG_MATCH, Presence, Revision, write_depth_value, write_prefer_value,
+};
+pub use crate::read_request::RequestBody;
+pub use crate::read_response::{MultiStatusReader, UNREADABLE_STATUS};
+pub use crate::reader::XmlReader;
+pub use crate::write_request::write_utc_date_time;
+pub use crate::write_response::MultiStatusWriter;
+pub use crate::writer::XmlWriter;
