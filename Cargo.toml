@@ -41,6 +41,13 @@ arithmetic_side_effects = "warn"
 missing_errors_doc = "allow"
 
 [workspace.lints.rust]
+# `Token` is `#[non_exhaustive]` and its consumers now live in the crate that defines it, where
+# that attribute means nothing: an in-crate match must be exhaustive, and a wildcard arm over it
+# is a silently ignored variant rather than forward compatibility. Denying the lint is what
+# keeps such an arm from being added back by a hand that remembers the old rule. Outside this
+# workspace the attribute still binds, so adding a variant stays a minor release there and a
+# compile error here.
+unreachable_patterns = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"

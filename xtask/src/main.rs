@@ -22,9 +22,35 @@
 //! the rename is a violation on its own, and a dependency that resolves from a registry
 //! rather than from `workspace = true` or a path under `crates/` is one too.
 //!
-//! The rule is also only as wide as the list it is applied to, so a crate under `crates/`
+//! The rule is also only as wide as the list it is applied to, so a crate under a member root
 //! that declares `#![no_std]` without appearing in [`CORE_CRATES`] fails: the exemption
-//! `ical-conform` holds is "not `no_std`", not "not listed".
+//! `ical-conform` holds is "not `no_std`", not "not listed". The membership walk covers every
+//! root the workspace declares members under, `gates/` included, while the purity partition
+//! stays over `crates/`: a directory that is not a crate must not be able to become one by
+//! being somewhere this task does not look. The list is written twice, here and as the
+//! `Justfile`'s `core_crates`, and the two are read against each other, because a crate in one
+//! and not the other is either compiled for a bare-metal target with nothing checking what it
+//! depends on or checked here and never compiled for one.
+//!
+//! # `purity`, second rule: the grammar layer
+//!
+//! `ical-core` absorbed `ical-grammar` (`docs/adr/0004`, D-0003), and inside one crate nothing
+//! stops a file of `src/grammar/` from naming the model above it. `gates/grammar-layering`
+//! compiles that directory with no dependencies at all and catches every spelling that names a
+//! model item — `use crate::CivilDate;` fails there with a file and a line. What it cannot
+//! catch is `crate::X` for an `X` the crate root re-exports *from the grammar*, because that
+//! resolves in the gate too, and that is the spelling a contributor reaches for.
+//!
+//! So the remaining half is held here, textually: no path under `crates/ical-core/src/grammar/`
+//! may resolve above the grammar root — in `mod.rs` neither `crate::` nor `super::`, in the
+//! files beside it neither `crate::` nor `super::super::` — and the tree stays flat, because a
+//! subdirectory changes the depth that arithmetic is stated in and a rule that quietly stops
+//! applying is worse than no rule. It is in the same family as the golden-list scan and is
+//! defeated by the same things: a macro, a generated path, a spelling it was not taught.
+//!
+//! This is hygiene about not routing a lateral import through the parent crate's public
+//! surface. It is not the layering guarantee, and nothing here should be read as saying the
+//! compiler enforces it.
 //!
 //! `just no-std` and `just wasm` are the compile-time half: they prove the core builds for
 //! `thumbv7em-none-eabi` and for `wasm32-unknown-unknown`. What they cannot express is the
@@ -68,10 +94,11 @@ use std::process::ExitCode;
 
 /// The crates that make up the sans-I/O core.
 ///
-/// Mirrors `core_crates` in the `Justfile`. A new core crate belongs in both.
-/// `ical-conform` is deliberately absent: the conformance runner is allowed `std` and
-/// depends on every crate here, which is what makes it a consumer of the core rather than
-/// part of it.
+/// Mirrors `core_crates` in the `Justfile`, and [`recipe_violations`] reads the two against
+/// each other, so a new core crate that reaches only one of them fails here rather than
+/// quietly losing a gate. `ical-conform` is deliberately absent: the conformance runner is
+/// allowed `std` and depends on every crate here, which is what makes it a consumer of the
+/// core rather than part of it.
 const CORE_CRATES: &[&str] = &[
     "ical-core",
     "ical-recur",
@@ -79,6 +106,20 @@ const CORE_CRATES: &[&str] = &[
     "ical-itip",
     "ical-dav",
 ];
+
+/// The directories the root manifest declares members under.
+///
+/// The membership walk covers all of them; the purity partition covers `crates/` alone.
+const MEMBER_ROOTS: [&str; 2] = ["crates", "gates"];
+
+/// The recipe file that carries the second copy of [`CORE_CRATES`], relative to the root.
+const JUSTFILE: &str = "Justfile";
+
+/// The grammar layer's root, relative to the workspace root.
+///
+/// Written out rather than derived, because every message below is about positions relative to
+/// this one directory: it is what `gates/grammar-layering` compiles alone.
+const GRAMMAR_ROOT: &str = "crates/ical-core/src/grammar";
 
 /// The committed golden list of diagnostic codes, relative to the workspace root.
 const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
@@ -143,9 +184,11 @@ fn report(task: &str, outcome: io::Result<Vec<String>>) -> ExitCode {
     }
 }
 
-/// Check that every core crate declares no outside dependency and stays `no_std`.
+/// Check that every core crate declares no outside dependency and stays `no_std`, that the
+/// two copies of the core list agree, and that the grammar layer names nothing above itself.
 fn collect_purity_violations() -> io::Result<Vec<String>> {
-    let root = workspace_root()?.join("crates");
+    let workspace = workspace_root()?;
+    let root = workspace.join("crates");
     let mut violations = Vec::new();
 
     for crate_name in CORE_CRATES {
@@ -172,8 +215,310 @@ fn collect_purity_violations() -> io::Result<Vec<String>> {
         }
     }
 
-    violations.extend(unregistered_core_crates(&root)?);
+    violations.extend(recipe_violations(&fs::read_to_string(
+        workspace.join(JUSTFILE),
+    )?));
+
+    let mut unregistered = Vec::new();
+    for member_root in MEMBER_ROOTS {
+        unregistered.extend(unregistered_core_crates(&workspace.join(member_root))?);
+    }
+    unregistered.sort();
+    violations.extend(unregistered);
+
+    violations.extend(grammar_layer_violations(&workspace.join(GRAMMAR_ROOT))?);
     Ok(violations)
+}
+
+/// What the `Justfile`'s `core_crates` and [`CORE_CRATES`] disagree about.
+///
+/// The recipe is what `just no-std`, `just wasm` and the feature powerset are run over; the
+/// constant is what the dependency rule is applied to. One decision, written twice, and neither
+/// copy failing on its own is what would let them drift.
+fn recipe_violations(justfile: &str) -> Vec<String> {
+    let Some(named) = recipe_core_crates(justfile) else {
+        return vec![format!(
+            "{JUSTFILE}: no `core_crates := \"...\"` assignment was found, so the two copies of \
+             the core list were compared against nothing (ADR 0004)"
+        )];
+    };
+
+    let mut violations = Vec::new();
+    for crate_name in CORE_CRATES {
+        if !named.iter().any(|name| name == crate_name) {
+            violations.push(format!(
+                "{JUSTFILE}: `core_crates` does not name `{crate_name}`, which CORE_CRATES \
+                 does; `just no-std` and `just wasm` would never compile it (ADR 0004)"
+            ));
+        }
+    }
+    for name in &named {
+        if !CORE_CRATES.contains(&name.as_str()) {
+            violations.push(format!(
+                "{JUSTFILE}: `core_crates` names `{name}`, which CORE_CRATES does not, so no \
+                 rule in this gate applies to it (ADR 0004)"
+            ));
+        }
+    }
+    violations
+}
+
+/// The crates the `Justfile`'s `core_crates` assignment names.
+///
+/// `None` when there is no such assignment at all, which is the difference between "the two
+/// lists agree" and "one of them could not be found".
+fn recipe_core_crates(justfile: &str) -> Option<Vec<String>> {
+    let assignment = justfile
+        .lines()
+        .find(|line| line.trim_start().starts_with("core_crates"))?;
+    let (_, value) = assignment.split_once(":=")?;
+    let named = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+
+    let mut crates = Vec::new();
+    let mut expecting = false;
+    for token in named.split_whitespace() {
+        if expecting {
+            crates.push(token.to_owned());
+        }
+        expecting = token == "-p";
+    }
+    Some(crates)
+}
+
+/// Everything under the grammar layer that reaches out of it.
+///
+/// Textual, and stated over the committed directory rather than over a syntax tree, because a
+/// gate about dependencies may not have any. What it costs is written in this file's header:
+/// a macro, a generated path or a spelling it was not taught goes through.
+fn grammar_layer_violations(root: &Path) -> io::Result<Vec<String>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let directory = path.is_dir();
+        let source = if directory || !is_rust_source(name) {
+            String::new()
+        } else {
+            fs::read_to_string(&path)?
+        };
+        entries.push(LayerEntry {
+            name: name.to_owned(),
+            directory,
+            source,
+        });
+    }
+    Ok(layer_violations(&entries))
+}
+
+/// Whether a directory entry names a Rust source file.
+fn is_rust_source(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+}
+
+/// One entry of the grammar directory, as the rule has to see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LayerEntry {
+    /// The file or directory name, with no path in front of it.
+    name: String,
+    /// Whether the entry is a directory, which the flat-tree rule is about.
+    directory: bool,
+    /// The source of a `.rs` file, and empty for everything else.
+    source: String,
+}
+
+/// The rule itself, over a listing rather than a directory.
+fn layer_violations(entries: &[LayerEntry]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut sources = 0usize;
+
+    for entry in entries {
+        let name = &entry.name;
+        if entry.directory {
+            violations.push(format!(
+                "{GRAMMAR_ROOT}/{name}: the grammar tree is flat. A subdirectory changes the \
+                 depth every path in this layer is stated in, and a check that quietly stops \
+                 applying is worse than no check (ADR 0004)"
+            ));
+            continue;
+        }
+        if !is_rust_source(name) {
+            continue;
+        }
+        sources = sources.saturating_add(1);
+        violations.extend(file_path_violations(name, &entry.source));
+    }
+
+    if sources == 0 {
+        violations.push(format!(
+            "{GRAMMAR_ROOT}: no source file was found, so a scan that matched nothing would \
+             have passed this rule for free (ADR 0004)"
+        ));
+    }
+    violations.sort();
+    violations
+}
+
+/// The paths in one file of the layer that resolve above the grammar root.
+///
+/// `mod.rs` *is* the root, so `super::` there names the crate; beside it `super::` names the
+/// root and `super::super::` names the crate. Comments and string literals are removed first,
+/// which is what lets a doc link keep writing `crate::Token`: the rendered documentation is
+/// `ical-core`'s, and that link is how a reader reaches the item.
+fn file_path_violations(name: &str, source: &str) -> Vec<String> {
+    let climb = if name == "mod.rs" {
+        "super::"
+    } else {
+        "super::super::"
+    };
+    let mut violations = Vec::new();
+    for (number, code) in code_lines(source) {
+        for path in ["crate::", climb] {
+            if code.contains(path) {
+                violations.push(format!(
+                    "{GRAMMAR_ROOT}/{name}:{number}: `{path}` resolves above the grammar root; \
+                     a path inside this layer names the layer or something under it, or the \
+                     layer holds only by convention (ADR 0004)"
+                ));
+            }
+        }
+    }
+    violations
+}
+
+/// One source file with its comments and literals removed, numbered from one.
+///
+/// A hand-rolled scan for the reason [`declared_dependencies`] gives about manifests. It reads
+/// line comments, nested block comments, plain and raw string and byte-string literals, and
+/// character literals — the last because `b'"'` is written in this very tree, and a scan that
+/// took it for the start of a string would read everything after it in the wrong state.
+fn code_lines(source: &str) -> Vec<(usize, String)> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut lines = Vec::new();
+    let mut code = String::new();
+    let mut number = 1usize;
+    let mut at = 0usize;
+    let mut comment = 0usize;
+    let mut literal: Option<usize> = None;
+
+    while let Some(&character) = chars.get(at) {
+        if literal.is_some_and(|end| at >= end) {
+            literal = None;
+        }
+        if character == '\n' {
+            // Checked before every other state, so that a literal or a block comment spanning
+            // lines does not merge the numbers a violation would be reported against.
+            lines.push((number, std::mem::take(&mut code)));
+            number = number.saturating_add(1);
+            at = at.saturating_add(1);
+        } else if literal.is_some() {
+            at = at.saturating_add(1);
+        } else if comment > 0 {
+            let (step, depth) = block_comment_step(&chars, at, comment);
+            comment = depth;
+            at = at.saturating_add(step);
+        } else if opens(&chars, at, '/') {
+            at = at.saturating_add(1);
+            while chars.get(at).is_some_and(|character| *character != '\n') {
+                at = at.saturating_add(1);
+            }
+        } else if opens(&chars, at, '*') {
+            comment = 1;
+            at = at.saturating_add(2);
+        } else if let Some(end) = literal_end(&chars, at) {
+            literal = Some(end);
+            at = at.saturating_add(1);
+        } else {
+            code.push(character);
+            at = at.saturating_add(1);
+        }
+    }
+
+    lines.push((number, code));
+    lines
+}
+
+/// Whether a `/` at `at` is followed by `second`, which is what opens either comment.
+fn opens(chars: &[char], at: usize, second: char) -> bool {
+    chars.get(at) == Some(&'/') && chars.get(at.saturating_add(1)) == Some(&second)
+}
+
+/// How far to advance inside a block comment, and the nesting depth after doing so.
+///
+/// Rust's block comments nest, so a `/*` inside one is an opening rather than noise.
+fn block_comment_step(chars: &[char], at: usize, depth: usize) -> (usize, usize) {
+    if opens(chars, at, '*') {
+        return (2, depth.saturating_add(1));
+    }
+    if chars.get(at) == Some(&'*') && chars.get(at.saturating_add(1)) == Some(&'/') {
+        return (2, depth.saturating_sub(1));
+    }
+    (1, depth)
+}
+
+/// The index just past the literal beginning at `at`, or `None` if none begins there.
+fn literal_end(chars: &[char], at: usize) -> Option<usize> {
+    let mut index = at;
+    if chars.get(index) == Some(&'b') {
+        index = index.saturating_add(1);
+    }
+    let raw = chars.get(index) == Some(&'r');
+    if raw {
+        index = index.saturating_add(1);
+    }
+    let mut hashes = 0usize;
+    while chars.get(index) == Some(&'#') {
+        hashes = hashes.saturating_add(1);
+        index = index.saturating_add(1);
+    }
+    match chars.get(index) {
+        Some(&'"') => Some(string_end(chars, index.saturating_add(1), raw, hashes)),
+        // A `'` opens a character literal or a lifetime, and only the first is a literal.
+        Some(&'\'') if !raw && hashes == 0 => character_end(chars, index),
+        _ => None,
+    }
+}
+
+/// The index just past a string literal whose opening quote has already been passed.
+fn string_end(chars: &[char], from: usize, raw: bool, hashes: usize) -> usize {
+    let mut index = from;
+    while let Some(&character) = chars.get(index) {
+        if !raw && character == '\\' {
+            index = index.saturating_add(2);
+            continue;
+        }
+        index = index.saturating_add(1);
+        if character == '"' && closed_by(chars, index, hashes) {
+            return index.saturating_add(hashes);
+        }
+    }
+    index
+}
+
+/// Whether `hashes` hash marks follow, which is what closes a raw literal opened with them.
+fn closed_by(chars: &[char], from: usize, hashes: usize) -> bool {
+    (0..hashes).all(|offset| chars.get(from.saturating_add(offset)) == Some(&'#'))
+}
+
+/// The index just past a character literal, or `None` when the `'` opened a lifetime.
+fn character_end(chars: &[char], at: usize) -> Option<usize> {
+    if chars.get(at.saturating_add(1)) == Some(&'\\') {
+        // The escape's own length varies — `'\n'` against `'\u{1F600}'` — so the quote after
+        // the escaped character is what ends it, and the escaped character is skipped first
+        // because in `'\''` it is a quote.
+        let mut index = at.saturating_add(3);
+        while let Some(&character) = chars.get(index) {
+            index = index.saturating_add(1);
+            if character == '\'' {
+                return Some(index);
+            }
+        }
+        return None;
+    }
+    (chars.get(at.saturating_add(2)) == Some(&'\'')).then(|| at.saturating_add(3))
 }
 
 /// Everything a core crate's manifest declares that the rule forbids.
@@ -202,11 +547,14 @@ fn manifest_violations(crate_name: &str, manifest: &str) -> Vec<String> {
     violations
 }
 
-/// Crates that declare `#![no_std]` without being named in [`CORE_CRATES`].
+/// Crates under one member root that declare `#![no_std]` without being named in
+/// [`CORE_CRATES`].
 ///
 /// The rule is only as wide as the list it is applied to, so the list must not be able to go
 /// stale behind a crate somebody added (ADR 0004). A crate that wants the exemption
 /// `ical-conform` has takes it by not being `no_std`, which is what that exemption means.
+/// Called for every root in [`MEMBER_ROOTS`], so that `gates/` is not a place to put one where
+/// nothing looks.
 fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
     let mut violations = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -225,7 +573,6 @@ fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
             ));
         }
     }
-    violations.sort();
     Ok(violations)
 }
 
@@ -787,9 +1134,10 @@ fn row_codes(rows: &[Row]) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        as_str_arms, codes_violations, collect_codes_violations, declared_dependencies, declares,
-        dependency_subtable_name, enum_variants, golden_rows, is_dependency_table,
-        manifest_violations,
+        LayerEntry, as_str_arms, codes_violations, collect_codes_violations,
+        collect_purity_violations, declared_dependencies, declares, dependency_subtable_name,
+        enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
+        manifest_violations, recipe_violations,
     };
 
     /// The packages a manifest links, which is what every rule here is stated over.
@@ -982,6 +1330,150 @@ extern crate alloc;
             ),
             "naming the attribute in prose is not declaring it"
         );
+    }
+
+    /// One `.rs` file of the grammar layer, as the listing hands it over.
+    fn source(name: &str, body: &str) -> LayerEntry {
+        LayerEntry {
+            name: name.to_owned(),
+            directory: false,
+            source: body.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_two_copies_of_the_core_list_are_read_against_each_other() {
+        let recipe = format!(
+            "core_crates := \"{}\"\n",
+            super::CORE_CRATES
+                .iter()
+                .map(|name| format!("-p {name}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert_eq!(recipe_violations(&recipe), Vec::<String>::new());
+
+        let missing = recipe.replace("-p ical-tz ", "");
+        assert!(
+            recipe_violations(&missing)
+                .iter()
+                .any(|line| line.contains("does not name `ical-tz`")),
+            "a core crate the recipe never compiles for a bare-metal target"
+        );
+
+        let extra = recipe.replace("core_crates := \"", "core_crates := \"-p ical-query ");
+        assert!(
+            recipe_violations(&extra)
+                .iter()
+                .any(|line| line.contains("names `ical-query`")),
+            "a crate the recipe compiles and this gate states no rule about"
+        );
+    }
+
+    #[test]
+    fn a_recipe_with_no_core_list_is_reported_rather_than_compared_against_nothing() {
+        assert!(
+            recipe_violations("# a Justfile with no such assignment\n")
+                .iter()
+                .any(|line| line.contains("compared against nothing")),
+            "the failure mode of a hand-rolled scan is matching nothing and passing"
+        );
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_grammar_layer_is_a_violation() {
+        let violations = file_path_violations("token.rs", "use crate::tree::Component;\n");
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("token.rs:1") && line.contains("`crate::`")),
+            "the file and the line are the whole point of reporting it: {violations:?}"
+        );
+
+        assert_eq!(
+            file_path_violations("token.rs", "use super::Token;\n"),
+            Vec::<String>::new(),
+            "one `super::` beside the root names the root, which is inside the layer"
+        );
+        assert!(
+            !file_path_violations("token.rs", "use super::super::Writer;\n").is_empty(),
+            "two of them name the crate"
+        );
+        assert!(
+            !file_path_violations("mod.rs", "use super::Writer;\n").is_empty(),
+            "`mod.rs` is the root, so one `super::` there already names the crate"
+        );
+    }
+
+    /// Everything the rule is stated to ignore, in the spellings this tree actually writes.
+    const LAYER_PROSE: &str = r##"
+// use crate::tree::Component;
+/// A doc link to [`Token`](crate::Token), which is how a reader reaches the item.
+/*
+   crate::Token, inside a block comment /* that nests */ and closes here.
+*/
+const QUOTE: u8 = b'"';
+const LIFETIME: fn(&str) -> &str = |value: &str| value;
+const MESSAGE: &str = "crate::Token";
+const RAW: &[u8] = br"crate::Token ends with \";
+const HASHED: &str = r#"crate::Token "quoted" inside"#;
+"##;
+
+    #[test]
+    fn a_path_written_in_a_comment_or_a_literal_is_not_a_path() {
+        assert_eq!(
+            file_path_violations("lexer.rs", LAYER_PROSE),
+            Vec::<String>::new(),
+            "the rendered documentation is `ical-core`'s, and its links have to name items"
+        );
+        assert!(
+            !file_path_violations(
+                "lexer.rs",
+                &format!("{LAYER_PROSE}use crate::tree::Tree;\n")
+            )
+            .is_empty(),
+            "and the scan must still be reading code after all of that"
+        );
+    }
+
+    #[test]
+    fn a_subdirectory_under_the_grammar_is_a_violation() {
+        let entries = [
+            source("mod.rs", "mod token;\n"),
+            LayerEntry {
+                name: "value".to_owned(),
+                directory: true,
+                source: String::new(),
+            },
+        ];
+        assert!(
+            layer_violations(&entries)
+                .iter()
+                .any(|line| line.contains("value") && line.contains("flat")),
+            "a nested file is one `super::` deeper, and the rule is stated in that arithmetic"
+        );
+    }
+
+    #[test]
+    fn an_empty_layer_is_reported_rather_than_passing_for_free() {
+        assert!(
+            layer_violations(&[])
+                .iter()
+                .any(|line| line.contains("no source file was found")),
+            "a scan of nothing finds nothing, which is not the same as finding nothing wrong"
+        );
+        assert_eq!(
+            layer_violations(&[source("mod.rs", "mod token;\n")]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_committed_tree_passes_every_leg_of_purity() {
+        // The gate's own subject, for the reason the codes task runs against its own files:
+        // the samples prove the scan reads the style they are written in, and only this proves
+        // it reads the style the workspace is.
+        assert_eq!(collect_purity_violations().unwrap(), Vec::<String>::new());
     }
 
     /// A stand-in for `report.rs`: two severities, two codes, one of them a note.

@@ -69,7 +69,12 @@ wasm:
     rustup target add wasm32-unknown-unknown
     cargo check {{core_crates}} --target wasm32-unknown-unknown --no-default-features
 
-# Reject std, clock, network, and bundled-tzdb dependencies in the core.
+# Two rules, one task, because it already walks this tree and already holds docs/adr/0004's
+# structural rules. First: reject std, clock, network, and bundled-tzdb dependencies in the
+# core, and hold this file's core_crates and xtask's CORE_CRATES to each other. Second: reject
+# a path inside ical-core's grammar layer that resolves above the layer's root, and a
+# subdirectory under it. A contributor grepping for a gate called "layering" finds nothing,
+# which is the price of not adding a third recipe and two CI lines to read one directory.
 purity:
     cargo run --quiet -p xtask -- purity
 
