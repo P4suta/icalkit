@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-11 (eleven amendments)
+- Amended: 2026-08-11 (fourteen amendments)
 
 ## Context
 
@@ -105,8 +105,11 @@ compares preserved octets — `diff.rs` chose that in M3 on the ground that its 
 is refusal rather than permission, and amendments 6 and 7 below reason from it. The hole beneath
 it is exactly the one named here and is not closed: a CP1252-mangled value can report
 "unchanged" for an organizer-only field an attendee touched, and no gate above the diff sees it.
-The CAL-ADDRESS / `SENT-BY` / `SCHEDULE-AGENT` delegation rules are gestured at above rather
-than specified. Beyond both, `RANGE=THISANDFUTURE` splitting, VALUE=DATE-safe
+**Amendment 14 closes it on the iMIP path only and narrows this sentence rather than striking
+it — every other route into this crate still reaches the diff with octets nobody has vouched
+for.** The CAL-ADDRESS / `SENT-BY` / `SCHEDULE-AGENT` delegation rules are gestured at above
+rather than specified. **Amendment 13 specifies them, and one third of that sentence turns out
+to be a category error: `SCHEDULE-AGENT` can never reach this gate.** Beyond both, `RANGE=THISANDFUTURE` splitting, VALUE=DATE-safe
 `DTSTART`, negative `BYSETPOS` and a fold across a codepoint remain unexercised through the reused
 type: `ical-itip` is not RFC-5546-complete, and nothing here entitles anyone to say it is.
 
@@ -282,3 +285,232 @@ over: a payload of a hundred thousand properties read for four units and cost a 
 allocations to judge, so a shared meter bounded how many messages an inbox read and not what
 reading one cost. `Limits::max_payload_properties` bounds it and `read` charges it, beside the
 attendee list it already charged.
+
+**12. The field-permission table acquires a per-method dimension, and a payload stating a change
+its author may not make is refused rather than dropped.** `field_rule` answers on a name alone,
+which is a dozen lines standing in for RFC 5546's section 3 restriction tables, and M3 recorded
+two failures with one cause: a legitimate `COUNTER` is refused, and an attendee's `REPLY`
+carrying a moved `DTSTART` is *ignored* — the transition holds only the sender's own `ATTENDEE`
+line, so the gate's guarantee holds, but a caller that applies `Authorization::message`'s payload
+instead of the transition moves the meeting.
+
+So `field_rule` takes the method as well as the name, and the per-method rows are read off the
+tables already committed as data rather than transcribed a second time: for an attendee-authored
+method, a name that method's own table prints is writable by an attendee-side actor under that
+method only. In practice exactly one method moves. Under `COUNTER`, section 3.2.7's scheduling and
+descriptive rows — `DTSTART`, `DTEND`, `DURATION`, `DUE`, `RRULE`, `RDATE`, `EXDATE`, `LOCATION`,
+`SUMMARY`, `DESCRIPTION`, `PRIORITY` — read as either party's. `ORGANIZER` and `SEQUENCE` stay
+organizer-only under every method, which is Amendment 7's finding and is not reopened, and
+`ATTENDEE` stays the actor's own under every method. Under `REPLY` nothing moves: section 3.2.3's
+table prints those rows only because a reply echoes them unchanged, and echoing is not writing.
+Permitting them under `COUNTER` is not a hole, because a `COUNTER` travels attendee to organizer,
+so the recipient evaluating it is the actor who may write those fields anyway; what it authorizes
+is a *proposal* the organizer's client shows and chooses to accept, after which the organizer
+sends the `REQUEST` that actually moves the meeting.
+
+The silent drop becomes a denial through one gate placed before the payload is described, and
+three properties of it are load-bearing. It is one-directional — a property the payload omits is
+silence and never a removal, the same reasoning that makes `REFRESH` short-circuit in Amendment 6,
+and without which every ordinary four-line `REPLY` would be refused for the `DTSTART` it does not
+echo. It reads only lines whose octets differ from the held ones, so a legitimate echo is not a
+change. And it skips every name whose rule is the actor's own line, because positional occurrence
+identity is not line identity for those: a reply's `ATTENDEE` occurrence 0 is not the held copy's
+occurrence 0, and only the address match inside the reply diff knows which line is meant. The
+existing occurrence-shaped check is retained beside it, and that is a division of labor rather
+than a backstop — it owns the question no per-method table can answer, which is whether this is
+the actor's own line and whether the line the change leaves behind still names them. It has a
+committed live path today, where an invited attendee replying on another attendee's behalf is
+refused at the recipient's own numbering; a second path arrives with Amendment 13's agent-aware
+lookup.
+
+Three costs. The conservative default the design document explicitly preferred is given up for one
+method, so a row transcribed wrong in section 3.2.7 is now a permission rather than a refusal —
+the failure direction flips for exactly the table with the most rows — and a caller that
+auto-applies an authorized `COUNTER` writes an attendee's proposed `DTSTART` into its own copy,
+which M3 refused at the gate and which now becomes caller policy that nothing here can enforce.
+The reply overreach gate converts M3's silence into refusal and inherits the octet diff's known
+noise as the difference between an accepted and a rejected message: a client that echoes a
+re-folded `DESCRIPTION` or a reordered parameter list on its `REPLY` is now refused outright,
+which is a real interoperability regression across every reply, it will be reported, and the only
+defense is that the comparison is one-directional and reads only differing octets. And one denial
+now has three producers over three different comparisons, so a reader debugging a refusal has three
+places to look, and drift between the last two — split along a boundary invisible in the error —
+is caught only by tests.
+
+Three alternatives rejected. Keeping the method-blind table and answering the `COUNTER` report with
+documentation is the design document's own stated preference, and it loses because the roadmap now
+records the refusal as observed rather than predicted, and a preference stated before the report is
+not a decision taken after it. Widening the reply diff so the transition itself carries the reply's
+`DTSTART` — one gate instead of two — loses because it fixes the refusal by reopening the write:
+an *accepted* reply's transition would then carry every property the replying client echoed,
+destroying the narrowing that preserves the recipient's own `X-` parameters and that section
+3.2.3's "MUST NOT differ" makes meaningful. And the reading that the occurrence-shaped check has no
+live path until delegation supplies one is rejected on committed evidence, since it is reached
+through `evaluate_message` today.
+
+**13. The delegation rules are specified, `SCHEDULE-AGENT` leaves this sentence entirely, and the
+hold a delegate's reply lands in is named rather than silent.** The Consequences gesture at three
+things at once, and reading the specifications apart shows they are not one subject.
+
+`SCHEDULE-AGENT` is a category error and is struck rather than answered. RFC 6638 section 7.1 says
+servers MUST NOT include the parameter in any scheduling message they send and clients MUST NOT
+include it in any they send, so a parameter both sides are forbidden to put in a message can never
+reach an iTIP message gate; section 1 of the same document excludes delegating from its scope
+outright. That `ical-itip` names it nowhere is therefore correct rather than a hole. It governs a
+stored scheduling object resource and belongs to `ical-dav`'s vocabulary — and because the crate
+graph forbids `ical-dav` from naming this crate's types, no joint enforcement exists or is planned:
+a caller wiring both owns that join, and this ADR says so rather than leaving a reader to wonder
+where the term went.
+
+`SENT-BY` is not vague, it is half-applied, and the gap is a live defect. An agent satisfies its
+principal's sender rule, and then the field check computes the actor's own occurrence by matching
+the address value only and never the `SENT-BY` parameter — so the occurrence is absent, every
+change to the actor's own line fails, and an assistant's reply is refused for making the one change
+a reply exists to make. It is untested because every `SENT-BY` in the corpus sits on `ORGANIZER`,
+where that check short-circuits on role. The rule: the actor's own occurrence is found by an
+agent-aware lookup, and if two `ATTENDEE` lines name the same agent the lookup answers nothing —
+the same conservative direction the reader already takes for multi-valued parameters — so an agent
+for one party can never reach another's line. The line the change leaves behind must still carry
+the *principal's* address, so an agent may change its principal's participation status and may
+never write its own address into a party line, and the actor role keeps the agent distinct, so
+"the assistant sent this" still never reads as "the attendee is the assistant".
+
+A delegate's `REPLY` is held, in one turn, and the hold is named. RFC 5546 section 5.2.2 offers two
+acceptable resolutions and declines to choose; this project chooses hold, because accepting the
+party crasher overturns this document's own opening position verbatim and section 3.2.2.6 makes
+admission the organizer's decision rather than the library's, while composing the two turns from
+the delegate's own `DELEGATED-FROM` would make an attendee-side actor author the addition of an
+`ATTENDEE` line on the sender's own word. But the hold as shipped fails on its own terms twice, and
+both are fixed here. It was silent — an authorized empty transition is indistinguishable from an
+authorized no-op, the precise conflation this crate introduced a denial variant elsewhere to avoid
+— so `TransitionReason` gains a held-for-delegation value, which is a description and not a
+permission and which costs no major version. And it was permanent while the documents said
+otherwise: the corpus fixture that *is* the post-delegator-reply state still describes nothing,
+because the delegator's reply writes parameter edits and never adds the delegate's own `ATTENDEE`
+line. Under the rules decided here the sole release is an organizer `REQUEST` naming the delegate,
+and the amendment states that as the documented path so a caller is told what it is waiting for.
+
+Two smaller rules close the same neighborhood. A forwarded delegation `REQUEST` is admitted only
+where there is nothing to overwrite: against an absent prior state an attendee-side role satisfies
+`REQUEST`, because nothing is held, the only reachable reason is creation, and Amendment 4 already
+concedes that for a first message the gate proves only that the actor is a party the message names;
+against a held copy it stays a sender refusal, which is the first attack `SECURITY.md` names and
+which does not move. And a multi-valued `DELEGATED-TO` matches nobody, promoted from a code comment
+to a rule: the reader does not split on comma, so a delegation to several calendar users — which
+section 2.1.2 permits — leaves each delegate a stranger whose reply is refused as an unknown
+attendee rather than held. That is a stated limitation with a fixture rather than a silent one.
+
+Five things this makes worse. The caller wanting one turn still does not get one and now gets a
+named reason for a wait this decision cannot end: if the organizer never sends a `REQUEST` naming
+the delegate, the hold repeats forever, and the library reports the wait while supplying no queue,
+no timeout and no implementation of section 5.2.2's third sentence. The `REQUEST` admission widens
+a path — against an absent prior state a `REQUEST` is now accepted from any party the payload names
+as an attendee, and the payload's own delegation parameters are written by the forwarder and
+cross-check nothing. The agent rule lets an address that appears only inside a parameter change its
+principal's participation status, which section 2.1.3 authorizes nowhere; it defines what `SENT-BY`
+means and states no permission, so a producer emitting a forged one has its word honored, bounded
+only by "one line, and the value stays the principal's". Striking `SCHEDULE-AGENT` leaves this
+workspace with no answer for a server that must honor a client-managed scheduling object, and the
+crate graph forbids ever enforcing it jointly with this gate. And the single-`ATTENDEE` rule stands
+until measured, so a `REPLY` shaped like RFC 5546 section 4.2.6's own printed example is still
+refused by an implementation that claims to transcribe that RFC.
+
+That last one is the only sub-question reading cannot settle, because RFC 5546 contradicts itself —
+section 3.2.3's table prints one `ATTENDEE`, section 4.2.5 item B says a second one MUST be
+included, and sections 4.2.6 and 4.2.7 print two while 4.2.5's own example prints one — so it gets a
+measurement and a threshold fixed now, before any capture. **The measurement.** For each of Google
+Calendar, Microsoft 365, Apple Calendar and Thunderbird, capture two iMIP payloads from a real
+account: the `REPLY` the client generates when an attendee delegates, and the `REPLY` the delegate's
+client generates when the delegate accepts. For each captured component record the count of
+`ATTENDEE` properties, the exact spelling and quoting of `DELEGATED-TO` and `DELEGATED-FROM` and
+whether each value is single or comma-joined, the participation status on each line, and whether
+`SEQUENCE` was incremented, with producer and `PRODID` recorded beside each capture. **The source.**
+Live iMIP messages from accounts on each of the four services, exported and committed under ADR
+0006's provenance rules; it needs a real account per service and a second account to delegate to,
+and no CalDAV server, no time zone data and no network service of this project's own. **The
+threshold.** If one or more of the four producers emits either capture with two or more `ATTENDEE`
+properties in a single component, the single-`ATTENDEE` row is an observed break and the
+delegator-authored addition is adopted: the `REPLY` row admits a second `ATTENDEE` only when the two
+lines form a delegation pair, and the field check gains exactly one exception — an attendee-side
+actor at its own occurrence may author the addition of one `ATTENDEE` line whose address equals the
+`DELEGATED-TO` value on that same actor's line. Every other reply keeps a count of one. If zero of
+the four emits a second line in either capture, the row stands unamended, the composing options are
+closed, and the organizer `REQUEST` is recorded as the sole release. The count is per producer, not
+per capture, and a capture that cannot be obtained counts as zero for that producer and is recorded
+as not-obtained, never as a negative. **If it cannot be obtained at all**, the row stands by default
+— refusal rather than permission, the direction M3 already chose — and this amendment records that
+it was never tested against a real producer, so a later interoperability report about a refused
+delegation reply reopens this rather than being treated as a new discovery. The default may not be
+flipped by argument, only by a capture meeting the threshold above.
+
+The strongest rejected alternative is composing the two turns in the gate, restricted to the state
+where the held copy already carries the delegator's line with a delegated status and a
+`DELEGATED-TO` naming the sender. In that state the addition is authorized by the organizer's own
+held copy rather than by the sender's word, which is a genuinely strong argument and must not be
+rediscovered from scratch. Two things beat it: it needs an attendee-side actor to author the
+addition of an `ATTENDEE` line, which is verbatim the write this document forbids and which the two
+field checks were built to stop; and decisively, it is the wrong author, since section 2.1.2 says
+the *delegating* attendee informs the organizer. If the measurement shows producers emit the
+two-`ATTENDEE` reply, the delegator-authored addition supersedes this alternative and is the better
+version of it.
+
+**14. The charset is a fact about the envelope, so it is judged at the door and never in the diff.**
+The Consequences name a hole with the failure direction this crate does not accept — permission —
+and the diff is the wrong place to close it. `ical-itip` does not become charset-aware: the octet
+comparison is unchanged, it gains no cannot-compare outcome, and Amendments 6 and 7, which reason
+from octet equality, are undisturbed. The hole is closed one layer up, at the iMIP door, where a
+charset is actually stated.
+
+`MediaTypeParams` gains one predicate over the part's body octets, cited to RFC 6047 section 2.4
+throughout and to RFC 5545 section 3.1.4 nowhere. A stated `utf-8` is accepted unconditionally. A
+stated `us-ascii` is accepted only when every octet is below `0x80`, since a high octet makes the
+declaration a statement the body contradicts. An *absent* charset is accepted only when every octet
+is below `0x80`, because the part is a `text/*` entity whose RFC 2046 default is US-ASCII and
+section 2.4 requires the parameter to be present and to read UTF-8 whenever the object carries
+characters US-ASCII cannot represent — so absent-plus-high-octet is itself a section 2.4 violation
+and lands on the same answer a declared `windows-1252` gets, by a stronger argument. Everything
+else is refused, with no alias table and no unsupported-encoding diagnostic: the door refuses.
+Well-formedness under a UTF-8 declaration is deliberately not checked here, because section 2.4
+governs the parameter rather than the encoding's validity, and a validity sweep is
+[ADR 0001](0001-lossless-round-trip.md) Amendment 9's subject. The door stays three separate
+questions composed by the caller — the media type, the method agreement, the charset — shipped as a
+documented recipe and a fixture rather than as one call, because this module's whole framing is
+that the envelope and the object are two statements from two parties.
+
+What that buys the diff, stated as the scope of the guarantee rather than left to be assumed: every
+payload reaching the describe step *through iMIP* arrived as octets declared and consistent with
+UTF-8 or US-ASCII, so exactly one charset is in force and octet equality coincides with text
+equality for anything that decodes. The construction this document names has no entry route through
+iMIP. It keeps every other route — a caller feeding this crate from CalDAV, from a file or from its
+own store holds no envelope and gets none of this.
+
+Six costs, and two of them are sharp. The predicate can no longer be answered from a header alone,
+which dents the module's dual of envelope statements on one side and object statements on the
+other; the only mitigation is that the method-agreement question already had that shape, which is
+consistency rather than a defense. And it depends on the caller having performed
+Content-Transfer-Encoding decoding and cannot verify that it happened: a caller passing the base64
+text of the part sees nothing but ASCII and gets acceptance for an absent charset over a body full
+of high octets. This amendment creates that hole and can only document it, so it belongs in
+`SECURITY.md` as a caller obligation and not only in a doc comment. Beyond those: the cost goes from
+constant to linear in the part's length on a call that takes no meter and charges nothing, which is
+tolerated because the octets are ones the caller already holds and paid to receive, and which a
+later hostile-input review is entitled to reopen; refusing a declared `windows-1252` and an absent
+charset over high octets drops real mail from shipping clients, which is lost interoperability
+bought with safety rather than safety for free; the guarantee is narrower than the sentence it
+answers, so the Consequences above are narrowed rather than struck and the roadmap keeps the hole
+listed with the iMIP path carved out; and the predicate's name under-describes what it answers,
+since it is also a section 2.4 conformance check about whether the declaration and the octets can
+both be true.
+
+The alternative rejected is strictly wider and is not weak: compare decoded text in the diff and
+refuse a comparison that cannot be decoded, which would close the hole for CalDAV inputs, file
+inputs and any caller-supplied component, and would need no cooperation about transfer decoding. It
+loses on two grounds. It puts the decode in the one place with no charset to decode against, so an
+encoding failure would surface as a scheduling refusal — right direction, wrong reason, at the depth
+where a caller can least diagnose it. And it forces lazy decoding to become eager at the gate, which
+is ADR 0001's question, and answering that as a side effect of this one is the wrong door. If an
+eager sweep is adopted there, this door stays anyway: it refuses before anything is parsed, the
+sweep refuses after, and the cheaper refusal is worth its own line. Also rejected, so it is not
+proposed as a simplification: answering false for an absent charset unconditionally, which would
+keep the predicate header-only. RFC 2046 makes an absent charset over an all-ASCII body fully
+conformant and RFC 6047's own examples run that way, so it would drop conforming mail for no gain.
