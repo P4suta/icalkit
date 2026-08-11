@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10
+- Amended: 2026-08-10, 2026-08-11
 
 ## Context
 
@@ -123,7 +123,9 @@ emit; matching local names alone would accept the fourth, which is namespace con
 The tokenizer obeys XML 1.0 section 2.11 like any conformant processor: every CRLF and lone
 CR becomes LF before tokenizing, inside CDATA and character data alike. Byte-exact round trip
 therefore does not survive the XML envelope, and this ADR says so rather than asking for a
-carve-out that cannot be satisfied. What survives is the logical content line: calendar-data
+carve-out that cannot be satisfied. **This paragraph is reversed by Amendment 1 below, which
+was written against the specification text and against three real servers' output rather than
+against the reading recorded here.** What survives is the logical content line: calendar-data
 recovered from a multi-status reaches `ical-core` with bare LF terminators, which `ical-core`
 accepts, and is re-terminated with CRLF when written back out. Escaping on the writing side
 is ours to get right — a literal `]]>` inside a `DESCRIPTION` is ordinary calendar text, and
@@ -274,3 +276,100 @@ depth on a server's parse of an untrusted REPORT body is still unbounded in the 
 a streaming decoder does not bound nesting depth for free. The HTTP envelope is still
 unmodeled, which now matters more: a producer that hits its own resource wall mid-encode has
 no in-scope way to say so, because `507` lives at the layer this ADR declines to describe.
+
+## Amendments
+
+**1. The reader keeps `calendar-data`'s line endings, and that is a stated, scoped departure
+from XML 1.0 section 2.11 rather than a conformant read.** The DP-14 paragraph above chose the
+conformant read and accepted the loss. M4 went back to the specification text before writing
+the code, and what it found changes the arithmetic in both directions.
+
+Section 2.11 says the processor "MUST behave as if it normalized all line breaks in external
+parsed entities (including the document entity) on input, before parsing, by translating both
+the two-character sequence #xD #xA and any #xD that is not followed by #xA to a single #xA
+character". That is the rule the paragraph above read correctly. What it did not read is RFC
+4791 section 9.6, which anticipates exactly this and says so: "Given that XML parsers normalize
+the two-character sequence CRLF ... to a single LF character ..., the CR character ... MAY be
+omitted in calendar object resources specified in the CALDAV:calendar-data XML element." So a
+server that never sends a `CR` is conformant, no reader can recover what such a server never
+sent, and CalDAV never promised end-to-end octet fidelity through this element. The second half
+of the paragraph above — that byte-exact round trip does not survive the envelope — is true as
+a statement about *the protocol* and stays true.
+
+What is not true is that a normalizing read is therefore the right implementation. Section 9.6
+permits a server to omit the `CR`. It does not permit a client to rewrite the line endings of a
+resource it received intact, which is what a normalizing read followed by a `PUT` does — to
+another client's data, with a changed `ETag` as the only trace. `SabreDAV` and Radicale both
+write the `CRLF` octets literally; Calendar Server writes the `CR` as `&#13;`. Two of those
+three lose data through a conformant reader and the third does not, and nothing about the
+element tells them apart afterwards.
+
+The decision, therefore:
+
+*Reading.* Character data is normalized per section 2.11 everywhere except inside the elements
+`ElementName::preserves_line_endings` names — today `CALDAV:calendar-data` and nothing else —
+where the octets are handed back as they arrived. References are still resolved inside that
+element, because a reference is markup and not a line break: `&#13;&#10;` and a literal `CRLF`
+converge on the same two octets, which is what makes this one rule rather than two dialects.
+Inside that element this reader is **not** a conformant XML 1.0 processor: two documents equal
+as infosets come out of it as different octets, and it must never be used to canonicalize or to
+verify signed XML.
+
+*The way out.* `TextPolicy::Normalized` restores section 2.11 everywhere, at runtime rather
+than behind a feature flag — a feature is unified across a dependency graph by the union rule,
+so one crate in a build could otherwise change how another's calendars parse. Every payload
+that loses a `CR` to it reports `DiagnosticCode::DavCalendarDataLineEndingsFolded`, because a
+choice being available is worth nothing if taking it is silent.
+
+*The witness.* `CalendarPayload` carries a `LineEndings` beside its octets, and
+`is_as_sent()` answers the only question a caller writing the payload back actually has. This
+is the part neither shape offered by the bake-off had: the loss is permitted by section 9.6 and
+is invisible in the octets afterwards, so the type says which it is instead of leaving a caller
+to assume.
+
+*Writing.* Strictly conformant, and it needs no departure at all. A `CR` is written as `&#13;`,
+which section 2.11 does not reach because a reference is resolved after normalization, so any
+conformant processor recovers it. No `CDATA` section is ever emitted — it cannot carry a `CR`
+past a conformant reader and it makes a literal `]]>` in a `DESCRIPTION` an escaping bug — and
+`>` is escaped unconditionally so that sequence is unwritable by accident. This crate's output
+is therefore readable, losslessly, by any XML parser; only its reader departs, for one element.
+
+*What it costs.* The phrase "auditable against the XML specification" is false for one element
+and a reader has to be told. A caller can ignore the witness, and ignoring it puts the silent
+rewrite back — the type makes the loss visible, not impossible. `TextRun::Wire` needs the body
+in one contiguous slice, so a chunked transport gives up the borrow and pays a copy. And where
+the octets were already folded upstream, by section 9.6's own permission or by something in the
+path, nothing here restores them; the carve-out preserves what arrived and claims nothing more.
+
+The conformance case is `crates/ical-dav/tests/calendar_data_collision.rs`, against fixtures
+shaped like all three servers' output, in all three of their namespace-prefix spellings.
+
+**2. ADR 0001 is not narrowed by any of this, and the fidelity retraction the Consequences
+above recorded is withdrawn.** That section said ADR 0001 "still says byte-identical ... without
+qualification" and filed the mismatch as debt. Under Amendment 1 the round trip through the DAV
+envelope is byte-identical over the octets this crate was handed, so the corpus needs no rule
+distinguishing a DAV-sourced case from an ICS-sourced one, and no gate has to enforce a
+distinction. What remains, and is recorded in ADR 0001's own register rather than here, is that
+"the octets this crate was handed" is not always "the octets the server stored" — and that gap
+is section 9.6's, not this workspace's.
+
+**3. The header boundary is stated rather than left to be discovered.** This ADR said the caller
+moves the bytes and left "which headers are the protocol's" unanswered, which the Consequences
+called an open gap. It is closed by naming both sides. Protocol semantics, modeled as values:
+`If-Match` and `If-None-Match` through `Precondition`, `Depth`, `Prefer`, and the `ETag`,
+`CALDAV:schedule-tag` and `DAV:sync-token` those carry — each of them changes what a request
+means or what a response body contains, and getting `If-Match`'s comparison wrong is how a
+conditional write silently overwrites somebody else's edit. Transport, modeled nowhere: `Host`,
+`Content-Length`, `Content-Type`, `Connection`, every credential, the method, the URL,
+redirects and retries. The rendering doors write a header *value* and never a name, never a
+`CRLF`, never a whole line, because framing is the caller's client's job. There is still no
+request type and no header map, and this amendment adds none.
+
+**4. The DAV limit dimensions ADR 0010 predicted would be missing were missing, and are named.**
+`Limits` gains `max_responses`, `max_props_per_response`, `max_xml_text_bytes` and
+`max_prefix_bindings`, and `Meter` gains the charges for them. The last is the one that
+document called out: namespace declarations are unbounded in a way no depth counter and no
+element count reaches, since one element at depth one can carry a thousand of them. The
+response cardinality is one number for two things — the `href`s a multiget asks for and the
+responses that answer them — because a policy that admits the request and refuses its answer
+describes an exchange nobody can complete.

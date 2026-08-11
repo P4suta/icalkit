@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10
+- Amended: 2026-08-10, 2026-08-11
 
 ## Context
 
@@ -249,3 +249,28 @@ The one rule it adds is about `ProposedChange::Add`, which has no occurrence yet
 must be the append position, since an addition landing elsewhere would renumber every
 occurrence after it and make a transition keyed on those numbers mean something else.
 `ical-itip` needs this and nobody else does, which is the honest description of why it exists.
+
+**6. The claim is over the octets this workspace was handed, and the CalDAV envelope is where
+that stops being the same thing as the octets a producer wrote.** Every sentence above is
+about a parse and a serialize of one byte string, and M4 put a second layer between the
+producer and this crate. XML 1.0 section 2.11 requires a conformant processor to fold every
+`CRLF` and every lone `CR` to `LF` before parsing, and RFC 5545 section 3.1 makes that same
+`CRLF` the syntax of a content line — so a conformant read of a `CALDAV:calendar-data` element
+hands `ical-core` a calendar whose terminators the server did not write.
+
+[ADR 0004](0004-sans-io-protocol-layer.md)'s Amendment 1 resolves that in `ical-dav`, and the
+resolution keeps this document's claim intact rather than narrowing it: the reader departs from
+section 2.11 inside that one element, so what reaches `Document::parse` from a multistatus is
+what the server sent, and `parse -> serialize` over it is byte-identical exactly as it is over
+a file read from disk. `ical-conform` needs no rule separating a DAV-sourced case from an
+ICS-sourced one, and no gate has to enforce one.
+
+What this amendment adds is the boundary that resolution does not reach, because it is not
+`ical-dav`'s to reach. RFC 4791 section 9.6 explicitly permits a server to omit the `CR`
+inside `calendar-data`, on the grounds that XML parsers fold it anyway. A server that does is
+conformant, the calendar arrives with bare `LF` terminators, and nothing in the octets says
+whether that is what the producer wrote or what the protocol was allowed to drop. This
+document's guarantee is that nothing here loses a byte it was given; it has never been, and
+under section 9.6 cannot be, a guarantee that the bytes given are the bytes authored.
+`CalendarPayload::is_as_sent` is how a caller reads which of the two it is holding, and a
+`bare-line-feed` diagnostic is how the grammar reports the terminators either way.

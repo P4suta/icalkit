@@ -30,7 +30,7 @@ has no outside dependencies" may not acquire one.
 
 ## Notes rather than violations
 
-Twelve codes travel on `Severity::Note`, and each is a case where the input is legal and the
+Seventeen codes travel on `Severity::Note`, and each is a case where the input is legal and the
 caller still needs telling. RFC 6868 section 2 requires an undefined caret pair to be left
 exactly as it is. RFC 5545 section 3.2.20 permits a `VALUE` type this workspace has no decoder
 for, so not knowing one is a gap here rather than a fault in the file. Section 3.3.10 requires
@@ -45,7 +45,14 @@ choosing between the two is a caller's policy rather than a repair. Two zone sou
 disagree are each internally consistent, and neither is the one that violated something. An
 observance rule this workspace does not evaluate in closed form is a gap here rather than a
 fault in the file, and a zone asked about a year past the last transition it knows — or about
-one before its first — is a legal question put to a legal file. A caller enforcing strictness rejects on `Severity::Violation`,
+one before its first — is a legal question put to a legal file. RFC 4918 section 17 requires a
+reader to tolerate the elements a server extended its bodies with, and RFC 4791 section 9.6
+explicitly permits a server to omit the `CR` of a `CRLF` inside `calendar-data`, so a skipped
+foreign element and a folded line ending are both legal documents a caller still has to be told
+about — the second because the octets it holds are no longer the ones the server stored, which
+is what makes writing them back a silent edit. A property kept as octets and a payload copied
+rather than borrowed are this crate reporting the limits of its own model and its own
+allocation. A caller enforcing strictness rejects on `Severity::Violation`,
 and would reject half the calendars in the world if it also rejected on `Severity::Note`.
 
 ## Codes with no M0 emitter
@@ -155,3 +162,10 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | scheduling-sender-not-permitted | A scheduling message was sent by a party RFC 5546 section 3 does not permit to send its `METHOD`. | Violation | M3 |
 | scheduling-method-ambiguous | A calendar stated more than one `METHOD`, so the verb of the whole message is two claims rather than one. | Violation | M3 |
 | scheduling-instance-nonexistent | A `RECURRENCE-ID` named a wall clock its series' zone does not show, and the reading the caller stated dropped it. | Violation | M3 |
+| dav-foreign-element-skipped | An XML element outside the `DAV:` and CalDAV vocabulary was skipped, with everything inside it. | Note | M4 |
+| dav-calendar-data-copied | A `calendar-data` payload had to be copied out of the body rather than borrowed from it. | Note | M4 |
+| dav-calendar-data-line-endings-folded | A `calendar-data` payload lost carriage returns to XML 1.0 section 2.11 line-ending normalization. | Note | M4 |
+| dav-property-unmodeled | A property was kept as octets because this crate has no model for its value. | Note | M4 |
+| dav-status-unreadable | A `DAV:status` element did not carry the status line RFC 4918 section 14.28 requires. | Violation | M4 |
+| dav-response-without-href | A `DAV:response` carried no `href`, so it names no resource. | Violation | M4 |
+| dav-responses-truncated | A multistatus carried more responses than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M4 |
