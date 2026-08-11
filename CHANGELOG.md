@@ -7,23 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing has been released. This section is everything since the first commit — the workspace
+bootstrap and the five milestones over it — and the entries in each group run oldest first,
+because several of them are corrections to entries above them and read as nothing at all in
+the other order. What version this becomes is a decision nobody has made.
+
 ### Added
 
-- `MatchHeader`, the reading door for `If-Match` and `If-None-Match` that RFC 9110 section
-  13.1.1 defines and this crate rendered without ever reading. A server assembled from the
-  parts could not tell `If-Match: *` from a header value it could not parse, and those two
-  demand opposite outcomes on a write; the list form is read too, because the specification
-  defines it and a server that refused it would fail a conformant client.
-- `CalendarQuery::shape` and `CalendarQuery::timezone`, so RFC 4791 section 9.5's own
-  production — `((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)` — is a body this
-  crate reads and writes rather than one it refuses with `DavError::Unexpected`, and the zone a
-  floating `time-range` is resolved against survives a read and a re-encode.
-- `ValueError::SelectionContradiction`: a `calendar-data` selection stating `allprop` beside
-  named properties is a value RFC 4791 section 9.6.1's grammar cannot express, and the crate's
-  precedent for one of those is a refusal rather than a body that says something else.
-- Two diagnostic codes, `dav-property-markup-dropped` and `dav-sync-token-withheld`.
 - Workspace bootstrap: crate skeletons, quality gates, and the day-one architectural
-  decision records. No parsing, recurrence, or scheduling logic yet.
+  decision records — the frame, written before anything it was built to hold. Everything
+  under it is in the entries below.
 - Five architectural decisions from the design bake-off — allocation policy, parser layering
   and the pull API, the error and diagnostic model, shared resource limits, and civil-time
   arithmetic — and a per-crate design document for each crate's committed public surface.
@@ -212,9 +205,173 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   transcribed table cannot drift apart — and a twenty-case adversarial suite, one test per named
   attack, each fixture built so exactly one gate can fire, which makes the assertion about the
   gate's order and not only its answer.
+- `MatchHeader`, the reading door for `If-Match` and `If-None-Match` that RFC 9110 section
+  13.1.1 defines and this crate rendered without ever reading. A server assembled from the
+  parts could not tell `If-Match: *` from a header value it could not parse, and those two
+  demand opposite outcomes on a write; the list form is read too, because the specification
+  defines it and a server that refused it would fail a conformant client.
+- `CalendarQuery::shape` and `CalendarQuery::timezone`, so RFC 4791 section 9.5's own
+  production — `((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)` — is a body this
+  crate reads and writes rather than one it refuses with `DavError::Unexpected`, and the zone a
+  floating `time-range` is resolved against survives a read and a re-encode.
+- `ValueError::SelectionContradiction`: a `calendar-data` selection stating `allprop` beside
+  named properties is a value RFC 4791 section 9.6.1's grammar cannot express, and the crate's
+  precedent for one of those is a refusal rather than a body that says something else.
+- Two diagnostic codes, `dav-property-markup-dropped` and `dav-sync-token-withheld`.
 
 ### Fixed
 
+- **Eleven recurrence defects, found by four adversarial lenses run against the shipped
+  expansion engine.** The last period of every cadence existed and was being deleted.
+  `PeriodWalk` computed each period's exclusive upper edge and refused the period when only that
+  edge left the calendar, so
+  `FREQ=DAILY` from 9999-12-28 stopped on the 30th, `FREQ=YEARLY` lost the year 9999, and the
+  same held for the other five frequencies — although every instant in those periods is
+  representable and the RFC writes them. The edge was read nowhere outside the walk's own tests;
+  a period carries its anchor now.
+- An `EXDATE` landing on an `RDATE` could erase occurrences it did not name. The merge documents
+  a three-call protocol — `is_drained`, `takes_rule_key`, `step` — and the search called only
+  `step`, reading its `None` both as "the series is over" and as "the offered rule key was
+  consumed". So an exclusion on an addition deleted the rule instance after it, `DTSTART`
+  included, having already spent its `COUNT`; and an exclusion on the head of an `RDATE` tail
+  discarded every addition behind it.
+- `BYWEEKNO` under `FREQ=YEARLY` expands a period to the weeks of its *week-numbering* year
+  rather than filtering the days of its calendar year. The two readings partition the same union,
+  so they differ only where a period is skipped, a `BYSETPOS` selects, or a year's week count is
+  asked about — and there the old one attributed week 1 of 2020 (which begins 2019-12-30) to the
+  2019 period, emitted a week 53 in years that have none, and let `BYSETPOS=1` over week one
+  select January 1st.
+- `BudgetExhausted::candidates_spent` reports what the search charged rather than what expansion
+  handed back. A period refused while filling had paid for every candidate it generated and
+  reported none of them, and a rule that produces an instance in no period spent its whole budget
+  and reported zero — telling a caller deciding whether to retry that it got nowhere at the
+  moment it needed to hear the opposite.
+- `Meter::is_exhausted` latches for every bound the ledger keeps. It carried the octet budget
+  alone, so a search stopped by `Limits::candidates_per_period` or `occurrences_per_search` left
+  the caller's own meter — ADR 0002's most durable report of a truncated answer — reading clean.
+- A `BYDAY` ordinal under a frequency RFC 5545 section 3.3.10 forbids one under is ignored and
+  its weekday kept, under all five such frequencies. `FREQ=WEEKLY` alone used to resolve it
+  inside a scope one week wide, where `BYDAY=2TU` matched nothing and silently emptied the entire
+  series while `BYDAY=1TU` worked. The decoder now reports the construct on
+  `recurrence-rule-part-out-of-range`.
+- **Eleven zone defects, found by four adversarial lenses run against the shipped resolver.**
+  A zone rule stopped being consulted once four dated transitions stood between it and the
+  query, so a `Europe/Berlin` definition restating two years of its own transitions as `RDATE`
+  lines answered noon on the first of July as CET — an hour wrong, with `AnswerBasis::Computed`
+  and no diagnostic. Every rule a definition carries is now asked about every query, and a rule
+  that fires rarely is probed back sixty-four years rather than three, which is what
+  `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` needs to be found from the year after it fires.
+- A zone with two transitions in one day reported seventeen hours of ordinary wall clock as
+  local times that never happened, because the candidate offsets were read at the two ends of a
+  two-day window and the offset governing the middle of it was never one of them. The window is
+  walked now, and a gap is answered from the transition that sprang over the queried wall clock
+  rather than from whichever transition the far end of the window held — which is what
+  `gap_end`, `offset_before` and section 3.3.5's `shifted` reading each have to come from.
+- A transition table is ordered by the instant each observance begins rather than by the wall
+  clock its `DTSTART` spells. Two observances declared on one wall clock used to resolve by the
+  order the producer wrote them in, an hour apart, and a `TZOFFSETFROM` further east than the
+  previous observance's left the binary search placing a query among onsets that did not ascend.
+- A `VTIMEZONE` that exists and carries no usable observance is no longer indistinguishable from
+  a zone nobody defined. It answers `LocalResolution::Undetermined` rather than `None`,
+  `ZoneSource::recognizes` is the question `offset_at` cannot answer, and
+  `CombinedZoneSource::report` no longer claims `unknown-time-zone` — a violation about a zone
+  the file supplies — for one.
+- A table's early end is labeled. A definition whose `RDATE` lines begin in 2027 answered July
+  2020 with its earliest `TZOFFSETFROM` extended backwards forever and called it computed;
+  `AnswerBasis::BeforeKnownTransitions` says so. And `coverage_end` is `None` only when every
+  side of a definition repeats forever, so a daylight rule that runs on beside standard onsets
+  that stop in 2029 no longer claims to know what 2031 does.
+- A second definition of one `TZID` is kept beside the first rather than dropped, so an empty
+  placeholder `VTIMEZONE` written above a full definition can no longer erase it, and both
+  readings of a file that states two stay reachable.
+- A definition the caller's own zone-count bound turned back is reported as that, naming the
+  zone, and the identifiers it declares are no longer reported as identifiers the calendar never
+  defined.
+- An observance whose required properties are all present and whose values cannot be read —
+  `TZOFFSETTO:+9999`, or a `DTSTART` written as a `DATE` — is reported under
+  `vtimezone-observance-unreadable`. `Component::audit` sees a property that is there and the
+  reader was deferring to it, so both files produced a zone in the set that answered nothing and
+  no code from anybody.
+- A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes is kept as the real
+  instant it names and reported under `exdate-zone-unknown`. It used to be dropped in silence,
+  which is the one outcome that layer says is indefensible.
+- Two overrides naming one cadence key are ranked by file order and counted rather than refusing
+  the whole series. The two halves of the hour a zone repeats are one wall clock, so a zoned
+  series produces the collision without anybody making a mistake, and `InputError::Duplicated`
+  cost such an event every occurrence it had.
+- A `REPLY` carrying a `VALARM` was accepted whole. The gate counted a payload's properties
+  against RFC 5546 section 3 and never its components, so the `VALARM` row of section 3.2.3's
+  `SUBCOMPONENTS` table — which reads `0` — was unenforced, and an attendee's answer could
+  install a component the recipient's client will act on. The refusal is
+  `AuthorizationDenied::MethodForbidsComponent`, a variant of its own rather than the existing
+  property-shaped one carrying a component's name; only the forbidden direction is read, and
+  that omission is machine-checked against the transcribed tables rather than asserted in prose.
+- A `PUBLISH` or a `REQUEST` about something the caller does not hold was always refused
+  `OrganizerMismatch`, so the two methods RFC 5546 defines to arrive before the recipient has
+  anything could never succeed and `TransitionReason::Created` was unreachable: the sending
+  party was resolved only against state that, being absent, names nobody. The lookup falls back
+  to the message's own payload when the prior state is absent. What rests on the transport as a
+  result is stated in `SECURITY.md` and in ADR 0005 amendment 4 rather than left implicit.
+- A `REFRESH` described the removal of the organizer's `DTSTART`, `RRULE` and attendee list.
+  It was diffed as a restatement of the component, so it stated a removal for every property its
+  four lines do not echo, and the field rule then refused the attendee for removals the diff had
+  invented. It describes nothing now, per section 3.2.6. Relatedly, the revision gate runs only
+  for a method whose own table admits a `SEQUENCE`: a refresh states no version of its own, so
+  the absent-is-zero reading made every refresh stale against every held revision above zero.
+- The octet diff counted property occurrences per name *as written* while filing them under the
+  normalized identity, so an implementation reporting `DTSTART` on one line and `dtstart` on
+  another counted two first occurrences and filed both under one key, silently discarding the
+  first. Both sides count the normalized identity now.
+- **Eleven scheduling authorization and replay defects, found by four adversarial lenses run
+  against the shipped gate.** An attendee's `COUNTER` could rewrite the `ORGANIZER` line — and
+  so hand itself a meeting it was merely invited to — raise `SEQUENCE` and lock the real
+  organizer out of its own updates, and replace its own `ATTENDEE` line with a party nobody
+  invited; a party named only inside somebody else's `DELEGATED-TO` could do the first of those
+  without being on the attendee list at all. `field_rule` moves `ORGANIZER` and `SEQUENCE` to
+  `OrganizerOnly`, since an attendee restating either produces no change to be asked about and
+  the permission bought only the case it was not written for, and `FieldRule::AttendeeOwn` now
+  asks both whether the occurrence is the actor's and whether the line the change leaves behind
+  still names the actor.
+- A held component whose `UID` line appeared twice read as a component the caller does not
+  hold, so the sending party was looked up in the attacker's own message — where the attacker is
+  the `ORGANIZER` — and a stranger was authorized to rewrite the organizer line, the time and
+  the attendee list of a meeting the caller was holding. Absence is now the absence of
+  everything a component could state, and the bridge reads a name stated twice with
+  byte-identical lines as the one claim it is.
+- A message at the revision already held overwrote it. At an equal `SEQUENCE` a revision
+  stating a readable `DTSTAMP` supersedes one stating none, so a `DTSTAMP` written as a `DATE`
+  or under a `TZID` no longer wins the tie it declined to offer — nor, once applied, disarms the
+  ordering for every later message at that revision. An organizer-authored message that
+  supersedes nothing describes nothing, because RFC 5546 section 2.1.4 requires an update to
+  increment `SEQUENCE`.
+- An attendee's own earlier `REPLY`, replayed, silently reverted their current answer. Two
+  replies are one revision answered twice and no component can order them, so
+  `ScheduledComponent::attendee_answered_at` carries the fact and the reply diff records it on
+  the line it answers for as `ical_itip::ANSWERED_AT`. A state that records nothing admits the
+  second answer, which keeps a change of mind working and is stated in `SECURITY.md` as a
+  defense a caller can discard.
+- A `RECURRENCE-ID` written as a bare wall clock was read as naming one instant, so one `REPLY`
+  answered both halves of a repeated hour — the spelling the zoned form was already refused for.
+  Every wall-clock spelling is now unresolved until a zone places it.
+- A `CANCEL` naming one instance twice cancelled the whole series: the gate read only the `0`
+  rows and the required rows of section 3's tables, so a `0 or 1` row was enforced for no method
+  at all. Every row is read in both directions now.
+- A calendar stating two different `METHOD`s was reported as stating none, and filed as an
+  ordinary `.ics` with nothing recorded. It is `MessageError::AmbiguousMethod` with
+  `scheduling-method-ambiguous` beside it.
+- A `REPLY` whose `ATTENDEE` was empty or did not decode was authorized to change nothing, which
+  is indistinguishable from an answer that was applied. It is
+  `AuthorizationDenied::CalendarAddressUnreadable`, and an empty `CAL-ADDRESS` now identifies
+  nobody rather than identifying every other empty one.
+- A `RECURRENCE-ID` in an hour a zone sprang over answered identically under all three readings
+  of `GapPolicy` with an empty report, and the refusal that followed claimed the instance could
+  not be told from its neighbor — about an hour in which the zone showed no meeting at all.
+  `resolve_instance` applies the caller's own gap reading, `FoldSide::Nowhere` is an identity
+  that names no instant, and `scheduling-instance-nonexistent` says when a reading dropped one.
+- A message of a hundred thousand properties was read for four units and then described in
+  full, so a shared meter bounded how many messages an inbox read and not what reading one
+  cost. `Limits::max_payload_properties` bounds a payload's property list and
+  `ItipMessage::read` charges it.
 - **Twenty CalDAV defects, three of them security findings, found by four adversarial lenses
   run against the shipped protocol layer.** A property this crate had no model for was kept as
   its decoded character data and written back unescaped, so a peer writing
@@ -268,221 +425,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   check asked only whether a `;` appeared within twelve octets, so `AT&T` could not be written
   at all and `a & b; c` was emitted with a bare `&` — a document this crate's own reader
   refuses.
-- **Eleven scheduling authorization and replay defects, found by four adversarial lenses run
-  against the shipped gate.** An attendee's `COUNTER` could rewrite the `ORGANIZER` line — and
-  so hand itself a meeting it was merely invited to — raise `SEQUENCE` and lock the real
-  organizer out of its own updates, and replace its own `ATTENDEE` line with a party nobody
-  invited; a party named only inside somebody else's `DELEGATED-TO` could do the first of those
-  without being on the attendee list at all. `field_rule` moves `ORGANIZER` and `SEQUENCE` to
-  `OrganizerOnly`, since an attendee restating either produces no change to be asked about and
-  the permission bought only the case it was not written for, and `FieldRule::AttendeeOwn` now
-  asks both whether the occurrence is the actor's and whether the line the change leaves behind
-  still names the actor.
-- A held component whose `UID` line appeared twice read as a component the caller does not
-  hold, so the sending party was looked up in the attacker's own message — where the attacker is
-  the `ORGANIZER` — and a stranger was authorized to rewrite the organizer line, the time and
-  the attendee list of a meeting the caller was holding. Absence is now the absence of
-  everything a component could state, and the bridge reads a name stated twice with
-  byte-identical lines as the one claim it is.
-- A message at the revision already held overwrote it. At an equal `SEQUENCE` a revision
-  stating a readable `DTSTAMP` supersedes one stating none, so a `DTSTAMP` written as a `DATE`
-  or under a `TZID` no longer wins the tie it declined to offer — nor, once applied, disarms the
-  ordering for every later message at that revision. An organizer-authored message that
-  supersedes nothing describes nothing, because RFC 5546 section 2.1.4 requires an update to
-  increment `SEQUENCE`.
-- An attendee's own earlier `REPLY`, replayed, silently reverted their current answer. Two
-  replies are one revision answered twice and no component can order them, so
-  `ScheduledComponent::attendee_answered_at` carries the fact and the reply diff records it on
-  the line it answers for as `ical_itip::ANSWERED_AT`. A state that records nothing admits the
-  second answer, which keeps a change of mind working and is stated in `SECURITY.md` as a
-  defense a caller can discard.
-- A `RECURRENCE-ID` written as a bare wall clock was read as naming one instant, so one `REPLY`
-  answered both halves of a repeated hour — the spelling the zoned form was already refused for.
-  Every wall-clock spelling is now unresolved until a zone places it.
-- A `CANCEL` naming one instance twice cancelled the whole series: the gate read only the `0`
-  rows and the required rows of section 3's tables, so a `0 or 1` row was enforced for no method
-  at all. Every row is read in both directions now.
-- A calendar stating two different `METHOD`s was reported as stating none, and filed as an
-  ordinary `.ics` with nothing recorded. It is `MessageError::AmbiguousMethod` with
-  `scheduling-method-ambiguous` beside it.
-- A `REPLY` whose `ATTENDEE` was empty or did not decode was authorized to change nothing, which
-  is indistinguishable from an answer that was applied. It is
-  `AuthorizationDenied::CalendarAddressUnreadable`, and an empty `CAL-ADDRESS` now identifies
-  nobody rather than identifying every other empty one.
-- A `RECURRENCE-ID` in an hour a zone sprang over answered identically under all three readings
-  of `GapPolicy` with an empty report, and the refusal that followed claimed the instance could
-  not be told from its neighbor — about an hour in which the zone showed no meeting at all.
-  `resolve_instance` applies the caller's own gap reading, `FoldSide::Nowhere` is an identity
-  that names no instant, and `scheduling-instance-nonexistent` says when a reading dropped one.
-- A message of a hundred thousand properties was read for four units and then described in
-  full, so a shared meter bounded how many messages an inbox read and not what reading one
-  cost. `Limits::max_payload_properties` bounds a payload's property list and
-  `ItipMessage::read` charges it.
-- A `REPLY` carrying a `VALARM` was accepted whole. The gate counted a payload's properties
-  against RFC 5546 section 3 and never its components, so the `VALARM` row of section 3.2.3's
-  `SUBCOMPONENTS` table — which reads `0` — was unenforced, and an attendee's answer could
-  install a component the recipient's client will act on. The refusal is
-  `AuthorizationDenied::MethodForbidsComponent`, a variant of its own rather than the existing
-  property-shaped one carrying a component's name; only the forbidden direction is read, and
-  that omission is machine-checked against the transcribed tables rather than asserted in prose.
-- A `PUBLISH` or a `REQUEST` about something the caller does not hold was always refused
-  `OrganizerMismatch`, so the two methods RFC 5546 defines to arrive before the recipient has
-  anything could never succeed and `TransitionReason::Created` was unreachable: the sending
-  party was resolved only against state that, being absent, names nobody. The lookup falls back
-  to the message's own payload when the prior state is absent. What rests on the transport as a
-  result is stated in `SECURITY.md` and in ADR 0005 amendment 4 rather than left implicit.
-- A `REFRESH` described the removal of the organizer's `DTSTART`, `RRULE` and attendee list.
-  It was diffed as a restatement of the component, so it stated a removal for every property its
-  four lines do not echo, and the field rule then refused the attendee for removals the diff had
-  invented. It describes nothing now, per section 3.2.6. Relatedly, the revision gate runs only
-  for a method whose own table admits a `SEQUENCE`: a refresh states no version of its own, so
-  the absent-is-zero reading made every refresh stale against every held revision above zero.
-- The octet diff counted property occurrences per name *as written* while filing them under the
-  normalized identity, so an implementation reporting `DTSTART` on one line and `dtstart` on
-  another counted two first occurrences and filed both under one key, silently discarding the
-  first. Both sides count the normalized identity now.
-
-- A zone rule stopped being consulted once four dated transitions stood between it and the
-  query, so a `Europe/Berlin` definition restating two years of its own transitions as `RDATE`
-  lines answered noon on the first of July as CET — an hour wrong, with `AnswerBasis::Computed`
-  and no diagnostic. Every rule a definition carries is now asked about every query, and a rule
-  that fires rarely is probed back sixty-four years rather than three, which is what
-  `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` needs to be found from the year after it fires.
-- A zone with two transitions in one day reported seventeen hours of ordinary wall clock as
-  local times that never happened, because the candidate offsets were read at the two ends of a
-  two-day window and the offset governing the middle of it was never one of them. The window is
-  walked now, and a gap is answered from the transition that sprang over the queried wall clock
-  rather than from whichever transition the far end of the window held — which is what
-  `gap_end`, `offset_before` and section 3.3.5's `shifted` reading each have to come from.
-- A transition table is ordered by the instant each observance begins rather than by the wall
-  clock its `DTSTART` spells. Two observances declared on one wall clock used to resolve by the
-  order the producer wrote them in, an hour apart, and a `TZOFFSETFROM` further east than the
-  previous observance's left the binary search placing a query among onsets that did not ascend.
-- A `VTIMEZONE` that exists and carries no usable observance is no longer indistinguishable from
-  a zone nobody defined. It answers `LocalResolution::Undetermined` rather than `None`,
-  `ZoneSource::recognizes` is the question `offset_at` cannot answer, and
-  `CombinedZoneSource::report` no longer claims `unknown-time-zone` — a violation about a zone
-  the file supplies — for one.
-- A table's early end is labeled. A definition whose `RDATE` lines begin in 2027 answered July
-  2020 with its earliest `TZOFFSETFROM` extended backwards forever and called it computed;
-  `AnswerBasis::BeforeKnownTransitions` says so. And `coverage_end` is `None` only when every
-  side of a definition repeats forever, so a daylight rule that runs on beside standard onsets
-  that stop in 2029 no longer claims to know what 2031 does.
-- A second definition of one `TZID` is kept beside the first rather than dropped, so an empty
-  placeholder `VTIMEZONE` written above a full definition can no longer erase it, and both
-  readings of a file that states two stay reachable.
-- A definition the caller's own zone-count bound turned back is reported as that, naming the
-  zone, and the identifiers it declares are no longer reported as identifiers the calendar never
-  defined.
-- An observance whose required properties are all present and whose values cannot be read —
-  `TZOFFSETTO:+9999`, or a `DTSTART` written as a `DATE` — is reported under
-  `vtimezone-observance-unreadable`. `Component::audit` sees a property that is there and the
-  reader was deferring to it, so both files produced a zone in the set that answered nothing and
-  no code from anybody.
-- A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes is kept as the real
-  instant it names and reported under `exdate-zone-unknown`. It used to be dropped in silence,
-  which is the one outcome that layer says is indefensible.
-- Two overrides naming one cadence key are ranked by file order and counted rather than refusing
-  the whole series. The two halves of the hour a zone repeats are one wall clock, so a zoned
-  series produces the collision without anybody making a mistake, and `InputError::Duplicated`
-  cost such an event every occurrence it had.
-- The last period of every cadence existed and was being deleted. `PeriodWalk` computed each
-  period's exclusive upper edge and refused the period when only that edge left the calendar, so
-  `FREQ=DAILY` from 9999-12-28 stopped on the 30th, `FREQ=YEARLY` lost the year 9999, and the
-  same held for the other five frequencies — although every instant in those periods is
-  representable and the RFC writes them. The edge was read nowhere outside the walk's own tests;
-  a period carries its anchor now.
-- An `EXDATE` landing on an `RDATE` could erase occurrences it did not name. The merge documents
-  a three-call protocol — `is_drained`, `takes_rule_key`, `step` — and the search called only
-  `step`, reading its `None` both as "the series is over" and as "the offered rule key was
-  consumed". So an exclusion on an addition deleted the rule instance after it, `DTSTART`
-  included, having already spent its `COUNT`; and an exclusion on the head of an `RDATE` tail
-  discarded every addition behind it.
-- `BYWEEKNO` under `FREQ=YEARLY` expands a period to the weeks of its *week-numbering* year
-  rather than filtering the days of its calendar year. The two readings partition the same union,
-  so they differ only where a period is skipped, a `BYSETPOS` selects, or a year's week count is
-  asked about — and there the old one attributed week 1 of 2020 (which begins 2019-12-30) to the
-  2019 period, emitted a week 53 in years that have none, and let `BYSETPOS=1` over week one
-  select January 1st.
-- `BudgetExhausted::candidates_spent` reports what the search charged rather than what expansion
-  handed back. A period refused while filling had paid for every candidate it generated and
-  reported none of them, and a rule that produces an instance in no period spent its whole budget
-  and reported zero — telling a caller deciding whether to retry that it got nowhere at the
-  moment it needed to hear the opposite.
-- `Meter::is_exhausted` latches for every bound the ledger keeps. It carried the octet budget
-  alone, so a search stopped by `Limits::candidates_per_period` or `occurrences_per_search` left
-  the caller's own meter — ADR 0002's most durable report of a truncated answer — reading clean.
-- A `BYDAY` ordinal under a frequency RFC 5545 section 3.3.10 forbids one under is ignored and
-  its weekday kept, under all five such frequencies. `FREQ=WEEKLY` alone used to resolve it
-  inside a scope one week wide, where `BYDAY=2TU` matched nothing and silently emptied the entire
-  series while `BYDAY=1TU` worked. The decoder now reports the construct on
-  `recurrence-rule-part-out-of-range`.
 
 ### Changed
 
-- **A `calendar-data` payload that is not UTF-8 is refused by the encoder rather than written.**
-  A document declaring UTF-8 and carrying octets that are not is discarded *whole* by any
-  conformant processor, so the peer loses the entire response and nothing on the wire says why;
-  there is no escaping that helps, because a character reference names a code point and these
-  octets are not one. The cost is stated in ADR 0001's own register: an `.ics` whose RFC 5545
-  fold falls between a lead octet and its continuations is a file this workspace round-trips
-  byte for byte and which has **no CalDAV representation at all**. That is a fact about the
-  envelope, not about the file.
-- `PropValue::Unmodeled` is a property's character data and `PropValue::Markup` is a property's
-  elements; a property carrying both keeps its text and reports `dav-property-markup-dropped`.
-  A reader that answered `PropValue::Text` for a property outside the vocabulary now answers
-  `Unmodeled`, because "this crate read the value" and "this crate has no model for this
-  property" are different claims and one direction has to be able to state what the other reads.
-- `XmlPull::attribute` answers a slice of the tokenizer rather than of the body, since a
-  normalized attribute value appears nowhere in the body contiguously, and the trait gains
-  `attribute_count` and `attribute_at`. `ResponseSource` gains `was_truncated`, with a default
-  of `false` for a source that has no bound of its own to stop at.
-- `DEFAULT_CANDIDATE_BUDGET` is 262,144 rather than 65,536, which is the calibration ADR 0010
-  assigns to whoever ships the first recurrence milestone. The old number was exactly
-  `Limits::DEFAULT.candidates_per_period()`, so the per-period ceiling and the whole-search
-  budget were one bound wearing two names: a search that filled a single maximal period had
-  already spent everything. Four times the ceiling admits a decade of a daily rule, a year of
-  an hourly one and a day of `FREQ=SECONDLY`, and refuses a year of `FREQ=MINUTELY` and a week
-  of `FREQ=SECONDLY`, which are policies rather than defaults. The workload table is asserted
-  against the shipped constant.
-- `Limits::DEFAULT.occurrences_per_search` is 262,144 rather than 65,536. A whole day of
-  `FREQ=SECONDLY` is 86,400 occurrences and the candidate calibration admits it, so the
-  retention bound was refusing a workload the budget beside it had already agreed to pay for —
-  the same "two round numbers, one of them wrong" defect the candidate budget was fixed for.
-- ADR 0002 carries fourteen amendments, each written because M1 found the sentence above it
-  wrong rather than merely unbuilt. The largest: the `Item = Result<Occurrence, BudgetExhausted>` the
-  ADR first committed to does not deliver its own guarantee, because `Result`'s `IntoIterator`
-  makes `search.flatten()` discard every terminal marker; what shipped is a crate-owned
-  `SearchStep` enum, the caller's latching `Meter`, and `RecurrenceSearch::outcome()`. Also
-  amended: a window admits by cadence key *or* by effective start rather than by start alone,
-  emission is ordered by cadence key because reordering needs a buffer nothing charges, the
-  `results()` adapter is withdrawn rather than deferred, and the open dedup case the ADR filed
-  without an answer is closed — an `RDATE`-added instant and a diff-moved one that collide are
-  both emitted.
-- `max_absolute_shift`'s documentation called its result a count of elapsed seconds, and no
-  timeline makes that true: for a zoned series both instants an override carries are on the
-  series' own wall clock, so the number is a wall-clock count and already exact, and
-  `extra_widening`'s shortfall on that timeline is always zero. Both docs say which timeline
-  they count now, and `WallClockShift::across` is where the two readings of one move are held
-  apart. ADR 0002 amendment 15 records the correction.
-- `ZonedSeries::actual` is documented as resolving the wall clock it is handed rather than "the
-  instant the occurrence at cadence key `key` actually happens at", which was false for every
-  occurrence a `RANGE=THISANDFUTURE` override moved. What to pass is `Occurrence::start`.
-- `VtimezoneSet::len` counts identifiers rather than definitions, and `VtimezoneSet::table`
-  answers with the first definition carrying a transition rather than the first definition.
-- ADR 0003 carries thirteen amendments, ADR 0011 three, ADR 0002 sixteen and ADR 0009 one, each
-  written because an adversarial case found the sentence above it wrong rather than unbuilt.
-- ADR 0005 carries six amendments and ADR 0001 a fifth, and `docs/design/ical-itip-api.md`
-  gains a "What M3 shipped" section for the five places it promised something the frozen
-  signatures could not deliver. The largest: `impl ScheduledComponent for ical_core::Component`
-  cannot exist, because `property_line` must hand back a whole content line a `Component` stores
-  nowhere as one contiguous run, and RFC 6868 decoding produces octets the file does not contain
-  while `Party` and `Attendee` are `Copy` over borrowed ones. The bridge is `ScheduledView`, a
-  value that owns both — which costs one build pass per component and keeps three frozen files
-  untouched. Also amended: `ScheduleTarget` routes through `Component::apply_to_occurrence` and
-  not ADR 0001's identity-addressed `PropertyMut` guard, `MediaTypeParams::read` is bounded,
-  charged and fallible, and `Authorization` borrowing its state means the same `Component`
-  cannot be both the state judged and the target written.
 - The purity gate reads the package a dependency links rather than the key it was written
   under. A `package = "..."` rename defeated every leg of the old gate; it is now a violation
   in both the inline and the sub-table spelling, alongside a dependency taken from a registry
@@ -543,6 +488,28 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in the reader; a fixture it cannot examine now fails it rather than being counted and
   skipped; and a fourth leg puts every committed fixture through one scoped write of each kind
   the change vocabulary has, which is the first time anything in that file reached P3 or P4.
+- `DEFAULT_CANDIDATE_BUDGET` is 262,144 rather than 65,536, which is the calibration ADR 0010
+  assigns to whoever ships the first recurrence milestone. The old number was exactly
+  `Limits::DEFAULT.candidates_per_period()`, so the per-period ceiling and the whole-search
+  budget were one bound wearing two names: a search that filled a single maximal period had
+  already spent everything. Four times the ceiling admits a decade of a daily rule, a year of
+  an hourly one and a day of `FREQ=SECONDLY`, and refuses a year of `FREQ=MINUTELY` and a week
+  of `FREQ=SECONDLY`, which are policies rather than defaults. The workload table is asserted
+  against the shipped constant.
+- ADR 0002 carries fourteen amendments, each written because M1 found the sentence above it
+  wrong rather than merely unbuilt. The largest: the `Item = Result<Occurrence, BudgetExhausted>` the
+  ADR first committed to does not deliver its own guarantee, because `Result`'s `IntoIterator`
+  makes `search.flatten()` discard every terminal marker; what shipped is a crate-owned
+  `SearchStep` enum, the caller's latching `Meter`, and `RecurrenceSearch::outcome()`. Also
+  amended: a window admits by cadence key *or* by effective start rather than by start alone,
+  emission is ordered by cadence key because reordering needs a buffer nothing charges, the
+  `results()` adapter is withdrawn rather than deferred, and the open dedup case the ADR filed
+  without an answer is closed — an `RDATE`-added instant and a diff-moved one that collide are
+  both emitted.
+- `Limits::DEFAULT.occurrences_per_search` is 262,144 rather than 65,536. A whole day of
+  `FREQ=SECONDLY` is 86,400 occurrences and the candidate calibration admits it, so the
+  retention bound was refusing a workload the budget beside it had already agreed to pay for —
+  the same "two round numbers, one of them wrong" defect the candidate budget was fixed for.
 - ADR 0003 carries six amendments, each written because M2 found the sentence above it narrower
   than what the crate needed rather than merely unbuilt. The source trait has two methods, not
   one: without `offset_at` a source can carry an instant out of a zone and not into it, which
@@ -571,6 +538,30 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   floating or UTC series, and `max_absolute_shift` says outright that the seconds it counts are
   elapsed ones and names `ical_tz::extra_widening` as what a zoned caller adds. The crate graph
   is unchanged; `ical-recur` still has no zone and `just purity` still says so.
+- `max_absolute_shift`'s documentation called its result a count of elapsed seconds, and no
+  timeline makes that true: for a zoned series both instants an override carries are on the
+  series' own wall clock, so the number is a wall-clock count and already exact, and
+  `extra_widening`'s shortfall on that timeline is always zero. Both docs say which timeline
+  they count now, and `WallClockShift::across` is where the two readings of one move are held
+  apart. ADR 0002 amendment 15 records the correction.
+- `ZonedSeries::actual` is documented as resolving the wall clock it is handed rather than "the
+  instant the occurrence at cadence key `key` actually happens at", which was false for every
+  occurrence a `RANGE=THISANDFUTURE` override moved. What to pass is `Occurrence::start`.
+- `VtimezoneSet::len` counts identifiers rather than definitions, and `VtimezoneSet::table`
+  answers with the first definition carrying a transition rather than the first definition.
+- ADR 0003 carries thirteen amendments, ADR 0011 three, ADR 0002 sixteen and ADR 0009 one, each
+  written because an adversarial case found the sentence above it wrong rather than unbuilt.
+- ADR 0005 carries six amendments and ADR 0001 a fifth, and `docs/design/ical-itip-api.md`
+  gains a "What M3 shipped" section for the five places it promised something the frozen
+  signatures could not deliver. The largest: `impl ScheduledComponent for ical_core::Component`
+  cannot exist, because `property_line` must hand back a whole content line a `Component` stores
+  nowhere as one contiguous run, and RFC 6868 decoding produces octets the file does not contain
+  while `Party` and `Attendee` are `Copy` over borrowed ones. The bridge is `ScheduledView`, a
+  value that owns both — which costs one build pass per component and keeps three frozen files
+  untouched. Also amended: `ScheduleTarget` routes through `Component::apply_to_occurrence` and
+  not ADR 0001's identity-addressed `PropertyMut` guard, `MediaTypeParams::read` is bounded,
+  charged and fallible, and `Authorization` borrowing its state means the same `Component`
+  cannot be both the state judged and the target written.
 - `ical-dav` builds and interprets every body RFC 4791 defines, from both ends, with no
   transport and no XML dependency. `RequestBody::read` answers which of the five request roots
   a server was handed — a fact about the octets rather than about the HTTP method, since
@@ -648,3 +639,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one code fence, a call to an `ical-core` function that does not exist, and a promised
   `tests/adversarial.rs` that was not written — with each attack it was to carry named against
   the test that does assert it.
+- **A `calendar-data` payload that is not UTF-8 is refused by the encoder rather than written.**
+  A document declaring UTF-8 and carrying octets that are not is discarded *whole* by any
+  conformant processor, so the peer loses the entire response and nothing on the wire says why;
+  there is no escaping that helps, because a character reference names a code point and these
+  octets are not one. The cost is stated in ADR 0001's own register: an `.ics` whose RFC 5545
+  fold falls between a lead octet and its continuations is a file this workspace round-trips
+  byte for byte and which has **no CalDAV representation at all**. That is a fact about the
+  envelope, not about the file.
+- `PropValue::Unmodeled` is a property's character data and `PropValue::Markup` is a property's
+  elements; a property carrying both keeps its text and reports `dav-property-markup-dropped`.
+  A reader that answered `PropValue::Text` for a property outside the vocabulary now answers
+  `Unmodeled`, because "this crate read the value" and "this crate has no model for this
+  property" are different claims and one direction has to be able to state what the other reads.
+- `XmlPull::attribute` answers a slice of the tokenizer rather than of the body, since a
+  normalized attribute value appears nowhere in the body contiguously, and the trait gains
+  `attribute_count` and `attribute_at`. `ResponseSource` gains `was_truncated`, with a default
+  of `false` for a source that has no bound of its own to stop at.
