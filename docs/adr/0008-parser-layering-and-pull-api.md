@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-10
+- Amended: 2026-08-11
 
 ## Context
 
@@ -58,7 +59,9 @@ the only shape M0 can pass with.
 The tree builder is still unbounded, by design and unavoidably. ADR-0001's losslessness requires
 keeping the original text, so a 400 MB value costs 400 MB in an owned tree. This ADR makes that
 honest rather than fixed: an implied whole-crate guarantee becomes an explicit capability split in
-which a 64 KB device may use only the pull path. A caller who wants a document view on a
+which a 64 KB device may use only the pull path — **and the pull path such a device may use is a
+pull path over *resident* input, since `ContentLineReader` is constructed over one contiguous
+slice and has neither a feed nor a resume.** A caller who wants a document view on a
 constrained device is out of luck, and this says so instead of solving it.
 
 Charging per appended chunk was an enforcement point, and the allocation-policy decision recorded
@@ -76,3 +79,22 @@ Cross-property gaps in the typed view stay out of scope and are worse than unfin
 value type agreeing with `DTSTART`'s, `RANGE=THISANDFUTURE` matched against the master, and
 `X-MICROSOFT-CDO-ALLDAYEVENT` going stale after a timed edit are inter-property invariants no
 layering choice and no token payload type can reach.
+
+## Amendments
+
+**1. The capability split says which pull path, and the dropped outcome stays dropped.** The
+Decision and the Consequences are unchanged. What the paragraph above gained is one clause, added
+because [ADR 0007](0007-allocation-policy.md)'s Amendment 1 found that "a 64 KB device may use only
+the pull path" was being read as a promise this layering never made. The chunked value protocol
+this ADR decided — a value token carrying whether another follows — is what lets such a device
+avoid holding a *value*. It does nothing about holding the *input*, because `ContentLineReader` is
+constructed over a contiguous, fully resident slice, and a device that cannot hold the input cannot
+read the calendar at any layer in this workspace.
+
+That is stated here rather than left to ADR 0007 because this is the document a reader consults for
+what the pull path can do, and a capability split whose two sides are described in different
+documents is how the promissory note arose in the first place. The outcome dropped for object
+safety stays dropped, and no feed or resume door is added; the reopening condition for that branch
+is recorded in ADR 0007's Amendment 1 and it is a caller with a real input larger than its memory,
+not an argument. The cost of saying it here is that this ADR now carries, in its own Consequences,
+the sentence that most narrows what it sells.
