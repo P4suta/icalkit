@@ -6,13 +6,6 @@
 # Cargo.lock is committed: the exact dependency graph is part of the reproducible
 # build, and reproducibility is the point of an integer-unit layout engine.
 
-# cargo-fuzz build output. `fuzz/` is its own workspace and has its own .gitignore;
-# these root-anchored entries keep `reuse lint` (which reads this file) in agreement
-# with git about what is generated. Curated `fuzz/corpus/` seeds are committed.
-/fuzz/target/
-/fuzz/artifacts/
-/fuzz/coverage/
-
 # cargo-mutants working output.
 /mutants.out/
 /mutants.out.old/

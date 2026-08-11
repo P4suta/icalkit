@@ -5,7 +5,7 @@
 # TOML formatting, checked by `just toml-check`.
 
 include = ["**/*.toml"]
-exclude = ["target/**", "fuzz/target/**"]
+exclude = ["target/**"]
 
 [formatting]
 align_entries = false

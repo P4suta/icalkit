@@ -7,19 +7,13 @@
 version = 1
 
 [[annotations]]
-path = [
-  "**/*.md",
-  "Cargo.lock",
-  ".gitignore",
-  "fuzz/.gitignore",
-  ".github/CODEOWNERS",
-]
+path = ["**/*.md", "Cargo.lock", ".gitignore", ".github/CODEOWNERS"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = ["**/tests/fixtures/**", "fuzz/corpus/**"]
+path = ["**/tests/fixtures/**"]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

@@ -18,4 +18,3 @@
 # Rewriting LF <-> CRLF inside one would rewrite the thing under test.
 **/tests/fixtures/** -text
 **/tests/corpus/** -text
-fuzz/corpus/** -text
