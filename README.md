@@ -53,6 +53,12 @@ reasonable today, and a server is the part still being worked through.
 | `ical-dav` | RFC 4791 CalDAV, sans-I/O — no HTTP client bundled |
 | `ical-conform` | Conformance and interoperability suite |
 
+Two changes to that table are decided and have not landed: `ical-grammar` collapses into
+`ical-core` as a private module before the first publish, so six crates are published rather than
+seven; and `ical-query` joins as the CalDAV filter evaluator above `ical-core`, `ical-recur`,
+`ical-tz` and `ical-dav`. See [ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) and
+[ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md).
+
 All but `ical-conform` are `no_std`, perform no I/O, read no clock, and bundle no time zone
 database; the corpus runner is `std` and reads calendars off a disk, because a harness that
 cannot open a file is not a harness — see [ARCHITECTURE.md](ARCHITECTURE.md) and the
