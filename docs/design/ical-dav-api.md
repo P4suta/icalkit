@@ -772,3 +772,51 @@ merely absent. Collapsing them onto it is mechanical except for one real obstacl
 `XmlWriter::new(out, meter)` borrows the meter for the writer's whole lifetime, and a nested
 `WriteXml` tree hands every level its own `&mut Meter`. Resolving that borrow is the work;
 it changes no output byte, and it is not done.
+
+## What the conformance attack changed
+
+The section above records what the units landed. This one records what happened when four
+adversarial lenses were pointed at the landed code — 411 cases in `crates/ical-conform`, of
+which twenty failed. Six signatures in the block at the top of this document are now wrong, and
+they are corrected here rather than left for a reader to discover by compiling against them.
+
+**`PropValue` has eight variants, not seven.** `Unmodeled(Box<[u8]>)` is a property's
+*character data* and is written escaped; `Markup(Box<[u8]>)` is a property's *elements*, kept as
+a self-contained fragment the reader re-serialized in this crate's own prefixes. This document
+listed one variant and described it as "keeps the octets of a property this crate has no model
+for", which the writer read as markup and the reader filled with text — the two-meanings defect
+[ADR 0004](../adr/0004-sans-io-protocol-layer.md) Amendment 5 records as a security finding
+rather than an inelegance.
+
+**`PropStat` carries an `error`.** RFC 4918 section 14.22's grammar is
+`propstat (prop, status, error?, responsedescription?)`, so a precondition inside a group
+explains that group. This document put one `ErrorBody` on `DavResponse` and nowhere else, which
+merged two groups' conditions into one bag and left the writing direction unable to put either
+back.
+
+**`CalendarQuery` has four fields.** `shape: QueryShape` covers RFC 4791 section 9.5's
+`(DAV:allprop | DAV:propname | DAV:prop)?`, two thirds of which this crate previously refused
+outright; `timezone: Option<CalendarPayload>` carries the zone section 9.9 resolves a floating
+window against, which was being dropped as a foreign element.
+
+**`XmlPull::attribute` answers `Option<&[u8]>` borrowed from the tokenizer, and there are two
+more methods beside it.** The value is the one XML 1.0 section 3.3.3 defines — references
+resolved, literal whitespace replaced — which appears nowhere in the body contiguously, so it
+cannot borrow the body. `attribute_count` and `attribute_at` exist because a reader keeping a
+foreign subtree has to keep what was written *on* its elements, and looking a name up requires
+knowing it.
+
+**`ResponseSource` has a third method, `was_truncated`.** RFC 6578 section 3.4 makes
+`sync_token` a statement about a whole answer, so a consumer needs both facts or it cannot tell
+"no token was sent" from "this token covers changes the source never handed over".
+
+**`MatchHeader` is a type this document did not have.** It reads `If-Match` and `If-None-Match`,
+including section 13.1.1's list form. `Precondition` renders those headers and `ETag::parse` is
+a tag parser that correctly refuses `*`; between them there was no door that could tell
+`If-Match: *` from a header value a server could not read, and those two demand opposite
+outcomes on a write.
+
+Three claims in this document's Consequences said the next review should attack the tokenizer's
+depth bounding, the skip-unknown rule and `TextRun::Wire`. All three held. What the review found
+instead was in the places this document did not name: the attribute grammar, the `Char`
+production, the charge on a comment, and the octets of `PropValue::Unmodeled`.

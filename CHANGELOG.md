@@ -9,6 +9,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `MatchHeader`, the reading door for `If-Match` and `If-None-Match` that RFC 9110 section
+  13.1.1 defines and this crate rendered without ever reading. A server assembled from the
+  parts could not tell `If-Match: *` from a header value it could not parse, and those two
+  demand opposite outcomes on a write; the list form is read too, because the specification
+  defines it and a server that refused it would fail a conformant client.
+- `CalendarQuery::shape` and `CalendarQuery::timezone`, so RFC 4791 section 9.5's own
+  production — `((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)` — is a body this
+  crate reads and writes rather than one it refuses with `DavError::Unexpected`, and the zone a
+  floating `time-range` is resolved against survives a read and a re-encode.
+- `ValueError::SelectionContradiction`: a `calendar-data` selection stating `allprop` beside
+  named properties is a value RFC 4791 section 9.6.1's grammar cannot express, and the crate's
+  precedent for one of those is a refusal rather than a body that says something else.
+- Two diagnostic codes, `dav-property-markup-dropped` and `dav-sync-token-withheld`.
 - Workspace bootstrap: crate skeletons, quality gates, and the day-one architectural
   decision records. No parsing, recurrence, or scheduling logic yet.
 - Five architectural decisions from the design bake-off — allocation policy, parser layering
@@ -202,6 +215,59 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Twenty CalDAV defects, three of them security findings, found by four adversarial lenses
+  run against the shipped protocol layer.** A property this crate had no model for was kept as
+  its decoded character data and written back unescaped, so a peer writing
+  `&lt;D:href&gt;/calendars/ann/private/secret.ics&lt;/D:href&gt;` inside its own extension
+  property got a real `DAV:href` element in the body a proxying server emitted;
+  `PropValue::Unmodeled` now carries character data and is escaped, and `PropValue::Markup`
+  carries a peer's elements as a fragment the reader re-serialized, so RFC 4918 section 9.1.3's
+  own structured property survives a proxy instead of being flattened. `ETag::parse` accepted
+  thirty-four octets outside RFC 9110 section 8.8.3's `etagc` — `CR` and `LF` among them — and
+  an accepted tag is rendered into an `If-Match` header value, so a server answering
+  `<D:getetag>"2d9&#13;&#10;If-Match: *"</D:getetag>` chose the caller's other headers and
+  turned a conditional write into an unconditional one. And nothing charged the octets a
+  comment occupies, so thirty-two mebibytes of `<!-- ... -->` cost 2,496 octets of a
+  sixteen-mebibyte ledger; comments and the whitespace outside the root are charged now.
+- An attribute value is the value XML 1.0 section 3.3.3 defines rather than the octets between
+  its quotes: references are resolved and a literal tab, line feed or carriage return becomes
+  one space. A `comp-filter name="VE&#78;T"` selected `VE&#78;T` here and `VENT` in every
+  conformant processor, so two implementations disagreed about which components a hostile
+  `calendar-query` matches; the same gap grew a request four octets a hop through a re-encode.
+- A character XML 1.0 section 2.2's `Char` production excludes is refused however it is spelled.
+  `&#0;` was refused under its own name and the literal `0x00` octet was not, as were the other
+  C0 controls and octet sequences that are not UTF-8 — so the reader accepted documents no
+  conformant processor will parse and handed its caller a run that is not text. Enforced over
+  names, normalized attribute values and character data, with two stated exceptions: the
+  elements the line-ending carve-out names, and `DAV:href`, whose value this crate models as
+  octets on purpose.
+- `CALDAV:calendar-timezone` and `CALDAV:timezone` keep their line endings. RFC 4791 section
+  5.2.2 makes the first "a valid iCalendar object containing exactly one VTIMEZONE component",
+  so its `CRLF` terminators are RFC 5545 syntax for exactly the reason `calendar-data`'s are; a
+  client that read a collection's timezone and `PROPPATCH`ed it back rewrote the stored object,
+  which is the harm ADR 0004 Amendment 1 exists to prevent, one property over.
+- A run of character data that is only a line break is not layout inside a calendar. A blank
+  run was dropped unconditionally, so two XML comments positioned around the `CRLF` that
+  terminates a content line welded two iCalendar properties into one and changed the object's
+  `UID`; the same rule read a `DAV:displayname` whose value is a space as a property that
+  arrived empty.
+- A value split across two runs by a comment reaches the caller whole. `text_of` kept the first
+  run and discarded the rest with nothing reported, which made an `href` and — worse — a
+  `DAV:sync-token` into values the peer never sent.
+- A report this reader truncated states no synchronization token. RFC 6578 section 3.4 makes the
+  token a statement about the whole answer, and the guard was positional: with the token written
+  before the responses, a report cut short at sixteen of forty thousand handed back the full
+  token, and a caller storing it would never be told about the rest.
+- A status line is read as the code it states or as none. `HTTP/1.1 2000 OK` read as `200` and
+  `HTTP/1.1 4045` as `404`, which promotes a malformed `DAV:propstat` into a success
+  `DavResponse::successful_value` hands back.
+- A precondition named inside one `propstat` stays in that group. RFC 4918 section 14.22's
+  grammar puts an `error` inside the group it explains; hoisting every group's conditions into
+  one bag on the response lost which refusal each one was about.
+- A kept fragment carrying an ampersand can be written and read back. The encoder's reference
+  check asked only whether a `;` appeared within twelve octets, so `AT&T` could not be written
+  at all and `a & b; c` was emitted with a bare `&` — a document this crate's own reader
+  refuses.
 - **Eleven scheduling authorization and replay defects, found by four adversarial lenses run
   against the shipped gate.** An attendee's `COUNTER` could rewrite the `ORGANIZER` line — and
   so hand itself a meeting it was merely invited to — raise `SEQUENCE` and lock the real
@@ -354,6 +420,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A `calendar-data` payload that is not UTF-8 is refused by the encoder rather than written.**
+  A document declaring UTF-8 and carrying octets that are not is discarded *whole* by any
+  conformant processor, so the peer loses the entire response and nothing on the wire says why;
+  there is no escaping that helps, because a character reference names a code point and these
+  octets are not one. The cost is stated in ADR 0001's own register: an `.ics` whose RFC 5545
+  fold falls between a lead octet and its continuations is a file this workspace round-trips
+  byte for byte and which has **no CalDAV representation at all**. That is a fact about the
+  envelope, not about the file.
+- `PropValue::Unmodeled` is a property's character data and `PropValue::Markup` is a property's
+  elements; a property carrying both keeps its text and reports `dav-property-markup-dropped`.
+  A reader that answered `PropValue::Text` for a property outside the vocabulary now answers
+  `Unmodeled`, because "this crate read the value" and "this crate has no model for this
+  property" are different claims and one direction has to be able to state what the other reads.
+- `XmlPull::attribute` answers a slice of the tokenizer rather than of the body, since a
+  normalized attribute value appears nowhere in the body contiguously, and the trait gains
+  `attribute_count` and `attribute_at`. `ResponseSource` gains `was_truncated`, with a default
+  of `false` for a source that has no bound of its own to stop at.
 - `DEFAULT_CANDIDATE_BUDGET` is 262,144 rather than 65,536, which is the calibration ADR 0010
   assigns to whoever ships the first recurrence milestone. The old number was exactly
   `Limits::DEFAULT.candidates_per_period()`, so the per-period ceiling and the whole-search

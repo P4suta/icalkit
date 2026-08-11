@@ -373,3 +373,120 @@ element count reaches, since one element at depth one can carry a thousand of th
 response cardinality is one number for two things — the `href`s a multiget asks for and the
 responses that answer them — because a policy that admits the request and refuses its answer
 describes an exchange nobody can complete.
+
+**5. A property's value is character data or it is elements, and one field could not be both.**
+`PropValue::Unmodeled` was documented by the writing side as "the octets it kept, which is what
+makes a server proxying another server's properties lossless" and filled by the reading side with
+the *decoded character data* of the property's subtree. Those are two different fields wearing one
+name, and the gap between them was a security defect rather than an inelegance: a peer writing
+`&lt;D:href&gt;/calendars/ann/private/secret.ics&lt;/D:href&gt;` inside its own extension property
+was writing a string, and the encoder pasted the decoded octets into its own multistatus, where
+`<D:href>` is an element RFC 4918 gives meaning to. A proxying server therefore emitted `DAV:`
+markup the peer had chosen. The balance filter in front of the copy asked whether the tags
+balanced and never whether they had been tags on the wire, so any self-balanced subtree went
+through.
+
+The same one-field-two-meanings also lost data in the other direction. `read -> write -> read` was
+not a fixed point — sixty-one octets of promoted markup came back as fifteen of character data —
+and a value carrying an ampersand could not be written at all (`AT&T`) or was written as a document
+this crate's own reader refuses (`a & b; c` emitted a bare `&`).
+
+The decision is to split the field along the line the values already had. `PropValue::Unmodeled`
+carries **character data** and is written escaped, so what a peer sent as text leaves as text.
+`PropValue::Markup` carries **elements**: the reader re-serializes the subtree in this crate's own
+prefixes, with each element declaring the namespace it resolved to and every text run escaped by
+the same door every other run goes through, and the writer copies those octets to the sink after a
+refusal filter that now also requires every `&` to begin a reference a reader would resolve and the
+octets to be UTF-8. RFC 4918 section 9.1.3's own example — `<R:bigbox><R:BoxType>Box type
+A</R:BoxType></R:bigbox>` — survives a proxy for the first time, which is what "lossless" was
+supposed to mean.
+
+What is *not* closed: a property that mixes character data with elements keeps its character data
+and reports `DiagnosticCode::DavPropertyMarkupDropped` at `Severity::Violation`. One `Box<[u8]>`
+cannot say where a peer's markup sat among a peer's text without inventing an order between them,
+and this ADR is not willing to grow `PropValue` a tree for a shape no mainstream server emits. The
+loss is reported rather than silent, which is the line `docs/adr/0001` actually draws.
+
+**6. `CALDAV:calendar-timezone` and `CALDAV:timezone` are iCalendar objects too.** Amendment 1
+scoped the line-ending carve-out to `CALDAV:calendar-data` "and nothing else today", and the
+"today" turned out to be doing real work. RFC 4791 section 5.2.2 makes `CALDAV:calendar-timezone`
+"a valid iCalendar object containing exactly one VTIMEZONE component" and section 9.5 puts the same
+value inside a `calendar-query` as `CALDAV:timezone`. Every sentence of Amendment 1's argument
+applies unchanged: RFC 5545 section 3.1 makes `CRLF` those objects' line syntax, `SabreDAV` and
+Radicale write the octets literally, and a client that reads a collection's timezone under a
+folding read and `PROPPATCH`es it back rewrites the stored object — the exact harm the carve-out
+exists to prevent, one property over. All three elements are now what
+`ElementName::preserves_line_endings` names, and `DiagnosticCode::DavCalendarDataLineEndingsFolded`
+reports the conformant read's loss for all three.
+
+The reason the gap survived Amendment 1 is worth recording because it is a shape of blind spot
+rather than an oversight: `tests/interop.rs` only ever round-trips *this crate's own output*, and
+this crate writes every `CR` as `&#13;`, which is markup and survives section 2.11 in every mode.
+Write-then-read was the identity on `calendar-timezone` and always would have been. Only a fixture
+holding a real server's spelling could see it.
+
+**7. XML 1.0 section 2.2's `Char` production is enforced, and where it is not is stated.** The
+reader refused `&#0;` under `SyntaxError::ForbiddenCharacter`, naming that production, and accepted
+the literal `0x00` octet, `0x08`, and `\xc3\x28\xff\xfe` — so one spelling of a forbidden character
+was a violation and the other was invisible, and the run handed to a caller was not text. It is now
+enforced over element and attribute names, over normalized attribute values, and over character
+data, with two stated exceptions. Inside the elements Amendment 6 names, because that is where this
+reader has already stopped being a conformant XML 1.0 processor and because a fold that splits a
+codepoint is a resource ADR 0001 guarantees this workspace round-trips. And inside `DAV:href`,
+whose value `value.rs` models as octets on the explicit ground that "a type that cannot model a
+response one can read is the failure this workspace exists to prevent".
+
+The write side gains the matching refusal and it costs something real. A `calendar-data` payload
+that is not UTF-8 is refused with `ValueError::NotUtf8` rather than written, because a document
+declaring UTF-8 and carrying octets that are not is discarded *whole* by any conformant processor —
+the peer loses the entire response, not one property, and nothing on the wire says why. There is no
+escaping that helps: a character reference names a code point and these octets are not one. **A
+`.ics` whose RFC 5545 fold falls between a lead octet and its continuations therefore has no CalDAV
+representation at all.** That is a fact about the envelope and not about the file, which this
+workspace still reads and writes byte for byte; it is recorded in ADR 0001's register as well as
+here. The remaining hole is named rather than closed: a non-UTF-8 `DAV:href` is still written
+through, because percent-encoding it on the way out without decoding on the way in would break the
+round trip and decoding it would erase the difference between `%2F` and `/`.
+
+**8. An attribute value is the value XML 1.0 section 3.3.3 defines.** `XmlPull::attribute` answered
+the octets between the quotes, with the reader's own justification that "the attributes this crate's
+vocabulary defines ... are all `US-ASCII` values with nothing to escape". That is an assumption
+about a cooperative peer. A `comp-filter name="VE&#78;T"` named a component spelled `VE&#78;T` here
+and `VENT` in every conformant processor, so two implementations disagreed about which components a
+hostile `calendar-query` selects; the same gap made a request round trip grow four octets a hop,
+because the encoder escaped an `&` the reader had never resolved. References are now resolved and a
+literal tab, line feed or carriage return becomes one space, before the value is delivered. The
+signature changes: the normalized value borrows the tokenizer rather than the body, because it
+appears nowhere in the body contiguously. `XmlPull` also gains `attribute_count` and `attribute_at`,
+without which Amendment 5's kept fragment would silently drop everything written *on* a peer's
+elements.
+
+**9. A comment costs what its octets cost, and a truncated report states no token.** Two claims
+this ADR and ADR 0010 make together were false at one seam each. `skip_comment` advanced the cursor
+and charged nothing, so eight mebibytes refused as character data were free as `<!-- ... -->`; the
+only remaining bound was `max_response_bytes`, which is per body, so a peer bought unmetered
+octet-by-octet scanning at 64 MiB a request against the ledger that is supposed to be the aggregate
+one. Comments and the whitespace outside the root are now charged like the octets they are. And RFC
+6578 section 3.4 makes `DAV:sync-token` a statement about the whole of a report, so a report this
+reader truncated at `max_responses` now states none — the guard is the fact of truncation and not
+the position of the element, because a server writing the token before its responses (which this
+reader accepts) otherwise handed back a full token for sixteen of forty thousand changes, and a
+caller storing it would never be told about the rest.
+
+**10. The header boundary gained the door it was missing, and `ETag` gained its production.**
+Amendment 3 named `If-Match` as protocol semantics and modeled the writing half. There was no
+reading half at all, and the only reading door there was — `ETag::parse` — answered identically for
+`If-Match: *` and for a header value it could not parse, which are the two cases that demand
+opposite outcomes on a write. `MatchHeader` reads one, including RFC 9110 section 13.1.1's list
+form, and judges it under the strong comparison `If-Match` uses and the weak one `If-None-Match`
+uses.
+
+`ETag::parse` now holds every octet between the quotes to RFC 9110 section 8.8.3's `etagc`
+production. That is a security bound and not pedantry: an accepted tag is rendered straight into a
+header *value* for a caller to frame, so a server answering
+`<D:getetag>"2d9&#13;&#10;If-Match: *"</D:getetag>` could choose the caller's other headers — the
+caller's conditional write became unconditional and silently replaced whatever another client had
+stored. Thirty-four octets outside the production were accepted before, `CR` and `LF` among them.
+`Status::parse_status_line` is held to section 15's three digits for the same class of reason: a
+fourth digit read as a success the server never stated, which promotes a malformed `DAV:propstat`
+into a property `DavResponse::successful_value` hands back.

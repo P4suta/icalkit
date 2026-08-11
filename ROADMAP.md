@@ -297,13 +297,15 @@ document and a working one, none of them small:
   request body and no row; so does everything in RFC 3744, and a multi-user server without
   ACL is a single-user server. `DAV:expand-property` and `DAV:principal-property-search` are
   how real clients discover a principal's collections, and neither is modeled.
-- **Two gaps inside what is modeled.** `CALDAV:timezone` — the inline `VTIMEZONE` a
-  `calendar-query` may carry, RFC 4791 section 9.5 — has no row, so under the default policy a
-  server silently ignores a timezone the client stated, which changes which events a
-  floating-time `time-range` matches. And `DAV:allprop` and `DAV:propname` inside a
-  `calendar-query` or `calendar-multiget` are refused rather than read, because
-  `CalendarQuery { props: PropRequest }` cannot express either. No deployed client is known to
-  send the second; the first is a correctness gap and is filed as one.
+- **Two gaps inside what is modeled — both now closed, by the attack rather than by this
+  plan.** `CALDAV:timezone` has a row, a field on `CalendarQuery`, and the line-ending
+  carve-out its value earns, so the zone a client stated survives a read and a re-encode
+  instead of being dropped as foreign. `DAV:allprop` and `DAV:propname` inside a
+  `calendar-query` are `QueryShape`, so RFC 4791 section 9.5's own production is a body this
+  crate reads and writes rather than one it answers `DavError::Unexpected` to. What replaces
+  them on this list is `calendar-multiget`, whose grammar admits the same three shapes and
+  which still carries only a property list — nobody is known to send the other two to a
+  multiget, and that is a reason to file it rather than to call it closed.
 - **Scheduling over HTTP is half here.** RFC 6638's preconditions, `schedule-tag` and the
   inbox and outbox properties are modeled, and `ical-itip` holds the semantics; the POST to a
   scheduling outbox and the `CALDAV:schedule-response` body it answers with are not.
@@ -312,6 +314,44 @@ So: a client, yes, today. A server, with the filter engine and the ACL vocabular
 would have to write, and with the two gaps above closed. Both of those were true before this
 milestone as well; what changed is that the protocol layer under them exists and the reasons
 are specific enough to be worked through rather than discovered.
+
+### What four adversaries found after that was written
+
+Everything above was true of a layer that had never been attacked from outside its own tests.
+Four lenses then wrote 411 conformance cases against it — the XML surface, the calendar round
+trip through the envelope, the one-shape-both-directions claim, and the protocol state a
+conditional write and a sync token carry — and twenty of them failed. Three were security
+findings and all three were real:
+
+- **Text a peer escaped became markup on the way out.** `PropValue::Unmodeled` was documented by
+  the encoder as markup and filled by the reader with decoded character data, so a proxying
+  server pasted a peer's string into its own multistatus as `DAV:` elements the peer had chosen.
+  The field is split — character data is escaped, markup is a re-serialized fragment — and RFC
+  4918 section 9.1.3's own structured property survives a proxy for the first time.
+- **A server could choose the caller's other headers.** `ETag::parse` accepted thirty-four
+  octets outside RFC 9110 section 8.8.3's `etagc`, `CR` and `LF` among them, and an accepted tag
+  is rendered straight into an `If-Match` value. A `getetag` spelling `&#13;&#10;If-Match: *`
+  turned a caller's conditional write into an unconditional one.
+- **A comment was free.** Nothing charged the octets `skip_comment` walked past, so thirty-two
+  mebibytes of comment cost 2,496 octets of a sixteen-mebibyte ledger and the aggregate bound
+  ADR 0010 exists for did not exist at that seam.
+
+The other seventeen were wrong answers and silent losses of the same family: an attribute value
+that was not the value XML 1.0 section 3.3.3 defines, a `Char` production enforced against one
+spelling of a character and not the other, a sync token handed back for an answer that was
+truncated, a status line read as `200` when the server wrote `2000`, a precondition moved from
+the property group that named it to the whole response, and `CALDAV:calendar-timezone` losing
+the line endings `CALDAV:calendar-data` keeps. All twenty pass. What that says about the four
+paragraphs above is not that they were wrong but that "met" was a claim about a design and the
+attack was the first evidence about the code.
+
+Two things were made worse on purpose and are recorded rather than smoothed over. A
+`calendar-data` payload that is not UTF-8 — including an `.ics` whose RFC 5545 fold splits a
+codepoint, which ADR 0001 guarantees this workspace round-trips — is now **refused** by the
+encoder instead of written into a document that declares UTF-8 and is not, because that document
+is one the peer discards whole. And a property that mixes character data with elements keeps its
+text and reports the markup dropped, because one `Box<[u8]>` cannot hold both without inventing
+an order between them.
 
 One piece of internal debt is named rather than left: `write_request.rs` and
 `write_response.rs` each carry a private element encoder instead of going through

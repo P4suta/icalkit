@@ -274,3 +274,33 @@ document's guarantee is that nothing here loses a byte it was given; it has neve
 under section 9.6 cannot be, a guarantee that the bytes given are the bytes authored.
 `CalendarPayload::is_as_sent` is how a caller reads which of the two it is holding, and a
 `bare-line-feed` diagnostic is how the grammar reports the terminators either way.
+
+**7. One class of file this document guarantees has no CalDAV representation, and that is the
+envelope's limit rather than this document's.** Amendment 6 recorded where "the octets this
+workspace was handed" stops being "the octets a producer wrote". M4's own attack found the
+sharper case, going the other way: a file this workspace reads and writes byte for byte that
+cannot be *put on a CalDAV wire at all*.
+
+An RFC 5545 fold may fall between the lead octet of a multi-octet character and its
+continuations. Real exporters emit that, `crates/ical-conform/tests/fixtures/break_grammar/
+fold_inside_utf8.ics` is the case, and every claim above holds over it: `parse -> serialize` is
+the identity. The octets are not valid UTF-8 — the fold sequence sits inside the character — and
+an XML document declares an encoding. A `<C:calendar-data>` element carrying them makes the
+whole multistatus one that no conformant processor will parse: the peer loses the entire
+response, not one property, and nothing on the wire says why. No escaping helps, because a
+character reference names a code point and these octets are not one.
+
+`ical-dav` therefore refuses to write such a payload
+([ADR 0004](0004-sans-io-protocol-layer.md) Amendment 7) rather than emitting a body the peer
+discards. Nothing above is narrowed: the file still round-trips through this workspace, and a
+server storing it can still serve it over any transport that carries octets. What is recorded
+here is that CalDAV is not such a transport, that the boundary is the XML envelope's and not
+the grammar's, and that a caller meeting `ValueError::NotUtf8` on a write is meeting a real
+property of the protocol rather than a defect in this crate.
+
+The matching hole on the same wire is named rather than closed: `DAV:href` is byte-shaped by
+this workspace's own decision — a type that cannot model a response one can read is the failure
+this document exists to prevent — so a path a store holds that is not UTF-8 is still written
+through, and a body carrying one is still a body a conformant peer refuses. Percent-encoding on
+the way out without decoding on the way in would break the round trip, and decoding would erase
+the difference between `%2F` and `/`. Nobody has designed the third answer.
