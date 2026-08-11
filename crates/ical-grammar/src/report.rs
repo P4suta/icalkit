@@ -408,6 +408,54 @@ pub enum DiagnosticCode {
     /// `ical_tz::GapPolicy`, so the identity resolves under one reading and vanishes under
     /// another, and a message addressed to it is refused for naming an instance nothing places.
     SchedulingInstanceNonexistent,
+    /// An XML element outside the `DAV:` and CalDAV vocabulary was skipped, with everything inside it.
+    ///
+    /// RFC 4918 section 17 requires a reader to tolerate what a server extended its bodies
+    /// with, so this is a note about a legal document rather than a fault in one. It is
+    /// reported rather than passed over in silence because the skipped subtree may be the
+    /// property the caller asked for, under a vendor name this crate has no row for, and
+    /// "the server sent nothing" and "this crate discarded it" are different answers.
+    DavForeignElementSkipped,
+    /// A `calendar-data` payload had to be copied out of the body rather than borrowed from it.
+    ///
+    /// The payload is delivered as a slice of the caller's own buffer whenever the element
+    /// held nothing but character data. A reference — `&amp;`, `&#13;` — or a `CDATA`
+    /// boundary means the octets the caller should receive appear nowhere contiguously, so
+    /// they are reassembled into an owned buffer instead. The octets are the same either way;
+    /// what changes is that one allocation was charged, which a caller counting them can see.
+    DavCalendarDataCopied,
+    /// A `calendar-data` payload lost carriage returns to XML 1.0 section 2.11 line-ending normalization.
+    ///
+    /// RFC 4791 section 9.6 anticipates this and permits it, so the document is legal and the
+    /// note is not a violation. What the caller needs telling is that the octets it now holds
+    /// are not the octets the server stored: writing them back changes the resource's line
+    /// endings and its `ETag`, which is a silent edit to somebody else's data. Only a reader
+    /// running under the normalizing text policy can produce this.
+    DavCalendarDataLineEndingsFolded,
+    /// A property was kept as octets because this crate has no model for its value.
+    ///
+    /// The `DAV:` and CalDAV vocabularies are extensible and a server may put anything inside
+    /// a `prop` element. The octets are preserved in place, as `docs/adr/0001` requires of
+    /// everything else this workspace reads, and this note says the value traveling with the
+    /// name was never interpreted.
+    DavPropertyUnmodeled,
+    /// A `DAV:status` element did not carry the status line RFC 4918 section 14.28 requires.
+    ///
+    /// The status is what says whether a property was returned, so a response carrying one
+    /// nothing can read states no outcome for the properties beside it.
+    DavStatusUnreadable,
+    /// A `DAV:response` carried no `href`, so it names no resource.
+    ///
+    /// RFC 4918 section 14.24 requires at least one. A response that names nothing cannot be
+    /// matched to the request that asked for it, which is how a client attributes one
+    /// resource's `ETag` to another.
+    DavResponseWithoutHref,
+    /// A multistatus carried more responses than the caller's policy admits, and the ones past the bound were dropped.
+    ///
+    /// The bound is the caller's own `Limits::max_responses`, and no number distinguishes a
+    /// forty-thousand-resource collection from a forged flood. A caller that must read the
+    /// whole collection drains it one response at a time instead of building it.
+    DavResponsesTruncated,
 }
 
 impl DiagnosticCode {
@@ -495,6 +543,13 @@ impl DiagnosticCode {
             Self::SchedulingSenderNotPermitted => "scheduling-sender-not-permitted",
             Self::SchedulingMethodAmbiguous => "scheduling-method-ambiguous",
             Self::SchedulingInstanceNonexistent => "scheduling-instance-nonexistent",
+            Self::DavForeignElementSkipped => "dav-foreign-element-skipped",
+            Self::DavCalendarDataCopied => "dav-calendar-data-copied",
+            Self::DavCalendarDataLineEndingsFolded => "dav-calendar-data-line-endings-folded",
+            Self::DavPropertyUnmodeled => "dav-property-unmodeled",
+            Self::DavStatusUnreadable => "dav-status-unreadable",
+            Self::DavResponseWithoutHref => "dav-response-without-href",
+            Self::DavResponsesTruncated => "dav-responses-truncated",
         }
     }
 }

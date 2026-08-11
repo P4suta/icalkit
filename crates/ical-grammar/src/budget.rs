@@ -183,6 +183,14 @@ pub struct Limits {
     max_response_bytes: u64,
     /// The most octets one `href` may occupy.
     max_href_bytes: u32,
+    /// The most responses one multistatus may carry, and `href`s one multiget may ask for.
+    max_responses: u32,
+    /// The most properties one response or one property request may carry.
+    max_props_per_response: u32,
+    /// The most octets one XML element's character data may occupy.
+    max_xml_text_bytes: u32,
+    /// The most namespace prefix bindings that may be live at once.
+    max_prefix_bindings: u16,
 }
 
 impl Limits {
@@ -215,6 +223,12 @@ impl Limits {
         // 64 MiB.
         max_response_bytes: 67_108_864,
         max_href_bytes: 4096,
+        max_responses: 10_000,
+        max_props_per_response: 256,
+        // 1 MiB, the same ceiling one property value gets: the largest character run a
+        // CalDAV body carries is a `calendar-data` payload, which is an `.ics` file.
+        max_xml_text_bytes: 1_048_576,
+        max_prefix_bindings: 64,
     };
 
     /// The policy for a server that has memory and expects large calendars.
@@ -244,6 +258,11 @@ impl Limits {
         // 1 GiB.
         max_response_bytes: 1_073_741_824,
         max_href_bytes: 65_536,
+        max_responses: 1_000_000,
+        max_props_per_response: 4096,
+        // 64 MiB, tracking `max_value_bytes` for the reason the default tracks it.
+        max_xml_text_bytes: 67_108_864,
+        max_prefix_bindings: 256,
     };
 
     /// The bounds the content-line grammar observes on its own.
@@ -384,6 +403,53 @@ impl Limits {
     #[must_use]
     pub const fn max_href_bytes(self) -> u32 {
         self.max_href_bytes
+    }
+
+    /// The most responses one multistatus may carry, and `href`s one multiget may ask for.
+    ///
+    /// One bound for both because they are one cardinality read from two ends: a client that
+    /// asks for `n` `href`s is asking for `n` responses, and a policy that admits the request
+    /// and refuses its answer describes an exchange nobody can complete.
+    ///
+    /// No number here separates a truthful collection from a forged one, which is why the
+    /// default is a phone's answer and [`Limits::GENEROUS`] is a server's. A reader that
+    /// cannot afford either drains the responses one at a time and never builds the
+    /// collection, and then this bound binds nothing because nothing is retained.
+    #[must_use]
+    pub const fn max_responses(self) -> u32 {
+        self.max_responses
+    }
+
+    /// The most properties one response or one property request may carry.
+    ///
+    /// Per response rather than per body, because a body's total is what
+    /// [`Limits::max_xml_elements`] already counts and a single response carrying a hundred
+    /// thousand properties crosses no cardinality bound the body has.
+    #[must_use]
+    pub const fn max_props_per_response(self) -> u32 {
+        self.max_props_per_response
+    }
+
+    /// The most octets one XML element's character data may occupy.
+    ///
+    /// Counted apart from [`Limits::max_response_bytes`] because the body budget bounds what
+    /// is read and this bounds what one element *retains*: a `calendar-data` payload is
+    /// copied out of the body and handed on, so a single element can hold the whole budget's
+    /// worth of octets a second time.
+    #[must_use]
+    pub const fn max_xml_text_bytes(self) -> u32 {
+        self.max_xml_text_bytes
+    }
+
+    /// The most namespace prefix bindings that may be live at once.
+    ///
+    /// The dimension `docs/adr/0010` predicted would be missing, and it was. A document may
+    /// declare `xmlns:` bindings without limit, each one retained for as long as its element
+    /// is open, and neither a depth bound nor an element count reaches them: one element can
+    /// carry a thousand declarations at depth one.
+    #[must_use]
+    pub const fn max_prefix_bindings(self) -> u16 {
+        self.max_prefix_bindings
     }
 
     /// The same policy with different grammar bounds.
@@ -553,6 +619,42 @@ impl Limits {
             ..self
         }
     }
+
+    /// The same policy with a different response-cardinality bound.
+    #[must_use]
+    pub const fn with_max_responses(self, responses: u32) -> Self {
+        Self {
+            max_responses: responses,
+            ..self
+        }
+    }
+
+    /// The same policy with a different per-response property bound.
+    #[must_use]
+    pub const fn with_max_props_per_response(self, props: u32) -> Self {
+        Self {
+            max_props_per_response: props,
+            ..self
+        }
+    }
+
+    /// The same policy with a different per-element character-data bound.
+    #[must_use]
+    pub const fn with_max_xml_text_bytes(self, bytes: u32) -> Self {
+        Self {
+            max_xml_text_bytes: bytes,
+            ..self
+        }
+    }
+
+    /// The same policy with a different live-binding bound.
+    #[must_use]
+    pub const fn with_max_prefix_bindings(self, bindings: u16) -> Self {
+        Self {
+            max_prefix_bindings: bindings,
+            ..self
+        }
+    }
 }
 
 impl Default for Limits {
@@ -599,6 +701,10 @@ pub struct Meter {
     element_depth: u16,
     /// XML elements charged so far.
     elements: u32,
+    /// Multistatus responses charged so far, across every body this ledger has served.
+    responses: u32,
+    /// Namespace prefix bindings currently live.
+    bindings: u16,
     /// Recurrence candidates generated inside the period currently open.
     candidates: u32,
     /// Recurrence candidates charged so far, across every period and every search.
@@ -646,6 +752,8 @@ impl Meter {
             depth: 0,
             element_depth: 0,
             elements: 0,
+            responses: 0,
+            bindings: 0,
             candidates: 0,
             candidates_charged: 0,
             occurrences: 0,
@@ -756,6 +864,71 @@ impl Meter {
     /// Close one XML element.
     pub fn leave_element(&mut self) {
         self.element_depth = self.element_depth.saturating_sub(1);
+    }
+
+    /// Charge one multistatus response against the shared ledger.
+    ///
+    /// Counted here as well as capped at the collection that holds them, because the reader
+    /// that most needs the bound builds no collection at all: a caller draining responses one
+    /// at a time retains one and would otherwise have nothing counting how many arrived. The
+    /// count runs across bodies rather than being reset per body, which is the aggregate
+    /// posture `docs/adr/0010` exists for — a caller wanting each exchange bounded on its own
+    /// gives each its own ledger.
+    pub fn try_charge_response(&mut self) -> Result<(), LimitExceeded> {
+        let next = self.responses.saturating_add(1);
+        if next > self.limits.max_responses {
+            return Err(LimitExceeded::Responses);
+        }
+        self.responses = next;
+        Ok(())
+    }
+
+    /// Charge `count` octets of one XML element's character data.
+    ///
+    /// Two bounds cross here, for the reason [`Limits::max_xml_text_bytes`] gives: the
+    /// per-element ceiling refuses one enormous `calendar-data`, and the shared octet budget
+    /// below it refuses a body of ten thousand merely large ones.
+    pub fn try_charge_text(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        if count > self.limits.max_xml_text_bytes {
+            return Err(LimitExceeded::Text);
+        }
+        self.try_charge(u64::from(count))
+    }
+
+    /// Open one namespace prefix binding. Paired with [`Meter::unbind_prefix`].
+    ///
+    /// Live bindings rather than declarations seen: a binding costs memory for as long as its
+    /// element is open and nothing after that, so a document that declares one prefix per
+    /// element at depth two is not the attack this bounds. One element carrying a thousand
+    /// `xmlns:` attributes is, and no depth or element count sees it.
+    pub fn try_bind_prefix(&mut self) -> Result<(), LimitExceeded> {
+        let next = self.bindings.saturating_add(1);
+        if next > self.limits.max_prefix_bindings {
+            return Err(LimitExceeded::PrefixBindings);
+        }
+        self.bindings = next;
+        Ok(())
+    }
+
+    /// Close one namespace prefix binding.
+    ///
+    /// Saturating at zero rather than refusing, for the reason [`Meter::leave`] is: an
+    /// unbalanced close is a fact about the document and must not become an error about the
+    /// ledger.
+    pub const fn unbind_prefix(&mut self) {
+        self.bindings = self.bindings.saturating_sub(1);
+    }
+
+    /// Multistatus responses charged so far under this ledger.
+    #[must_use]
+    pub const fn responses(&self) -> u32 {
+        self.responses
+    }
+
+    /// Namespace prefix bindings currently live.
+    #[must_use]
+    pub const fn live_prefix_bindings(&self) -> u16 {
+        self.bindings
     }
 
     /// Begin a recurrence period, clearing the per-period candidate count.

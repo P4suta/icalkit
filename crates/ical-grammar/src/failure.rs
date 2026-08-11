@@ -131,6 +131,14 @@ pub enum LimitExceeded {
     Elements,
     /// The length of one `href`.
     Href,
+    /// The number of responses in one multistatus, or of `href`s in one multiget.
+    Responses,
+    /// The number of properties in one response or one property request.
+    Properties,
+    /// The length of one XML element's character data.
+    Text,
+    /// The number of namespace prefix bindings live at once.
+    PrefixBindings,
     /// The number of recurrence candidates generated within one period.
     Candidates,
     /// The number of occurrences one recurrence search emitted.
@@ -155,6 +163,10 @@ impl Display for LimitExceeded {
             Self::Depth => "nesting depth",
             Self::Elements => "element count",
             Self::Href => "href length",
+            Self::Responses => "response count",
+            Self::Properties => "property count",
+            Self::Text => "element text length",
+            Self::PrefixBindings => "live namespace binding count",
             Self::Candidates => "recurrence candidate count",
             Self::Occurrences => "occurrence count",
             Self::RdateEntries => "RDATE entry count",
