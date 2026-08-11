@@ -1,6 +1,6 @@
 # ical-recur: the public API
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-10
 - Carries: DP-09, DP-10 (crate); DP-01, DP-08, DP-17, DP-18 (workspace)
 - Skeleton: assembled with the other five into one workspace and compiled together; see
@@ -626,10 +626,12 @@ so through a diagnostic. RFC 2445 permitted two and files with two exist. This i
 made to keep the adopted single-counter cursor coherent, and it is the first thing that will
 need reopening if the corpus turns up real ones.
 
-Nothing here has been run. The `THISANDFUTURE` diff splice, the anchor composition, and the
-`EXDATE`-versus-anchor collision are all mechanisms with zero blind convergence behind them, and
-the decision record says to expect the first draft of each to be wrong. The mandatory fixtures
-are named in DP-10's gate change, and they should exist before any of this is called correct.
+All of it has been run, and the decision record was right to expect the first draft to be wrong.
+The `THISANDFUTURE` diff splice, the anchor composition and the `EXDATE`-versus-anchor collision
+had zero blind convergence behind them, and each needed a case to show what was wrong with it:
+the fixtures DP-10's gate change named are in `crates/ical-conform/tests/break_recur_set.rs`, the
+RFC's own forty-two worked examples are beside them, and what they found is `docs/adr/0002`'s
+amendments 5 through 14.
 
 ## Open questions for the integrator
 

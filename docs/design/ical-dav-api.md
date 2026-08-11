@@ -1,6 +1,6 @@
 # `ical-dav` API design
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-10
 - Skeleton: assembled with the other five into one workspace and compiled together; see
   "What the first compile changed" below
@@ -533,13 +533,13 @@ and never debiting it compiles today, exactly as ADR-0010 warns, and the encoder
 coarse granularity: a `Status` charges thirteen octets whatever it writes, and `write_range`
 charges a flat forty-eight. Those are estimates that happen to be conservative, not accounting.
 
-Three claims in this document are prose backed by no code yet, and they are the three the next
-review should attack: that the tokenizer is genuinely iterative and depth-capped, that the
-skip-unknown rule keeps a `SabreDAV` response readable, and that `TextRun::Wire` really does
-deliver `CRLF` intact. `ResponseSource` and `ReadXml` are declared and unimplemented, which is
-what the A1 stress pass found wrong with every proposal it scored, this one's ancestor included.
-The corpus of ADR-0006 is where those become evidence; until then they are intentions with
-signatures attached.
+Three claims in this document were prose backed by no code, and the next review did attack them:
+that the tokenizer is genuinely iterative and depth-capped, that the skip-unknown rule keeps a
+`SabreDAV` response readable, and that `TextRun::Wire` really does deliver `CRLF` intact. All
+three held. `ResponseSource` and `ReadXml` are implemented — units 5 and 3 — so the A1 stress
+pass's finding against every proposal it scored no longer describes this one. The corpus of
+ADR-0006 is where they became evidence rather than intentions with signatures attached, and what
+it found instead is in the two sections below.
 
 ## What the first compile changed
 
@@ -656,7 +656,7 @@ been waiting on.
 
 **Whether a CalDAV store implements `ScheduledComponent` over its own rows** is answered:
 build the `ical_core::Component`. The store already holds the octets — `calendar-data` is what
-it stores and what it must hand back byte for byte — and the seventeen methods read `ORGANIZER`,
+it stores and what it must hand back byte for byte — and the sixteen methods read `ORGANIZER`,
 `ATTENDEE`, `SEQUENCE` and `DTSTAMP`, every one of which must agree with those octets or the
 copy it serves and the copy it judges are different calendars. Columns for them would be a
 second source of truth for a claim the first one already carries.

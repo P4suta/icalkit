@@ -1,6 +1,6 @@
 # The `ical-core` public API
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-10
 - Decisions: DP-01 through DP-07 (crate), DP-08, DP-17, DP-18 (workspace)
 - Skeleton: assembled with the other five into one workspace and compiled together; see
@@ -597,9 +597,9 @@ Four flags that are deliberately absent, because a flag is a configuration someb
 
 ### Using it
 
-These four are compiled and run against the skeleton by
-[`skeletons/examples_check.rs`](../../skeletons/examples_check.rs), which also carries the
-assertions quoted beneath each one.
+These four are the shapes the crate's own tests exercise; the harness that once compiled them
+beside this document is gone, and the crate's `tests/round_trip.rs` and `tests/edit_locality.rs`
+are where they are held now.
 
 **1. Parse, read, and write it back byte for byte.** The assertion under it is the whole crate's
 reason for existing.
@@ -846,7 +846,9 @@ share `DTSTART`'s value type, `DTEND` and `DURATION` must not both appear, and
 `X-MICROSOFT-CDO-ALLDAYEVENT` must not say `TRUE` beside a timed `DTSTART` — all of them surface
 as diagnostics, none of them is caught at the call site, and DP-03's stress record is right that
 removing the typed cache bought no protection against any of them. The `DiagnosticCode` golden
-list is a mechanism this document requires and does not build. And the genuinely alloc-free tier
+list is a mechanism this document requires and `xtask` builds: `docs/diagnostic-codes.md` carries
+a row per code and `just codes` fails when a row's meaning or channel moves without the
+declaration moving with it. And the genuinely alloc-free tier
 remains an unimplemented gap: today's `no_std` gate proves these crates build for embedded
 targets, not that they build without a global allocator.
 

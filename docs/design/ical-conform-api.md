@@ -389,11 +389,15 @@ guarantee presented in one API, and only the last is real. The trait bound is ch
 compiler; the zero-duration rejection is checked at construction; the anonymization attestation is
 checked by nobody. A reader who trusts the first is likely to over-trust the third.
 
-Finally, the corpus is empty. `committed()` returns two empty slices today, every type above is
-load-bearing for zero cases, and `PortableQuestion` was frozen against a fourth comparison class
-before the first case exists to say whether three are the right three. That is the ordinary cost
-of designing a vocabulary ahead of its contents, and it is worth restating that ADR 0006 itself
-calls the bridge "the decision but not a settled one".
+Finally, none of this exists. The crate is a documentation module and the iTIP chapter; there is
+no `Corpus`, no `committed()`, and every type above is load-bearing for zero cases. What does
+exist is a corpus written the other way round — thirty-one files under `tests/`, the forty-two
+worked examples of section 3.8.5.3 among them, addressed to specification sections in prose and
+run against this workspace's crates directly — so the vocabulary above has contents to be fitted
+to rather than none, and `PortableQuestion` is still frozen against a fourth comparison class by
+a document rather than by a compiler. That is the ordinary cost of designing a vocabulary ahead
+of its contents, and it is worth restating that ADR 0006 itself calls the bridge "the decision
+but not a settled one".
 
 ## What the first compile changed
 
@@ -404,8 +408,13 @@ reads. `Instant` comes from there too, having settled one layer lower still, in 
 One thing this document assumes is now provable and not yet proved: `DiagnosticCode` is a single
 workspace-wide enum, so "input X produces code Y" is a claim about one stable vocabulary rather
 than about whichever crate happened to detect it. The golden list that freezes those meanings is
-still the mechanism this document requires and does not build.
+built: `docs/diagnostic-codes.md` carries a row per code and `xtask codes` refuses a row whose
+meaning or channel moved without a rename. What this document requires and does not build is a
+case of its own vocabulary hung on that list.
 
-The crate itself stayed `#![no_std]` through the assembly, which is why the whole workspace — this
-crate included — compiles for `thumbv7em-none-eabi` today. The `std` half, the subprocess bridge
-to a foreign implementation, is still a feature nobody has written.
+The crate did not stay `#![no_std]`: it links `std`, `just no-std` names the six core crates and
+not this one, and the `thumbv7em-none-eabi` claim is theirs rather than the workspace's. The
+`no_std` + `alloc` vocabulary this document describes is therefore a shape still to be built, not
+a property the crate has — which matters, because a `std`-only feature added here later would
+otherwise look like the moment it was lost. The `std` half, the subprocess bridge to a foreign
+implementation, is still a feature nobody has written.

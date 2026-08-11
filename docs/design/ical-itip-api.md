@@ -517,9 +517,11 @@ iTIP-relevant, and this document adds a second obligation on top — the paramet
 
 Re-evaluating at the confirm turn closes forgery and not staleness. Nothing forces the second
 call to read fresh state rather than replay a snapshot, and a genuine `AuthorizedTransition` over
-a stale snapshot is still wrong. Binding a transition to an `ETag` is ADR-0004 territory and
-undesigned, so the propose-and-confirm flow is not safe against a racing organizer update and
-must not be described as if it were.
+a stale snapshot is still wrong. Binding a transition to an `ETag` was ADR-0004 territory and is
+designed: `ical_dav::Revision` carries what the first turn read into the `Precondition` the
+second turn writes under. That is plumbing rather than a guarantee — the comparison happens at
+the server — so the propose-and-confirm flow is still not safe against a racing organizer update
+unless the caller carries one, and must not be described as if it were.
 
 The octet-level diff is a decision this document makes that ADR-0005 left open, and it makes
 `Replace` noisier than it should be: a message that only refolds a long `DESCRIPTION` reports a

@@ -1,6 +1,6 @@
 # `ical-tz` API design
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-10
 - Decisions honored: DP-11, DP-12 (crate), DP-01, DP-08, DP-17, DP-18 (workspace)
 - Skeleton: assembled with the other five into one workspace and compiled together; see
@@ -523,7 +523,7 @@ budget.
 
 ## Using it
 
-Every example below compiles against `skeletons/ical-tz.rs` as a downstream crate.
+Every example below is written against the shipped crate as a downstream caller would see it.
 
 **Resolving a `DTSTART`, stating what to do about the two awkward hours.**
 
