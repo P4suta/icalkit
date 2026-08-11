@@ -78,10 +78,12 @@
 //! Two things are known rather than hidden. An answer past a table's last transition continues
 //! its final observance and says so through [`AnswerBasis::BeyondKnownTransitions`], but this
 //! crate has no opinion on what a caller should do about a continuation six years wide as
-//! against one a day wide. And [`VtimezoneSet::insert`] charges a zone-count bound that no
-//! diagnostic code reports, so a calendar declaring more zones than the caller's policy admits
-//! silently keeps the ones that fit; [`ZoneSetError::TooMany`]'s own wording assumes otherwise
-//! and one of the two is wrong. `docs/design/ical-tz-api.md` carries the surface and its "What
+//! against one a day wide. And [`VtimezoneSet::insert`] still refuses a definition past the
+//! caller's zone-count bound and keeps the ones that fit, but it no longer does so silently: the
+//! refusal travels as `vtimezone-components-truncated` at `Severity::LimitReached`, naming each
+//! definition turned back, and the identifiers those definitions declare are excluded from the
+//! undefined-identifier walk, so a loss the caller's own policy caused is never reported as one
+//! the file committed. `docs/design/ical-tz-api.md` carries the surface and its "What
 //! M2 shipped" section the reasoning; `ROADMAP.md` carries the milestone.
 
 #![no_std]

@@ -41,8 +41,9 @@
 //! pass, and section 3.3.11's escaping, section 3.2's quoting and RFC 6868's caret encoding
 //! are readable and writable in both directions.
 //!
-//! Two readings this crate had to choose are permissive and are the ones a corpus case should
-//! pin down. A bare `LF` or a bare `CR` followed by whitespace is lexed as a fold, recording
+//! Two readings this crate had to choose are permissive, and both are now pinned by a corpus
+//! case rather than owed one. A bare `LF` or a bare `CR` followed by whitespace is lexed as a
+//! fold, recording
 //! which terminator arrived rather than refusing it, because [`FoldPoint`] exists to carry
 //! exactly that. And a `DQUOTE` opens a quoted parameter value only where a value may begin,
 //! so one unbalanced quote inside a `CN` cannot swallow the rest of the line. Both readings

@@ -13,16 +13,21 @@
 //!
 //! This crate is that missing artifact, and it is deliberately not a `tests/` directory.
 //! Cases are addressed to specification sections rather than to any implementation's
-//! internals, and they are evaluated through a trait, so a competing implementation can run
-//! the identical suite and compare answers. This workspace supplies one implementation of
-//! that trait (see `docs/adr/0006`).
+//! internals, and the contract that would let a competing implementation answer them is
+//! designed in `docs/design/ical-conform-api.md` and not yet built (see `docs/adr/0006`).
+//! Until it is, every case here links this workspace's own crates and names their types,
+//! which makes the suite evidence about one implementation and not yet a measurement anybody
+//! else can reproduce.
 //!
-//! The corpus is real. Calendars exported from real clients are committed verbatim and
-//! round-tripped byte for byte, which is what makes the fidelity claim in `docs/adr/0001`
-//! verifiable rather than asserted. Each file is reduced to the smallest form that still
-//! shows the behavior and stripped of personal data before the case is accepted — a case
-//! that cannot be anonymized is not accepted — and every case records which client and
-//! version produced the original.
+//! The corpus is not yet real, and saying so is cheaper than discovering it. Every fixture
+//! committed here is synthetic and shaped like something a named client writes — a fold
+//! landing inside a quoted `X-APPLE-STRUCTURED-LOCATION`, the `X-MICROSOFT-CDO-` family, a
+//! `/mozilla.org/`-prefixed `TZID` — and each is round-tripped byte for byte, so it is
+//! evidence for `docs/adr/0001` and not evidence about any client. Collecting the real
+//! exports, reducing each to the smallest form that still shows the behavior, anonymizing it,
+//! and recording which client and version produced it is M5's, and the case vocabulary that
+//! would make skipping the anonymization an act rather than an omission is designed for
+//! exactly that.
 //!
 //! Where implementations diverge, a case records each observed behavior and says which one
 //! this project chose and why. Where the RFC permits alternatives, every permitted outcome
@@ -30,7 +35,7 @@
 //! the RFC forbids it, this project accepts it on read and never emits it" is documentation
 //! that exists nowhere else.
 //!
-//! This is the one crate here that uses `std`, and the purity gate covers the five beneath
+//! This is the one crate here that uses `std`, and the purity gate covers the six beneath
 //! it rather than this one: a harness that cannot read a corpus file or print a report is
 //! not a harness. Nothing about the implementations under test changes as a result — they
 //! are still handed bytes.
@@ -42,12 +47,18 @@
 //!
 //! # Status
 //!
-//! The case vocabulary, the subject contract and the two runners are designed and compiled;
-//! `docs/design/ical-conform-api.md` carries them. The cases beside them in `tests/` are the
-//! ones M0 owes: what real clients export and what an adversary sends (`break_clients.rs`,
-//! `break_grammar.rs`, `break_hostile.rs`, `break_hostile_stack_overflow.rs`), what the write
-//! side may author (`write_side_grammar.rs`, `break_construction.rs`), and the two readings
-//! this workspace had to choose about parameters and RFC 6868 (`break_parameters.rs`).
+//! The case vocabulary, the subject contract and the two runners are designed and not built:
+//! `docs/design/ical-conform-api.md` carries them and this crate exports nothing.
+//!
+//! The cases in `tests/` are thirty-one files that arrived a milestone at a time. M0's are what
+//! real clients export and what an adversary sends (`break_clients.rs`, `break_grammar.rs`,
+//! `break_hostile.rs`, `break_hostile_stack_overflow.rs`), what the write side may author
+//! (`write_side_grammar.rs`, `break_construction.rs`), and the two readings this workspace had
+//! to choose about parameters and RFC 6868 (`break_parameters.rs`). What followed is the RFC's
+//! own forty-two recurrence examples (`rfc5545_recurrence_examples.rs`) and, for each of M1
+//! through M4, the four adversarial lenses that were run against the built crate and the case
+//! each finding left behind: `break_recur_*.rs`, `break_tz_*.rs` with `break_zones.rs`,
+//! `break_itip_*.rs`, and `break_dav_*.rs`.
 //!
 //! `sweep.rs` is the other kind of evidence: a seeded, deterministic, time-bounded sweep over
 //! inputs nobody chose — exhaustively every short string over the octets that decide a line,

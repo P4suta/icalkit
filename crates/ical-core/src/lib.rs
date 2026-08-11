@@ -57,7 +57,11 @@
 //! [`Document::parse`] and [`Document::from_tokens`] read a tree out of the public token path,
 //! [`Document::serialize`] writes one back, the civil arithmetic is checked in every direction,
 //! every value type of RFC 5545 section 3.3 decodes and all but `GEO` and `FLOAT` encode, the
-//! typed accessors read through [`View`], and [`PropertyMut`] is the only way to write.
+//! typed accessors read through [`View`], and a write is either [`PropertyMut`] or one of
+//! [`Component`]'s two described-change doors — [`Component::apply`], addressed to a property
+//! identity and answering for every occurrence of it, and [`Component::apply_to_occurrence`],
+//! addressed to one, which is the address a scheduling message needs. All three discard the
+//! preserved text of the line they touch and of no other.
 //!
 //! Section 3.6 is read as well as stored. [`ComponentKind::cardinality`] states how often each
 //! of the nine components may carry a name, [`Component::audit`] reports what section 3.6 says

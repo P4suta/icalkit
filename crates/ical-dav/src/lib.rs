@@ -54,9 +54,11 @@
 //!
 //! # Status
 //!
-//! Landed and tested, and the milestone it belongs to is met. Every body RFC 4791 defines
-//! reads and writes from both ends over [`XmlReader`], which is this crate's own tokenizer and
-//! has no dependency: [`RequestBody`] for the five request roots and the filter tree beneath
+//! Landed and tested, and the milestone it belongs to is met. Every body RFC 4791 defines for a
+//! `PROPFIND` or a `REPORT` reads and writes from both ends over [`XmlReader`], which is this
+//! crate's own tokenizer and has no dependency — `MKCALENDAR`'s is the one the vocabulary
+//! paragraph below names as absent: [`RequestBody`] for the five request roots and the filter
+//! tree beneath
 //! them, [`MultiStatusReader`] and [`MultiStatusWriter`] for the multistatus one response at a
 //! time, [`MultiStatus`] as one consumer of each rather than a second implementation beside
 //! them, [`XmlWriter`] as the element writer whose open-element stack makes an unbalanced
@@ -69,13 +71,18 @@
 //! deciding which resources match is work a server does by composing them with `ical-recur`
 //! and `ical-core`. The vocabulary is CalDAV's and stops there — `MKCALENDAR` has a request
 //! body and no row, RFC 3744's ACL vocabulary is absent, and so are `DAV:expand-property` and
-//! `DAV:principal-property-search`. Two gaps sit inside what *is* modeled: `CALDAV:timezone`
-//! (the inline `VTIMEZONE` a `calendar-query` may carry, RFC 4791 section 9.5) has no row, so
-//! under the default [`UnknownPolicy`] a server silently ignores a timezone the client stated
-//! and a floating-time `time-range` then matches different events; and `DAV:allprop` and
-//! `DAV:propname` inside a `calendar-query` are refused rather than read, because
-//! [`CalendarQuery`]'s `props` field cannot express either. RFC 6638's preconditions and tags
-//! are modeled and the POST to a scheduling outbox is not.
+//! `DAV:principal-property-search`. The two gaps that sat inside what *is* modeled are closed,
+//! by the attack rather than by the plan: `CALDAV:timezone` (the inline `VTIMEZONE` a
+//! `calendar-query` may carry, RFC 4791 section 9.5) has a row, a field on [`CalendarQuery`] and
+//! the line-ending carve-out its value earns, so the zone a client stated survives a read and a
+//! re-encode instead of being dropped as foreign and answering a floating-time `time-range` in a
+//! zone nobody asked for; and `DAV:allprop` and `DAV:propname` inside a `calendar-query` are
+//! [`QueryShape`] beside `props`, so section 9.5's own production is a body this crate reads and
+//! writes rather than one it answers `DavError::Unexpected` to. What sits on that list in their
+//! place is `calendar-multiget`, whose grammar admits the same three shapes and which still
+//! carries only a property list: nobody is known to send the other two to a multiget, which is a
+//! reason to file it rather than to call it closed. RFC 6638's preconditions and tags are
+//! modeled and the POST to a scheduling outbox is not.
 //!
 //! This crate is not RFC-4791-complete and nothing here entitles anyone to say it is. See
 //! `ROADMAP.md` (M4) and `docs/design/ical-dav-api.md`.
