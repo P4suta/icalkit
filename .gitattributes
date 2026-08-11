@@ -13,8 +13,13 @@
 # tree to LF:  git add --renormalize . && git checkout .
 * text=auto eol=lf
 
-# The committed corpus is `.ics` files exported from real clients, and parse then
-# serialize has to reproduce them byte for byte (docs/adr/0001, docs/adr/0006).
-# Rewriting LF <-> CRLF inside one would rewrite the thing under test.
+# These are calendars, and a calendar's line endings are its syntax: RFC 5545 terminates a
+# content line with `CRLF`, and docs/adr/0001 states the round trip over the octets a
+# producer wrote. Rewriting LF <-> CRLF inside one rewrites the thing under test.
 **/tests/fixtures/** -text
+
+# `tests/corpus/` is where a calendar this repository did not write goes. It is protected
+# here and deliberately absent from REUSE.toml: a file under it carries its own `.license`
+# naming whoever holds it, and `just reuse` fails until one does. Under `tests/fixtures/`
+# the blanket annotation would absorb it into a copyright claim nobody checked.
 **/tests/corpus/** -text

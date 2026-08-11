@@ -4,7 +4,8 @@
 *.pdb
 *.tmp
 # Cargo.lock is committed: the exact dependency graph is part of the reproducible
-# build, and reproducibility is the point of an integer-unit layout engine.
+# build, and a round trip asserted octet for octet cannot rest on a graph that moves
+# between two builds of one commit.
 
 # cargo-mutants working output.
 /mutants.out/
