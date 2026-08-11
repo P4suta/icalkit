@@ -16,5 +16,20 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[dependencies]
+# The whole graph this crate is allowed. `Limits`, `Meter`, `Diagnostic` and `Instant` come
+# from here because two crates that do not depend on each other both need to name them, and
+# `calendar-data` is carried as octets rather than parsed, so nothing above the model is
+# reachable from a protocol body (DP-17, ADR-0004).
+ical-core = { path = "../ical-core", version = "0.0.0" }
+
+[features]
+default = []
+# RFC 6578: the `sync-collection` REPORT body and its encoder. Reading a `sync-token` a server
+# volunteered is unconditional, because a token costs nothing to carry; asking for one is what
+# this buys. The element rows exist either way, so a build without the flag answers
+# `DavError::Unsupported` rather than skipping a REPORT it cannot honor.
+sync-collection = []
+
 [lints]
 workspace = true

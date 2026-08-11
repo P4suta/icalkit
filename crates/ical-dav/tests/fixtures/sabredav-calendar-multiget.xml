@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">
+ <d:response>
+  <d:href>/calendars/ann/work/20260105T090000Z-1.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;5f2b8c1e9a04&quot;</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Corp.//CalDAV Client//EN
+BEGIN:VEVENT
+UID:20260105T090000Z-1@example.invalid
+DTSTAMP:20260101T000000Z
+DTSTART:20260105T090000Z
+DTEND:20260105T100000Z
+SUMMARY:Weekly sync with a summary long enough that the exporter folded i
+ t here
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+  <d:propstat>
+   <d:prop>
+    <d:displayname/>
+   </d:prop>
+   <d:status>HTTP/1.1 403 Forbidden</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/calendars/ann/work/gone.ics</d:href>
+  <d:status>HTTP/1.1 404 Not Found</d:status>
+ </d:response>
+</d:multistatus>
