@@ -664,7 +664,7 @@ place, and the file compiled unchanged — the only skeleton of the six for whic
 The stand-ins had been written from `ical-core`'s own document rather than from what this crate
 wished existed, and that is the whole difference.
 
-Two things this crate reads did move underneath it. `Instant` now ships from `ical-grammar`,
+Two things this crate reads did move underneath it. `Instant` now ships from `ical-core`,
 because the diagnostic vocabulary sits at the bottom of the stack and a diagnostic may name an
 occurrence; `ical-core` re-exports it, so the name in this crate's signatures is unchanged.
 `LimitExceeded` became an enum naming the dimension that ran out. The candidate budget is

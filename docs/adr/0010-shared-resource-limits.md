@@ -27,7 +27,7 @@ reports a clean result; the total is whatever the attacker chose N to be.
 ## Decision
 
 A limit is two things, and this ADR names both. `Limits` is the caller's immutable policy: the
-thresholds, cheap to copy, identical for every call, declared in `ical-grammar` and re-exported
+thresholds, cheap to copy, identical for every call, declared in the grammar layer and re-exported
 by `ical-core`. The grammar charges octets before a tree exists, so the policy had to sit under
 the seam ADR 0004 cut; a caller still names one crate for it. `Meter` is the
 caller's mutable ledger: a running count of work already done under that policy. Every

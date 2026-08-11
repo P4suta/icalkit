@@ -11,25 +11,32 @@ This document states the invariants. The reasoning behind each one lives in
    ical-dav ── ical-itip ── ical-recur ── ical-tz          ← semantics
                               ▲
                           ical-core                        ← model, typed views, serialize
-                              ▲
-                         ical-grammar                      ← content lines, diagnostics
+                              │
+                        (src/grammar/)                     ← content lines, diagnostics
 ```
 
 Nothing here opens a connection, reads a clock, or bundles time zone data. Everything
 above `ical-core` is a separate crate so that a caller who only reads `.ics` files never
-compiles scheduling or CalDAV, and `ical-grammar` sits below it so that a linter, a differ,
-or a fuzz harness never compiles the typed model
-([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)).
+compiles scheduling or CalDAV. The content line grammar is a layer and not a crate: it is a
+private module tree inside `ical-core`, every item of it re-exported at that crate's root, so
+`ical_core::Token` is the one spelling there is
+([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md), amendments 12 and 17).
 
-**Two changes to this shape are decided and have not landed.** `ical-grammar` collapses into
-`ical-core` as a private module tree before the first publish, and the layering rule it was
-holding becomes a compilation — the same grammar sources built a second time, under `gates/`, in
-a crate root that contains no model, so an upward reference is a compiler error rather than a
-review comment (ADR 0004 amendment 12). And `ical-query` joins the graph *above* `ical-core`,
-`ical-recur`, `ical-tz` and `ical-dav` as the filter evaluator, with `ical-dav` taking no
-dependency in return
+Nothing in the tree names that layer's path, and two gates keep it a layer.
+`gates/grammar-layering` is an unpublished workspace member that compiles the same sources a
+second time in a crate root holding no model, so a reference to `CivilDate` from inside the
+grammar is `error[E0432]` with a file and a line rather than a review comment. What that
+member cannot catch is `crate::X` for an `X` the crate root re-exports from the grammar
+itself — it resolves there too — so `just purity` carries a second, textual rule: no path
+under `crates/ical-core/src/grammar/` may resolve above that directory, and the tree stays
+flat. That rule is hygiene about not routing a lateral import through the parent crate's
+public surface. It is not what the layering member proves, and no compiler enforces it.
+
+**One change to this shape is decided and has not landed.** `ical-query` joins the graph
+*above* `ical-core`, `ical-recur`, `ical-tz` and `ical-dav` as the filter evaluator, with
+`ical-dav` taking no dependency in return
 ([ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md)). The
-diagram and the table below describe the tree as it stands today, before either lands.
+diagram and the table below describe the tree as it stands today, before it lands.
 
 `ical-recur` and `ical-tz` are siblings: neither depends on the other. Recurrence needs a
 zone answer, and the caller obtains it from `ical-tz` and passes in the instant, which is why
@@ -114,18 +121,18 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 
 | Crate | Depends on | std | alloc | Reads a clock | State |
 | --- | --- | --- | --- | --- | --- |
-| `ical-grammar` | — | no | yes | no | landed (M0) |
-| `ical-core` | `ical-grammar` | no | yes | no | landed (M0) |
+| `ical-core` | — | no | yes | no | landed (M0) |
 | `ical-recur` | `ical-core` | no | yes | no | landed (M1) |
 | `ical-tz` | `ical-core` | no | yes | no | landed (M2) |
 | `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no | landed (M3) |
 | `ical-dav` | `ical-core` | no | yes | no | landed (M4) |
-| `ical-conform` | all but `ical-grammar` | yes | yes | no | grows with each milestone (M5) |
+| `ical-conform` | all of them | yes | yes | no | grows with each milestone (M5) |
 
-Two rows are owed and neither exists yet: `ical-query` (`ical-core`, `ical-recur`, `ical-tz`,
-`ical-dav`; no std, alloc, no clock), and the unpublished layering member under `gates/` that
-compiles the grammar sources a second time. When the grammar collapses, the first row leaves this
-table and six crates are published rather than seven.
+One row is owed and does not exist yet: `ical-query` (`ical-core`, `ical-recur`, `ical-tz`,
+`ical-dav`; no std, alloc, no clock). Six crates are published, not seven.
+`gates/grammar-layering` is a workspace member and is deliberately not a row here: it declares
+no dependencies, publishes nothing, and compiles `ical-core`'s own sources, so a row claiming
+otherwise would describe a crate that does not exist.
 
 "State" is the milestone whose gates the crate met, not a stability claim: nothing is
 published and no public API is frozen. What each landed crate does **not** do is in its own
@@ -151,9 +158,10 @@ crates together and tries to compile the result.
 
 ## What lives where
 
-- **Syntax lives in `ical-grammar`.** Unfolding, content-line lexing, escaping, parameter
-  structure — and the diagnostic vocabulary, which did not stay above the seam because a
-  violation of the grammar is detected by the grammar.
+- **Syntax lives in `ical-core`'s grammar layer.** Unfolding, content-line lexing, escaping,
+  parameter structure — and the diagnostic vocabulary, which did not stay above the layer
+  because a violation of the grammar is detected by the grammar. `src/grammar/` names nothing
+  above itself; nothing outside it names its path.
 - **Preservation lives in `ical-core`.** Every layer above it operates on the preserved
   model and must not require reserializing through a lossy typed form.
 - **The shared vocabulary lives at or below `ical-core`.** `Limits`, `Meter`, the civil-time
@@ -176,9 +184,10 @@ crates together and tries to compile the result.
 
 ## Where the details are
 
-Every crate but `ical-grammar` has a design document in [`docs/design/`](docs/design/) carrying
-its committed public surface, the reasoning behind each signature, and a closing section
-recording what the first whole-workspace compile changed. Those sections are the only place the
-seams between crates are described from both sides at once — and `ical-grammar` has none,
-because DP-17 carved it out of `ical-core` after the bake-off, so the one seam that matters most
-is argued inside its neighbor's document.
+Every crate has a design document in [`docs/design/`](docs/design/) carrying its committed
+public surface, the reasoning behind each signature, and a closing section recording what the
+first whole-workspace compile changed. Those sections are the only place the seams between
+crates are described from both sides at once. The grammar layer has no document of its own,
+because DP-17 carved it out of `ical-core` after the bake-off and D-0003 put it back, so the
+layer is argued inside `docs/design/ical-core-api.md` — which is where it belongs now that the
+two are one crate.

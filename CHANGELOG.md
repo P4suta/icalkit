@@ -656,3 +656,13 @@ the other order. What version this becomes is a decision nobody has made.
   normalized attribute value appears nowhere in the body contiguously, and the trait gains
   `attribute_count` and `attribute_at`. `ResponseSource` gains `was_truncated`, with a default
   of `false` for a source that has no bound of its own to stop at.
+- **`ical-grammar` is gone as a crate and survives as a layer.** Its sources are
+  `crates/ical-core/src/grammar/`, a private module tree whose every item the crate root
+  re-exports, so `ical_core::Token` is the one spelling and `ical_grammar::Token` names
+  nothing. Six crates are published, not seven. The seam was insurance against a caller that
+  wanted the grammar without the model; ADR 0004 said what to do if none appeared, and none
+  did. What replaces the crate boundary is `gates/grammar-layering`, an unpublished workspace
+  member that compiles the same sources where no model exists, plus a second rule in
+  `just purity` for the spelling that member cannot see. `Token` keeps `#[non_exhaustive]`,
+  which now means what it says: a minor release outside this workspace, a compile error inside
+  it, with `unreachable_patterns = "deny"` keeping a wildcard arm from taking that back.

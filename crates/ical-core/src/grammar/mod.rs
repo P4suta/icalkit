@@ -8,13 +8,22 @@
 //! <https://www.rfc-editor.org/rfc/rfc5545#section-3.1>.
 //!
 //! Unfolding, lexing, escaping, and the structure of parameters live here; so does the
-//! diagnostic vocabulary the whole workspace reports through. A linter, a diff or merge
-//! tool, or a fuzz harness depends on this crate alone and never compiles a `CivilDate`, an
-//! edit set, or a typed accessor. `ical-core` depends on it and adds the object model, the
-//! typed views, and serialization, re-exporting every item here unchanged so that
-//! `ical_core::Token` and `ical_grammar::Token` name one type (see `docs/adr/0004`).
+//! diagnostic vocabulary the whole workspace reports through. The crate root re-exports every
+//! item of this module unchanged, so `ical_core::Token` is the one spelling of that type and
+//! no caller ever writes this module's path (see `docs/adr/0004`).
 //!
-//! Diagnostics did not stay above this seam and were never going to. A violation of the
+//! This was a crate of its own until D-0003. It was insurance against a caller that wanted the
+//! grammar without the model, `docs/adr/0004` said out loud that the honest move was to fold it
+//! back if no such caller appeared, and none did. What survives the fold is the layer, and the
+//! rule that keeps it one: nothing here names anything above this directory. Not `crate::`, not
+//! `super::` from this file, not `super::super::` from the files beside it, and the tree stays
+//! flat. `gates/grammar-layering` compiles these sources in a crate that has no model, which
+//! turns naming a model item into a compile error; it cannot see a `crate::X` that the crate
+//! root re-exports from here, so the second rule of `just purity` reads this directory for one
+//! textually. That is hygiene about not routing a lateral import through the parent crate's
+//! public surface, and no compiler enforces it.
+//!
+//! Diagnostics did not stay above this layer and were never going to. A violation of the
 //! grammar is detected by the grammar, and a value cut short at a limit loses its bytes
 //! inside the grammar, which `docs/adr/0001` requires be flagged where the bytes are
 //! dropped. So `Diagnostic`, its code, its severity, and the sink they are reported into are
@@ -29,10 +38,6 @@
 //! above, where a failure is a diagnostic and the preserved bytes are still written back
 //! (see `docs/adr/0008`).
 //!
-//! This seam is insurance rather than demonstrated demand, and `docs/adr/0004` says so: if
-//! no caller ever wants grammar without model, the honest move is to fold this crate back
-//! into `ical-core` before 1.0.
-//!
 //! # Status
 //!
 //! The whole surface is implemented and tested. Alongside the shared vocabulary — spans,
@@ -41,10 +46,9 @@
 //! pass, and section 3.3.11's escaping, section 3.2's quoting and RFC 6868's caret encoding
 //! are readable and writable in both directions.
 //!
-//! Two readings this crate had to choose are permissive, and both are now pinned by a corpus
+//! Two readings this layer had to choose are permissive, and both are now pinned by a corpus
 //! case rather than owed one. A bare `LF` or a bare `CR` followed by whitespace is lexed as a
-//! fold, recording
-//! which terminator arrived rather than refusing it, because [`FoldPoint`] exists to carry
+//! fold, recording which terminator arrived rather than refusing it, because [`FoldPoint`]
 //! exactly that. And a `DQUOTE` opens a quoted parameter value only where a value may begin,
 //! so one unbalanced quote inside a `CN` cannot swallow the rest of the line. Both readings
 //! round-trip; they disagree with a stricter one about where the header ends. RFC 6868's

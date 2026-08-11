@@ -13,6 +13,10 @@
 #   - ical-conform  the published conformance and interoperability corpus (docs/adr/0006).
 #   - xtask         repository policy checks shared by Just and CI.
 #
+# Two members under gates/ and xtask/ are not crates and are not published. `gates/` holds
+# compile-only members: `ical-grammar-layering` builds ical-core's grammar layer a second time
+# with no dependencies, so a path out of that layer is a compile error (docs/adr/0004).
+#
 # Policy:
 #   - Every third-party action is SHA-pinned (Dependabot bumps them weekly); the comment
 #     records the human-readable version.

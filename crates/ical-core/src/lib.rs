@@ -50,6 +50,11 @@
 //!
 //! # Status
 //!
+//! The content line grammar is part of this crate rather than a crate below it, as of D-0003:
+//! `src/grammar/` is a private module tree whose items are re-exported here, `ical_grammar` is
+//! not a crate any more, and `gates/grammar-layering` plus the second rule of `just purity` are
+//! what keep the layer a layer.
+//!
 //! Every item `docs/design/ical-core-api.md` commits to exists and is tested. The foundation —
 //! the octet storage and its one decode point, the property identity, the civil-time and value
 //! types, the tree nodes with the recorded line syntax, the change vocabulary, the typed view

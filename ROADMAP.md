@@ -5,7 +5,7 @@ is verifiable by `cargo test` on `ubuntu-latest`.
 
 ## M0 — Model and round trip
 
-`ical-grammar` and `ical-core`: the RFC 5545 content line grammar, the component and property
+`ical-core`: the RFC 5545 content line grammar, the component and property
 model, and serialization. The milestone is complete when a corpus of real client exports
 parses and serializes back byte-identically
 ([ADR 0001](docs/adr/0001-lossless-round-trip.md)).

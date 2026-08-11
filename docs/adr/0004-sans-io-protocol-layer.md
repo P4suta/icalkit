@@ -43,7 +43,10 @@ siblings above it, `ical-itip` above both because it needs both, `ical-dav` besi
 leaf, `ical-conform` on top. One seam is added below all of it. `ical-grammar` holds the
 content-line grammar — unfolding, lexing, escaping, and parameter structure — and depends on
 nothing. `ical-core` depends on it and adds the object model, the typed views, and
-serialization. A grammar-only consumer — a linter, a diff or merge tool, a fuzz harness —
+serialization. **This is the shape as argued; amendment 12 collapsed the crate and D-0003
+landed it. The seam is now `crates/ical-core/src/grammar/`, a private module tree re-exported
+at that crate's root, and everything below about where things live still holds — only the
+crate boundary is gone.** A grammar-only consumer — a linter, a diff or merge tool, a fuzz harness —
 sheds the typed model: `CivilDate`, `EditSet`, and the typed accessors. It does not shed
 diagnostics, and it was never going to: a violation of the grammar is detected by the
 grammar, and a value truncated at a limit loses bytes inside the grammar, which ADR-0001
@@ -54,7 +57,9 @@ middle of it. `Diagnostic`, `DiagnosticKind`, `Severity`, and the sink they are 
 into are defined in `ical-grammar`; `ical-core` re-exports them unchanged and adds only the
 kinds it alone can detect. There is no second diagnostic type and no wrapping layer at the
 seam, so "diagnostics travel with the item they concern" survives the split as one
-vocabulary rather than two that must be reconciled.
+vocabulary rather than two that must be reconciled. **They are defined in the grammar layer
+now and re-exported by the same crate; the sentence that mattered — one vocabulary, defined
+where the violation is detected — did not depend on the boundary.**
 
 The crate table in ARCHITECTURE.md gains an `alloc` column beside `std`, because `no_std`
 alone did not capture the wiring that actually broke: a panel proposal's
@@ -74,7 +79,7 @@ about the packages a core crate links, and a manifest states that only when it i
 the name Cargo would resolve rather than the name somebody wrote.
 
 A dependency's key in a manifest is a nickname its author chose; the name Cargo links is the
-`package` field. For each of {`ical-grammar`, `ical-core`, `ical-recur`, `ical-tz`,
+`package` field. For each of {`ical-core`, `ical-recur`, `ical-tz`,
 `ical-itip`, `ical-dav`}, `xtask purity` reads every dependency entry — normal, dev, build,
 and `[target.'cfg(..)'.dependencies]` alike, in the inline-table spelling and in the
 `[dependencies.name]` sub-table spelling — for that field, and reports the name it finds
@@ -94,6 +99,11 @@ under `crates/` that declares `#![no_std]` while absent from CORE_CRATES fails t
 because the list of crates the rule governs must not be able to go stale behind a new crate;
 the exemption `ical-conform` holds is "not `no_std`", not "not listed". `ical-grammar`
 arrived under exactly that rule, which is the first thing the amendment was used for.
+**Amendment 17's landing widened that walk to every root the workspace declares members under,
+`gates/` included, so a directory that is not a crate cannot become one by sitting where
+nothing looks; the purity partition still covers `crates/` alone. The same landing made
+`CORE_CRATES` and the `Justfile`'s `core_crates` read each other, because one decision written
+twice with neither copy failing on its own is a decision waiting to drift.**
 
 ### XML inside `ical-dav` (DP-14)
 
@@ -197,10 +207,11 @@ demand. If no real caller ever wants grammar-without-model, the honest move is t
 decides it. The trigger as written could never be evaluated — "if no real caller ever wants" is
 a proposition about unbounded future time — so what replaces it is a measured baseline and a
 numeric re-opening threshold, and the collapse happens before the first publish rather than
-before 1.0.**
+before 1.0. It has landed: six crates are published, not seven, and what holds the layer in
+its place is `gates/grammar-layering` plus the second rule of `xtask purity`.**
 
 Where tree construction lives was left unstated and M0 placed it. Unfolding and content-line
-lexing belong to `ical-grammar` and the typed view belongs to `ical-core`, and the `BEGIN`/`END`
+lexing belong to the grammar layer and the typed view belongs to the model above it, and the `BEGIN`/`END`
 stack went to `ical-core` with them: a nesting mismatch — a `VEVENT` closed by `END:VTODO` —
 needs no typed interpretation and is not content-line grammar either, but it is the tree
 builder's own stack that sees it, and `unmatched-end`, `mismatched-end-name` and

@@ -23,7 +23,7 @@ fix the cause rather than narrowing the gate.
 - **No `allow` and no `ignore`.** Every gate is strict on purpose. Make the code pass
   instead of suppressing the finding. If a lint is genuinely wrong for this codebase,
   change the shared configuration and say why in the commit message.
-- **The core stays `no_std` and sans-I/O.** `ical-grammar`, `ical-core`, `ical-recur`,
+- **The core stays `no_std` and sans-I/O.** `ical-core`, `ical-recur`,
   `ical-tz`, `ical-itip`, and `ical-dav` must not gain `std`, a bundled time zone database, a
   clock, or a transport. `just purity`, `just no-std`, and `just wasm` enforce it. A zone
   answer comes from a caller-supplied source and names that source
@@ -55,6 +55,14 @@ fix the cause rather than narrowing the gate.
   path a streaming caller uses; a private fast path is how one name acquires two grammars
   ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). Token payloads are `&[u8]`,
   and UTF-8 is demanded only in the typed view, where failure is a diagnostic.
+- **The grammar is a layer inside `ical-core`, and it names nothing above itself.**
+  `crates/ical-core/src/grammar/` is a private module tree, re-exported at the crate root, and
+  the tree stays flat. `gates/grammar-layering` compiles the same sources in a crate that has
+  no model, so naming one is a compile error there. That member cannot see a `crate::X` for an
+  `X` the root re-exports from the grammar itself, so the rest is the second rule of
+  `just purity`: in `mod.rs` neither `crate::` nor `super::`, in the files beside it neither
+  `crate::` nor `super::super::`. The check is textual and a macro or a generated path goes
+  through it ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendment 17).
 - **Time arithmetic is checked and never coerces.** `checked_*`, `div_euclid`, `rem_euclid`;
   no `Duration` carries years or months; a recurrence instance whose date or local time does
   not exist is filtered per RFC 5545 section 3.3.10, never moved to a nearby one

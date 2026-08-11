@@ -33,7 +33,7 @@ the resolution types live in `ical-tz`, and every operation on any of them is `c
 follows the crate graph rather than the subject matter: [ADR 0004](0004-sans-io-protocol-layer.md)
 makes `ical-recur` and `ical-tz` siblings and leaves `ical-dav` depending on `ical-core` alone,
 so a primitive all three speak cannot live in one of them. `Instant` sits one layer lower
-still, in `ical-grammar`, because a diagnostic may name an occurrence rather than a byte
+still, in `ical-core`'s grammar layer, because a diagnostic may name an occurrence rather than a byte
 offset and the diagnostic vocabulary is the grammar's; `ical-core` re-exports it and owns
 every conversion between it and a civil date-time, which is arithmetic rather than syntax. No `Duration`-shaped type carries years or months, so "one month later" is a
 method on a date rather than a value that can be added to one.

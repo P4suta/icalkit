@@ -557,7 +557,7 @@ text length, response and property cardinality, live prefix bindings — are fie
 puts them, and this crate charges `ical_core::Meter` through `try_charge_bytes` and
 `try_charge_element`. A private ledger here would have made "five thousand multigets under one
 budget" false at exactly the seam the ADR wrote it for. `LimitExceeded` kept its variants; they
-now live in `ical-grammar` and are shared, so a `DavError::Limit` still says which dimension ran
+now live in `ical-core`'s grammar layer and are shared, so a `DavError::Limit` still says which dimension ran
 out.
 
 `Diagnostic` is `ical-core`'s, which means a code, a severity and a `Location` rather than a code

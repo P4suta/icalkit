@@ -125,8 +125,12 @@ as an undecided scope rather than a non-goal.
 - **Consumers**: Debt
 - **Related**: D-0002
 - **Verdict**: **amend-mechanism** — `ical-grammar` collapses into `ical-core` before the first
-  publish, and the layering rule becomes a second compilation under `gates/`. Landed as ADR 0004
-  amendment 12, with a measured baseline and a numeric re-opening threshold.
+  publish, and the layering rule becomes a second compilation under `gates/`. Recorded as ADR
+  0004 amendment 12, re-argued against its own probe as amendment 17, and **executed**: the
+  sources are `crates/ical-core/src/grammar/`, `gates/grammar-layering` is a registered member,
+  and six crates are published rather than seven. Half of act 2 came back textual — the layering
+  member cannot see a `crate::X` the crate root re-exports from the grammar — so that half is a
+  second rule of `xtask purity` and is described nowhere as something the compiler catches.
 
 It is a docket item, and it belongs in Tier 1 for the same reason D-0002 does: it changes the set
 of published crates and it is expensive to undo after external callers exist. It is not the same
@@ -137,7 +141,7 @@ The evidence is already gathered and points one way, which is why this needs a v
 than a study. The seam was justified as a compile-footprint saving for a grammar-only consumer.
 That consumer has not appeared; the crate has since acquired the diagnostic vocabulary, the sink,
 `Limits`, `Meter` and `Instant` (`docs/adr/0011-civil-time-arithmetic-and-resolution-types.md:34`,
-`crates/ical-grammar/src/lib.rs`), so the saving is smaller than it was when ADR 0004 already
+now `crates/ical-core/src/grammar/mod.rs`), so the saving is smaller than it was when ADR 0004 already
 called it "insurance, not demonstrated demand"; and `ical-core` re-exports every item of it with
 a glob so that "the seam is meant to be invisible". Against that: collapsing costs a published
 crate name that cannot be unpublished, and ADR 0004's purity gate lists `ical-grammar` in
@@ -768,18 +772,27 @@ than summaries, and every line is holdable against a pull request.
   one landing: ADR 0012's governed-list change, ADR 0004 amendment 12's `gates/` member, and
   amendment 16's custodian legs. The custodian edit lands last or merged with the other two. In
   any other order the gate is red on the day the layering member is registered, or a leg is
-  written against a list that no longer exists.
-- **Run four gates against a `#[path]` workspace member before the grammar collapse lands** —
-  `cargo-semver-checks`, `cargo llvm-cov` attribution, REUSE header scanning and
-  `cargo package --verify`. If any breaks, stop: the dissent's failure condition has fired and the
-  collapse must be re-argued without the layering crate (ADR 0004 amendment 12).
-- Six published crates after the collapse, not seven. One public spelling for every grammar item,
-  no `ical_core::grammar::` path and no `ical_grammar::` path. Files under the grammar directory
-  use `super::`-relative intra-layer imports and carry no crate-level inner attributes; anything
-  there naming a model module fails the build rather than a review. A wildcard arm over `Token`
-  anywhere in `ical-core` is a defect. Adding a `Token` variant is a minor release for external
-  callers and a compile error in-tree — anything pricing it as a seven-crate major is pricing the
-  rejected shape.
+  written against a list that no longer exists. **The `gates/` member's legs are in, together
+  with the act-2 rule amendment 17 added and the `CORE_CRATES`/`core_crates` cross-read: the
+  member root walk now covers `crates/` and `gates/`, and the purity partition still covers
+  `crates/` alone. The two edits still owed to this file are ADR 0012's and amendment 16's, and
+  they are owed against the shape as it now stands.**
+- **Answered.** The four gates were run against a throwaway `#[path]` member before a byte moved,
+  three broke, the precondition fired, and ADR 0004 amendment 17 is the re-argument that narrows
+  the verdict rather than defeating it. Their whole repair is `test = false`, `doc = false` and
+  one `--exclude`, and all three are in the tree. `cargo package --workspace` stays permanently
+  unavailable for this workspace, which is addressed to whoever later adds that command rather
+  than to anyone today.
+- **Discharged, and these are the properties to keep true.** Six published crates, not seven. One
+  public spelling for every grammar item: no `ical_core::grammar::` path and no `ical_grammar::`
+  path. Files under the grammar directory use `super::`-relative intra-layer imports and carry no
+  crate-level inner attributes; naming a model item there fails in `gates/grammar-layering` with
+  a file and a line, and naming a grammar item through the crate root fails the second rule of
+  `xtask purity`, which is textual. The grammar tree stays flat, because a subdirectory changes
+  the depth that rule is stated in. A wildcard arm over `Token` anywhere in `ical-core` is a
+  defect, and `unreachable_patterns = "deny"` is what says so. Adding a `Token` variant is a
+  minor release for external callers and a compile error in-tree — anything pricing it as a
+  seven-crate major is pricing the rejected shape.
 - Do not add a fourth outcome to the token source, and do not add feed, resume or a reader-state
   type. Do not add a second value-chunk protocol beside the existing flag, and do not add a
   pull-layer value ceiling: the absence of one is now a stated capability (ADR 0007 amendment 1).

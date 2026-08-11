@@ -127,11 +127,13 @@ both have to hold.
 ### The grammar layer, and where it lives
 
 DP-04 makes the token layer mandatory and public rather than an optional convenience, so that
-`Document::parse` cannot fork into a second grammar. DP-17 then moves it: `ical-grammar` is a
-no-dependency crate below `ical-core`, so a linter, a differ or a fuzz harness that wants folding
-and escaping does not compile `CivilDate` and `Component` as a side effect. `ical-core`
-re-exports every item, so `ical_core::Token` and `ical_grammar::Token` name one type and DP-04's
-public commitment is unchanged.
+`Document::parse` cannot fork into a second grammar. DP-17 then moved it out into
+`ical-grammar`, a no-dependency crate below this one, and D-0003 moved it back: the grammar is
+`crates/ical-core/src/grammar/`, a private module tree whose every item this crate's root
+re-exports, so `ical_core::Token` is the one spelling of that type and DP-04's public commitment
+is unchanged. Nothing outside the layer names its path and nothing inside it names anything
+above itself; `gates/grammar-layering` and the second rule of `xtask purity` are what hold that,
+and neither is a claim about the crate graph any more (ADR 0004 amendments 12 and 17).
 
 ```rust
 pub enum Token<'a> {
@@ -305,7 +307,7 @@ repeated on each would have closed two of the three, since `edit_parameters` han
 `&mut Vec<Parameter>` and no check stands in front of a reference after it is returned. Second,
 the value side was never the only channel: `ParameterEdit` carries a *value*, so writing one means
 choosing its §3.2 spelling, and there are two answers rather than one. A value carrying `:` `;` or
-`,` is written inside a `DQUOTE` pair, which `ical_grammar::quote_parameter` already knew how to
+`,` is written inside a `DQUOTE` pair, which `quote_parameter` already knew how to
 do and nothing called; one carrying a `DQUOTE` or a control character has no §3.2 spelling at all
 (`parameter_is_representable`), and is `MutationError::NotRepresentable`. So there are two refusals
 and they are both write-side, both stated over octets that were never read from a file.
@@ -871,8 +873,9 @@ compiled together for the first time. `ical-core` absorbed most of the reconcili
 owns the vocabulary the other five spell differently.
 
 The grammar seam of [ADR 0004](../adr/0004-sans-io-protocol-layer.md) is real: the items under
-`grammar` ship from `ical-grammar`, and `ical-core` re-exports them. Three consequences were not
-visible on paper. `Instant` went down with them — `Diagnostic` names an instant, because
+`grammar` shipped from `ical-grammar`, and `ical-core` re-exported them. **D-0003 has since
+collapsed the crate into this one; the seam is a module layer and the three consequences below
+were recorded when it was a crate boundary.** Three consequences were not visible on paper. `Instant` went down with them — `Diagnostic` names an instant, because
 `ical-recur` and `ical-tz` report about occurrences that exist at no byte offset, so the type has
 to sit under the diagnostic vocabulary; `Instant::to_civil` became `CivilDateTime::from_instant`,
 since a crate may not write an inherent method for another crate's type, and
@@ -883,15 +886,18 @@ the far side of a crate boundary; a private struct's fields became API. And `Tok
 `#[non_exhaustive]`, so this crate's own builder now needs a catch-all arm: adding a token variant
 no longer breaks the one consumer that must handle it, which is a guarantee the split spent.
 **That last clause is false and is corrected rather than reinterpreted: the attribute binds only
-crates other than the defining one, so the catch-all arm was never what the split bought. It is a
-silent-loss path against ADR 0001, and ADR 0004 amendment 12 deletes it while keeping the
-attribute. The three constructors named above become crate-private in the same change.**
+crates other than the defining one, so the catch-all arm was never what the split bought. It was
+a silent-loss path against ADR 0001, and the collapse deleted it — both of them, since `mutate`
+carried one too — while keeping the attribute; `unreachable_patterns = "deny"` is what keeps
+another from being written. The three constructors named above are still public and are still
+owed the change to crate-private, which the collapse did not carry: they are named only by this
+crate now, so nothing outside it would notice.**
 
-`DiagnosticCode` is one enum in `ical-grammar` carrying every code in the workspace, including the
-ones only `ical-tz` or `ical-dav` can produce. ADR 0004 says `ical-core` "adds only the kinds it
-alone can detect", and Rust has no extensible enum, so the choice was one vocabulary defined at
-the bottom or two vocabularies to reconcile at the seam. The ADR forbids the second, so the bottom
-crate enumerates codes it cannot itself emit. That is the honest cost, and it is also why the
+`DiagnosticCode` is one enum in the grammar layer carrying every code in the workspace, including
+the ones only `ical-tz` or `ical-dav` can produce. ADR 0004 says `ical-core` "adds only the kinds
+it alone can detect", and Rust has no extensible enum, so the choice was one vocabulary defined at
+the bottom or two vocabularies to reconcile at the seam. The ADR forbids the second, so the
+bottom layer enumerates codes it cannot itself emit. That is the honest cost, and it is also why the
 golden list is a workspace artifact rather than a per-crate one.
 
 `DiagnosticSink::push` returns `SinkOutcome` rather than `()`, which is what

@@ -9,7 +9,7 @@ this code, on this channel" across releases, and an edited meaning or a retuned 
 that claim while every variant and every doc comment sits still.
 
 This file is the golden list that makes the freeze enforceable rather than merely documented.
-`just codes` reads it and `crates/ical-grammar/src/report.rs`, and nothing else, with the same
+`just codes` reads it and `crates/ical-core/src/grammar/report.rs`, and nothing else, with the same
 hand-rolled scan `just purity` uses and for the same reason: the tool that enforces "the core
 has no outside dependencies" may not acquire one.
 
@@ -59,7 +59,7 @@ and would reject half the calendars in the world if it also rejected on `Severit
 
 Every row whose milestone is not `M0` is a code this workspace declares today and does not
 emit yet. Two of those absences are worth naming, because both look like dead API to anyone
-reading `ical-grammar` alone and neither is:
+reading the grammar layer alone and neither is:
 
 - `Severity::LimitReached` is carried by three codes, `recurrence-budget-exhausted`,
   `vtimezone-observances-truncated` and `vtimezone-components-truncated`, which belong to M1

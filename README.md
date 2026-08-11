@@ -45,19 +45,19 @@ reasonable today, and a server is the part still being worked through.
 
 | Crate | Responsibility |
 | --- | --- |
-| `ical-grammar` | RFC 5545 content lines and the diagnostic vocabulary, no model |
-| `ical-core` | RFC 5545 model, parser, serializer — lossless by construction |
+| `ical-core` | RFC 5545 content lines, model, parser, serializer — lossless by construction |
 | `ical-recur` | `RRULE` / `RDATE` / `EXDATE` expansion, bounded and lazy |
 | `ical-tz` | `VTIMEZONE` against a caller-supplied time zone source |
 | `ical-itip` | RFC 5546 scheduling semantics |
 | `ical-dav` | RFC 4791 CalDAV, sans-I/O — no HTTP client bundled |
 | `ical-conform` | Conformance and interoperability suite |
 
-Two changes to that table are decided and have not landed: `ical-grammar` collapses into
-`ical-core` as a private module before the first publish, so six crates are published rather than
-seven; and `ical-query` joins as the CalDAV filter evaluator above `ical-core`, `ical-recur`,
-`ical-tz` and `ical-dav`. See [ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) and
-[ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md).
+One change to that table is decided and has not landed: `ical-query` joins as the CalDAV
+filter evaluator above `ical-core`, `ical-recur`, `ical-tz` and `ical-dav`. See
+[ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md). The
+content line grammar was a seventh crate until D-0003; it is now a private module tree inside
+`ical-core`, re-exported at that crate's root
+([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)).
 
 All but `ical-conform` are `no_std`, perform no I/O, read no clock, and bundle no time zone
 database; the corpus runner is `std` and reads calendars off a disk, because a harness that

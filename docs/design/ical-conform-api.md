@@ -425,7 +425,7 @@ first useful row exists.
 
 The `sibling` module was deleted and `Limits`, `Meter` and `DiagnosticCode` now come from
 `ical-core`, so a case that pins a policy pins the same value the implementation under test
-reads. `Instant` comes from there too, having settled one layer lower still, in `ical-grammar`.
+reads. `Instant` comes from there too, having settled one layer lower still, in the grammar.
 
 One thing this document assumes is now provable and not yet proved: `DiagnosticCode` is a single
 workspace-wide enum, so "input X produces code Y" is a claim about one stable vocabulary rather

@@ -29,8 +29,12 @@ use super::{FoldPoint, LineEnding, ParseError};
 /// [`GrammarLimits::max_header_bytes`](crate::GrammarLimits::max_header_bytes), because they
 /// have a bound and values do not.
 ///
-/// `#[non_exhaustive]` so that adding a variant does not break the consumer that must handle
-/// it. That guarantee is what the split between this crate and the model above it spends.
+/// `#[non_exhaustive]` so that adding a variant is a minor release for a caller outside this
+/// workspace rather than a break. It buys nothing inside the crate that defines the type: an
+/// in-crate match must be exhaustive whatever the attribute says, so adding a variant is a
+/// compile error at every consumer here, which is the answer wanted at both distances. A
+/// wildcard arm over this type anywhere in `ical-core` is a variant silently ignored, and
+/// `unreachable_patterns = "deny"` is what stops one being written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Token<'a> {

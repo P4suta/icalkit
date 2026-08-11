@@ -50,9 +50,10 @@ namespace stack and writer move into one self-contained module that may not name
 enforced by a gate, and nothing of it is exported, including through a hidden public re-export. On
 the day a second DAV-shaped consumer is accepted, extraction becomes a file move plus a manifest
 rather than a redesign. Publishing the name today would buy insurance against a consumer that may
-never exist, which is the purchase [ADR 0004](0004-sans-io-protocol-layer.md)'s Amendment 12 is on
-the same docket to unwind for `ical-grammar`; a published crate name cannot be withdrawn, an
-unexported module can.
+never exist, which is the purchase [ADR 0004](0004-sans-io-protocol-layer.md)'s Amendment 12 was
+on the same docket to unwind for `ical-grammar` — and has since unwound, that crate now being a
+module tree inside `ical-core`; a published crate name cannot be withdrawn, an unexported module
+can.
 
 Separating the outcomes is deliberate and it is defensible for a specific reason: `ical-query`
 consumes filter *values*, not XML, so nothing about the new crate creates an external dependent of
