@@ -29,15 +29,18 @@ own wall clock projected onto UTC, not the UTC timeline.** Every instant crossin
 either direction is on it, and each cadence key is resolved against the zone one at a time,
 which is the only place a daylight saving transition can be seen. `ical_tz::seam` states the
 contract, `ical-recur`'s crate documentation states the caller's two obligations under it, and
-`crates/ical-conform/tests/break_zones.rs` is the only file in the workspace that names both
-crates — it holds a daily 09:00 series to its wall clock across both of Europe/Berlin's 2026
-transitions and asserts that the reading which never re-resolves is 3,600 seconds out.
+`crates/ical-conform/tests/break_zones.rs` is where that seam is held to a real zone — it holds
+a daily 09:00 series to its wall clock across both of Europe/Berlin's 2026 transitions and
+asserts that the reading which never re-resolves is 3,600 seconds out. It was the only file in
+the workspace naming both crates until M3, when `ical-itip` took a dependency on each and made
+the seam something a shipped crate crosses rather than only something a test watches.
 
 ## Invariants
 
 Numbers 1 through 6 date from the bootstrap; 7 through 11 come from the design bake-off that
-followed it. `just purity`, `just no-std` and `just wasm` enforce the structural ones today —
-a change that violates one fails CI. The rest are testable rather than structural, and their
+followed it. `just purity`, `just no-std`, `just wasm` and `just codes` enforce the structural
+ones today — a change that violates one fails CI. The rest are testable rather than structural,
+and their
 gates arrive with the code they constrain; `ROADMAP.md` says which milestone owes which gate.
 
 1. **Nothing is lost on a round trip**
@@ -106,14 +109,16 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 | `ical-tz` | `ical-core` | no | yes | no | landed (M2) |
 | `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no | landed (M3) |
 | `ical-dav` | `ical-core` | no | yes | no | landed (M4) |
-| `ical-conform` | all of the above | yes | yes | no | grows with each milestone (M5) |
+| `ical-conform` | all but `ical-grammar` | yes | yes | no | grows with each milestone (M5) |
 
 "State" is the milestone whose gates the crate met, not a stability claim: nothing is
 published and no public API is frozen. What each landed crate does **not** do is in its own
 `# Status` section and in `ROADMAP.md`, which are the two places that stay honest about it.
 `ical-dav` depends on `ical-core` and on nothing else — `just purity` rejects every declared
 dependency of a core crate including dev-dependencies, so the hand-rolled XML tokenizer ADR
-0004 chose is a gate rather than an intention.
+0004 chose is a gate rather than an intention. `ical-conform`'s five are declared as
+dev-dependencies, which is the distinction that makes "runnable against any implementation"
+mean anything: a competing implementation depending on this crate compiles none of them.
 
 "Reads a clock" is a column because a calendar library that quietly asks the OS for the
 current time is untestable: the answer to "is this event in the past" must come from an
@@ -122,8 +127,9 @@ instant the caller passed in.
 "alloc" is a column because `no_std` alone did not capture the wiring that actually broke.
 A panel proposal's `Vec<Response>: Slots<Response>` failed to compile at the
 `ical-core`/`ical-dav` seam under an allocation-free reading of these crates, and no
-dependency diff can see that. Every crate therefore carries a compiled minimal-usage example
-built at its declared setting.
+dependency diff can see that. Every crate's declared setting was therefore compiled against a
+minimal usage, in the design document that carries it — which is a record of what compiled once
+at the bake-off and not a gate that recompiles it.
 
 ## What lives where
 
@@ -144,7 +150,9 @@ built at its declared setting.
 
 ## Where the details are
 
-Each crate has a design document in [`docs/design/`](docs/design/) carrying its committed
-public surface, the reasoning behind each signature, and a closing section recording what the
-first whole-workspace compile changed. Those sections are the only place the seams between
-crates are described from both sides at once.
+Every crate but `ical-grammar` has a design document in [`docs/design/`](docs/design/) carrying
+its committed public surface, the reasoning behind each signature, and a closing section
+recording what the first whole-workspace compile changed. Those sections are the only place the
+seams between crates are described from both sides at once — and `ical-grammar` has none,
+because DP-17 carved it out of `ical-core` after the bake-off, so the one seam that matters most
+is argued inside its neighbor's document.

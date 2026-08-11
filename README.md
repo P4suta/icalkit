@@ -24,9 +24,10 @@ making it mature, `rrule` is a separate crate that has not moved since April 202
 carries a warning about untrusted input, and **pure-Rust CalDAV does not exist** (the
 `xandikos` crate is a PyO3 wrapper around a Python server, last published in 2023).
 
-The practical consequence is that writing a calendar application in Rust is not a
-reasonable thing to attempt today — which is the gap this workspace is closing, and the
-sentence it intends to make false rather than the one it repeats.
+The practical consequence was that writing a calendar application in Rust was not a
+reasonable thing to attempt — which is the gap this workspace is closing, and the sentence it
+intends to make false rather than the one it repeats. Half of it is false already: a client is
+reasonable today, and a server is the part still being worked through.
 
 ## What makes this hard, and therefore worth doing carefully
 
@@ -52,8 +53,10 @@ sentence it intends to make false rather than the one it repeats.
 | `ical-dav` | RFC 4791 CalDAV, sans-I/O — no HTTP client bundled |
 | `ical-conform` | Conformance and interoperability suite |
 
-All of them are `no_std`, perform no I/O, read no clock, and bundle no time zone database
-— see [ARCHITECTURE.md](ARCHITECTURE.md) and the [decision records](docs/adr/).
+All but `ical-conform` are `no_std`, perform no I/O, read no clock, and bundle no time zone
+database; the corpus runner is `std` and reads calendars off a disk, because a harness that
+cannot open a file is not a harness — see [ARCHITECTURE.md](ARCHITECTURE.md) and the
+[decision records](docs/adr/).
 
 ## Development
 

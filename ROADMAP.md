@@ -21,11 +21,13 @@ against the caller's budget as they are appended, never sliced out of pre-unfold
 may refuse, and an error means no item could be built at all
 ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)).
 
-Gates this milestone owes, because they cannot be written before the code they read: the
-`DiagnosticCode` golden list and its diff check, a round-trip property test over the corpus, a
-fold that splits a UTF-8 codepoint, a CP1252 `SUMMARY`, a hostile input of 200,000 one-byte
-properties, a peak-allocation ceiling as a multiple of input size, and a structural test that
-`Document` is built from the public token path.
+Gates this milestone owed, five met: the `DiagnosticCode` golden list and its diff check, a
+round-trip property test over the corpus, a fold that splits a UTF-8 codepoint, a CP1252
+`SUMMARY`, and a structural test that `Document` is built from the public token path. Two are
+still owed: a hostile input of 200,000 one-byte properties, and a peak-allocation ceiling as a
+multiple of input size. The fold bomb and the depth bomb reach neither — one bounds what a
+single line retains and the other what a walk survives, and the question both of these ask is
+what a whole document costs.
 
 ## M1 — Recurrence
 

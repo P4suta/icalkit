@@ -56,9 +56,12 @@ error rather than a forgeable token. What no lifetime can see is that the borrow
 snapshot read minutes ago. A `Commitment` crosses a request boundary and deliberately carries
 **no authority**: it is compared only to cause a refusal, its digest is a checksum and not a MAC,
 and an attacker who forges one gains exactly the ability to decline to be told that the target
-moved. The gate ran fresh either way. Binding a transition to an `ETag` is undesigned, so the
-propose-and-confirm flow is not safe against a racing organizer update and must not be described
-as if it were.
+moved. The gate ran fresh either way. Binding a transition to a revision is designed and is still
+nobody's default. `ical_dav::Revision` carries the `ETag` a read returned and `Revision::digest`
+is the number a caller stores beside a `Commitment` and re-derives after the confirming read.
+But `ical-dav` may not name `ical-itip`'s types and does not, so the binding is the caller's to
+make and nothing here can see whether it was made — until it is, the propose-and-confirm flow is
+not safe against a racing organizer update and must not be described as if it were.
 
 **Refusal is whole, and a refused message stays inspectable.** There is no partial success: a
 message that overreaches on one property is denied entire, because applying its permitted half
