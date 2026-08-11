@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-10
+- Amended: 2026-08-11 (two amendments)
 
 ## Context
 
@@ -87,3 +88,28 @@ paid by every diagnostic in the workspace whether it carries a name or not, whic
 `Copy` diagnostic that allocates nothing costs; the capacity holds every IANA identifier and
 `/mozilla.org/20050126_1/Europe/Berlin` besides. The gate in `xtask` is unaffected: a subject is
 not a code, and the golden list still keys on the code alone.
+
+**2. One meaning is restated without a rename, once, and the exemption is written down with its
+expiry.** The freeze this ADR installs is that a row's meaning may not change without a rename or
+a deprecation, and [ADR 0001](0001-lossless-round-trip.md)'s Amendment 9 needs exactly that for
+`invalid-utf8-text`, whose committed meaning describes a decode a typed view attempted and which
+must now describe a stream-level fact the parser establishes unasked. The exemption is granted
+because the freeze's own stated rationale is empty here: the rule exists so that "input X produces
+code Y" stays true for a corpus case and a downstream `match`, and no site in the workspace
+constructs this code, no conformance case asserts it, and the one textual hit elsewhere names a
+fixture file rather than the code. There is nothing for the rename to protect. The window closes
+the moment an emitter ships, which is the same change — so this is a one-time exemption with a
+stated expiry rather than a softening of the rule.
+
+Two things are owed with it, and both are costs rather than mitigations. The exemption rests on an
+in-tree scan, so an out-of-tree consumer already keyed to that code under its narrower documented
+sense gets a silently widened meaning with no version signal, and that cannot be checked from here.
+And the Consequences above already say the golden list is hand-maintained and that a code can carry
+a row, a channel and a milestone while being emitted by nobody; this amendment is what makes that
+concrete, because the row in question has asserted a milestone the code was never delivered in. The
+gate should therefore grow one leg — every declared variant has at least one construction site
+outside its own declaration, with an explicitly commented allowlist for codes whose emitter a later
+milestone owes — and the leg's own weakness is the one `xtask` already names about itself: a
+hand-rolled source scan that stops matching reports nothing and passes, and an allowlist is an
+invitation to park codes in it. It is worth having anyway, because it makes CI say what the
+documentation currently admits in prose.
