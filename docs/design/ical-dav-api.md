@@ -337,7 +337,12 @@ purity gate; this is DP-14's decision, not this document's, and the cost is reco
 **A shared `webdav-core` crate.** The multistatus and `PROPFIND` grammar is identical for CardDAV
 and for `WebDAV`-sync, and extracting it would be right the day a second consumer exists. There
 is none, and extracting after external users depend on `ical-dav`'s internals is worse than
-extracting before; that ordering is the acknowledged bet.
+extracting before; that ordering is the acknowledged bet. **The bet is superseded by
+[ADR 0012](../adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md): the
+untangling happens now and the crate does not, because what an external user could depend on is
+what this crate *exports*. The tokenizer, namespace stack and writer live in one module that may
+not name a CalDAV type and exports nothing, so extraction is a file move rather than a
+redesign.**
 
 **An HTTP request or response type.** No method, no URL, no header map, no `Content-Type`. DP-15
 records this as an open gap and it stays open on purpose: the protocol-defined values (`Depth`,

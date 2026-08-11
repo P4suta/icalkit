@@ -537,7 +537,10 @@ Finally: the field-permission table is a dozen lines of `field_rule` standing in
 per-method restriction tables, which run to pages. The conservative default keeps the gaps
 closed rather than open, which means the first real interoperability report is likely to be
 "this legitimate `COUNTER` was refused", not a security hole — a failure mode we prefer, but a
-failure mode.
+failure mode. **That report arrived, so the preference stated before it does not survive it:
+[ADR 0005](../adr/0005-scheduling-apart-from-the-model.md) amendment 12 gives `field_rule` the
+method as well as the name, admitting section 3.2.7's rows under `COUNTER` alone, and turns a
+payload stating a change its author may not make into a denial rather than a silent drop.**
 
 ## What the first compile changed
 

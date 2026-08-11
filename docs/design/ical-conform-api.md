@@ -52,14 +52,23 @@ data and the corpus stops being inspectable as source. As landed, `ical-core` sa
 `Limits::DEFAULT` plus `const` `with_*` builders — and that property is now load-bearing here,
 not incidental.
 
-### The three comparison classes, and the wall between them
+### The four comparison classes, and the wall between them
 
-ADR 0006 closes the set of comparison classes at three and requires the portable/non-portable
-split to be type-level. Here that is two case types and two traits rather than one enum with three
-arms:
+ADR 0006 closed the set of comparison classes at three, and its amendment 2 spends the loud break
+it reserved: the set is four, and the fourth is portable. The portable/non-portable split is still
+type-level, so this is two case types and two traits rather than one enum with four arms:
 
 ```rust
-pub enum PortableQuestion { RoundTrip, Derived(DerivedQuestion) }   // NOT #[non_exhaustive]
+pub enum PortableQuestion {                                        // NOT #[non_exhaustive]
+    RoundTrip,
+    Derived(DerivedQuestion),
+    Exchange(ExchangeQuestion),
+}
+pub struct ExchangeQuestion {              // #[non_exhaustive]: a new exchange is routine
+    pub actor: Actor,                      // the applying party, CAL-ADDRESS-shaped
+    pub continuation: &'static [Input],    // the ordered documents after `PortableCase::input`
+    pub kind: ExchangeKind,                // ItipArbitration | ReportResultSet
+}
 pub struct DiagnosticQuestion {
     pub limits: Limits,
     pub sink: SinkCapacity,
@@ -71,10 +80,14 @@ pub struct NativeCase   { pub header: CaseHeader, pub input: Input,
                           pub question: DiagnosticQuestion }
 ```
 
-*Invariants.* `PortableQuestion` is deliberately not `#[non_exhaustive]`. A fourth comparison
-class — iTIP `SEQUENCE` arbitration, a CalDAV `REPORT` result set — must break every `match` in
-every downstream crate and force ADR 0006 open, which is the loud failure that ADR chose over
-silent misfiling. `DerivedQuestion` *is* `#[non_exhaustive]`, because adding a derivation is
+*Invariants.* `PortableQuestion` is deliberately not `#[non_exhaustive]`. A new comparison class
+must break every `match` in every downstream crate and force ADR 0006 open, which is the loud
+failure that ADR chose over silent misfiling; the two classes that sentence predicted — iTIP
+`SEQUENCE` arbitration and a CalDAV `REPORT` result set — turned out to be one class with two
+members, and `Exchange` is it. Because this enum exports nothing today, the break costs nobody
+anything *now* and costs a major version at the first publish, so the variant lands in the change
+that first exports the type or not at all. A `PortableCase::input` still means "the document the
+case is addressed to" — for an exchange, the prior state — so no existing case table moves. `DerivedQuestion` *is* `#[non_exhaustive]`, because adding a derivation is
 routine where adding a class is not. A `NativeCase` pins the `Limits` it runs under, since "the
 budget was exhausted after nine instances" is not reproducible against an unstated policy, and
 pins a `SinkCapacity` so the corpus can drive ADR 0009's refusal protocol — `Fixed(0)` and
@@ -344,7 +357,9 @@ adopted decision names as unacceptable. Two case types and a trait bound cost a 
 field and buy a compile error.
 
 **`#[non_exhaustive]` on `PortableQuestion`.** Rejected for the reason it is normally added: a
-fourth comparison class should break downstream builds.
+new comparison class should break downstream builds. That reservation has now been *taken*, once,
+by ADR 0006's amendment 2 — which is the attribute working as intended and is also the reason a
+fifth class would have to argue that the set is closed on evidence rather than on assertion.
 
 **Typed comparison instead of canonical bytes.** Comparing parsed values would encode our reading
 of the specification into the comparison — the objection ADR 0006 opens with — and would make a
@@ -361,7 +376,12 @@ making it `no_std` + `alloc` means an implementation under test is never forced 
 satisfy the trait. Only `ForeignRunner` implementors need an operating system.
 
 **A static-only matrix, or a live-only bridge.** Neither, on purpose: `Observed` is checked-in
-static data and the bridge, when enabled, is what detects that the data went stale.
+static data and the bridge is what detects that the data went stale. ADR 0006's amendment 1 scores
+and adopts exactly this, and fixes the two things this entry left unsaid: the static matrix is the
+only foreign evidence a required check reads and every row carries its provenance as data, and the
+bridge lives in `xtask` off the required path, proposing diffs a human reviews and never failing a
+build. `ForeignRunner` stays published as the seam for out-of-tree subjects, and nothing in-tree
+may construct one.
 
 ## Consequences
 
@@ -396,8 +416,10 @@ worked examples of section 3.8.5.3 among them, addressed to specification sectio
 run against this workspace's crates directly — so the vocabulary above has contents to be fitted
 to rather than none, and `PortableQuestion` is still frozen against a fourth comparison class by
 a document rather than by a compiler. That is the ordinary cost of designing a vocabulary ahead
-of its contents, and it is worth restating that ADR 0006 itself calls the bridge "the decision
-but not a settled one".
+of its contents, and it is worth restating that ADR 0006 itself called the bridge "the decision
+but not a settled one" — which its amendment 1 has since settled, on grounds a bake-off could not
+have decided: what a red job means, which targets the differential claim can cover, and when the
+first useful row exists.
 
 ## What the first compile changed
 

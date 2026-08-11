@@ -475,7 +475,10 @@ otherwise would be citing an authority that does not exist.
   a question that has three, and end `no_std`.
 - **A bundled Windows-to-IANA (CLDR) alias table.** Same argument, smaller table. The crate
   reports `TzidForm::Opaque` and returns `None`; the caller, who already has CLDR or a
-  server mapping, decides.
+  server mapping, decides. This rejection is now ratified in the ADR rather than living only
+  here ([ADR 0003](../adr/0003-caller-supplied-time-zones.md) amendment 16), which also closes
+  the two options this document never addressed — a feature flag, and a separate crate outside
+  the purity rule — and states the three conditions that would reopen it.
 - **`CombinedZoneSource: ZoneSource`.** Convenient, and it would put a fallback chain right
   back inside an `impl` where nobody can see it.
 - **An error channel on `ZoneSource::resolve`.** `Option` plus `AnswerBasis` plus

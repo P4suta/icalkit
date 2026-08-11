@@ -163,7 +163,10 @@ direction the finding pointed.
 "need more input" protocol, so a 400 MB inline `ATTACH;ENCODING=BASE64` would have to be
 contiguous and resident before one token could be built. `Token::Value { bytes, more }` is that
 protocol: chunks are the runs between folds, they borrow the input and are never buffered by the
-reader, and the tree builder is the thing that decides to own them. Names and parameters *are*
+reader, and the tree builder is the thing that decides to own them. What that removes is the need
+for the *value* to be re-materialized; the *input it borrows from* must still be contiguous and
+resident at `ContentLineReader::new`, which has no feed and no resume
+([ADR 0007](../adr/0007-allocation-policy.md) amendment 1). Names and parameters *are*
 reassembled, through a scratch buffer bounded by `GrammarLimits::max_header_bytes`, because they
 have a bound and values do not.
 
@@ -488,7 +491,11 @@ impl CivilDate {
     pub const fn days_in_month(year: u16, month: u8) -> Option<u8>;
     pub fn days_from_epoch(self) -> Option<i64>;
     pub fn weekday(self) -> Option<Weekday>;
-    pub fn add_months(self, count: i32) -> MonthAddOutcome;
+    pub fn add_months(self, count: i32) -> MonthAddOutcome;   // the only month-stepping door
+}
+impl MonthAddOutcome {
+    pub fn exact(self) -> Option<CivilDate>;         // Some for Exact only
+    pub fn carried_date(self) -> Option<CivilDate>;  // the date carried, clamped included
 }
 impl CivilDateTime { pub fn at_offset(self, offset: UtcOffset) -> Option<Instant>; }
 impl Instant {
@@ -819,7 +826,10 @@ outright.
 **Bundling the grammar with the model** (DP-17). A fuzz harness that wants folding and escaping
 should not compile `CivilDate`. The seam costs one more published crate and one more entry in
 every cross-target job, and it is insurance rather than demonstrated demand until a syntax-only
-caller actually appears.
+caller actually appears. **That rejection is reversed by
+[ADR 0004](../adr/0004-sans-io-protocol-layer.md) amendment 12: the insurance is bought as a
+compilation rather than as a published crate, and the footprint saving it was priced against
+measured at zero on three targets.**
 
 ## Consequences
 
@@ -872,6 +882,10 @@ gained public constructors — `LineLayout::preserved`, `LineLayout::mark_refold
 the far side of a crate boundary; a private struct's fields became API. And `Token` is
 `#[non_exhaustive]`, so this crate's own builder now needs a catch-all arm: adding a token variant
 no longer breaks the one consumer that must handle it, which is a guarantee the split spent.
+**That last clause is false and is corrected rather than reinterpreted: the attribute binds only
+crates other than the defining one, so the catch-all arm was never what the split bought. It is a
+silent-loss path against ADR 0001, and ADR 0004 amendment 12 deletes it while keeping the
+attribute. The three constructors named above become crate-private in the same change.**
 
 `DiagnosticCode` is one enum in `ical-grammar` carrying every code in the workspace, including the
 ones only `ical-tz` or `ical-dav` can produce. ADR 0004 says `ical-core` "adds only the kinds it
@@ -893,7 +907,11 @@ the field-free version cost nothing to widen and a discriminant is not an alloca
 its consequences. There is no `XmlLimits`. `Limits::GENEROUS` is the second named policy the two
 crates each invented separately, once. `Meter` gained `try_charge_bytes` and `try_charge_element`
 so that `ical-dav` charges the shared ledger instead of keeping its own, which is the whole point
-of one meter.
+of one meter. Every field of `Limits` and `GrammarLimits` now carries exactly one calibration
+marker saying whether it is the stated envelope, derived from it by a written function, measured
+against this reader, argued from shape, or merely asserted; "provisional" is no longer a property
+of the type as a whole ([ADR 0010](../adr/0010-shared-resource-limits.md) amendment 1). A new
+field may not be added without one.
 
 Every entry point takes `Limits` by value rather than `&Limits`. ADR 0010 spells it `&Limits`, and
 `clippy::trivially_copy_pass_by_ref` under this repository's own `trivial-copy-size-limit` rejects
