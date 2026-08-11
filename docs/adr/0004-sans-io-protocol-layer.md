@@ -166,10 +166,13 @@ one breaking a rule the wire format never had.
 The envelope is opaque to iCalendar internals by design and not by omission: `calendar-data`
 is carried as opaque bytes and parsed by `ical-core`. Depth bounding of recursive
 `CompFilter` on a server's parse of an untrusted REPORT body was out of scope here and is not
-any more: Amendment 4 names the dimension and the filter read refuses at it. `Depth` became a
-value under Amendment 3. What is still out of scope, and tracked as a follow-up rather than
-quietly treated as solved, is the rest of the HTTP envelope — the method, `Content-Type`, and
-the framing a header value sits inside.
+any more: `read_comp_filter` counts its own nesting and refuses `LimitExceeded::Depth` at
+`Limits::max_xml_depth`. No amendment below added that dimension — ADR 0010's decision named it
+and `max_xml_depth` has been a field since before this crate existed — so what closed here is
+the filter tree's second recursion, not the bound. `Depth` became a value under Amendment 3.
+What is still out of scope, and tracked as a follow-up rather than quietly treated as solved,
+is the rest of the HTTP envelope — the method, `Content-Type`, and the framing a header value
+sits inside.
 
 ## Consequences
 

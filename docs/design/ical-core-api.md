@@ -400,9 +400,11 @@ impl Meter {
 change and no caller can construct one that skips a bound. `candidates_per_period` is defined
 over candidates *generated*, not instances emitted, which is the definition that closes the
 negative-`BYSETPOS` blowup DP-08 names. `max_vtimezone_observances` and
-`max_vtimezone_components` are `ical-tz`'s; XML nesting depth and multi-status size are
-`ical-dav`'s `XmlLimits`, a documented sibling rather than a field here, because they bound XML
-rather than calendars.
+`max_vtimezone_components` are `ical-tz`'s; XML nesting depth, element count, `href` and text
+length, response and property cardinality and live prefix bindings are `ical-dav`'s, and they are
+fields of this same `Limits` rather than a typed `XmlLimits` sibling, because one meter cannot
+charge against two policies. The cost lands on this crate's own readers: a caller who never
+speaks CalDAV still carries eight thresholds that only bound XML.
 
 `Meter` is neither `Copy` nor `Default` on purpose: minting a fresh meter inside a fan-out loop
 is how a budget silently stops binding, and it should be a visible act. Exhaustion latches.

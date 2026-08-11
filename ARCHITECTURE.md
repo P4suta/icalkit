@@ -32,8 +32,9 @@ contract, `ical-recur`'s crate documentation states the caller's two obligations
 `crates/ical-conform/tests/break_zones.rs` is where that seam is held to a real zone — it holds
 a daily 09:00 series to its wall clock across both of Europe/Berlin's 2026 transitions and
 asserts that the reading which never re-resolves is 3,600 seconds out. It was the only file in
-the workspace naming both crates until M3, when `ical-itip` took a dependency on each and made
-the seam something a shipped crate crosses rather than only something a test watches.
+the workspace naming both crates until M2's own adversarial pass landed `break_tz_seam.rs`
+beside it, and at M3 `ical-itip` took a dependency on each, which made the seam something a
+shipped crate crosses rather than only something a test watches.
 
 ## Invariants
 
@@ -127,9 +128,11 @@ instant the caller passed in.
 "alloc" is a column because `no_std` alone did not capture the wiring that actually broke.
 A panel proposal's `Vec<Response>: Slots<Response>` failed to compile at the
 `ical-core`/`ical-dav` seam under an allocation-free reading of these crates, and no
-dependency diff can see that. Every crate's declared setting was therefore compiled against a
-minimal usage, in the design document that carries it — which is a record of what compiled once
-at the bake-off and not a gate that recompiles it.
+dependency diff can see that. No crate carries a compiled minimal-usage example at its declared
+setting: `just no-std` and `just wasm` build the six core crates for a bare-metal and a browser
+target, which proves the targets and says nothing about the seam. So the column is a claim the
+workspace holds to by hand, and that class of break stays invisible until somebody wires two
+crates together and tries to compile the result.
 
 ## What lives where
 
