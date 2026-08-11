@@ -18,7 +18,7 @@
 //! caller who writes `Meter::new(..)` inside its own loop reproduces the attack exactly —
 //! so this makes the mistake visible rather than impossible.
 //!
-//! These types live at the bottom of the stack rather than in `ical-core` because the crates
+//! These types live at the bottom of the stack rather than beside the model because the crates
 //! that name them do not all depend on each other, and because the running count of refused
 //! diagnostics has to live outside the sink, which is defined here.
 

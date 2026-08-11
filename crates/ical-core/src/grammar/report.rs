@@ -6,7 +6,7 @@
 //!
 //! One vocabulary for the whole workspace, defined at the bottom of it. Rust has no
 //! extensible enum, so the choice was one set of codes defined here or one set per crate to
-//! reconcile at every seam; `docs/adr/0004` forbids the second, which is why this crate
+//! reconcile at every seam; `docs/adr/0004` forbids the second, which is why this layer
 //! enumerates codes only `ical-tz` or `ical-recur` can emit. That is also why the golden
 //! list `docs/adr/0009` requires is a workspace artifact rather than a per-crate one.
 //!

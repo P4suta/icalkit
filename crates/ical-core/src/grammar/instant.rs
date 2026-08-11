@@ -12,7 +12,8 @@
 //! reason to take.
 //!
 //! What an instant *means* under a zone belongs to `ical-tz`; converting one to civil fields
-//! belongs to `ical-core`, which owns the civil types. Nothing here reads a clock.
+//! belongs to the model above this layer, which owns the civil types. Nothing here reads a
+//! clock.
 
 /// A point on the UTC timeline, counted in seconds from the Unix epoch.
 ///
