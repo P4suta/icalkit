@@ -37,7 +37,7 @@
 use alloc::vec::Vec;
 use core::mem;
 
-use ical_grammar::{
+use crate::{
     ContentLineReader, ContentLineSource, Diagnostic, DiagnosticCode, DiagnosticSink, FoldPoint,
     Limits, LineEnding, LineLayout, Location, Meter, ParseError, Severity, Span, Token,
     is_control_octet, report_diagnostic, undefined_caret_escapes, unquote_parameter,
@@ -522,11 +522,6 @@ impl TreeBuilder {
                 let layout = LineLayout::preserved(folds.to_vec(), ending, has_separator);
                 self.finish_line(layout, meter, sink)
             },
-            // `Token` is `#[non_exhaustive]`, and that guarantee is what the seam between the
-            // grammar crate and this one spends: a variant added there must not break the one
-            // consumer that has to handle every line. A token this build does not know
-            // contributes no octets rather than ending a parse that can still finish.
-            _ => Ok(()),
         }
     }
 
@@ -923,7 +918,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use ical_grammar::{
+    use crate::{
         ContentLineSource, Diagnostic, DiagnosticCode, FoldPoint, IgnoreDiagnostics, Limits,
         LineEnding, LineLayout, Meter, ParseError, Severity, Token,
     };

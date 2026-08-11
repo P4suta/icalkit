@@ -38,10 +38,7 @@
 
 use alloc::vec::Vec;
 
-use crate::budget::GrammarLimits;
-use crate::failure::ParseError;
-use crate::syntax::{FoldPoint, LineEnding};
-use crate::token::{ContentLineSource, Token};
+use super::{ContentLineSource, FoldPoint, GrammarLimits, LineEnding, ParseError, Token};
 
 /// Whether `octet` is whitespace that may introduce a folded continuation line.
 ///
@@ -577,11 +574,10 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{ContentLineReader, is_fold_whitespace};
-    use crate::budget::GrammarLimits;
-    use crate::failure::ParseError;
-    use crate::syntax::{FoldPoint, LineEnding};
-    use crate::token::{ContentLineSource, Token};
+    use super::{
+        ContentLineReader, ContentLineSource, FoldPoint, GrammarLimits, LineEnding, ParseError,
+        Token, is_fold_whitespace,
+    };
 
     /// One token, detached from the reader that produced it.
     ///

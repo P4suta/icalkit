@@ -22,7 +22,13 @@
 //! that name them do not all depend on each other, and because the running count of refused
 //! diagnostics has to live outside the sink, which is defined here.
 
-use crate::failure::{LimitExceeded, ParseError};
+use super::{LimitExceeded, ParseError};
+
+// Named only by this file's tests. A nested module reaches the grammar root through the
+// module it sits in, because no path under `grammar/` may climb past that root (ADR 0004),
+// which leaves a test module one `super::` and nothing above it.
+#[cfg(test)]
+use super::{ContentLineReader, ContentLineSource, Token};
 
 /// The bounds that apply to the content-line grammar alone.
 ///
@@ -1135,10 +1141,10 @@ impl Meter {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{GrammarLimits, Limits, Meter};
-    use crate::failure::{LimitExceeded, ParseError};
-    use crate::lexer::ContentLineReader;
-    use crate::token::{ContentLineSource, Token};
+    use super::{
+        ContentLineReader, ContentLineSource, GrammarLimits, LimitExceeded, Limits, Meter,
+        ParseError, Token,
+    };
 
     /// RFC 5545 section 3.1's ceiling on one physical line, terminator excluded.
     const SPEC_FOLD_WIDTH: usize = 75;

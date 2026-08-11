@@ -28,7 +28,7 @@ use core::fmt::{self, Debug, Formatter};
 use core::hash::{Hash, Hasher};
 use core::{mem, slice};
 
-use ical_grammar::{LineEnding, LineLayout};
+use crate::{LineEnding, LineLayout};
 
 use crate::ident::PropertyId;
 use crate::octets::RawText;
@@ -772,7 +772,7 @@ mod tests {
     use core::cmp::Ordering;
     use core::hash::{Hash, Hasher};
 
-    use ical_grammar::{FoldPoint, LineEnding, LineLayout};
+    use crate::{FoldPoint, LineEnding, LineLayout};
 
     use super::{Boundary, Component, Document, Item, Parameter, Property};
     use crate::ident::PropertyId;

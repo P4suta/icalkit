@@ -29,7 +29,7 @@
 //! `153/5` terms are a closed form of that year's cumulative month lengths, exact over the
 //! whole domain rather than an approximation.
 
-use ical_grammar::Instant;
+use crate::Instant;
 
 use crate::gregorian::{
     CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, UtcOffset, Weekday,
@@ -360,7 +360,7 @@ fn time_of_day(second_of_day: i64) -> Option<CivilTime> {
 
 #[cfg(test)]
 mod tests {
-    use ical_grammar::Instant;
+    use crate::Instant;
 
     use crate::gregorian::{
         CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, UtcOffset, Weekday,

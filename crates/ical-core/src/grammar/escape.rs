@@ -31,7 +31,7 @@
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
-use crate::report::DiagnosticCode;
+use super::DiagnosticCode;
 
 /// The section 3.3.11 substitutions, as `(octet after the backslash, octet it stands for)`.
 ///
@@ -126,7 +126,7 @@ pub fn text_needs_unescaping(bytes: &[u8]) -> bool {
 /// text it showed disagree with the file.
 ///
 /// ```
-/// use ical_grammar::unescape_text;
+/// use ical_core::unescape_text;
 ///
 /// assert_eq!(unescape_text(br"a\nb").as_ref(), b"a\nb");
 /// assert_eq!(unescape_text(br"ends with \").as_ref(), br"ends with \");
@@ -176,7 +176,7 @@ pub fn text_needs_escaping(bytes: &[u8]) -> bool {
 /// authors, where no spelling is being overwritten.
 ///
 /// ```
-/// use ical_grammar::escape_text;
+/// use ical_core::escape_text;
 ///
 /// assert_eq!(escape_text(b"a;b\nc").as_ref(), br"a\;b\nc");
 /// assert_eq!(escape_text(b"nothing to do").as_ref(), b"nothing to do");
@@ -299,7 +299,7 @@ impl<'a> UnquotedParameter<'a> {
 /// would silently accept a truncated line.
 ///
 /// ```
-/// use ical_grammar::{unquote_parameter, ParameterQuoting};
+/// use ical_core::{unquote_parameter, ParameterQuoting};
 ///
 /// let closed = unquote_parameter(b"\"Europe/Paris\"");
 /// assert_eq!(closed.value(), b"Europe/Paris");
@@ -440,14 +440,13 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        PARAMETER_MUST_QUOTE, PARAMETER_NAME_DELIMITERS, ParameterQuoting, TEXT_ESCAPES,
-        TEXT_MUST_ESCAPE, escape_text, escape_text_into, parameter_is_representable,
+        DiagnosticCode, PARAMETER_MUST_QUOTE, PARAMETER_NAME_DELIMITERS, ParameterQuoting,
+        TEXT_ESCAPES, TEXT_MUST_ESCAPE, escape_text, escape_text_into, parameter_is_representable,
         parameter_name_is_representable, parameter_needs_quoting, property_name_is_representable,
         quote_parameter, quote_parameter_into, text_escape_meaning, text_escape_spelling,
         text_needs_escaping, text_needs_unescaping, unescape_text, unescape_text_into,
         unquote_parameter,
     };
-    use crate::report::DiagnosticCode;
 
     /// The empty value is legal everywhere and is the shape a fold or a bare `NAME:` produces.
     #[test]

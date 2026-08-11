@@ -139,7 +139,7 @@ pub fn undefined_caret_escapes(bytes: &[u8]) -> bool {
 /// caller's display and nothing else, while making the text it showed disagree with the file.
 ///
 /// ```
-/// use ical_grammar::decode_caret;
+/// use ical_core::decode_caret;
 ///
 /// assert_eq!(decode_caret(b"^'quoted^'").as_ref(), b"\"quoted\"");
 /// assert_eq!(decode_caret(b"^x undefined").as_ref(), b"^x undefined");
@@ -194,7 +194,7 @@ pub fn caret_needs_encoding(bytes: &[u8]) -> bool {
 /// no meaning to a caret outside one.
 ///
 /// ```
-/// use ical_grammar::encode_caret;
+/// use ical_core::encode_caret;
 ///
 /// assert_eq!(encode_caret(b"say \"hi\"").as_ref(), b"say ^'hi^'");
 /// assert_eq!(encode_caret(b"Europe/Paris").as_ref(), b"Europe/Paris");

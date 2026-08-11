@@ -16,9 +16,6 @@ dependencies = [
 [[package]]
 name = "ical-core"
 version = "0.0.0"
-dependencies = [
- "ical-grammar",
-]
 
 [[package]]
 name = "ical-dav"
@@ -26,10 +23,6 @@ version = "0.0.0"
 dependencies = [
  "ical-core",
 ]
-
-[[package]]
-name = "ical-grammar"
-version = "0.0.0"
 
 [[package]]
 name = "ical-itip"

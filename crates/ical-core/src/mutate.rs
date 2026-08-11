@@ -35,7 +35,7 @@
 
 use alloc::vec::Vec;
 
-use ical_grammar::{
+use crate::{
     ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token, encode_caret,
     parameter_is_representable, parameter_name_is_representable, property_name_is_representable,
     quote_parameter_into,
@@ -156,7 +156,7 @@ fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError>
 /// that was read: a parameter keeps the spelling its producer wrote, so a parameter this crate
 /// writes has to carry the spelling its value needs. Which is also the contract this door
 /// states — it takes a value and not a spelling, so a caller moving a parameter from one line
-/// to another resolves it with [`decode_caret`](ical_grammar::decode_caret) first.
+/// to another resolves it with [`decode_caret`](crate::decode_caret) first.
 fn spelled_parameter(name: &[u8], value: &[u8]) -> Parameter {
     let mut spelled = Vec::new();
     quote_parameter_into(encode_caret(value).as_ref(), &mut spelled);
@@ -181,7 +181,7 @@ impl Parameter {
     ///
     /// The value is what it means rather than how it is spelled: `Doe, John` is written
     /// `"Doe, John"` and `Ann ^n Marie` is written `Ann ^^n Marie`, which is what
-    /// [`decode_caret`](ical_grammar::decode_caret) reads back as the value that was handed
+    /// [`decode_caret`](crate::decode_caret) reads back as the value that was handed
     /// over.
     ///
     /// # Errors
@@ -366,11 +366,6 @@ fn take_token(
             line.ending = ending;
             Ok(true)
         },
-        // `Token` is `#[non_exhaustive]`, and a variant added after this code was written is a
-        // piece of a content line this crate has nowhere to put. Keeping the rest without it
-        // would write back less than the caller handed over, which is the one outcome the
-        // whole crate is arranged against.
-        _ => Err(MutationError::MalformedReplacement),
     }
 }
 
@@ -480,7 +475,7 @@ impl Component {
     /// alternative would be answering `None`, which says "there is no such property" about a
     /// property that is there — collapsing the two states the read side spends a whole enum
     /// to keep apart. A caller that needs to know reads first: the singular accessor reports
-    /// [`DiagnosticCode::DuplicateProperty`](ical_grammar::DiagnosticCode::DuplicateProperty)
+    /// [`DiagnosticCode::DuplicateProperty`](crate::DiagnosticCode::DuplicateProperty)
     /// and every occurrence stays reachable through the general lookup.
     pub fn get_mut<T>(&mut self, id: &PropertyId) -> Option<PropertyMut<'_, T>> {
         self.property_with_id_mut(id).map(PropertyMut::new)
@@ -509,7 +504,7 @@ impl Component {
     ///
     /// Every variant addresses the *identity* `id` names rather than one occurrence of it.
     /// A component carrying two `DTSTART`s is a component this crate reports
-    /// [`DiagnosticCode::DuplicateProperty`](ical_grammar::DiagnosticCode::DuplicateProperty)
+    /// [`DiagnosticCode::DuplicateProperty`](crate::DiagnosticCode::DuplicateProperty)
     /// about and refuses to pick a winner in; a change that wrote one of the two and said
     /// nothing would leave the identity the caller addressed carrying two different values,
     /// with no way to see that it half happened. So a replacement writes every occurrence, a
@@ -798,7 +793,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use ical_grammar::{FoldPoint, Limits, LineEnding, LineLayout};
+    use crate::{FoldPoint, Limits, LineEnding, LineLayout};
 
     use super::{ParsedLine, read_replacement_line};
     use crate::change::{ParameterEdit, ProposedChange};

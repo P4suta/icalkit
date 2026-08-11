@@ -30,7 +30,7 @@
 //! absence rather than an error, because a component that carries one is a component this crate
 //! must still be able to read.
 
-use ical_grammar::{
+use crate::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Location, Meter, Severity, report_diagnostic,
 };
 
@@ -838,7 +838,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use ical_grammar::{
+    use crate::{
         Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits, LineEnding, LineLayout, Meter,
         Severity,
     };

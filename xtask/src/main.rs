@@ -47,7 +47,7 @@
 //! which is the review a frozen meaning is owed; improving the prose below a variant's first
 //! paragraph stays free, because that prose is not the meaning.
 //!
-//! Exactly two committed files are read, `crates/ical-grammar/src/report.rs` and the golden
+//! Exactly two committed files are read, `crates/ical-core/src/grammar/report.rs` and the golden
 //! list, by the same kind of hand-rolled scan and for the same reason: a gate about
 //! dependencies may not have any. The task fails on a code with no row, on a row no code
 //! declares, on rows out of declaration order, on a meaning that drifted from either side, on
@@ -73,7 +73,6 @@ use std::process::ExitCode;
 /// depends on every crate here, which is what makes it a consumer of the core rather than
 /// part of it.
 const CORE_CRATES: &[&str] = &[
-    "ical-grammar",
     "ical-core",
     "ical-recur",
     "ical-tz",
@@ -85,7 +84,7 @@ const CORE_CRATES: &[&str] = &[
 const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
 
 /// The declarations the golden list is checked against, relative to the workspace root.
-const DIAGNOSTIC_SOURCE: &str = "crates/ical-grammar/src/report.rs";
+const DIAGNOSTIC_SOURCE: &str = "crates/ical-core/src/grammar/report.rs";
 
 /// The golden list's columns, in the order its cells are read.
 const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
@@ -373,7 +372,7 @@ fn dependency_subtable_name(header: &str) -> Option<&str> {
     is_dependency_table(prefix).then(|| name.trim_matches('"'))
 }
 
-/// Check the committed golden list against the codes `ical-grammar` declares.
+/// Check the committed golden list against the codes the grammar declares.
 fn collect_codes_violations() -> io::Result<Vec<String>> {
     let root = workspace_root()?;
     let declarations = fs::read_to_string(root.join(DIAGNOSTIC_SOURCE))?;

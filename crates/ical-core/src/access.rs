@@ -26,7 +26,7 @@
 //! [`Component::properties_named`] — which is the only shape that can name more than one of
 //! them.
 
-use ical_grammar::{Diagnostic, DiagnosticCode, Location, Severity};
+use crate::{Diagnostic, DiagnosticCode, Location, Severity};
 
 use crate::gregorian::DateTimeValue;
 use crate::ident::PropertyId;
@@ -169,7 +169,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use ical_grammar::{Diagnostic, DiagnosticCode, Limits, LineEnding, LineLayout, Severity};
+    use crate::{Diagnostic, DiagnosticCode, Limits, LineEnding, LineLayout, Severity};
 
     use crate::ident::PropertyId;
     use crate::octets::RawText;

@@ -18,8 +18,7 @@
 //! `BEGIN` and `END` are ordinary names here. The component model belongs to the crate that
 //! has one.
 
-use crate::failure::ParseError;
-use crate::syntax::{FoldPoint, LineEnding};
+use super::{FoldPoint, LineEnding, ParseError};
 
 /// One lexical piece of a content line.
 ///

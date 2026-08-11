@@ -19,7 +19,7 @@ use core::error::Error;
 use core::fmt::{self, Debug, Display, Formatter, Write};
 use core::marker::PhantomData;
 
-use ical_grammar::{Diagnostic, DiagnosticCode};
+use crate::{Diagnostic, DiagnosticCode};
 
 use crate::change::ParameterEdit;
 use crate::gregorian::{DateTimeValue, Duration};
@@ -575,7 +575,7 @@ impl<T> Debug for PropertyMut<'_, T> {
 mod tests {
     use core::fmt::Write;
 
-    use ical_grammar::{Diagnostic, DiagnosticCode, Location, Severity};
+    use crate::{Diagnostic, DiagnosticCode, Location, Severity};
 
     use super::{MutationError, TextValue, ValueBuf, ValueType, View};
     use crate::octets::RawText;
@@ -587,7 +587,7 @@ mod tests {
             RawText::from_bytes(b"SUMMARY"),
             alloc::vec::Vec::new(),
             RawText::from_bytes(b"hi"),
-            ical_grammar::LineLayout::canonical(ical_grammar::LineEnding::CANONICAL),
+            crate::LineLayout::canonical(crate::LineEnding::CANONICAL),
         )
     }
 

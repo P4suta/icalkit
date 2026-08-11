@@ -40,7 +40,7 @@
 use alloc::vec::Vec;
 use core::{mem, slice};
 
-use ical_grammar::{FoldPoint, LineEnding, LineLayout};
+use crate::{FoldPoint, LineEnding, LineLayout};
 
 use crate::output::Writer;
 use crate::tree::{Boundary, Document, Item, Property};
@@ -396,7 +396,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::convert::Infallible;
 
-    use ical_grammar::{FoldPoint, LineEnding, LineLayout};
+    use crate::{FoldPoint, LineEnding, LineLayout};
 
     use super::{REFOLD_WIDTH, fold_at};
     use crate::octets::RawText;

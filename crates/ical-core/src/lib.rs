@@ -10,9 +10,9 @@
 //! An `.ics` file is a tree of components — `VCALENDAR` wrapping `VEVENT`, `VTODO`,
 //! `VJOURNAL`, `VFREEBUSY`, `VTIMEZONE` — built out of content lines, each a property name,
 //! its parameters, and a value, folded at octet boundaries and escaped by rules that are
-//! close enough to other formats to invite mistakes. Reading those content lines is
-//! `ical-grammar`'s job, and this crate re-exports every item of it unchanged, so
-//! `ical_core::Token` and `ical_grammar::Token` name one type. What this crate adds is the
+//! close enough to other formats to invite mistakes. Reading those content lines is the
+//! grammar layer's job — a private module whose every item is re-exported here unchanged, so
+//! `ical_core::Token` is the one spelling of that type. What this crate adds is the
 //! tree, the typed views, scoped mutation, and serialization. It expands no recurrence,
 //! resolves no `TZID`, and attaches no meaning to `METHOD`; those live in the crates above
 //! it.
@@ -95,6 +95,7 @@ mod arith;
 mod change;
 mod codec;
 mod emit;
+mod grammar;
 mod gregorian;
 mod ident;
 mod mutate;
@@ -105,11 +106,12 @@ mod schema;
 mod tree;
 mod view;
 
-// Every item of the grammar crate is re-exported unchanged, so that `ical_core::Token` and
-// `ical_grammar::Token` name one type and a caller never has to know which side of the seam
-// a name came from. A glob rather than a list, because the seam is meant to be invisible and
-// a list is a second place to forget an item.
-pub use ical_grammar::*;
+// The grammar is a private module and every item of it is re-exported here unchanged, so that
+// `ical_core::Token` is the only spelling there is: no caller writes `ical_core::grammar::`
+// and no caller writes `ical_grammar::`, because there is no such crate. A glob rather than a
+// list, because the layer is meant to be invisible from outside and a list is a second place
+// to forget an item.
+pub use crate::grammar::*;
 
 pub use crate::change::{ParameterEdit, ProposedChange};
 pub use crate::gregorian::{
@@ -119,7 +121,7 @@ pub use crate::gregorian::{
 pub use crate::ident::PropertyId;
 pub use crate::octets::{RawText, TextError};
 pub use crate::output::Writer;
-// `schema` is re-exported wholesale rather than item by item, for the reason `ical-grammar`
+// `schema` is re-exported wholesale rather than item by item, for the reason the grammar
 // globs two of its own: the component readings arrive with the milestone that writes them, and
 // a glob keeps this file from becoming a place two separate pieces of work both have to edit.
 pub use crate::schema::*;

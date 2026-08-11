@@ -20,9 +20,11 @@
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter};
 
-use crate::budget::Meter;
-use crate::instant::Instant;
-use crate::location::Location;
+use super::{Instant, Location, Meter};
+
+// Named only by this file's tests, for the reason `budget.rs` states beside the same import.
+#[cfg(test)]
+use super::Limits;
 
 /// How much a diagnostic claims.
 ///
@@ -852,12 +854,9 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        Diagnostic, DiagnosticCode, DiagnosticSink, IgnoreDiagnostics, Severity, SinkOutcome,
-        Subject, report_diagnostic,
+        Diagnostic, DiagnosticCode, DiagnosticSink, IgnoreDiagnostics, Instant, Limits, Location,
+        Meter, Severity, SinkOutcome, Subject, report_diagnostic,
     };
-    use crate::budget::{Limits, Meter};
-    use crate::instant::Instant;
-    use crate::location::Location;
 
     #[test]
     fn every_code_has_a_distinct_stable_key() {

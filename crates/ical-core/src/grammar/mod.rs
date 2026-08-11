@@ -52,10 +52,6 @@
 //! wrote, so a `DQUOTE` written `^'` stays `^'` on the wire and is a `"` only in the decoded
 //! view. See `ROADMAP.md` and `ical-conform`.
 
-#![no_std]
-
-extern crate alloc;
-
 mod budget;
 mod caret;
 mod escape;
