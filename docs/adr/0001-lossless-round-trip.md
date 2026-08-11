@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10, 2026-08-11
+- Amended: 2026-08-10, 2026-08-11 (nine amendments)
 
 ## Context
 
@@ -97,6 +97,9 @@ in a property nothing reads survive parse, round trip, and iTIP processing with 
 raised. Byte-identical round trip and always-visible violation are in tension; we deliver the
 first fully and the second only where a caller looks. An eager parse-time sweep over text
 properties would close that gap cheaply and is a named follow-up, not a rejected idea.
+**Amendment 9 adopts that sweep and corrects two things about this sentence: the sweep is not
+a follow-up but a predicate missing from a walk that already runs, and its scope is every
+stored piece rather than text properties.**
 
 Mutation has to say what it means. Changing a `DTSTART` invalidates the preserved text for that
 property and nothing else; the API makes that boundary explicit rather than regenerating the whole
@@ -115,7 +118,8 @@ not eliminate it. It is also advisory, because running it at serialize time woul
 serialization can refuse, which contradicts this document's whole posture — so a caller who never
 asks ships the corrupt file, and no gate here can catch that. If callers turn out to skip it, the
 honest fix is a serialize path that returns diagnostics alongside bytes, and that API shape is not
-decided here.
+decided here. **Amendment 9 decides it and decides it the other way: the eager sweep is adopted
+and the serialize-diagnostics shape is rejected on the record rather than left open.**
 
 Mutation is scoped by a short-lived handle rather than a marker value: `dtstart_mut()` returns a
 guard borrowing `&mut Component` for exactly the one property its own signature names, and only a
@@ -304,4 +308,78 @@ this workspace's own decision — a type that cannot model a response one can re
 this document exists to prevent — so a path a store holds that is not UTF-8 is still written
 through, and a body carrying one is still a body a conformant peer refuses. Percent-encoding on
 the way out without decoding on the way in would break the round trip, and decoding would erase
-the difference between `%2F` and `/`. Nobody has designed the third answer.
+the difference between `%2F` and `/`. Nobody has designed the third answer. **Amendment 8
+designs it, and the price it pays is the sentence above: for one class of `href`, wire to model
+to wire is no longer the identity.**
+
+**8. The third answer exists, and this document's round trip is conditional for `DAV:href`.**
+The paragraph above named two answers that do not work and stopped. The third is neither of
+them: `ical-dav` percent-encodes on the way out per RFC 3986 section 2.1, never decodes on the
+way in, and offers the inverse as an *equivalence* rather than as a decoded byte string —
+`Href::addresses_same`, which splits both values on unencoded `/` and compares segment by
+segment with percent-decoding inside each segment and hex case folded. That is what dissolves
+the objection that killed decode-on-read: `%2F` against `/` is erased only by flattening a path
+to bytes, and RFC 3986 section 3.3 decides segment structure before percent-decoding, so an
+equivalence that respects segments never erases it. `Href::is_as_sent` answers, before a write,
+whether the octets held are the octets going out, in the same shape and for the same reason as
+`CalendarPayload::is_as_sent`.
+
+Two things about this belong in *this* register rather than in ADR 0004's. The first is that
+the transform fires on exactly the input class the byte shape exists for, so the earlier reading
+— that a conformant `href` is unaffected and the encoder therefore never runs on wire-derived
+octets — was false, and a committed case in `ical-conform` already asserted the opposite. The
+second is the consequence: `\xe9` in, `%E9` out. Wire to model to wire is byte-identical for
+every `href` that is a legal URI-reference and is *not* byte-identical for the illegal-but-real
+octets a store may hold. This is the second place in this workspace that knowingly does not
+return the octets it received, after `calendar-data`'s line endings, and it is recorded here as
+such rather than left to be discovered from ADR 0004.
+
+What it costs beyond that. The identity is restored only by a call the type does not force: a
+caller reaching for `==` where it should call `addresses_same` gets a silent wrong answer, and
+that is the direct price of not decoding on read — a stricter design would have removed
+`PartialEq` or made `Href` unusable as a map key, and both were worse. An `href` whose octets
+already carry a literal `%` followed by two hex digits is indistinguishable from one carrying an
+escape, so it goes out as an escape it never was; the ambiguity existed before the octets were
+handed in and no byte-shaped type can repair it. And because the bound applies to the emitted
+length, a value that was legal to read can be illegal to write back, as `LimitExceeded::Href` on
+a round trip that previously completed. The alternative this rejects — refusing the write, as
+ADR 0004 Amendment 7 refuses a non-UTF-8 `calendar-data` — loses on a distinction worth keeping:
+a non-conformant payload has no CalDAV representation at all, and a non-conformant path has
+exactly one, so refusal is right where the protocol has no spelling and wrong where it has one
+and this crate declined to write it.
+
+**9. `Document::parse` establishes UTF-8 validity without a caller asking, and the sweep is a
+predicate rather than a pass.** The Consequences call an eager parse-time sweep a follow-up that
+"would close that gap cheaply", which reads as a proposal for new work. The walk already runs:
+`report_piece` visits every stored value, every parameter name, every parameter value and every
+property name on every parse, and reports `ControlCharacterInText` from a scan over the same
+slice. What was missing is one arm beside it. So the posture this document records — that
+nothing establishes a violation unless a caller looks — was true of exactly one predicate in a
+channel already carrying ten others, and the asymmetry had no defense.
+
+Three things are decided with it. The predicate runs on *reassembled* pieces and never on the
+input buffer, and that placement is normative rather than incidental: across the committed
+fixtures, three files hold invalid UTF-8 before unfolding and valid UTF-8 after, because RFC
+5545 section 3.1 permits a fold between a lead octet and its continuations — an input-buffer
+sweep would report those as violations, and this document guarantees they round-trip. The scope
+is every stored piece rather than "text properties", because section 3.1.4 makes UTF-8 a
+property of the stream and `report_piece` runs before any value type is known. And
+`DiagnosticCode::InvalidUtf8Text` gets its first producer, its committed meaning restated once
+to describe the stream-level fact rather than a decode a typed view attempted — an edit ADR 0009
+forbids without a rename, exempted here only because no site constructs the code and no case
+asserts it, and the exemption closes the moment an emitter ships.
+
+The costs are real and two of them are permanent. Every parse of the CP1252 fixture this
+document exists to carry now reports a `Violation`, on a file that is in the corpus precisely
+because it must survive; `Limits` gates budget rather than predicates, so a caller who
+deliberately accepts such exports filters a code rather than declining the pass. The sweep also
+spends a caller's sink capacity on behalf of a caller who was not going to ask, and a hostile
+input can hold one such piece per line. And it does not close what this document complains
+about: mojibake that decodes as valid UTF-8 stays invisible, exactly as ADR 0009 says, so the
+tension between byte-identical round trip and always-visible violation is narrowed here and not
+resolved. Reading Amendment 9 as "the gap is closed" is reading it wrong.
+
+The alternative rejected on the record, so no backlog item reopens it: `Document::serialize`
+returning diagnostics alongside bytes. It contradicts this document's posture that serialization
+cannot refuse, changes two published names on the central type, walks the whole tree on every
+write, and has no precedent in any deployed implementation surveyed.
