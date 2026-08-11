@@ -34,14 +34,20 @@ lint:
 
 # Run the workspace suite. Nextest runs normal tests process-per-test; Cargo
 # separately runs doctests, which nextest does not currently support.
+#
+# `ical-grammar-layering` is excluded from the doctests and only from them. It compiles
+# `ical-core`'s grammar a second time, so the doc examples on those items would be compiled
+# inside a crate that declares no dependencies and would fail there. `[lib] doctest = false`
+# reads like the fix and is not one: cargo reports the member's doctests disabled and the
+# merged doctest runner runs them anyway (docs/adr/0004, amendment 17).
 test:
     cargo nextest run --workspace --all-features
-    cargo test --workspace --doc --all-features
+    cargo test --workspace --doc --all-features --exclude ical-grammar-layering
 
 # Run the complete test suite with the non-fail-fast CI profile.
 test-ci:
     cargo nextest run --profile ci --workspace --all-features
-    cargo test --workspace --doc --all-features
+    cargo test --workspace --doc --all-features --exclude ical-grammar-layering
 
 # Build public documentation with warnings denied.
 doc:
@@ -105,6 +111,7 @@ msrv:
     cargo msrv verify --path crates/ical-itip
     cargo msrv verify --path crates/ical-dav
     cargo msrv verify --path crates/ical-conform
+    cargo msrv verify --path gates/grammar-layering
     cargo msrv verify --path xtask
 
 # Fast deterministic checks used during the edit/commit loop.

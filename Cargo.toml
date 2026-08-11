@@ -11,6 +11,7 @@ members = [
   "crates/ical-itip",
   "crates/ical-dav",
   "crates/ical-conform",
+  "gates/grammar-layering",
   "xtask",
 ]
 

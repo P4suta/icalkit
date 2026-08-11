@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Not a crate. A gate: it compiles `crates/ical-core/src/grammar/` with nothing but itself in
+# scope, so that a path from the grammar into the model above it is a compile error with a file
+# and a line rather than a convention somebody remembers. It lives under `gates/` rather than
+# `crates/` because `xtask purity` partitions `crates/` and would otherwise have to carve out an
+# exception for the one member that is not a crate (docs/adr/0004).
+#
+# A literal version rather than the workspace one: nothing here is released, so this member has
+# no reason to move when the published version does.
+
+[package]
+name = "ical-grammar-layering"
+publish = false
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+# `doc = false` because these are `ical-core`'s items and documenting them twice would publish
+# a second set of pages for one API. `test = false` because without it every grammar file is
+# compiled into a second test binary: nextest runs the eighty-one grammar tests twice and
+# `cargo llvm-cov` counts every grammar region twice, which flatters the coverage number in the
+# direction nobody questions. Neither is derivable from reading this manifest, which is why both
+# are written down here (docs/adr/0004, amendment 17).
+[lib]
+doc = false
+test = false
+
+[lints]
+workspace = true
