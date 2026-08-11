@@ -24,6 +24,8 @@ homepage.workspace = true
 # The implementation this workspace supplies for the corpus to run against. A path plus a
 # version so the dependency resolves from inside this workspace rather than from a registry.
 ical-core = { path = "../ical-core", version = "0.0.0" }
+# The CalDAV layer the XML chapter of this corpus is run against.
+ical-dav = { path = "../ical-dav", version = "0.0.0" }
 # The scheduling chapter runs its cases through this crate's own gate, and supplies the state
 # they are judged against through `ScheduledComponent` rather than through a `Component`.
 ical-itip = { path = "../ical-itip", version = "0.0.0" }

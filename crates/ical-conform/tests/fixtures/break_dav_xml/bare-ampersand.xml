@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:" xmlns:X="urn:x:vendor"><D:response><D:href>/calendars/ann/work/1.ics</D:href><D:propstat><D:prop><X:note><X:mark/>a &amp; b; c</X:note></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>

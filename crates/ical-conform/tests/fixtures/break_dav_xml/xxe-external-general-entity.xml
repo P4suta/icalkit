@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><!DOCTYPE D:multistatus [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><D:multistatus xmlns:D="DAV:"><D:response><D:href>&xxe;</D:href></D:response></D:multistatus>

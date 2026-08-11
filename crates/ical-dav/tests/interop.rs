@@ -567,3 +567,155 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .filter(|window| *window == needle)
         .count()
 }
+
+// -------------------------------------------------------------------------------------------
+// The fields the conformance attack added, driven through both halves the same way.
+// -------------------------------------------------------------------------------------------
+
+/// A precondition inside one property group stays inside that group, both ways.
+///
+/// RFC 4918 section 14.22's grammar is `propstat (prop, status, error?, responsedescription?)`.
+/// Two groups naming two different conditions have said two different things about two
+/// different properties, and a client asking "why was `calendar-data` refused" has to read the
+/// one that belongs to that group.
+#[test]
+fn a_precondition_stays_in_the_property_group_that_named_it() {
+    let limits = Limits::DEFAULT;
+    let mut meter = Meter::new(limits);
+    let mut refused = PropStat::new(Status::FORBIDDEN, limits);
+    refused
+        .push(
+            DavProperty {
+                name: PropName::Known(ElementName::CalendarData),
+                value: PropValue::Empty,
+            },
+            &mut meter,
+        )
+        .expect("one property");
+    let mut named = ical_dav::ErrorBody::new(limits);
+    named
+        .push(
+            PropName::Known(ElementName::SupportedCalendarData),
+            &mut meter,
+        )
+        .expect("one condition");
+    refused.error = Some(named);
+
+    let mut missing = PropStat::new(Status::NOT_FOUND, limits);
+    missing
+        .push(
+            DavProperty {
+                name: PropName::Known(ElementName::Displayname),
+                value: PropValue::Empty,
+            },
+            &mut meter,
+        )
+        .expect("one property");
+    let mut other = ical_dav::ErrorBody::new(limits);
+    other
+        .push(PropName::Known(ElementName::SupportedFilter), &mut meter)
+        .expect("one condition");
+    missing.error = Some(other);
+
+    let mut response = DavResponse::with_propstats(href(b"/c/1.ics").expect("an href"), limits);
+    response
+        .push_propstat(refused, &mut meter)
+        .expect("a group");
+    response
+        .push_propstat(missing, &mut meter)
+        .expect("a group");
+    let mut built = MultiStatus::new(limits);
+    built.push(response, &mut meter).expect("a response");
+
+    let wire = encode(&built, limits).expect("the body encodes");
+    let (read, _) = read_multistatus(&wire, limits).expect("the body reads");
+    assert_eq!(read, built);
+    // And the two conditions did not end up in one bag on the response.
+    assert!(
+        read.responses()
+            .first()
+            .and_then(|one| one.error.as_ref())
+            .is_none()
+    );
+}
+
+/// RFC 4791 section 9.5's three property shapes and its `timezone`, both directions.
+#[test]
+fn a_query_keeps_the_shape_it_asked_with_and_the_zone_it_stated() {
+    let limits = Limits::DEFAULT;
+    let mut meter = Meter::new(limits);
+    let zone = b"BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nTZID:America/New_York\r\n\
+END:VTIMEZONE\r\nEND:VCALENDAR\r\n"
+        .as_slice();
+    for shape in [
+        ical_dav::QueryShape::Named,
+        ical_dav::QueryShape::AllProp,
+        ical_dav::QueryShape::Names,
+    ] {
+        let mut query = CalendarQuery::new(limits);
+        query.shape = shape;
+        query.filter = Some(CompFilter::new(b"VCALENDAR", limits, &mut meter).expect("a filter"));
+        query.timezone =
+            Some(CalendarPayload::from_octets(zone, limits, &mut meter).expect("a zone"));
+        let wire = encode(&query, limits).expect("the query encodes");
+        assert_eq!(
+            read_request(&wire, limits),
+            Ok(RequestBody::CalendarQuery(query.clone())),
+            "{shape:?}: {}",
+            String::from_utf8_lossy(&wire)
+        );
+        // The zone's own line endings are its content, exactly as `calendar-data`'s are.
+        let RequestBody::CalendarQuery(read) = read_request(&wire, limits).expect("it reads")
+        else {
+            panic!("a calendar-query");
+        };
+        let carried = read.timezone.as_ref().expect("the zone");
+        assert_eq!(carried.as_bytes(), zone);
+        assert!(carried.is_as_sent());
+    }
+}
+
+/// A property whose value is a peer's own elements survives a proxy, and one whose value is
+/// text leaves as text.
+///
+/// The two halves of the split `PropValue::Unmodeled` used to be one field: a peer writing
+/// `&lt;D:href&gt;…&lt;/D:href&gt;` as a *string* got a real `DAV:href` element in the body a
+/// proxying server emitted.
+#[test]
+fn a_kept_value_leaves_as_the_kind_of_thing_it_arrived_as() {
+    let limits = Limits::DEFAULT;
+    let mut meter = Meter::new(limits);
+    let vendor =
+        ical_dav::ExtensionName::new(b"urn:x:vendor", b"note", &mut meter).expect("a vendor name");
+    let mut group = PropStat::new(Status::OK, limits);
+    group
+        .push(
+            DavProperty {
+                name: PropName::Extension(vendor),
+                value: PropValue::Unmodeled(
+                    b"<D:href>/private/secret.ics</D:href>".to_vec().into(),
+                ),
+            },
+            &mut meter,
+        )
+        .expect("one property");
+    let mut response = DavResponse::with_propstats(href(b"/c/").expect("an href"), limits);
+    group_into(&mut response, group, &mut meter);
+    let mut built = MultiStatus::new(limits);
+    built.push(response, &mut meter).expect("a response");
+
+    let wire = encode(&built, limits).expect("the body encodes");
+    assert!(
+        find(&wire, b"<D:href>/private/secret.ics</D:href>").is_none(),
+        "text a peer escaped became markup: {}",
+        String::from_utf8_lossy(&wire)
+    );
+    let (read, _) = read_multistatus(&wire, limits).expect("the body reads");
+    assert_eq!(read, built, "{}", String::from_utf8_lossy(&wire));
+}
+
+/// Push one group into a response, since three cases above do the same two lines.
+fn group_into(response: &mut DavResponse, group: PropStat, meter: &mut Meter) {
+    let pushed = response.push_propstat(group, meter);
+    assert!(pushed.is_ok(), "one group is within bounds: {pushed:?}");
+}

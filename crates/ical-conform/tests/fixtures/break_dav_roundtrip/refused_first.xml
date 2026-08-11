@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+ <d:response>
+  <d:href>/calendars/ann/work/1.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <cal:calendar-data/>
+    <d:displayname/>
+   </d:prop>
+   <d:status>HTTP/1.1 403 Forbidden</d:status>
+  </d:propstat>
+  <d:propstat>
+   <d:prop>
+    <cal:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Corp.//CalDAV Client//EN
+BEGIN:VEVENT
+UID:1@example.invalid
+DTSTAMP:20260101T000000Z
+DTSTART:20260105T090000Z
+SUMMARY:first
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+</d:multistatus>

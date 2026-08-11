@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Corp.//CalDAV Client//EN
+BEGIN:VEVENT
+UID:2@example.invalid
+DTSTAMP:20260101T000000Z
+DTSTART:20260105T090000Z
+SUMMARY:second with a summary long enough that the exporter folded i
+ t here
+END:VEVENT
+END:VCALENDAR

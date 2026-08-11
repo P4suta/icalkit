@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+ <d:response>
+  <d:href>/calendars/ann/work/1.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;5f2b8c1e9a04&quot;</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR&#13;
+VERSION:2.0&#13;
+PRODID:-//Example Corp.//CalDAV Client//EN&#13;
+BEGIN:VEVENT&#13;
+UID:1@example.invalid&#13;
+DTSTAMP:20260101T000000Z&#13;
+DTSTART:20260105T090000Z&#13;
+SUMMARY:Weekly sync with a summary long enough that the exporter folded i&#13;
+ t here&#13;
+END:VEVENT&#13;
+END:VCALENDAR&#13;
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+</d:multistatus>

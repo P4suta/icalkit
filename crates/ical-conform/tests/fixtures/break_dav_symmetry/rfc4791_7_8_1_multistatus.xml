@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<D:multistatus xmlns:D="DAV:"
+               xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>http://cal.example.com/bernard/work/abcd2.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"fffff-abcd2"</D:getetag>
+        <C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Corp.//CalDAV Client//EN
+BEGIN:VEVENT
+UID:74855313FA803DA593CD579A@example.com
+DTSTAMP:20060206T001121Z
+DTSTART:20060102T100000Z
+DURATION:PT1H
+SUMMARY:Event #2 bis: a summary long enough that an exporter folds it acro
+ ss two content lines
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>http://cal.example.com/bernard/work/abcd3.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"fffff-abcd3"</D:getetag>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data/>
+      </D:prop>
+      <D:status>HTTP/1.1 403 Forbidden</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>http://cal.example.com/bernard/work/gone.ics</D:href>
+    <D:status>HTTP/1.1 404 Not Found</D:status>
+  </D:response>
+</D:multistatus>

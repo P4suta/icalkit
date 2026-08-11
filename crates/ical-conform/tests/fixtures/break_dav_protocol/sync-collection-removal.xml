@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/calendars/ann/work/1.ics</D:href>
+    <D:status>HTTP/1.1 404 Not Found</D:status>
+  </D:response>
+  <D:response>
+    <D:href>/calendars/ann/work/2.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"33-a"</D:getetag>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:sync-token>http://sabre.io/ns/sync/17</D:sync-token>
+</D:multistatus>
