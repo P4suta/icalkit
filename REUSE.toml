@@ -12,8 +12,18 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
+# Fixtures carry no inline header. An `.ics` file has nowhere to put one — RFC 5545 gives the
+# format no comment syntax — and a header written into one would change the octets the
+# round-trip claim of docs/adr/0001 is stated over. `aggregate` rather than `override`: the
+# specification makes `override` ignore every statement closer to the file, including the
+# `.license` sidecar that is REUSE's own answer for a format with no comments, so an override
+# is a claim nothing in this tree can correct. Every fixture here was written for this
+# repository and the declaration is true of all of them; it stays correctable for the day one
+# of them is a calendar somebody else exported. Whether such a file should then be declared
+# here at all, or left to say its own name under `closest`, is a question for whoever records
+# fixture provenance.
 [[annotations]]
 path = ["**/tests/fixtures/**"]
-precedence = "override"
+precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
