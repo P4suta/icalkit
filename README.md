@@ -3,8 +3,13 @@
 A pure-Rust calendaring stack: iCalendar (RFC 5545), recurrence, time zones, iTIP
 scheduling (RFC 5546), and CalDAV (RFC 4791).
 
-> **Status: bootstrap.** The workspace, quality gates, and architectural decisions are in
-> place. Nothing is implemented yet. See [ROADMAP.md](ROADMAP.md).
+> **Status: the stack is implemented and unreleased.** Round trip, recurrence, time zones,
+> scheduling and CalDAV are landed and tested together; nothing has been published to
+> crates.io and no public API is stable yet. Writing a **client** on top of this is a
+> reasonable thing to attempt today — you bring the HTTP client, which is deliberate. Writing
+> a **server** still needs the filter engine and the ACL vocabulary this workspace does not
+> contain; [ROADMAP.md](ROADMAP.md) says exactly what is missing rather than leaving it to be
+> discovered.
 
 ## Why this exists
 
@@ -20,7 +25,8 @@ carries a warning about untrusted input, and **pure-Rust CalDAV does not exist**
 `xandikos` crate is a PyO3 wrapper around a Python server, last published in 2023).
 
 The practical consequence is that writing a calendar application in Rust is not a
-reasonable thing to attempt today.
+reasonable thing to attempt today — which is the gap this workspace is closing, and the
+sentence it intends to make false rather than the one it repeats.
 
 ## What makes this hard, and therefore worth doing carefully
 

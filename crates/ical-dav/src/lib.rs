@@ -54,11 +54,31 @@
 //!
 //! # Status
 //!
-//! The shared foundation is landed and tested: the failure channels, the byte sinks, the
-//! element vocabulary, the bounded collection, the character-data rules that resolve the
-//! line-ending collision, the protocol values, the request and response shapes, and the four
-//! codec traits. The tokenizer, the element writer, the per-body readers and writers, and the
-//! conditional-write binding are the units built on top of it; see `ROADMAP.md` (M4).
+//! Landed and tested, and the milestone it belongs to is met. Every body RFC 4791 defines
+//! reads and writes from both ends over [`XmlReader`], which is this crate's own tokenizer and
+//! has no dependency: [`RequestBody`] for the five request roots and the filter tree beneath
+//! them, [`MultiStatusReader`] and [`MultiStatusWriter`] for the multistatus one response at a
+//! time, [`MultiStatus`] as one consumer of each rather than a second implementation beside
+//! them, [`XmlWriter`] as the element writer whose open-element stack makes an unbalanced
+//! document unrepresentable, and [`Revision`] for the conditional write that makes a second
+//! turn land on the revision the first turn read. `tests/interop.rs` drives the two halves
+//! through each other rather than each against a stand-in.
+//!
+//! **What this crate does not do, and a server needs.** Nothing here evaluates a filter: a
+//! `comp-filter`, a `time-range` and a `text-match` are represented and handed back, and
+//! deciding which resources match is work a server does by composing them with `ical-recur`
+//! and `ical-core`. The vocabulary is CalDAV's and stops there — `MKCALENDAR` has a request
+//! body and no row, RFC 3744's ACL vocabulary is absent, and so are `DAV:expand-property` and
+//! `DAV:principal-property-search`. Two gaps sit inside what *is* modeled: `CALDAV:timezone`
+//! (the inline `VTIMEZONE` a `calendar-query` may carry, RFC 4791 section 9.5) has no row, so
+//! under the default [`UnknownPolicy`] a server silently ignores a timezone the client stated
+//! and a floating-time `time-range` then matches different events; and `DAV:allprop` and
+//! `DAV:propname` inside a `calendar-query` are refused rather than read, because
+//! [`CalendarQuery`]'s `props` field cannot express either. RFC 6638's preconditions and tags
+//! are modeled and the POST to a scheduling outbox is not.
+//!
+//! This crate is not RFC-4791-complete and nothing here entitles anyone to say it is. See
+//! `ROADMAP.md` (M4) and `docs/design/ical-dav-api.md`.
 
 #![no_std]
 
@@ -82,10 +102,10 @@ mod write_request;
 mod write_response;
 mod writer;
 
-// The seven units built on the foundation above. Each creates exactly one file, declares it
-// here, and adds its own line to the re-export block at the end; nothing else in this file is
-// a shared edit. The files are absent rather than present and empty because `cargo shear`
-// refuses a module with no items, and a placeholder item to satisfy it would be padding.
+// The seven modules above that are not the shared foundation, and what each owns. They were
+// written concurrently against the frozen surface and integrated in one pass, which is why
+// each is one file with no overlap; the notes stay because they are the division of labor a
+// reader needs to know before changing one of them.
 //
 // `reader.rs`         `XmlPull` over one body: an iterative state machine with an explicit
 //                     stack, the scoped prefix-binding stack `Namespace` resolution needs

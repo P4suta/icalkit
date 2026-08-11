@@ -488,3 +488,80 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   floating or UTC series, and `max_absolute_shift` says outright that the seconds it counts are
   elapsed ones and names `ical_tz::extra_widening` as what a zoned caller adds. The crate graph
   is unchanged; `ical-recur` still has no zone and `just purity` still says so.
+- `ical-dav` builds and interprets every body RFC 4791 defines, from both ends, with no
+  transport and no XML dependency. `RequestBody::read` answers which of the five request roots
+  a server was handed — a fact about the octets rather than about the HTTP method, since
+  `REPORT` carries three of them — and `WriteXml` writes each one back out of the same fields.
+  `MultiStatusReader` and `MultiStatusWriter` carry a multistatus one `DavResponse` at a time,
+  with the owned `MultiStatus` as one consumer of each rather than a second implementation
+  beside them, so a server enumerating forty thousand resources and a client holding one
+  collection run the same code.
+- `XmlReader`, this crate's own tokenizer, refusing by class rather than by budget: no
+  `DOCTYPE` in any casing, which closes the billion laughs and the internal, external and
+  file-pointing entity together; no processing instruction, no encoding but UTF-8, no unbound
+  prefix, no mismatched tag, no duplicate attribute, no `<` inside an attribute value. It is
+  iterative with an explicit stack, so a hundred-thousand-deep body meets
+  `LimitExceeded::Depth` rather than a stack overflow, and namespace bindings are charged as
+  they are declared and released as their elements close. Every lookup is a resolved
+  `(namespace, local name)`: `SabreDAV`'s `d:`/`cal:`, Radicale's `ns0:`/`ns1:` and Calendar
+  Server's default `DAV:` declaration read to one value, and a familiar `D:` bound to a
+  namespace of an attacker's choosing reads as foreign.
+- `XmlWriter`, whose open-element stack makes an unbalanced document unrepresentable rather
+  than merely unlikely: `close` writes the tag the stack names and not one a call site does,
+  `finish` closes whatever is still open, `attribute` refuses `xmlns` and `xmlns:*` so a fixed
+  prefix cannot be rebound to mean something else, and no door emits a `CDATA` section.
+- The line-ending collision between ADR 0001 and XML 1.0 section 2.11, resolved in both
+  documents' own registers rather than in a commit message. Inside `CALDAV:calendar-data` and
+  nowhere else the reader hands back the octets as they arrived, so what reaches
+  `Document::parse` from a multistatus is what the server sent; for that one element it is
+  deliberately not a conformant XML processor, and must never be used to canonicalize or verify
+  signed XML. The writer needs no departure at all — a `CR` leaves as `&#13;` — so anything
+  this crate writes is recoverable by any parser. `TextPolicy::Normalized` restores conformance
+  at runtime rather than behind a feature flag, because a feature is unified across a
+  dependency graph and one crate could otherwise change how another's calendars parse; every
+  payload it costs a `CR` reports `dav-calendar-data-line-endings-folded`, and
+  `CalendarPayload::is_as_sent` is how a caller about to write the payload back finds out which
+  it holds.
+- `Revision` and `Precondition`, which close what M3 filed as "ADR 0004 territory and
+  undesigned": what a read learned about one resource — presence, `ETag`, `schedule-tag`, sync
+  token — and the conditional write that makes a second turn land on that revision or be
+  refused by the server. Presence is three-valued because only `404` and `410` assert an
+  absence and reading a `403` as one is how a client creates a second copy of an event it was
+  merely not allowed to see. A weak `ETag` yields no precondition rather than an `If-Match` no
+  server can satisfy or an `If-Match: *` that means something else. Sync tokens are carried and
+  never parsed or ordered, and `Revision` refuses `Ord` for that reason.
+- Two injection vectors closed on the writing side. A `PropValue::Unmodeled` is written
+  verbatim — that is the losslessness claim — but only past a filter that refuses unbalanced
+  tags, `<!` and `<?`, an unterminated `&` and nesting past the remaining depth budget, with
+  quote-aware tag termination so a `>` inside an attribute value is not miscounted. An
+  extension's local name is validated as an ASCII NCName, because a name cannot be escaped: a
+  peer's property called `x/><D:href>/evil</D:href>` is not written differently, it is not
+  written at all.
+- Four `Limits` dimensions and seven diagnostic codes in `ical-grammar`, including the one
+  ADR 0010 predicted would be missing: `max_prefix_bindings`, since a namespace declaration is
+  charged by no depth counter and no element count, and one element at depth one can carry a
+  thousand of them.
+- `DavError::Foreign`, `ValueError::AttributeMissing` and `ValueError::AttributeValue`. Three
+  units independently reached for `Syntax(Malformed)` to report a well-formed body carrying a
+  vendor element or a `negate-condition` outside `(yes | no)`, which tells an operator reading
+  logs that the peer sent something that is not XML. It did not.
+- `crates/ical-dav/tests/interop.rs`, which drives the two halves through each other rather
+  than each against a stand-in: every request body written and read back through the shipped
+  tokenizer, the three real-server fixtures read and re-encoded and read again, the streaming
+  and owned multistatus encoders asserted to emit identical octets, and the one input where
+  `encode -> decode` is idempotent rather than the identity stated as such — a `PropRequest`
+  naming `calendar-data` twice converges on the one spelling RFC 4791 section 9.6 admits.
+- ADR 0004 carries four amendments and ADR 0001 a sixth. The first reverses the DP-14 paragraph
+  that had chosen the conformant read, having gone back to XML 1.0 section 2.11 and RFC 4791
+  section 9.6 rather than to the earlier reading of them; the fourth names the four limit
+  dimensions; the third states the header boundary — which headers are protocol semantics and
+  which are the transport's — that the ADR had left to be discovered. ADR 0001's amendment is
+  the boundary the resolution does not reach: section 9.6 lets a server omit the `CR`, so "the
+  octets this workspace was handed" is not always "the octets the producer wrote", and that gap
+  is the protocol's rather than this workspace's.
+- `docs/design/ical-dav-api.md` gains "What the units landed, and where this document was
+  wrong": nine corrections, including a `MultiStatusReader::new` that took a body and a
+  `Limits` and takes neither, a `ResponseSource` signature inconsistent with `ReadXml` inside
+  one code fence, a call to an `ical-core` function that does not exist, and a promised
+  `tests/adversarial.rs` that was not written — with each attack it was to carry named against
+  the test that does assert it.

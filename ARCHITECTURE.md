@@ -98,15 +98,22 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 
 ## Crate boundaries
 
-| Crate | Depends on | std | alloc | Reads a clock |
-| --- | --- | --- | --- | --- |
-| `ical-grammar` | — | no | yes | no |
-| `ical-core` | `ical-grammar` | no | yes | no |
-| `ical-recur` | `ical-core` | no | yes | no |
-| `ical-tz` | `ical-core` | no | yes | no |
-| `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no |
-| `ical-dav` | `ical-core` | no | yes | no |
-| `ical-conform` | all of the above | yes | yes | no |
+| Crate | Depends on | std | alloc | Reads a clock | State |
+| --- | --- | --- | --- | --- | --- |
+| `ical-grammar` | — | no | yes | no | landed (M0) |
+| `ical-core` | `ical-grammar` | no | yes | no | landed (M0) |
+| `ical-recur` | `ical-core` | no | yes | no | landed (M1) |
+| `ical-tz` | `ical-core` | no | yes | no | landed (M2) |
+| `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no | landed (M3) |
+| `ical-dav` | `ical-core` | no | yes | no | landed (M4) |
+| `ical-conform` | all of the above | yes | yes | no | grows with each milestone (M5) |
+
+"State" is the milestone whose gates the crate met, not a stability claim: nothing is
+published and no public API is frozen. What each landed crate does **not** do is in its own
+`# Status` section and in `ROADMAP.md`, which are the two places that stay honest about it.
+`ical-dav` depends on `ical-core` and on nothing else — `just purity` rejects every declared
+dependency of a core crate including dev-dependencies, so the hand-rolled XML tokenizer ADR
+0004 chose is a gate rather than an intention.
 
 "Reads a clock" is a column because a calendar library that quietly asks the OS for the
 current time is untestable: the answer to "is this event in the past" must come from an

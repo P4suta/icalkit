@@ -166,13 +166,13 @@ pub trait WriteXml {
         -> Result<(), DavError>;
 }
 pub trait ResponseSource {
-    fn next_response(&mut self, limits: &Limits, meter: &mut Meter,
-                     sink: &mut dyn DiagnosticSink) -> Result<Option<DavResponse>, DavError>;
+    fn next_response(&mut self, context: &mut DecodeContext<'_>)
+        -> Result<Option<DavResponse>, DavError>;
     fn sync_token(&self) -> Option<&[u8]>;
 }
-pub struct MultiStatusReader<'a> { /* private */ }
-impl<'a> MultiStatusReader<'a> {
-    pub fn new(body: &'a [u8], limits: &Limits) -> Result<Self, DavError>;
+pub struct MultiStatusReader<'body, 'pull> { /* private */ }
+impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
+    pub fn new(events: &'pull mut dyn XmlPull<'body>) -> Self;
 }
 ```
 
@@ -568,3 +568,207 @@ is the name the workspace kept for the acceptance-or-refusal answer that
 
 `Limits` is taken by value here, not by reference; see the corresponding section of the
 `ical-core` design document for why, and for the lint that decided it.
+
+## What M4's freeze changed
+
+The foundation is landed and compiled, and five things this document left to the implementer
+are now decided. None of them costs a signature above; three of them are corrections.
+
+**The line-ending carve-out is the same decision and a better-argued one, and it now carries a
+witness.** This document reached the verbatim carve-out from XML 1.0 section 2.11 alone.
+Section 9.6 of RFC 4791 turns out to speak to it directly — "the CR character ... MAY be
+omitted in calendar object resources specified in the CALDAV:calendar-data XML element" —
+which means CalDAV never promised octet fidelity through this element and a server that folds
+is conformant. The carve-out survives that reading intact, because what it prevents is not the
+server's permitted omission but a *client* rewriting a resource it received whole. What the
+reading adds is that the loss is invisible in the octets afterwards, so `CalendarPayload`
+carries a `LineEndings` beside them and `is_as_sent()` answers the question a caller writing
+the payload back has. `TextPolicy::Verbatim` is the default and `TextPolicy::Normalized` is the
+conformant read, which reports `DiagnosticCode::DavCalendarDataLineEndingsFolded` on every
+payload it costs a `CR`. The whole argument, and the reversal of the paragraph in ADR 0004 that
+had chosen the other answer, is Amendment 1 of that ADR.
+
+**References are resolved inside the verbatim element, and that is what makes it one rule.**
+This document said `TextPolicy::Verbatim` "hands back the octets as they arrived" without
+saying what happens to a `&#13;`. It is resolved: a reference is markup rather than a line
+break, section 2.11 never reaches it, and resolving it is what makes Calendar Server's
+`&#13;&#10;` and Radicale's literal `CRLF` arrive as the same two octets. Without that, the
+carve-out would be a second dialect rather than a scoped departure.
+
+**`ElementSpec` lost `written_name`, and `Namespace` grew `write_prefix`.** A prefixed name
+cannot be a `&'static str` without either allocating or storing every row twice, and the writer
+emits the prefix and the local name separately anyway. `Namespace::CalendarServer` is a third
+row — `http://calendarserver.org/ns/` — because `getctag` is the property every deployed client
+polls a collection with, and a table without it leaves a real `PROPFIND` response two thirds
+skipped.
+
+**`Bounded<T>` carries the dimension a refusal names.** `Bounded::with_cap(cap, dimension)`
+rather than `with_cap(cap)`, so a full property list answers `LimitExceeded::Properties` and a
+full response list answers `LimitExceeded::Responses`. "Some bound was crossed" is not a number
+any caller can raise, which is the argument ADR 0010 makes for naming dimensions at all.
+
+**`Limits` grew the four dimensions ADR 0010 predicted and this document listed under other
+names.** `max_responses`, `max_props_per_response`, `max_xml_text_bytes` and
+`max_prefix_bindings` are fields of `ical_core::Limits`, not of a second type;
+`max_body_bytes` is the existing `max_response_bytes` and `max_text_bytes` is
+`max_xml_text_bytes`. `max_responses` is one number for the `href`s a multiget asks for and the
+responses that answer them, because a policy admitting the first and refusing the second
+describes an exchange nobody can complete.
+
+**The header boundary is stated on `value.rs` and in ADR 0004's Amendment 3.** Protocol
+semantics are modeled as values — `Precondition` for `If-Match`/`If-None-Match`, `Depth`,
+`Prefer`, `ETag`, `SyncToken` — and the transport is modeled nowhere. Rendering writes a header
+*value*, never a name and never a terminator.
+
+## What M4's freeze left to the units, and what it deliberately did not close
+
+Six things M3 handed to this milestone, answered where this layer can answer them:
+
+**Where a server keeps the per-attendee reply timestamp** is not a `DAV:` question and stays
+outside this crate: `ANSWERED_AT` is an iCalendar parameter and a store's column is the store's.
+What M4 supplies is the retrieval shape a store implements `attendee_answered_at` out of, and
+the observation that `X-CALENDARSERVER-DTSTAMP` is a `CalendarServer` spelling of a related
+fact rather than the same one — reading it as `ANSWERED_AT` would be an interop guess, and this
+crate makes none.
+
+**Freshness** is unit 7. `Revision` binds what a caller read — an `ETag`, a `schedule-tag`, a
+sync token — into the `Precondition` a conditional write must carry, so the second turn of a
+propose-and-confirm flow lands on the revision the first turn read or is refused by the server.
+That is the honest closure: the freshness a caller gets is the freshness the *server* enforces
+when it compares the `If-Match`, and nothing this crate holds is authority of its own.
+
+**Who the authenticated principal is** is answered by the vocabulary rather than by a check:
+`DAV:current-user-principal` is what the server says the caller is, and
+`CALDAV:calendar-user-address-set` is the join from that `href` to the `CAL-ADDRESS` an
+`ORGANIZER` line is written with. Without both, a principal and a `mailto:` are two identifiers
+nothing connects, which is where a caller ends up handing the scheduling gate an actor it took
+from an unverified header.
+
+**An `ORGANIZER` change on write** gets its refusal modeled:
+`CALDAV:allowed-organizer-scheduling-object-change` and the three preconditions beside it in
+RFC 6638 section 3.2.1 are rows of the table and travel in `ErrorBody`. The comparison itself
+belongs to a server holding both copies, which this crate is not.
+
+**`RANGE=THISANDFUTURE`** stays unimplemented and is not this crate's to implement. What M4
+supplies is the only thing this layer can: `calendar-multiget` and `calendar-query` are how a
+caller gets more than one component at a time, which is the precondition the splitting work has
+been waiting on.
+
+**Whether a CalDAV store implements `ScheduledComponent` over its own rows** is answered:
+build the `ical_core::Component`. The store already holds the octets — `calendar-data` is what
+it stores and what it must hand back byte for byte — and the seventeen methods read `ORGANIZER`,
+`ATTENDEE`, `SEQUENCE` and `DTSTAMP`, every one of which must agree with those octets or the
+copy it serves and the copy it judges are different calendars. Columns for them would be a
+second source of truth for a claim the first one already carries.
+
+## How the remaining work splits
+
+Seven units, one file each, no overlap. Each declares its own module in `lib.rs` and appends
+its own line to the re-export block at the end of that file; nothing else in `lib.rs` is a
+shared edit, and the contract for every one of them is written into `lib.rs` beside where the
+declaration goes.
+
+| unit | file | what it closes |
+| --- | --- | --- |
+| 1 | `crates/ical-dav/src/reader.rs` | `XmlPull` over one body; the refusal list; the prefix-binding stack and its charge |
+| 2 | `crates/ical-dav/src/writer.rs` | the element writer; the fixed output prefixes; conformant escaping on every door |
+| 3 | `crates/ical-dav/src/read_request.rs` | `ReadXml` for the five request bodies and the filter tree — the server direction |
+| 4 | `crates/ical-dav/src/write_request.rs` | `WriteXml` for the same — the client direction, and the `time-range` instant spelling |
+| 5 | `crates/ical-dav/src/read_response.rs` | `MultiStatusReader`, `ResponseSource`, per-property status, the payload witness |
+| 6 | `crates/ical-dav/src/write_response.rs` | `WriteXml` for the multistatus, and the incremental encoder beside it |
+| 7 | `crates/ical-dav/src/freshness.rs` | `Revision`, and the binding from what was read to the `If-Match` a write carries |
+
+Two test files sit above them and belong to no unit's file: `tests/adversarial.rs` for the
+hostile-input corpus `SECURITY.md` names — a `DOCTYPE`, a parameter entity, the billion laughs,
+a thousand-deep nesting, a namespace prefix rebound mid-document, a default declaration that
+changes what an unprefixed element means — and `tests/interop.rs` for the recorded exchanges,
+asserting that a body this crate writes is a body this crate reads back to the same value in
+both directions. `tests/calendar_data_collision.rs` is already landed and is frozen with the
+foundation, because it is the evidence for a decision rather than a test of a unit.
+
+## What the units landed, and where this document was wrong
+
+The seven units are landed, compiled and tested together. Nine things this document said are
+corrected here rather than quietly left standing, because a design document that survives its
+own implementation unamended is one nobody checked.
+
+**`MultiStatusReader::new` does not take a body.** This document wrote
+`new(body: &[u8], limits: &Limits) -> Result<Self, DavError>`; the signature above is now
+`new(events: &'pull mut dyn XmlPull<'body>) -> Self`, for two reasons the unit found and this
+document had not. The body belongs to the tokenizer, so constructing one inside the reader
+would weld the DAV grammar to one tokenizer and leave the grammar untestable without it. And
+`Limits` must not be captured at construction: `next_response` already carries the caller's
+`DecodeContext`, and a source holding a policy from its first body would read its second under
+the first body's ledger, which is the aggregate mistake ADR 0010 exists to prevent. It also
+matches the precedent one layer up, where `MultiStatus::read` takes `&mut dyn ResponseSource`.
+
+**`ResponseSource::next_response` takes a `DecodeContext`, not three arguments.** The block
+above had it taking `limits`, `meter` and `sink` separately while `ReadXml` in the same block
+already took the bundle — an inconsistency inside one code fence. Corrected above.
+
+**`ical_core::utc_date_time_bytes` does not exist.** This document said `write_range` would
+call it. Unit 4 renders a `time-range` bound through `CivilDateTime::from_instant` and
+`DateTimeValue::Utc(..).encode_value` instead — `ical-core`'s own civil arithmetic and its own
+`YYYYMMDDTHHMMSSZ` encoder rather than a second one in this crate — behind a private helper of
+the same name, which is the only site that moves if the function is ever promoted. What this
+document got right is the refusal: an instant outside the four digits RFC 5545 section 3.3.4
+writes is `ValueError::TimeUnrepresentable` and is never clamped to one that fits.
+
+**A diagnostic from this crate carries an offset and no line number.** This document said the
+`report` helper "fills the line number in as zero". It does not: `Location::at_offset` states
+an offset and states nothing else, because a zero in a line field is a claim about line one
+rather than an absence of a claim, and an XML body has no content lines to number.
+
+**`tests/adversarial.rs` was not written, and every attack it was to carry is asserted.** The
+corpus this document scheduled into its own file lives in `reader.rs`'s test module instead,
+which is where the refusals it exercises are defined.
+`entity_expansion_is_refused_where_it_would_be_declared` covers the `DOCTYPE`, the internal and
+external parameter entity, the billion laughs and an undeclared general entity;
+`what_this_reader_does_not_implement_is_refused_under_its_own_name` covers the processing
+instruction and the non-UTF-8 encoding;
+`the_bounds_a_body_s_length_never_reaches_are_charged` meets a thousand-deep nesting and a
+thousand live prefix bindings at `LimitExceeded::Depth` and `LimitExceeded::PrefixBindings`
+rather than at a stack overflow; and the prefix rebound mid-document, the default declaration
+that changes what an unprefixed element means, and a familiar `D:` bound to a hostile URI each
+have a test of their own. Moving them into a black-box file would test the same refusals
+through one more layer; leaving this paragraph out would have left a promised file missing.
+
+**`tests/interop.rs` is written and asserts more than this document asked of it.** Beyond the
+recorded exchanges in both directions, it pins three things no unit could: that the streaming
+multistatus encoder and the owned one emit identical octets, that `XmlWriter`'s output is read
+by `XmlReader`, and that a `PropRequest` naming `calendar-data` twice converges on the one
+spelling RFC 4791 section 9.6's grammar admits — an idempotence rather than an identity, which
+this document had not noticed was possible.
+
+**`DavError` and `ValueError` each grew what three units reached for and could not name.**
+`DavError::Foreign` is an element outside the closed vocabulary refused under
+`UnknownPolicy::Reject`, or a foreign root, or a foreign element where skipping is not an
+option. It carries nothing, because the element's spelling lives in a body the error outlives
+and the whole point of a foreign element is that it has no `ElementName` row. `ValueError`
+gained `AttributeMissing` and `AttributeValue` for a `name` a filter did not carry and a
+`negate-condition` outside `(yes | no)`. Without these three, a well-formed body carrying a
+vendor extension was reported as `Syntax(Malformed)` — a claim that the peer sent something
+that is not XML, which is false and which an operator reading logs would act on.
+
+**The public surface gained seven names this document did not list.** `XmlReader`,
+`XmlWriter`, `RequestBody`, `MultiStatusReader`, `MultiStatusWriter`, `Revision` and
+`write_utc_date_time`, plus `Presence`, `UNREADABLE_STATUS`, `IF_SCHEDULE_TAG_MATCH`,
+`write_depth_value` and `write_prefer_value`. `RequestBody` is the one that changes the shape
+of the layer rather than naming a unit's type: `ReadXml` starts at an element the caller has
+already opened, so nothing implementing it can answer "which of the five bodies is this", and a
+server holding octets and an HTTP method needs exactly that answer — `REPORT` carries three of
+the five. It is also the only place `DavError::Unsupported` can fire for a whole body, which is
+what makes a build without `sync-collection` refuse an RFC 6578 `REPORT` rather than answer it
+with a full enumeration and let the client believe it had synchronized.
+
+**Two body encoders in this crate do not go through `XmlWriter`, and that is unresolved rather
+than decided.** `write_request.rs` and `write_response.rs` each carry a private element encoder,
+because both units were written before `writer.rs` existed and its API shape was not knowable
+from the frozen surface. All three share the one escaping path — `write_escaped_text` and
+`write_escaped_attribute` are the foundation's — and `tests/interop.rs` holds all three to the
+same tokenizer, so they cannot drift silently. What the two private encoders do not have is
+`XmlWriter`'s open-element stack, which makes an unbalanced write unrepresentable rather than
+merely absent. Collapsing them onto it is mechanical except for one real obstacle:
+`XmlWriter::new(out, meter)` borrows the meter for the writer's whole lifetime, and a nested
+`WriteXml` tree hands every level its own `&mut Meter`. Resolving that borrow is the work;
+it changes no output byte, and it is not done.

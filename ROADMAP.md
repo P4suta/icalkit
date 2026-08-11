@@ -231,9 +231,96 @@ writing one is an incremental encoder, with the owned `MultiStatus` as one optio
 Per-property status is a `PropStat` list, a `time-range` has two independently optional
 bounds, and a collection field is private behind a capped push.
 
-Gates this milestone owes: compile-checked examples for those three shapes, and the
-incremental codec pair compiling under `no_std` on `thumbv7em-none-eabi`, which is the part
-this design has never proved.
+Gates this milestone owed, all met: compile-checked examples for those three shapes, and
+the incremental codec pair compiling under `no_std` on `thumbv7em-none-eabi`, which is the
+part this design had never proved.
+
+**Met.** `ical-dav` reads and writes every body RFC 4791 defines, from both ends, over a
+tokenizer that is this crate's own and depends on nothing. A client builds a `REPORT` and
+reads the multistatus; a server reads the same `REPORT` and builds the same multistatus; the
+direction is visible only in which codec trait is called. `tests/interop.rs` drives the two
+halves through each other rather than each against a stand-in, which is where a disagreement
+between an encoder and a decoder about one element's shape shows up and nowhere else.
+
+The XML refuses more than it accepts, and each refusal is a class rather than a budget. No
+`DOCTYPE` in any casing, so the billion laughs, the internal and external parameter entity and
+the file-pointing general entity are closed together rather than raced; no processing
+instruction, no encoding but UTF-8, no unbound prefix, no mismatched tag, no duplicate
+attribute. The reader is iterative with an explicit stack, so a hundred-thousand-deep body
+meets `LimitExceeded::Depth` rather than a stack overflow, and namespace bindings are charged
+and released as their elements open and close. Every lookup is on a resolved `(namespace,
+local name)`: `SabreDAV`'s `d:`/`cal:`, Radicale's `ns0:`/`ns1:` and Calendar Server's default
+`DAV:` declaration read to one value, and a familiar `D:` bound to a namespace of an
+attacker's choosing reads as foreign, which a reader matching local names would have accepted.
+
+The collision ADR 0001 and XML 1.0 section 2.11 were on either side of is settled and written
+into both documents' own registers rather than reconciled in a commit message. Inside
+`CALDAV:calendar-data` and nowhere else the reader hands back the octets as they arrived, so
+what reaches `Document::parse` from a multistatus is what the server sent; it is therefore not
+a conformant XML processor for that one element, and must never be used to canonicalize or
+verify signed XML. The writer needs no departure at all — a `CR` goes out as `&#13;`, no
+`CDATA` is ever emitted, so anything this crate writes is recoverable by any parser.
+`TextPolicy::Normalized` restores conformance at runtime, and every payload it costs a `CR`
+says so on the sink, because a choice being available is worth nothing if taking it is silent.
+
+Of the six things M3 handed over, three are answered here and three are answered by saying
+whose they are. Freshness is `Revision`: what a read learned about one resource, and the
+`Precondition` that makes a second turn land on that revision or be refused by the server —
+which is the honest closure, since the freshness a caller gets is the freshness the server
+enforces. A weak `ETag` yields no precondition rather than an `If-Match` no server can satisfy
+or an `If-Match: *` that means something else, and a 403 is not read as an absence, because
+that is how a client creates a second copy of an event it was merely not allowed to see. The
+authenticated principal is answered by the vocabulary — `DAV:current-user-principal` joined to
+`CALDAV:calendar-user-address-set` — rather than by a check this crate has no standing to make.
+An `ORGANIZER` change on write gets its refusal modeled and on the wire. The reply timestamp
+stays a store's column, `RANGE=THISANDFUTURE` stays unimplemented, and a store should build the
+`ical_core::Component` rather than a second source of truth for claims its own octets carry.
+
+### Is a calendar client or a self-hosted server now a reasonable thing to attempt?
+
+For a **client**, yes, and that is the claim this milestone was written to earn. Discovery,
+`PROPFIND`, the three `REPORT`s, conditional writes and RFC 6578 synchronization are all
+values a caller builds and reads; the caller brings the HTTP client it already has, which is
+what ADR 0004 chose deliberately rather than what this workspace failed to supply. Nothing
+below is missing from that path.
+
+For a **server**, the sentence above is overstated, and the honest version is that this crate
+supplies the protocol layer and not the server. Four things stand between a reader of this
+document and a working one, none of them small:
+
+- **Nothing here evaluates a filter.** A `comp-filter`, a `time-range` and a `text-match` are
+  represented, refused when they contradict themselves, and handed back; deciding which
+  resources match is work a server does by composing them with `ical-recur` and `ical-core`.
+  ADR 0004 always said so. It is still the largest single piece of a server that this
+  workspace does not contain.
+- **The vocabulary is CalDAV's and stops there.** `MKCALENDAR` (RFC 4791 section 5.3.1) has a
+  request body and no row; so does everything in RFC 3744, and a multi-user server without
+  ACL is a single-user server. `DAV:expand-property` and `DAV:principal-property-search` are
+  how real clients discover a principal's collections, and neither is modeled.
+- **Two gaps inside what is modeled.** `CALDAV:timezone` — the inline `VTIMEZONE` a
+  `calendar-query` may carry, RFC 4791 section 9.5 — has no row, so under the default policy a
+  server silently ignores a timezone the client stated, which changes which events a
+  floating-time `time-range` matches. And `DAV:allprop` and `DAV:propname` inside a
+  `calendar-query` or `calendar-multiget` are refused rather than read, because
+  `CalendarQuery { props: PropRequest }` cannot express either. No deployed client is known to
+  send the second; the first is a correctness gap and is filed as one.
+- **Scheduling over HTTP is half here.** RFC 6638's preconditions, `schedule-tag` and the
+  inbox and outbox properties are modeled, and `ical-itip` holds the semantics; the POST to a
+  scheduling outbox and the `CALDAV:schedule-response` body it answers with are not.
+
+So: a client, yes, today. A server, with the filter engine and the ACL vocabulary a reader
+would have to write, and with the two gaps above closed. Both of those were true before this
+milestone as well; what changed is that the protocol layer under them exists and the reasons
+are specific enough to be worked through rather than discovered.
+
+One piece of internal debt is named rather than left: `write_request.rs` and
+`write_response.rs` each carry a private element encoder instead of going through
+`XmlWriter`, because both were written before it existed. All three share the one escaping
+path and `tests/interop.rs` holds all three to the same tokenizer, so they cannot drift
+silently; what the two private encoders lack is `XmlWriter`'s open-element stack, which makes
+an unbalanced write unrepresentable. The obstacle is a borrow — `XmlWriter` holds the meter
+for its whole lifetime and a nested `WriteXml` tree hands every level its own — and it is not
+resolved.
 
 ## M5 — Interoperability evidence
 
