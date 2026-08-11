@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10
+- Amended: 2026-08-10, 2026-08-11 (sixteen amendments)
 
 ## Context
 
@@ -63,7 +63,9 @@ means the instant lies past the last transition the source actually knows, and t
 continues the final observance recorded at `last` — the ordinary fate of an embedded
 `VTIMEZONE` whose transitions are explicit `RDATE` lines, asked about a date after they run
 out. Continuing the last observance is the defensible thing for such a source to do;
-reporting it as though a rule had produced it is not. Agreement between a `Computed` answer
+reporting it as though a rule had produced it is not. **"Defensible" is superseded by
+Amendment 14: it is RFC 5545 section 3.6.5's stated procedure executed literally, and the
+hedge invited re-litigation of something now closed.** Agreement between a `Computed` answer
 and a `BeyondKnownTransitions` one is a different fact from agreement between two computed
 ones, and `basis` is what lets a caller tell those apart instead of reading confident
 concurrence into a coincidence.
@@ -118,6 +120,8 @@ caller gets a bare `Disagreed`, and nothing in the type hints that one side's ru
 years old. Fixing that needs an as-of date attached to a source, which the no-clock rule
 makes genuinely awkward — the library cannot ask what "now" is, so it would have to be a
 caller-supplied assertion. That is an unmade decision, not a deferred implementation.
+**Amendment 15 makes it: a source may be asked how old its data is, the asking is a separate
+call from the answering, and nothing in this workspace compares two vintages.**
 
 Nor does this say what a caller should *do* with a `BeyondKnownTransitions` answer. That is
 deliberate, since this ADR refuses to prefer a source, but the consequence is that every
@@ -127,12 +131,15 @@ likewise assigned rather than answered: mapping is now the caller's visible step
 sources from lying about it, but the workspace ships no Windows/CLDR identifier table and has
 not decided whether it may. This ADR forbids bundling time zone *data*; whether an identifier
 alias table counts as data or as vocabulary is undecided, and every caller hits the question
-on its first Outlook file.
+on its first Outlook file. **Amendment 16 decides it: an alias table is data, no crate
+published from this workspace ships one, and the refusal is scoped by question rather than by
+crate.**
 
 Two things carry over unclosed. Whether "continue the last observance" is even the right RFC
 reading for an exhausted `RDATE`-only `VTIMEZONE` has been treated here as the defensible
 default without being confirmed against section 3.6.5's observance-selection language or
-against what libical does. And the vtable cost of `&dyn ZoneSource` on Cortex-M-class
+against what libical does. **Both legs are confirmed in Amendment 14, and what does not
+survive the confirmation is the label rather than the answer.** And the vtable cost of `&dyn ZoneSource` on Cortex-M-class
 hardware is unquantified — nobody benchmarked it — which is why the enum-dispatch escape
 above is offered per target rather than settled here.
 
@@ -200,7 +207,9 @@ test comment says exactly that. What M2 adds is the fact traveling on a golden-l
 `time-zone-coverage-exhausted`, so a caller that wants to act on it does not have to inspect a
 field it may not know exists. Whether "continue the last observance" is the right reading of
 section 3.6.5 is still unconfirmed against that section's observance-selection language and
-against libical, exactly as this ADR left it.
+against libical, exactly as this ADR left it. **That sentence is closed by Amendment 14; both
+legs were read, and the reading is confirmed against the section and against four
+implementations.**
 
 **6. One bound is charged and reported by nobody.** `VtimezoneSet::insert` charges
 `Limits::max_vtimezone_components` and hands back the table that did not fit, but no golden-listed
@@ -312,3 +321,182 @@ and nothing on every other day. And the table is ordered by the instant each obs
 *begins* rather than by the wall clock its `DTSTART` spells, which is what makes the search's
 own predicate monotone and what stops two observances declared on one wall clock from resolving
 by the order the producer happened to write them in.
+
+**14. Continuing the final observance is section 3.6.5 executed literally, and `coverage_end` is
+this crate's inference rather than the file's claim.** Amendment 5 and the Consequences both left
+the reading unconfirmed, and both legs the ADR named have now been read. Section 3.6.5's
+selection sentence is unconditional — the offset to apply at any given time is found by locating
+the observance with the last onset before the time in question, and using that observance's
+offset — with no upper bound, no exhaustion case and no alternative rule. For an `RDATE` table
+ending in 2029 asked about 2035, the observance with the last onset before the time in question
+*is* the final `RDATE`. libical's `icaltimezone_get_utc_offset` does exactly this, and ical.js,
+ical4j's `getLatestOnset` and dateutil's `_tzicalvtz` agree. The incumbent is unopposed, no code
+moves, and the reading that would have been the rival — continuing the last *rule* past an
+expired `UNTIL` — is foreclosed by the same section's requirement that `UNTIL` state the last
+valid onset of an observance.
+
+What does not survive the confirmation is the label the Mechanism bundled with the answer. RFC
+7808 section 7.1 states that an upper bound on a `VTIMEZONE`'s validity cannot simply be derived
+from the observance with the latest onset time and that RFC 5545 defines no way to get such a
+bound — which is precisely what `coverage_end_of` derives it from. So the amendment says, in the
+ADR and in `ical-tz`'s own doc comments, that the *answer* is RFC-backed and the *bound* is not:
+`AnswerBasis::BeyondKnownTransitions` and `time-zone-coverage-exhausted` report this crate's
+reading of the extent of the table it was handed, and are not a claim the file made about its own
+validity. That correction lands below the first paragraph of the code's doc comment, deliberately,
+because `docs/diagnostic-codes.md` freezes the first paragraph verbatim and improving the prose
+below it stays free — so no code key, no channel, no golden-list row and no conformance case
+moves, and Corpus is unblocked without having its cases invalidated.
+
+`TZUNTIL` (RFC 7808 section 3.9) is the property that would replace the inference with the file's
+own statement, and it is not adopted now. Two thresholds are fixed here rather than after the
+corpus lands, because this project already has one default that flips on unspecified evidence and
+one is enough. Reading `TZUNTIL` and preferring it where present — same variant, same code, same
+channel, inference unchanged where absent — is turned on if and only if the M5 corpus shows it on
+at least 1% of `VTIMEZONE` components whose table is finite, from at least two distinct producers.
+Splitting the fact into two golden-listed codes, one for a stated bound and one for an inferred
+one, is turned on if and only if `TZUNTIL` reaches 50% of that same population, because one code
+covering both grades misdescribes the minority and describes neither once the stated bound is the
+majority. The asymmetry is deliberate: preferring a file's own statement over an inference is free
+correctness that needs only proof the case exists, while a golden-list event should require the
+stated bound to be the common case. Nothing here is contingent on the corpus arriving — if it
+never lands, the reading stays closed, the doc corrections stand, and `TZUNTIL` stays unread.
+
+Four things this makes worse. The workspace now cites section 3.6.5 as licensing the answer while
+shipping a Note whose bound has no standards-track source, and the only thing reconciling them is
+a paragraph placed *below* the frozen meaning — the weaker of the two places, chosen because the
+stronger one costs a rename. A reader who reads only the golden list gets the unreconciled
+version. Closing the far end also sharpens an asymmetry it does not touch:
+`time-zone-before-known-transitions` will sit beside a sibling that now carries a citation, and
+the near end is the end where section 3.6.5 is genuinely silent and the deployed implementations
+genuinely disagree three ways — this amendment makes the weaker half look stronger by proximity,
+and the near end stays open. The 1% and 50% numbers are judgment without data and can be wrong in
+both directions; a corpus returning 40% leaves the workspace preferring `TZUNTIL` and still
+describing two grades with one code, which is the state ADR 0009's freeze exists to prevent, and
+this amendment says to live there until 50%. And the endless-one-side case Amendment 8 records
+leaves the frozen phrase "later than the last transition it actually knows" true only if the
+reader imports Amendment 8's claim that half an alternation is not knowledge — an imprecision left
+in place, because fixing it means editing a frozen meaning.
+
+The alternative rejected, with its own thresholds attached so it is not rediscovered: reground
+`coverage_end` on `TZUNTIL` now and unconditionally, on the argument that this ADR exists to
+refuse answers claiming more than their source supports and RFC 7808 names the derivation invalid.
+It loses on payoff rather than on principle — no implementation examined emits or reads `TZUNTIL`,
+admitting a second RFC's property into `ical-core`'s `VTIMEZONE` schema is a scope decision no ADR
+licenses, and the inference's failure mode is a Note a caller may ignore rather than a wrong
+offset, since section 3.6.5 gives the same answer either way.
+
+**15. A zone source may be asked how old its data is, and the asking is a separate call from the
+answering.** The Consequences call staleness the more common case and then say fixing it needs an
+as-of date, which the no-clock rule makes awkward. It does not: a date supplied by the caller's
+wiring, or read from octets already in the file, breaks neither the no-bundled-data rule nor the
+no-clock rule, because the library still cannot say what "now" is. So `ical-tz` gains
+`Vintage`, whose two variants — `CallerAsserted(CivilDate)` and `FileAsserted(CivilDate)` — are
+the point of the type: there is no bare-date constructor, so a caller can never receive a vintage
+without also receiving its origin, which is this ADR's own rule that every result says which
+source produced it, applied one level up.
+
+The mechanism follows from the ADR's other standing rules rather than from taste.
+`TransitionTable::asserted_as_of` is populated by the reader from the definition's own
+`LAST-MODIFIED`, a property RFC 5545 defines on `VTIMEZONE` for this purpose and the schema
+already accepts, as `FileAsserted`; `TransitionTable::with_asserted_as_of` replaces it with
+`CallerAsserted`, so a preference is written on the call the caller makes rather than made
+silently by precedence rules inside the reader, in the shape Amendment 3 used for
+`embedded_first`. `ZoneSource::asserted_as_of` is a fourth method with a provided body returning
+`None`, exactly as `recognizes` was added by Amendment 7, so it is object-safe, `no_std`, and
+breaks no existing implementor — and the forwarding impl for `&T` must forward it, or a `&dyn`
+wrapper answers `None` over a source that knows better. `ZoneAnswer`, `OffsetAnswer`,
+`AnswerBasis` and `PolicyOutcome` are unchanged: a third `AnswerBasis` variant is refused because
+`basis` states what data stood behind *this* answer at *this* instant while a vintage is a
+property of the source whatever the question, and folding them would widen a value returned once
+per occurrence. Nothing in this workspace compares two vintages, ranks them, or lets one settle a
+`Disagreed`, so no diagnostic code is minted and ADR 0009's golden list does not move — an old
+definition is not a fault, and preferring the newer side is exactly the buried fallback chain this
+ADR exists to refuse.
+
+Five things get worse, and the first two are the real ones. `FileAsserted` is the file's claim
+about itself and nothing verifies it: an exporter that stamps `LAST-MODIFIED` with the moment of
+export rather than the vintage of the rules it copied produces a fresh-looking date over
+eight-year-old transitions, and for a caller who trusts the date that is strictly worse than the
+silence it replaces — silence prompted a question, a confident wrong date does not. The variant
+tag is the whole mitigation and it is a label, not a check. And the ADR's complaint is narrowed
+rather than closed: a caller who never calls `asserted_as_of` still receives a bare `Disagreed`
+with nothing hinting that one side is old, so staleness becomes available rather than unmissable,
+which is a deliberate second-best. Beyond those, `TransitionTable` grows an `Option<Vintage>` for
+every zone whether or not the definition states anything; `LAST-MODIFIED` is a UTC date-time and
+`Vintage` carries a `CivilDate`, so a value present in the file arrives through this door reduced;
+and `ZoneSource` reaches four methods, one more for every future implementor to decide to leave
+alone.
+
+The alternative that must be recorded because it is serious: nothing at all, leaving staleness an
+admitted blind spot, on the ground that a vintage nobody can verify invites `if newer { prefer }`
+in every caller — the silent resolution this ADR forbids, now with a library-blessed field to hang
+it on. It is rejected because the blind spot is not neutral either. The fact is reachable today by
+re-parsing a component `ical-tz` has already read, so the choice is not between a fact and no fact
+but between a fact with provenance attached and a fact every caller extracts privately with none.
+Also rejected, and recorded so it is not rediscovered: deferring this behind a corpus grep. The
+grep would report how often real exports stamp `LAST-MODIFIED` and no value of it changes the
+shape, the semantics or the ban on comparison, and a measurement whose every outcome yields the
+same design is a curiosity rather than a threshold.
+
+**16. An identifier alias table is data, and no crate published from this workspace ships one.**
+The Consequences leave this undecided while `docs/design/ical-tz-api.md` already lists a bundled
+CLDR table under "Deliberately rejected", so two documents disagreed about whether anything had
+been decided. Closing that gap is itself a decision, and leaving the design document as the only
+place a refusal is written down is how a rejection nobody ratified becomes a default nobody
+examined. The refusal is scoped by *question*, not by crate: no crate published here answers
+"which IANA zone does this vendor string mean" — not Windows/CLDR `windowsZones`, not the
+`/mozilla.org/DATE/Zone` convention, not case folding, not any other guess at an identifier's
+intent. That closes all three of the options this was posed with, including the third: shipping
+the table as a separate crate outside the purity rule fails for a reason that is not purity.
+`ical-conform` sits outside that rule because it is a test artifact answering no question on the
+resolution path; an alias crate would answer the central question of zone identity for anyone who
+added it, and the fallback chain this ADR keeps visible would then be visible only in a
+`Cargo.toml` line, which is not where a wrong zone shows up.
+
+The evidence is that a table counts as data because CLDR itself refuses to answer with one value:
+`windowsZones` is keyed on (Windows identifier, territory) and gives an ordered list of IANA
+identifiers per key, so collapsing it to one answer is a policy choice, and this ADR assigns
+policy choices about zone identity to the caller. The ecosystem's one bundled table confirms the
+premise rather than falsifying it — python-icalendar's generated `windows_to_olson.py` carries
+single-string values, is applied on a path with no warning and no exception, and on a miss
+silently proceeds with the unmapped name. Its `GloballyUniqueTZIDGuessed` diagnostic belongs to
+vendor-prefix stripping under section 3.2.19 and not to the Windows table at all, so the one
+implementation that warns warns about the mechanism this workspace refuses outright in
+`Tzid::strip_global_prefix`'s documented contract.
+
+What stands in place of a table, and what makes the refusal usable rather than merely pure, is
+already built: `Tzid::form` classifies an identifier's shape without claiming what it names and
+`TzidForm::Opaque` is the crate saying in a type that translation is the caller's step; lookup is
+by exact bytes including case, so an Exchange file that writes both `TZID:W. Europe Standard Time`
+*and* the matching `VTIMEZONE` resolves today with no table; and where nothing answers, `resolve`
+returns `None` and the hole is reported as `unknown-time-zone` rather than defaulted to UTC. The
+residue a table would serve is exactly the files that name a vendor zone they do not define. The
+one path a table may take is caller-side, as a `ZoneSource` decorator the caller wires — and a
+decorator is now also responsible for forwarding Amendment 15's `asserted_as_of`, since a wrapper
+that inherits the provided body answers `None` over a source that knows better.
+
+The costs are not small and none of them is hypothetical. A caller reading Exchange or Outlook
+files that reference a Windows zone without defining it gets nothing from this workspace and must
+obtain, wire and maintain a CLDR mapping; they will each do it differently, which is a weaker form
+of the inconsistency this ADR set out to prevent and the same cost already recorded against
+`BeyondKnownTransitions`. `unknown-time-zone` fires at `Severity::Violation` on files that open
+correctly in Outlook, so this library reads as stricter than the ecosystem on inputs users consider
+ordinary, and that support burden lands on whoever answers the first report. No measurement was
+taken of how large the affected population is. The conformance corpus can now test only the
+refusal and never the resolution. And the one genuinely good thing the ecosystem demonstrated —
+python-icalendar stamping its generated table with the CLDR commit and date, sabre/vobject
+stamping its own last update — is given up: a caller who wants stamped, inspectable provenance for
+its own mapping builds that machinery again, and most will not.
+
+The strongest rejected alternative is shipping the table inside `ical-tz` behind a non-default
+feature, on the ground that this ADR's premise is that bundled data makes the library wrong when
+the world moves *and invisibly so*, and the second half is avoidable by stamping the generated
+file. That is a real weakening of the premise and it is why the reopening condition below has a
+clause about provenance. It loses on a narrower and better-supported ground than "a bundled table
+would hide its age", which it need not: a bundled table would hide that it *chose*. Reopening
+requires all three of — measured against `ical-conform`'s corpus — at least 90% of the distinct
+`TzidForm::Opaque` identifiers being `windowsZones` keys that appear in calendars carrying no
+usable `VTIMEZONE` for them, a proposed table preserving (Windows identifier, territory) keys and
+the full ordered candidate list so the crate reports the choice instead of making it, and a table
+naming the CLDR release it was generated from in a value a caller can read at runtime with a gate
+failing when it falls behind. Failing any one of the three, the refusal stands and this is closed.
