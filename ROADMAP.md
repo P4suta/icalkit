@@ -27,7 +27,10 @@ round-trip property test over the corpus, a fold that splits a UTF-8 codepoint, 
 still owed: a hostile input of 200,000 one-byte properties, and a peak-allocation ceiling as a
 multiple of input size. The fold bomb and the depth bomb reach neither — one bounds what a
 single line retains and the other what a walk survives, and the question both of these ask is
-what a whole document costs.
+what a whole document costs. The second is retargeted rather than merely built: it must report
+bytes retained *per item* and *per XML element* as well as peak charged bytes, because per-unit
+retention is what turns `max_items` and `max_xml_elements` from asserted numbers into measured
+ones ([ADR 0010](docs/adr/0010-shared-resource-limits.md) amendment 1).
 
 ## M1 — Recurrence
 
@@ -68,11 +71,11 @@ every cadence to satisfy an upper edge nothing read; a `BYWEEKNO` read as a filt
 calendar year rather than an expansion of the week-numbering one; and a `BYDAY` ordinal answered
 two ways under the frequencies that forbid one, the quieter of which emptied a whole series.
 
-Three things are known and named: emission is ordered by cadence key rather than by effective
-start; the period walk's own vocabulary is on the public surface as an integration artifact and
-is expected to narrow; and `UNTIL` is compared on the timeline the caller resolved, which is the
-right answer for a crate that holds no zone and is why M2 owns the question of what a floating
-`UNTIL` against a zoned `DTSTART` means.
+Two things are known and named: emission is ordered by cadence key rather than by effective
+start, and the period walk's own vocabulary is on the public surface as an integration artifact
+and is expected to narrow. A third was listed here and is struck: what a floating `UNTIL` against
+a zoned `DTSTART` means was closed by M2, with a test and the golden-listed
+`recurrence-until-not-utc` behind it.
 
 ## M2 — Time zones
 
@@ -204,14 +207,19 @@ the other were the same silent answer; and a message of a hundred thousand prope
 for four units and described in full. ADR 0005 amendments 7 to 11 record what changed, and two
 diagnostic codes are new: `scheduling-method-ambiguous` and `scheduling-instance-nonexistent`.
 
-Five things are known and named. An attendee's `REPLY` carrying a moved `DTSTART` is *ignored*
-rather than refused — the transition holds one change on the sender's own `ATTENDEE` line, so
-the security property holds, but a caller that applies `Authorization::message`'s payload instead
-of the transition moves the meeting. A legitimate `COUNTER` is refused, because the field rule
-has no per-method dimension — the interoperability cost the design document said it preferred,
-now observed rather than predicted. A delegate's `REPLY` describes nothing until the delegator's
-own reply has been applied, which is RFC 5546's order but is not what a caller wanting one turn
-gets. Ordering two replies from one attendee needs the state to record when the first was
+Five things were known and named, and three of them are now decided rather than merely named.
+An attendee's `REPLY` carrying a moved `DTSTART` is *ignored* rather than refused — the transition
+holds one change on the sender's own `ATTENDEE` line, so the security property holds, but a caller
+that applies `Authorization::message`'s payload instead of the transition moves the meeting. A
+legitimate `COUNTER` is refused, because the field rule has no per-method dimension — the
+interoperability cost the design document said it preferred, now observed rather than predicted.
+[ADR 0005](docs/adr/0005-scheduling-apart-from-the-model.md) amendment 12 answers both: the field
+rule takes the method, so the `COUNTER` is admitted, and an overreaching `REPLY` is refused rather
+than dropped. A delegate's `REPLY` describes nothing, and the sentence that stood here — that it
+describes nothing *until the delegator's own reply has been applied* — is wrong: the corpus fixture
+that is the post-delegator-reply state still describes nothing, because a delegator's reply writes
+parameter edits and never adds the delegate's own `ATTENDEE` line. Amendment 13 names the hold and
+records the organizer `REQUEST` as its only release. Ordering two replies from one attendee needs the state to record when the first was
 written, so a store that keeps no such column keeps the change-of-mind case and loses that
 defense. And a component whose own `ORGANIZER` line names an attendee authorizes that attendee
 to cancel it: RFC 5546 section 1.3 lets one calendar user be both, so the defense is that no
@@ -290,30 +298,39 @@ For a **server**, the sentence above is overstated, and the honest version is th
 supplies the protocol layer and not the server. Four things stand between a reader of this
 document and a working one, none of them small:
 
-- **Nothing here evaluates a filter.** A `comp-filter`, a `time-range` and a `text-match` are
-  represented, refused when they contradict themselves, and handed back; deciding which
-  resources match is work a server does by composing them with `ical-recur` and `ical-core`.
-  ADR 0004 always said so. It is still the largest single piece of a server that this
-  workspace does not contain.
-- **The vocabulary is CalDAV's and stops there.** `MKCALENDAR` (RFC 4791 section 5.3.1) has a
-  request body and no row; so does everything in RFC 3744, and a multi-user server without
-  ACL is a single-user server. `DAV:expand-property` and `DAV:principal-property-search` are
-  how real clients discover a principal's collections, and neither is modeled.
+- **Nothing here evaluates a filter yet, and the crate that will is named.** A `comp-filter`, a
+  `time-range` and a `text-match` are represented, refused when they contradict themselves, and
+  handed back; deciding which resources match is work a server does by composing them with
+  `ical-recur` and `ical-core`. ADR 0004 always said so. It is the largest single piece of a
+  server this workspace does not contain *today*:
+  [ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md) decides
+  that it is `ical-query`, a published crate above `ical-core`, `ical-recur`, `ical-tz` and
+  `ical-dav`, and that `ical-dav` takes no dependency to make it possible.
+- **The vocabulary is CalDAV's and stops there, on purpose.** `MKCALENDAR` (RFC 4791 section
+  5.3.1) has a request body and no row, and that half is work this milestone owes.
+  Everything in RFC 3744 is a scope decision and it is made:
+  [ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendment 14 declines ACL's semantics and
+  the principal-discovery reports, which are now in the Non-goals below. Six of those roots gain
+  recognition-only rows so a server can tell a standard report this crate will not honor from a
+  root somebody invented — the deployed answer to which is an empty `207`, not a `403` — but
+  nothing reads or writes them, and a multi-user server still supplies its own ACL.
 - **Two gaps inside what is modeled — both now closed, by the attack rather than by this
   plan.** `CALDAV:timezone` has a row, a field on `CalendarQuery`, and the line-ending
   carve-out its value earns, so the zone a client stated survives a read and a re-encode
   instead of being dropped as foreign. `DAV:allprop` and `DAV:propname` inside a
   `calendar-query` are `QueryShape`, so RFC 4791 section 9.5's own production is a body this
-  crate reads and writes rather than one it answers `DavError::Unexpected` to. What replaces
-  them on this list is `calendar-multiget`, whose grammar admits the same three shapes and
-  which still carries only a property list — nobody is known to send the other two to a
-  multiget, and that is a reason to file it rather than to call it closed.
+  crate reads and writes rather than one it answers `DavError::Unexpected` to. What replaced
+  them on this list was `calendar-multiget`, whose grammar admits the same three shapes and
+  which still carries only a property list. That is now decided the same way: ADR 0004 amendment
+  15 gives the multiget a `QueryShape`, because "nobody is known to send it" is the argument M4
+  declined one element over, and it fixes the *production* as the rule that says which bodies
+  carry the group at all.
 - **Scheduling over HTTP is half here.** RFC 6638's preconditions, `schedule-tag` and the
   inbox and outbox properties are modeled, and `ical-itip` holds the semantics; the POST to a
   scheduling outbox and the `CALDAV:schedule-response` body it answers with are not.
 
-So: a client, yes, today. A server, with the filter engine and the ACL vocabulary a reader
-would have to write, and with the two gaps above closed. Both of those were true before this
+So: a client, yes, today. A server, with the filter engine `ical-query` will ship and with an
+ACL vocabulary a reader supplies, since this workspace has declined that one. Both of those were true before this
 milestone as well; what changed is that the protocol layer under them exists and the reasons
 are specific enough to be worked through rather than discovered.
 
@@ -378,15 +395,43 @@ on a budget is not reproducible without one
 `DiagnosticCode` and its channel, which is what the golden list of
 [ADR 0009](docs/adr/0009-error-and-diagnostic-model.md) exists to keep stable.
 
-Gates this milestone owes: the foreign-implementation bridge job, which needs an external
-runtime in CI and a kill wrapper around the child process — neither exists today, and until
-both do the bridge is a best-effort check rather than a gate.
+Gates this milestone owes, restated by
+[ADR 0006](docs/adr/0006-conformance-corpus-as-artifact.md) amendment 1. The owed gate is the
+corpus against the committed `Observed` matrix: no external runtime, no kill wrapper, runs on
+every supported target including the two cross-targets, required, and red for exactly one reason
+— our answers moved against the recorded ones. The foreign-implementation bridge is no longer an
+owed gate. It survives as `xtask observed-refresh`, a scheduled non-required job whose only
+output is a classified diff for human review, which never commits and can never fail a build;
+promoting it to a required gate is a measurement with its threshold already fixed in that
+amendment.
+
+Two measurements land here and neither may be argued afterwards. Whether the gap-case default
+flips to shift needs one export apiece from three producers, with two shifting and none skipping
+([ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md) amendment 4); if they
+cannot be obtained by the close of this milestone the clause is struck rather than rolled
+forward. Whether a delegator's `REPLY` may carry two `ATTENDEE` lines needs two captures apiece
+from four clients ([ADR 0005](docs/adr/0005-scheduling-apart-from-the-model.md) amendment 13);
+if none can be captured the refusal stands by default and is recorded as untested.
 
 ## Non-goals
 
 Bundling a time zone database or an HTTP client. Reading the system clock. vCard and
 CardDAV — the same shape, a different specification, and a decision to make later rather
 than a scope to assume now.
+
+RFC 3744's access-control vocabulary and the principal-discovery reports
+(`DAV:principal-match`, `DAV:principal-property-search`, `DAV:principal-search-property-set`,
+`DAV:acl-principal-prop-set`) together with `DAV:expand-property`. This workspace does not model
+them; a server that needs access control supplies it. `ical-dav` recognizes those roots by name
+and honors none of them, and the boundary
+[ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md) draws
+inherits the limit rather than becoming the place they were always going to live
+([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendment 14).
+
+A vendor-identifier-to-IANA alias table. No crate published here answers which IANA zone a
+vendor `TZID` means, in any crate, behind any feature, or as a separate crate outside the purity
+rule; the mapping is a caller-side decorator
+([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md) amendment 16).
 
 An allocation-free tier is a named gap rather than a non-goal: it belongs to a future crate
 with its own lint profile, not to a feature flag on these

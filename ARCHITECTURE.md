@@ -21,6 +21,16 @@ compiles scheduling or CalDAV, and `ical-grammar` sits below it so that a linter
 or a fuzz harness never compiles the typed model
 ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)).
 
+**Two changes to this shape are decided and have not landed.** `ical-grammar` collapses into
+`ical-core` as a private module tree before the first publish, and the layering rule it was
+holding becomes a compilation — the same grammar sources built a second time, under `gates/`, in
+a crate root that contains no model, so an upward reference is a compiler error rather than a
+review comment (ADR 0004 amendment 12). And `ical-query` joins the graph *above* `ical-core`,
+`ical-recur`, `ical-tz` and `ical-dav` as the filter evaluator, with `ical-dav` taking no
+dependency in return
+([ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md)). The
+diagram and the table below describe the tree as it stands today, before either lands.
+
 `ical-recur` and `ical-tz` are siblings: neither depends on the other. Recurrence needs a
 zone answer, and the caller obtains it from `ical-tz` and passes in the instant, which is why
 recurrence expansion and zone resolution can be compiled apart. M2 settled the one thing that
@@ -112,6 +122,11 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 | `ical-dav` | `ical-core` | no | yes | no | landed (M4) |
 | `ical-conform` | all but `ical-grammar` | yes | yes | no | grows with each milestone (M5) |
 
+Two rows are owed and neither exists yet: `ical-query` (`ical-core`, `ical-recur`, `ical-tz`,
+`ical-dav`; no std, alloc, no clock), and the unpublished layering member under `gates/` that
+compiles the grammar sources a second time. When the grammar collapses, the first row leaves this
+table and six crates are published rather than seven.
+
 "State" is the milestone whose gates the crate met, not a stability claim: nothing is
 published and no public API is frozen. What each landed crate does **not** do is in its own
 `# Status` section and in `ROADMAP.md`, which are the two places that stay honest about it.
@@ -148,6 +163,14 @@ crates together and tries to compile the result.
 - **Ambiguity is represented, not resolved.** Non-existent and repeated local times at DST
   transitions, disagreeing time zone sources, and specification violations are all values
   a caller can inspect, not errors that discard the input.
+- **A limit's number says how it was arrived at.** `max_input_bytes` is the stated allocation
+  envelope of a named policy, and every other field is derived from it by a written function,
+  measured against this reader, argued from shape, or explicitly marked as merely asserted
+  ([ADR 0010](docs/adr/0010-shared-resource-limits.md) amendment 1).
+- **No crate here translates a vendor time zone identifier.** Not behind a feature, not in a
+  separate crate. Lookup is by exact bytes, an unrecognized identifier answers nothing and is
+  reported, and the mapping is a decorator the caller wires
+  ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md) amendment 16).
 - **Diagnostics travel with the item they concern,** so a caller can accept a
   specification-violating calendar and still know what was wrong with it.
 
