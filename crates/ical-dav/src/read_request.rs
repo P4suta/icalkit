@@ -46,8 +46,11 @@ use crate::failure::{DavError, SyntaxError, ValueError};
 use crate::policy::{DecodeContext, UnknownPolicy};
 use crate::request::{
     CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
-    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, TextMatch, TimeRange,
+    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, QueryShape, TextMatch,
+    TimeRange,
 };
+use crate::response::CalendarPayload;
+use crate::text::LineEndings;
 use crate::value::{ExtensionName, Href};
 
 /// The namespace an unprefixed attribute is in, which is none at all.
@@ -210,7 +213,22 @@ impl ReadXml for CalendarQuery {
         while let Some((_, known)) = next_child(events, context)? {
             match known {
                 Some(ElementName::Prop) => read_prop_request(events, context, &mut query.props)?,
+                // RFC 4791 section 9.5's own production is
+                // `((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)`. Two of the
+                // three used to be refused outright, which is a conformant request this crate
+                // answered `DavError::Unexpected` to.
+                Some(ElementName::Allprop) => {
+                    events.skip_element(context)?;
+                    query.shape = QueryShape::AllProp;
+                },
+                Some(ElementName::Propname) => {
+                    events.skip_element(context)?;
+                    query.shape = QueryShape::Names;
+                },
                 Some(ElementName::Filter) => query.filter = Some(read_filter(events, context)?),
+                Some(ElementName::Timezone) => {
+                    query.timezone = Some(read_payload(events, context)?);
+                },
                 Some(other) => return Err(DavError::Unexpected(other)),
                 None => skip_foreign(events, context)?,
             }
@@ -663,7 +681,11 @@ fn parse_utc_date_time(written: &[u8]) -> Result<Instant, DavError> {
 }
 
 /// The `name` attribute a filter or a selection element must carry.
-fn required_name<'a>(events: &dyn XmlPull<'a>) -> Result<&'a [u8], DavError> {
+///
+/// The borrow is the tokenizer's rather than the body's, because the value XML 1.0 section
+/// 3.3.3 defines is the one with its references resolved and its literal whitespace replaced —
+/// which is not a run of octets the body holds anywhere.
+fn required_name<'a>(events: &'a dyn XmlPull<'_>) -> Result<&'a [u8], DavError> {
     events
         .attribute(QName::new(NO_NAMESPACE, b"name"))
         .ok_or_else(|| DavError::from(ValueError::AttributeMissing))
@@ -707,6 +729,43 @@ fn read_text(
         trim(&mut collected);
     }
     Ok(collected)
+}
+
+/// Collect an iCalendar object a request element carries, with its line-ending witness.
+///
+/// The same shape a `calendar-data` payload arrives in on the response side, because it is the
+/// same kind of value: RFC 4791 section 9.5's `CALDAV:timezone` is "a valid iCalendar object
+/// containing exactly one VTIMEZONE component", and its `CRLF` terminators are RFC 5545 section
+/// 3.1 syntax rather than layout. No trimming, for the same reason.
+fn read_payload(
+    events: &mut dyn XmlPull<'_>,
+    context: &mut DecodeContext<'_>,
+) -> Result<CalendarPayload, DavError> {
+    let mut collected = Vec::new();
+    let mut endings: Option<LineEndings> = None;
+    loop {
+        match events.next_event(context)? {
+            None => return Err(SyntaxError::Truncated.into()),
+            Some(XmlEvent::End { .. }) => break,
+            Some(XmlEvent::Text(decoded)) => {
+                // The witness of the first run is the read's own answer about folding, and a
+                // fold is a fact about the read rather than about one run of it.
+                if endings.is_none() || endings == Some(LineEndings::Absent) {
+                    endings = Some(decoded.line_endings);
+                }
+                append(&mut collected, decoded.run.as_bytes())?;
+            },
+            Some(XmlEvent::Start { known, .. }) => match known {
+                Some(row) => return Err(DavError::Unexpected(row)),
+                None => skip_foreign(events, context)?,
+            },
+        }
+    }
+    let payload = CalendarPayload::from_octets(&collected, context.limits, context.meter)?;
+    match endings {
+        Some(LineEndings::Folded) => Ok(payload.into_folded()),
+        _ => Ok(payload),
+    }
 }
 
 /// Drop the whitespace a producer indented a value with, in place.
@@ -1050,21 +1109,37 @@ mod tests {
             self.lookup(prefix).map(Namespace::from_uri)
         }
 
-        fn attribute(&self, wanted: QName<'_>) -> Option<&'a [u8]> {
-            self.attributes.iter().find_map(|&(written, value)| {
-                if written.starts_with(b"xmlns") {
-                    return None;
-                }
-                let (prefix, local_name) = split_prefix(written);
-                // An unprefixed attribute is in no namespace: XML Namespaces 1.0 section 6.2.
-                let uri = if prefix.is_empty() {
-                    b"".as_slice()
-                } else {
-                    self.lookup(prefix)?
-                };
-                (Namespace::from_uri(uri).is(wanted.namespace) && local_name == wanted.local_name)
-                    .then_some(value)
-            })
+        fn attribute(&self, wanted: QName<'_>) -> Option<&[u8]> {
+            (0..self.attribute_count())
+                .filter_map(|index| self.attribute_at(index))
+                .find(|(held, _)| {
+                    held.namespace.is(wanted.namespace) && held.local_name == wanted.local_name
+                })
+                .map(|(_, value)| value)
+        }
+
+        fn attribute_count(&self) -> usize {
+            self.attributes
+                .iter()
+                .filter(|(written, _)| !written.starts_with(b"xmlns"))
+                .count()
+        }
+
+        fn attribute_at(&self, index: usize) -> Option<(QName<'a>, &[u8])> {
+            let (written, value) = self
+                .attributes
+                .iter()
+                .copied()
+                .filter(|(written, _)| !written.starts_with(b"xmlns"))
+                .nth(index)?;
+            let (prefix, local_name) = split_prefix(written);
+            // An unprefixed attribute is in no namespace: XML Namespaces 1.0 section 6.2.
+            let uri = if prefix.is_empty() {
+                b"".as_slice()
+            } else {
+                self.lookup(prefix)?
+            };
+            Some((QName::new(Namespace::from_uri(uri), local_name), value))
         }
     }
 

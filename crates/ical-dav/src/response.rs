@@ -69,6 +69,17 @@ impl CalendarPayload {
         })
     }
 
+    /// The same payload, with the witness that this read cost it its carriage returns.
+    ///
+    /// A payload assembled out of several runs cannot take its witness from the octets it ends
+    /// up with — folding is a fact about the *read*, and once the `CR`s are gone the octets no
+    /// longer say that they were ever there.
+    #[must_use]
+    pub fn into_folded(mut self) -> Self {
+        self.line_endings = LineEndings::Folded;
+        self
+    }
+
     /// The octets.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
@@ -113,11 +124,35 @@ pub enum PropValue {
     Entity(ETag),
     /// A `CALDAV:calendar-data` payload.
     CalendarData(CalendarPayload),
-    /// A property this crate has no model for, kept as the octets inside it.
+    /// A property this crate has no model for, kept as the *character data* inside it.
     ///
     /// `docs/adr/0001`'s rule one layer up: what is not understood is preserved rather than
     /// dropped, because dropping it is how one client destroys another's data.
+    ///
+    /// These octets are text and are written as text — escaped, so that what a peer sent as
+    /// character data leaves this crate as character data. That is not a detail of the
+    /// encoder. A peer writing `&lt;D:href&gt;/calendars/ann/private/secret.ics&lt;/D:href&gt;`
+    /// inside its own extension property is writing a string; a proxying server that copied
+    /// the decoded octets out unescaped would put a `DAV:href` element the peer never sent
+    /// into its own multistatus, and RFC 4918 gives that element meaning. Markup a peer really
+    /// did send is [`PropValue::Markup`], which is a different field with a different rule.
     Unmodeled(Box<[u8]>),
+    /// A property whose value is elements this crate has no model for, kept as a fragment.
+    ///
+    /// RFC 4918 section 14.18 makes a property's value an arbitrary XML fragment and section
+    /// 9.1.3's own example puts a peer's structure — `<R:bigbox><R:BoxType>…</R:BoxType>` —
+    /// inside one. Flattening that to its concatenated text is a loss a downstream client
+    /// cannot detect, so the elements are kept.
+    ///
+    /// What is kept is a *re-serialization* and not the octets off the wire: this crate's own
+    /// prefixes, each element declaring the namespace it resolved to, every text run escaped
+    /// by the same door every other value goes through. That is what makes the fragment
+    /// self-contained — a peer's prefix bindings do not survive into this crate's document —
+    /// and what makes copying it to the sink safe, since nothing inside it is octets a peer
+    /// chose the *syntax* of. A caller building one by hand is choosing markup, and the
+    /// encoder refuses a fragment whose tags do not balance, that declares or instructs, or
+    /// that carries a reference no reader would resolve.
+    Markup(Box<[u8]>),
 }
 
 /// A property name and what came back for it.
@@ -134,6 +169,17 @@ pub struct DavProperty {
 pub struct PropStat {
     /// The status these properties came back under.
     pub status: Status,
+    /// The precondition that explains *this group's* refusal, if the server named one.
+    ///
+    /// RFC 4918 section 14.22's grammar is `propstat (prop, status, error?,
+    /// responsedescription?)`, so an error inside a group explains the group it sits in. A
+    /// response naming `CALDAV:supported-calendar-data` under its `403` and
+    /// `CALDAV:supported-filter` under its `404` has said two different things about two
+    /// different properties, and a client asking "why was `calendar-data` refused" has to be
+    /// able to read the one that belongs to that group. Hoisting both into
+    /// [`DavResponse::error`] merged them into a bag with no record of which explained what,
+    /// and left the writing direction unable to put either back where it was.
+    pub error: Option<ErrorBody>,
     /// The properties. Private behind a charged push.
     props: Bounded<DavProperty>,
 }
@@ -144,6 +190,7 @@ impl PropStat {
     pub fn new(status: Status, limits: Limits) -> Self {
         Self {
             status,
+            error: None,
             props: Bounded::with_cap(
                 bounded_cap(limits.max_props_per_response()),
                 LimitExceeded::Properties,
@@ -327,11 +374,22 @@ impl MultiStatus {
     /// because a partial collection plus a report of its partiality is more useful than
     /// nothing — and `Severity::LimitReached` is exactly the channel `docs/adr/0009` gives to
     /// work cut short at a bound with what was already read intact.
+    /// A token is a statement about the whole answer, so a partial answer states none.
+    ///
+    /// RFC 6578 section 3.4 makes `DAV:sync-token` the state a *complete* report brings the
+    /// client up to. A caller that stored the token of a report this reader cut short would
+    /// never be told about the changes it did not receive — no later `sync-collection`
+    /// mentions them, because as far as the server is concerned they were delivered. The
+    /// guard has to be the fact of truncation and not the position of the element: a server
+    /// writing the token before its responses (which this reader accepts) would otherwise
+    /// hand back a full token for sixteen of forty thousand changes, while the ordinary
+    /// spelling was safe only because the reader never reached the end of the body.
     pub fn read(
         source: &mut dyn ResponseSource,
         context: &mut DecodeContext<'_>,
     ) -> Result<Self, DavError> {
         let mut collected = Self::new(context.limits);
+        let mut truncated = false;
         while let Some(response) = source.next_response(context)? {
             if collected.responses.is_full() {
                 context.report(
@@ -339,9 +397,21 @@ impl MultiStatus {
                     Severity::LimitReached,
                     0,
                 );
+                truncated = true;
                 break;
             }
             collected.push(response, context.meter)?;
+        }
+        truncated |= source.was_truncated();
+        if truncated {
+            if source.sync_token().is_some() {
+                context.report(
+                    DiagnosticCode::DavSyncTokenWithheld,
+                    Severity::LimitReached,
+                    0,
+                );
+            }
+            return Ok(collected);
         }
         if let Some(token) = source.sync_token() {
             collected.sync_token = Some(SyncToken::new(token, context.limits, context.meter)?);

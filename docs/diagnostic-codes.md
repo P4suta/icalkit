@@ -169,3 +169,5 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | dav-status-unreadable | A `DAV:status` element did not carry the status line RFC 4918 section 14.28 requires. | Violation | M4 |
 | dav-response-without-href | A `DAV:response` carried no `href`, so it names no resource. | Violation | M4 |
 | dav-responses-truncated | A multistatus carried more responses than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M4 |
+| dav-property-markup-dropped | A property mixed character data with elements, and the elements were not kept. | Violation | M4 |
+| dav-sync-token-withheld | A synchronization token was withheld because the answer it arrived with was truncated. | LimitReached | M4 |

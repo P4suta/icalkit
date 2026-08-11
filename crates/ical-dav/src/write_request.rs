@@ -60,7 +60,8 @@ use crate::element::{ElementName, Namespace};
 use crate::failure::{DavError, SyntaxError, ValueError};
 use crate::request::{
     CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
-    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, TextMatch, TimeRange,
+    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, QueryShape, TextMatch,
+    TimeRange,
 };
 use crate::sink::ByteSink;
 use crate::text::{write_escaped_attribute, write_escaped_text};
@@ -499,6 +500,18 @@ impl Encoder<'_, '_> {
     /// `Limits` and refuses no depth, so [`Encoder::enter`] is what stands between a caller's
     /// own selection tree and a blown stack.
     fn comp_selection(&mut self, selection: &CompSelection) -> Result<(), DavError> {
+        // RFC 4791 section 9.6.1's grammar is `comp ((allprop | prop*), (allcomp | comp*))`, so
+        // "every property" and "these properties" are alternatives and a value stating both is
+        // one no body can express. The crate's own precedent for an inexpressible value is a
+        // refusal — a `CompFilter` that states a condition and its own negation is
+        // `ValueError::FilterContradiction` — and the third answer, writing `allprop` and
+        // dropping the named properties, sends a request the client never wrote and never
+        // tells it so.
+        if (selection.all_props && !selection.props().is_empty())
+            || (selection.all_comps && !selection.comps().is_empty())
+        {
+            return Err(DavError::Invalid(ValueError::SelectionContradiction));
+        }
         self.open(ElementName::CalendarDataComp)?;
         self.attribute(b"name", selection.name())?;
         if !selects_inside(selection) {
@@ -591,8 +604,14 @@ impl WriteXml for CalendarQuery {
         let vendor = names_a_vendor_property(&self.props);
         let mut encoder = Encoder::new(out, limits, meter);
         encoder.open_root(ElementName::CalendarQuery, vendor)?;
-        if asks_for_a_property(&self.props) {
-            encoder.prop_list(ElementName::Prop, &self.props)?;
+        match self.shape {
+            QueryShape::AllProp => encoder.empty_element(ElementName::Allprop)?,
+            QueryShape::Names => encoder.empty_element(ElementName::Propname)?,
+            QueryShape::Named => {
+                if asks_for_a_property(&self.props) {
+                    encoder.prop_list(ElementName::Prop, &self.props)?;
+                }
+            },
         }
         // An absent filter asks for every resource, which is what the field says it does.
         // RFC 4791 section 9.5's grammar requires the element, so a strict server refuses a
@@ -604,6 +623,11 @@ impl WriteXml for CalendarQuery {
             encoder.begin_content()?;
             encoder.comp_filter(filter)?;
             encoder.close(ElementName::Filter)?;
+        }
+        // Section 9.5 puts the zone after the filter, which is also where a reader of this
+        // body needs it: it says what a floating window in that filter is resolved against.
+        if let Some(zone) = self.timezone.as_ref() {
+            encoder.text_element(ElementName::Timezone, zone.as_bytes())?;
         }
         encoder.close(ElementName::CalendarQuery)
     }

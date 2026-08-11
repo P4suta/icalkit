@@ -33,6 +33,15 @@
 //!   [`SyntaxError::DuplicateAttribute`].
 //! - A tag, a comment, a `CDATA` section or an attribute value the body ends inside:
 //!   [`SyntaxError::Truncated`].
+//! - A character XML 1.0 section 2.2's `Char` production excludes, or octets that are not the
+//!   UTF-8 section 4.3.3 requires of the document entity: [`SyntaxError::ForbiddenCharacter`].
+//!   In an element name, in an attribute value, and in character data alike, and whether the
+//!   character is spelled `&#0;` or written as the octet — one spelling refused under its own
+//!   name while the other went by is how a caller ends up holding a run that is not text. The
+//!   two exceptions are stated rather than accidental: the elements
+//!   [`ElementName::preserves_line_endings`] names, where this reader is already not a
+//!   conformant processor, and `DAV:href`, whose value `value.rs` deliberately models as
+//!   octets because a store may hold a path that is not UTF-8.
 //! - Everything else that is not the XML this crate reads — a `<` inside an attribute value, a
 //!   second root element, a name carrying two colons, `xmlns:p=""`, which XML Namespaces 1.0
 //!   forbids while permitting `xmlns=""`: [`SyntaxError::Malformed`].
@@ -60,12 +69,16 @@
 //! caller's [`crate::TextPolicy`] — this file never chooses that mode, which is what keeps the
 //! `calendar-data` carve-out one element wide.
 //!
-//! **An attribute value is handed back as the octets between its quotes.** [`XmlPull::attribute`]
-//! answers `&'a [u8]` borrowed from the body, so there is nowhere to put a decoded copy; a
-//! caller whose attribute may carry a reference passes the slice to [`decode_text`] itself. The
-//! attributes this crate's vocabulary defines — a `time-range`'s `start` and `end`, a
-//! `comp-filter`'s `name`, a `text-match`'s `collation` — are all `US-ASCII` values with nothing
-//! to escape.
+//! **An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets between its
+//! quotes.** References are resolved and every literal tab, line feed and carriage return is
+//! replaced by one space, before [`XmlPull::attribute`] answers. This file used to hand back
+//! the raw span on the reasoning that the attributes this crate's vocabulary defines — a
+//! `time-range`'s `start` and `end`, a `comp-filter`'s `name`, a `text-match`'s `collation` —
+//! are `US-ASCII` values with nothing to escape. That is an assumption about a cooperative
+//! peer, and the peer is the attacker: a `comp-filter name="VE&#78;T"` selected `VE&#78;T` here
+//! and `VENT` in every conformant processor, so two implementations disagreed about which
+//! components a hostile `calendar-query` matches. The normalized value borrows the reader
+//! rather than the body, because it appears nowhere in the body contiguously.
 //!
 //! # The refusal a rejecting policy owes a foreign element
 //!
@@ -84,13 +97,13 @@ use crate::codec::{XmlEvent, XmlPull};
 use crate::element::{ElementName, Namespace, QName};
 use crate::failure::{DavError, SyntaxError};
 use crate::policy::{DecodeContext, UnknownPolicy};
-use crate::text::{TextMode, decode_text};
+use crate::text::{TextMode, check_chars, decode_text, normalize_attribute};
 
 /// The URI XML Namespaces 1.0 section 3 binds the `xml` prefix to, declared or not.
 ///
 /// RFC 4918 section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, so a
 /// reader that demanded a declaration for it would refuse bodies the specification writes itself.
-const XML_URI: &[u8] = b"http://www.w3.org/XML/1998/namespace";
+pub(crate) const XML_URI: &[u8] = b"http://www.w3.org/XML/1998/namespace";
 
 /// The prefix bound to [`XML_URI`] without a declaration.
 const XML_PREFIX: &[u8] = b"xml";
@@ -165,8 +178,23 @@ struct Binding<'a> {
 struct RawAttribute<'a> {
     /// The name, prefix included.
     name: &'a [u8],
-    /// The value, quotes excluded.
+    /// The value, quotes excluded and nothing resolved.
     value: &'a [u8],
+}
+
+/// One attribute of the element that has just started, resolved and normalized.
+///
+/// The value is a range into [`XmlReader::values`] rather than a slice of the body, because
+/// XML 1.0 section 3.3.3's normalization resolves references and replaces literal whitespace —
+/// so the value an attribute *has* appears nowhere contiguously in the octets it arrived in.
+#[derive(Clone, Copy, Debug)]
+struct Attribute<'a> {
+    /// The resolved name: a namespace and a local name, never a prefix.
+    name: QName<'a>,
+    /// Where the normalized value starts.
+    from: usize,
+    /// Where it ends.
+    to: usize,
 }
 
 /// What one turn of the state machine produced.
@@ -203,7 +231,9 @@ pub struct XmlReader<'a> {
     /// The attributes of the element that has just started, as they lie in the body.
     raw: Vec<RawAttribute<'a>>,
     /// The same attributes with their prefixes resolved, sorted by name.
-    resolved: Vec<(QName<'a>, &'a [u8])>,
+    resolved: Vec<Attribute<'a>>,
+    /// The normalized values those attributes point into, one element's worth at a time.
+    values: Vec<u8>,
     /// Whether an empty-element tag still owes its `End`.
     pending_end: bool,
 }
@@ -228,6 +258,7 @@ impl<'a> XmlReader<'a> {
             bindings: Vec::new(),
             raw: Vec::new(),
             resolved: Vec::new(),
+            values: Vec::new(),
             pending_end: false,
         }
     }
@@ -245,6 +276,17 @@ impl<'a> XmlReader<'a> {
     /// Move the cursor past any whitespace.
     fn eat_space(&mut self) {
         self.at = space_end(self.body, self.at);
+    }
+
+    /// Move the cursor past any whitespace, charging the octets it walked over.
+    ///
+    /// Whitespace outside the root element is octets a peer chose and a reader scanned, which
+    /// is what `docs/adr/0010` means by work. Free scanning is free scanning whether the
+    /// octets are indentation or a comment.
+    fn eat_space_charged(&mut self, meter: &mut Meter) -> Result<(), DavError> {
+        let from = self.at;
+        self.eat_space();
+        charge_span(meter, from, self.at)
     }
 
     /// How deep the reader sits, with the root element at one.
@@ -283,7 +325,7 @@ impl<'a> XmlReader<'a> {
     /// One turn of the machine: look at the cursor, decide what is there, consume it.
     fn step(&mut self, context: &mut DecodeContext<'_>) -> Result<Step<'a>, DavError> {
         if self.stage == Stage::Epilog {
-            return self.step_epilog();
+            return self.step_epilog(context.meter);
         }
         let Some(&byte) = self.body.get(self.at) else {
             // A body that ends with elements still open ended inside them.
@@ -300,7 +342,7 @@ impl<'a> XmlReader<'a> {
             return self.read_end_tag(context).map(Step::Event);
         }
         if self.starts_with(COMMENT_OPEN) {
-            self.skip_comment()?;
+            self.skip_comment(context.meter)?;
             return Ok(Step::Skipped);
         }
         if self.starts_with(b"<!") {
@@ -313,14 +355,14 @@ impl<'a> XmlReader<'a> {
     }
 
     /// After the root element: whitespace and comments, and then nothing.
-    fn step_epilog(&mut self) -> Result<Step<'a>, DavError> {
+    fn step_epilog(&mut self, meter: &mut Meter) -> Result<Step<'a>, DavError> {
         loop {
-            self.eat_space();
+            self.eat_space_charged(meter)?;
             if self.at >= self.body.len() {
                 return Ok(Step::Done);
             }
             if self.starts_with(COMMENT_OPEN) {
-                self.skip_comment()?;
+                self.skip_comment(meter)?;
                 continue;
             }
             // A second root element, or text outside the one there was. Either way the octets
@@ -341,19 +383,21 @@ impl<'a> XmlReader<'a> {
         }
         if self.starts_with(BYTE_ORDER_MARK) {
             self.at = BYTE_ORDER_MARK.len();
+            charge_span(context.meter, 0, self.at)?;
         }
-        self.eat_space();
+        self.eat_space_charged(context.meter)?;
         if self.declaration_here() {
+            let opened = self.at;
             self.read_declaration()?;
+            charge_span(context.meter, opened, self.at)?;
         }
         loop {
-            self.eat_space();
+            self.eat_space_charged(context.meter)?;
             if !self.starts_with(COMMENT_OPEN) {
                 break;
             }
-            self.skip_comment()?;
+            self.skip_comment(context.meter)?;
         }
-        charge_span(context.meter, 0, self.at)?;
         self.check_root_follows()?;
         self.stage = Stage::Content;
         Ok(())
@@ -407,8 +451,17 @@ impl<'a> XmlReader<'a> {
         }
     }
 
-    /// Consume a comment, which carries no event.
-    fn skip_comment(&mut self) -> Result<(), DavError> {
+    /// Consume a comment, charging its octets, and carry no event.
+    ///
+    /// The charge is the whole comment including its delimiters. A comment is markup this
+    /// reader scans octet by octet and hands nobody, and charging nothing for it made the
+    /// aggregate ledger this type documents — "many bodies under one `Meter` are bounded in
+    /// aggregate" — false for exactly the shape a peer would choose: eight mebibytes refused
+    /// as character data cost nothing at all as `<!-- ... -->`, so a peer bought unmetered
+    /// scanning at `max_response_bytes` a request, forever. The scan happens either way; what
+    /// changes is that the ledger now sees it.
+    fn skip_comment(&mut self, meter: &mut Meter) -> Result<(), DavError> {
+        let opened = self.at;
         let from = self.at.saturating_add(COMMENT_OPEN.len());
         let inside = self.body.get(from..).ok_or(SyntaxError::Truncated)?;
         let end = find(inside, COMMENT_CLOSE).ok_or(SyntaxError::Truncated)?;
@@ -416,7 +469,7 @@ impl<'a> XmlReader<'a> {
             .saturating_add(end)
             .saturating_add(COMMENT_CLOSE.len())
             .min(self.body.len());
-        Ok(())
+        charge_span(meter, opened, self.at)
     }
 
     /// Read one run of character data, `CDATA` sections and references included.
@@ -567,6 +620,10 @@ impl<'a> XmlReader<'a> {
         if name.is_empty() || name.iter().any(|byte| is_name_forbidden(*byte)) {
             return Err(SyntaxError::Malformed.into());
         }
+        // A name is characters too. Without this a `NUL` or an octet sequence that is not
+        // UTF-8 could sit inside an element or attribute name, where `is_name_forbidden` only
+        // ever looked for the five octets that would let a name smuggle markup past the scan.
+        check_chars(name)?;
         Ok((name, from.saturating_add(length)))
     }
 
@@ -685,9 +742,10 @@ impl<'a> XmlReader<'a> {
             .any(|binding| binding.prefix == prefix)
     }
 
-    /// Resolve every attribute that is not a declaration, and refuse a name written twice.
+    /// Resolve and normalize every attribute that is not a declaration, refusing a repeat.
     fn resolve_attributes(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         self.resolved.clear();
+        self.values.clear();
         for index in 0..self.raw.len() {
             let Some(attribute) = self.raw.get(index).copied() else {
                 break;
@@ -703,26 +761,37 @@ impl<'a> XmlReader<'a> {
             } else {
                 self.binding_for(prefix).ok_or(SyntaxError::UnboundPrefix)?
             };
-            let footprint = u64::try_from(size_of::<(QName<'a>, &'a [u8])>()).unwrap_or(u64::MAX);
+            let footprint = u64::try_from(size_of::<Attribute<'a>>()).unwrap_or(u64::MAX);
             meter.try_charge_bytes(footprint)?;
+            let from = self.values.len();
+            normalize_attribute(attribute.value, &mut self.values)?;
+            let to = self.values.len();
             self.resolved
                 .try_reserve(1)
                 .map_err(|_| LimitExceeded::Budget)?;
-            self.resolved
-                .push((QName::new(namespace, local), attribute.value));
+            self.resolved.push(Attribute {
+                name: QName::new(namespace, local),
+                from,
+                to,
+            });
         }
         // Sorted so the duplicate check is a walk rather than a comparison of every pair with
         // every other, which is work an attacker would otherwise size. Attribute order is not
         // significant in XML, so nothing above this can tell that it was reordered.
         self.resolved
-            .sort_unstable_by(|left, right| sort_key(left.0).cmp(&sort_key(right.0)));
+            .sort_unstable_by(|left, right| sort_key(left.name).cmp(&sort_key(right.name)));
         for pair in self.resolved.windows(2) {
             let [left, right] = pair else { continue };
-            if same_name(left.0, right.0) {
+            if same_name(left.name, right.name) {
                 return Err(SyntaxError::DuplicateAttribute.into());
             }
         }
         Ok(())
+    }
+
+    /// The normalized value one held attribute carries.
+    fn value_of(&self, held: Attribute<'a>) -> Option<&[u8]> {
+        self.values.get(held.from..held.to)
     }
 
     /// Resolve a name as the document spelled it into a namespace and a local name.
@@ -810,11 +879,22 @@ impl<'a> XmlPull<'a> for XmlReader<'a> {
         self.binding_for(prefix)
     }
 
-    fn attribute(&self, name: QName<'_>) -> Option<&'a [u8]> {
-        self.resolved
+    fn attribute(&self, name: QName<'_>) -> Option<&[u8]> {
+        let held = self
+            .resolved
             .iter()
-            .find(|held| same_name(held.0, name))
-            .map(|held| held.1)
+            .copied()
+            .find(|held| same_name(held.name, name))?;
+        self.value_of(held)
+    }
+
+    fn attribute_count(&self) -> usize {
+        self.resolved.len()
+    }
+
+    fn attribute_at(&self, index: usize) -> Option<(QName<'a>, &[u8])> {
+        let held = self.resolved.get(index).copied()?;
+        Some((held.name, self.value_of(held)?))
     }
 }
 
@@ -1730,5 +1810,84 @@ mod tests {
         assert_eq!(depths, [1, 2, 2, 1]);
         assert_eq!(reader.depth(), 0);
         assert_eq!(reader.offset(), u64::try_from(body.len()).unwrap());
+    }
+
+    /// A comment is octets a peer chose and a reader scanned, so it costs what it costs.
+    ///
+    /// The claim on this type — that many bodies under one `Meter` are bounded in aggregate —
+    /// was false while a comment charged nothing: eight mebibytes refused as character data
+    /// were free as `<!-- ... -->`, and `max_response_bytes` is per body rather than across
+    /// them, so a peer bought unmetered scanning at whatever rate it liked, forever.
+    #[test]
+    fn a_comment_costs_the_octets_it_is_made_of() {
+        let mut body = Vec::from(&br#"<D:multistatus xmlns:D="DAV:"><!--"#[..]);
+        body.extend(core::iter::repeat_n(b'a', 4096));
+        body.extend_from_slice(b"--></D:multistatus>");
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::new(limits);
+        assert_eq!(
+            read(&body, limits, TextPolicy::Verbatim).map(|seen| seen.len()),
+            Ok(2)
+        );
+        let mut sink = IgnoreDiagnostics;
+        {
+            let mut context = DecodeContext::new(limits, &mut meter, &mut sink);
+            let mut reader = XmlReader::new(&body);
+            while reader.next_event(&mut context).unwrap().is_some() {}
+        }
+        assert!(meter.spent() >= 4096, "a comment cost {}", meter.spent());
+    }
+
+    /// An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets in it.
+    ///
+    /// Section 3.3.3 resolves references and replaces every literal tab, line feed and
+    /// carriage return with a space before the value is delivered. Handing the raw octets back
+    /// made a `comp-filter name="VE&#78;T"` select `VE&#78;T` here and `VENT` in every
+    /// conformant processor, which is two implementations disagreeing about which components a
+    /// hostile `calendar-query` matches.
+    #[test]
+    fn an_attribute_value_is_resolved_and_normalized_before_it_is_delivered() {
+        let body = br#"<C:comp-filter xmlns:C="urn:ietf:params:xml:ns:caldav" name="VE&#78;T"
+ x="a&amp;b" y="p	q" />"#;
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::new(limits);
+        let mut sink = IgnoreDiagnostics;
+        let mut context = DecodeContext::new(limits, &mut meter, &mut sink);
+        let mut reader = XmlReader::new(body);
+        let first = reader.next_event(&mut context).unwrap();
+        assert!(matches!(first, Some(XmlEvent::Start { .. })));
+        let named = |local: &'static [u8]| QName::new(Namespace::Other(b""), local);
+        assert_eq!(reader.attribute(named(b"name")), Some(b"VENT".as_slice()));
+        assert_eq!(reader.attribute(named(b"x")), Some(b"a&b".as_slice()));
+        assert_eq!(reader.attribute(named(b"y")), Some(b"p q".as_slice()));
+        // Every attribute is reachable without knowing its name, which is what a reader
+        // keeping a foreign subtree needs in order to keep what was written on it.
+        assert_eq!(reader.attribute_count(), 3);
+    }
+
+    /// A character the `Char` production excludes is refused however it is spelled.
+    ///
+    /// `&#0;` was refused under its own name and the literal octet was not, so one spelling
+    /// was a violation and the other was invisible — and the run handed to the caller was not
+    /// text. The exception is the elements the line-ending carve-out names and `DAV:href`,
+    /// which this crate delivers as octets on purpose and states that it does.
+    #[test]
+    fn a_character_xml_excludes_is_refused_as_an_octet_too() {
+        let cases: [&[u8]; 3] = [
+            b"<D:displayname xmlns:D=\"DAV:\">a\x00b</D:displayname>",
+            b"<D:displayname xmlns:D=\"DAV:\">a\x08b</D:displayname>",
+            b"<D:displayname xmlns:D=\"DAV:\">\xc3\x28</D:displayname>",
+        ];
+        for body in cases {
+            assert_eq!(
+                read_default(body).err(),
+                Some(DavError::Syntax(SyntaxError::ForbiddenCharacter)),
+                "{body:?}"
+            );
+        }
+        // A path a store holds that is not UTF-8 is the one value byte-shaped `Href` exists
+        // for, and refusing it would mean this crate could not model a response it can read.
+        let latin1 = b"<D:href xmlns:D=\"DAV:\">/calendars/ann/\xe9t\xe9.ics</D:href>";
+        assert_eq!(read_default(latin1).map(|seen| seen.len()), Ok(3));
     }
 }

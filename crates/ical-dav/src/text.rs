@@ -23,14 +23,25 @@
 //!
 //! ## What this crate does about it
 //!
-//! Reading is verbatim for the elements [`ElementName::preserves_line_endings`] names — today
-//! `CALDAV:calendar-data` and nothing else — and section 2.11 normalization everywhere else.
+//! Reading is verbatim for the elements [`ElementName::preserves_line_endings`] names and
+//! section 2.11 normalization everywhere else. That set is three elements rather than one,
+//! because RFC 4791 defines three places an iCalendar object travels through this envelope and
+//! the argument does not weaken for the other two: `CALDAV:calendar-data` (section 9.6),
+//! `CALDAV:calendar-timezone` (section 5.2.2, "a valid iCalendar object containing exactly one
+//! VTIMEZONE component") and `CALDAV:timezone` (section 9.5). A client that reads a
+//! collection's timezone under a folding read and `PROPPATCH`es it back rewrites the stored
+//! object, which is the same harm one property over.
+//!
 //! Inside a verbatim element, references are still resolved, because a reference is markup
 //! rather than a line break: `&#13;&#10;` from a conformant writer and a literal `CRLF` from
 //! Radicale arrive at `ical-core` as the same two octets, which is the property that makes
-//! this a scoped departure rather than a second dialect.
+//! this a scoped departure rather than a second dialect. Inside it, XML 1.0 section 2.2's
+//! `Char` production is not enforced either, and that is one departure rather than two: an
+//! element whose octets are handed back as they arrived is an element this reader has already
+//! stopped being a conformant processor inside, and an `.ics` whose fold splits a codepoint is
+//! a resource ADR 0001 guarantees this workspace round-trips.
 //!
-//! That departure is real, it is deliberate, and it is one element wide: inside it this reader
+//! That departure is real, it is deliberate, and it is scoped: inside it this reader
 //! is **not** a conformant XML 1.0 processor. Two documents that are equal as XML infosets
 //! come out of it as different octets, so it must never be used to canonicalize or to verify
 //! signed XML. A caller that wants strict conformance sets [`TextPolicy::Normalized`], gets
@@ -91,6 +102,16 @@ pub enum TextPolicy {
 pub enum TextMode {
     /// Section 2.11 normalization, for an element whose line endings are its layout.
     Normalized,
+    /// The same, for an element whose value this crate delivers as octets rather than as text.
+    ///
+    /// One element: `DAV:href`. `value.rs` states the decision it follows from — "a server is
+    /// free to emit octets that are not UTF-8 in a path, and a type that cannot model a
+    /// response one can read is the failure this workspace exists to prevent" — and a reader
+    /// that held those octets to XML 1.0 section 2.2's `Char` production would refuse the
+    /// response `Href` is byte-shaped in order to model. RFC 3986 requires a URI reference to
+    /// be `US-ASCII` and stores emit paths that are not; both facts are true and this crate
+    /// carries what arrived.
+    NormalizedOctets,
     /// The octets as they arrived, for an element whose line endings are its content.
     Verbatim,
     /// Section 2.11 normalization of an element that would otherwise have been verbatim.
@@ -109,17 +130,49 @@ impl TextMode {
             Some(name) => name.preserves_line_endings(),
             None => false,
         };
-        match (preserving, policy) {
-            (false, _) => Self::Normalized,
-            (true, TextPolicy::Verbatim) => Self::Verbatim,
-            (true, TextPolicy::Normalized) => Self::NormalizedPayload,
+        if !preserving {
+            return match element {
+                Some(ElementName::Href) => Self::NormalizedOctets,
+                _ => Self::Normalized,
+            };
+        }
+        match policy {
+            TextPolicy::Verbatim => Self::Verbatim,
+            TextPolicy::Normalized => Self::NormalizedPayload,
         }
     }
 
     /// Whether this mode folds line breaks.
     #[must_use]
     pub const fn normalizes(self) -> bool {
-        matches!(self, Self::Normalized | Self::NormalizedPayload)
+        matches!(
+            self,
+            Self::Normalized | Self::NormalizedOctets | Self::NormalizedPayload
+        )
+    }
+
+    /// Whether this mode holds its run to XML 1.0 section 2.2's `Char` production.
+    ///
+    /// True everywhere the run is delivered as text, and false for the two places this crate
+    /// delivers octets on purpose: inside the elements the line-ending carve-out names, and
+    /// inside a `DAV:href`. Both departures are stated rather than discovered, and both are
+    /// about a value a peer holds that would otherwise become unreadable rather than safe.
+    #[must_use]
+    pub const fn checks_characters(self) -> bool {
+        matches!(self, Self::Normalized)
+    }
+
+    /// Whether this mode is inside the elements the line-ending carve-out names.
+    ///
+    /// The carve-out's boundary is also where XML 1.0 section 2.2's `Char` production stops
+    /// being enforced, and that is one departure rather than two: an element whose octets are
+    /// handed back as they arrived is an element this reader has already stopped being a
+    /// conformant processor inside. An `.ics` a server stores may hold a fold that splits a
+    /// codepoint — `docs/adr/0001` guarantees that file round-trips — and refusing to *read*
+    /// it here would lose a resource the peer is holding rather than protect anybody from it.
+    #[must_use]
+    pub const fn preserves(self) -> bool {
+        matches!(self, Self::Verbatim | Self::NormalizedPayload)
     }
 }
 
@@ -240,6 +293,16 @@ pub fn decode_text<'a>(
     let length = u32::try_from(raw.len()).map_err(|_| LimitExceeded::Text)?;
     meter.try_charge_text(length)?;
 
+    // The span is held to XML 1.0 section 2.2's `Char` production and to section 4.3.3's
+    // requirement that the document entity be well-formed UTF-8, before anything is decoded
+    // and before the borrowed fast path below. `&#0;` was already refused under its own name
+    // by `push_character_reference`; the literal octet is the same code point in the same
+    // position, and accepting one spelling while refusing the other handed a caller a run
+    // that is not text and re-emitted it into a document no peer can parse.
+    if mode.checks_characters() {
+        check_chars(raw)?;
+    }
+
     if !needs_reassembly(raw, mode) {
         return Ok(DecodedText {
             run: TextRun::Wire(raw),
@@ -284,7 +347,7 @@ fn report_reassembly(
         (TextMode::Verbatim | TextMode::NormalizedPayload, _) => {
             DiagnosticCode::DavCalendarDataCopied
         },
-        (TextMode::Normalized, _) => return,
+        (TextMode::Normalized | TextMode::NormalizedOctets, _) => return,
     };
     report_diagnostic(sink, meter, Diagnostic::new(code, Severity::Note, location));
 }
@@ -332,13 +395,68 @@ fn push_literal(run: &[u8], mode: TextMode, out: &mut Vec<u8>) -> Result<bool, D
     Ok(folded)
 }
 
+/// Refuse octets no conformant XML processor would deliver as characters.
+///
+/// Two rules in one pass, because they are one question — "is this a run of characters?" —
+/// asked of octets a peer chose. XML 1.0 section 4.3.3 makes the document entity UTF-8, and
+/// section 2.2's `Char` production excludes `U+0000`, the C0 controls other than tab, line
+/// feed and carriage return, the surrogates, and `U+FFFE`/`U+FFFF`.
+pub(crate) fn check_chars(bytes: &[u8]) -> Result<(), DavError> {
+    let text = core::str::from_utf8(bytes).map_err(|_| SyntaxError::ForbiddenCharacter)?;
+    if text.chars().all(is_xml_char) {
+        Ok(())
+    } else {
+        Err(SyntaxError::ForbiddenCharacter.into())
+    }
+}
+
+/// Normalize an attribute value the way XML 1.0 section 3.3.3 requires, into `out`.
+///
+/// The value between the quotes is not the value the attribute has. Section 3.3.3 resolves
+/// character and entity references in it and replaces every literal tab, line feed and
+/// carriage return — the last two after section 2.11 has already folded `CRLF` to one line
+/// feed — with a single space, all before the value is delivered. Handing back the raw octets
+/// made a `comp-filter name="VE&#78;T"` name a component spelled `VE&#78;T` here and `VENT` in
+/// every conformant processor, so two implementations disagreed about which components a
+/// hostile `calendar-query` selects; it also made the request round trip grow by four octets a
+/// hop, because the encoder escaped the `&` that the reader had never resolved.
+///
+/// This crate's attributes are all `CDATA`-typed, so no further whitespace collapsing applies.
+pub(crate) fn normalize_attribute(raw: &[u8], out: &mut Vec<u8>) -> Result<(), DavError> {
+    let mut at = 0;
+    while let Some(&byte) = raw.get(at) {
+        match byte {
+            b'&' => {
+                at = push_reference(raw, at, out)?;
+                continue;
+            },
+            b'\r' => {
+                push(out, b" ")?;
+                // Section 2.11 makes `CRLF` one line break, and section 3.3.3 then makes that
+                // one break one space rather than two.
+                let paired = raw.get(at.saturating_add(1)) == Some(&b'\n');
+                at = at.saturating_add(if paired { 2 } else { 1 });
+                continue;
+            },
+            b'\n' | b'\t' => push(out, b" ")?,
+            _ => push(out, &[byte])?,
+        }
+        at = at.saturating_add(1);
+    }
+    check_chars(out)
+}
+
 /// Resolve one reference into `out` and answer where the octet after its `;` is.
 ///
 /// Nothing beyond the five entities XML 1.0 section 4.6 predefines is resolvable, because this
 /// crate accepts no `DOCTYPE` and so nothing can ever have been declared. An undefined name is
 /// refused rather than passed through: a reader that emitted `&file;` unchanged would hand its
 /// caller octets the peer did not write, and one that dropped it would hide an attempt.
-fn push_reference(raw: &[u8], start: usize, out: &mut Vec<u8>) -> Result<usize, DavError> {
+pub(crate) fn push_reference(
+    raw: &[u8],
+    start: usize,
+    out: &mut Vec<u8>,
+) -> Result<usize, DavError> {
     let window = raw
         .get(start..)
         .and_then(|rest| rest.get(..MAX_REFERENCE_BYTES.min(rest.len())))

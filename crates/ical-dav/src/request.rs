@@ -22,6 +22,7 @@ use ical_core::{Instant, LimitExceeded, Limits, Meter};
 use crate::bound::Bounded;
 use crate::element::ElementName;
 use crate::failure::{DavError, ValueError};
+use crate::response::CalendarPayload;
 use crate::value::{ExtensionName, Href, bounded_cap, copy};
 
 /// The name of a property, whether or not this crate has a row for it.
@@ -81,13 +82,42 @@ pub enum PropFind {
     Props(PropRequest),
 }
 
+/// Which of RFC 4791 section 9.5's three property shapes a `calendar-query` asks with.
+///
+/// The production is
+/// `calendar-query ((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)`, so all three
+/// are bodies a conformant client sends and a server has to read. A field that was a property
+/// list and nothing else could express one of them: a client here could not send `allprop` and
+/// a server here refused the body outright with `DavError::Unexpected`, which is a conformant
+/// request rejected rather than a shape nobody uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QueryShape {
+    /// `DAV:prop` — exactly the properties named beside it.
+    #[default]
+    Named,
+    /// `DAV:allprop` — every property the server volunteers.
+    AllProp,
+    /// `DAV:propname` — the names a resource carries, with no values.
+    Names,
+}
+
 /// A `CALDAV:calendar-query` body, RFC 4791 section 9.5.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CalendarQuery {
-    /// What to return for each matching resource.
+    /// Which of the three property shapes section 9.5 defines this query asks with.
+    pub shape: QueryShape,
+    /// What to return for each matching resource, when the shape names properties.
     pub props: PropRequest,
     /// Which resources match. Absent asks for all of them.
     pub filter: Option<CompFilter>,
+    /// The zone a floating `time-range` in the filter is resolved in, section 9.9.
+    ///
+    /// Carried because the alternative is not "ignored" but "answered differently": a server
+    /// that resolves a floating window in a zone of its own choosing answers a question the
+    /// client did not ask, and a proxy that re-encodes the query without the zone changes what
+    /// the query means. The value is an iCalendar object, so it travels as a payload with its
+    /// line-ending witness beside it like every other one.
+    pub timezone: Option<CalendarPayload>,
 }
 
 impl CalendarQuery {
@@ -95,8 +125,10 @@ impl CalendarQuery {
     #[must_use]
     pub fn new(limits: Limits) -> Self {
         Self {
+            shape: QueryShape::Named,
             props: PropRequest::new(limits),
             filter: None,
+            timezone: None,
         }
     }
 }

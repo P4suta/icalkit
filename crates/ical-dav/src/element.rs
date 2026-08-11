@@ -258,6 +258,12 @@ pub enum ElementName {
     TextMatch,
     /// `CALDAV:time-range`, RFC 4791 section 9.9.
     TimeRange,
+    /// `CALDAV:timezone`, RFC 4791 section 9.5.
+    ///
+    /// The zone a floating `time-range` inside a `calendar-query` is resolved in (section
+    /// 9.9). Its value is an iCalendar object, so its line endings are its content in exactly
+    /// the way `calendar-data`'s are.
+    Timezone,
     /// `CALDAV:comp` inside a `calendar-data` request, RFC 4791 section 9.6.1.
     CalendarDataComp,
     /// `CALDAV:allcomp` inside a `calendar-data` request, RFC 4791 section 9.6.2.
@@ -340,7 +346,7 @@ pub enum ElementName {
 /// A const array rather than a derived iterator, because [`ElementName::resolve`] scans it and
 /// a test asserts that no two rows share a namespace and a local name — which is the property
 /// that makes the scan's first hit the only hit.
-const ALL: [ElementName; 77] = [
+const ALL: [ElementName; 78] = [
     ElementName::Multistatus,
     ElementName::Response,
     ElementName::Propstat,
@@ -386,6 +392,7 @@ const ALL: [ElementName; 77] = [
     ElementName::IsNotDefined,
     ElementName::TextMatch,
     ElementName::TimeRange,
+    ElementName::Timezone,
     ElementName::CalendarDataComp,
     ElementName::CalendarDataAllcomp,
     ElementName::CalendarDataAllprop,
@@ -445,14 +452,28 @@ impl ElementName {
 
     /// Whether this element's character data carries line endings that are its content.
     ///
-    /// True for `CALDAV:calendar-data` and nothing else. An iCalendar object's `CRLF`
-    /// terminators are RFC 5545 section 3.1 syntax rather than the file's layout, and XML 1.0
-    /// section 2.11 would fold them away before any of this crate saw them. What this
-    /// predicate scopes — a deliberate, stated, one-element departure from that rule — is
-    /// [`crate::TextMode`]'s subject, and the reasoning is in `docs/adr/0004`.
+    /// True for every element whose value RFC 4791 defines as an iCalendar object, and for
+    /// nothing else. An iCalendar object's `CRLF` terminators are RFC 5545 section 3.1 syntax
+    /// rather than the file's layout, and XML 1.0 section 2.11 would fold them away before any
+    /// of this crate saw them. What this predicate scopes — a deliberate, stated departure
+    /// from that rule — is [`crate::TextMode`]'s subject, and the reasoning is in
+    /// `docs/adr/0004`.
+    ///
+    /// The set is three elements rather than one because RFC 4791 defines three places an
+    /// iCalendar object travels through the envelope, and the argument for the carve-out does
+    /// not weaken for the other two. `CALDAV:calendar-data` is section 9.6.
+    /// `CALDAV:calendar-timezone` is section 5.2.2 — "a valid iCalendar object containing
+    /// exactly one VTIMEZONE component" — and a client that reads a collection's timezone
+    /// under a folding read and `PROPPATCH`es it back rewrites the stored object, which is the
+    /// exact harm the carve-out exists to prevent, one property over. `CALDAV:timezone` is
+    /// section 9.5's copy of the same value inside a `calendar-query`, and a server that
+    /// resolved a floating window against a folded zone would answer a different question.
     #[must_use]
     pub const fn preserves_line_endings(self) -> bool {
-        matches!(self, Self::CalendarData)
+        matches!(
+            self,
+            Self::CalendarData | Self::CalendarTimezone | Self::Timezone
+        )
     }
 
     /// Whether this build can honor the element.
@@ -523,6 +544,7 @@ impl ElementName {
             | Self::IsNotDefined
             | Self::TextMatch
             | Self::TimeRange
+            | Self::Timezone
             | Self::CalendarDataComp
             | Self::CalendarDataAllcomp
             | Self::CalendarDataAllprop
@@ -610,6 +632,7 @@ impl ElementName {
             Self::IsNotDefined => "is-not-defined",
             Self::TextMatch => "text-match",
             Self::TimeRange => "time-range",
+            Self::Timezone => "timezone",
             Self::CalendarDataComp => "comp",
             Self::CalendarDataAllcomp => "allcomp",
             Self::Expand => "expand",
@@ -703,12 +726,23 @@ mod tests {
     }
 
     #[test]
-    fn one_element_and_only_one_keeps_its_line_endings() {
+    fn the_elements_that_keep_their_line_endings_are_the_icalendar_ones() {
+        // Three rows, and every one of them is an element RFC 4791 defines as carrying an
+        // iCalendar object: section 9.6's `calendar-data`, section 5.2.2's `calendar-timezone`
+        // and section 9.5's `timezone`. The carve-out is scoped by that fact rather than by a
+        // count, so this asserts the set and not its size.
         let preserving: Vec<ElementName> = ALL
             .into_iter()
             .filter(|row| row.preserves_line_endings())
             .collect();
-        assert_eq!(preserving, [ElementName::CalendarData]);
+        assert_eq!(
+            preserving,
+            [
+                ElementName::CalendarData,
+                ElementName::Timezone,
+                ElementName::CalendarTimezone,
+            ]
+        );
     }
 
     #[test]

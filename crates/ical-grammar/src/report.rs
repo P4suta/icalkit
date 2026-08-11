@@ -431,6 +431,13 @@ pub enum DiagnosticCode {
     /// are not the octets the server stored: writing them back changes the resource's line
     /// endings and its `ETag`, which is a silent edit to somebody else's data. Only a reader
     /// running under the normalizing text policy can produce this.
+    ///
+    /// "A `calendar-data` payload" is the meaning and the scope is every element RFC 4791
+    /// defines as carrying an iCalendar object, which is three: `CALDAV:calendar-data`,
+    /// `CALDAV:calendar-timezone` (section 5.2.2) and `CALDAV:timezone` (section 9.5). The
+    /// harm is identical in all three — a client that reads a collection's timezone and writes
+    /// it back rewrites the stored object — so a second code would have said the same thing
+    /// under a second name.
     DavCalendarDataLineEndingsFolded,
     /// A property was kept as octets because this crate has no model for its value.
     ///
@@ -456,6 +463,24 @@ pub enum DiagnosticCode {
     /// forty-thousand-resource collection from a forged flood. A caller that must read the
     /// whole collection drains it one response at a time instead of building it.
     DavResponsesTruncated,
+    /// A property mixed character data with elements, and the elements were not kept.
+    ///
+    /// A property's value is character data or it is a fragment of elements; `PropValue` holds
+    /// one or the other, because a single run of octets cannot say where a peer's markup sat
+    /// among a peer's text without inventing an order between them. A property that carries
+    /// both keeps its character data and loses its elements, and this says so — the loss is a
+    /// violation rather than a note because `docs/adr/0001`'s whole claim is that nothing is
+    /// dropped without the caller being able to see it. No mainstream server writes this
+    /// shape; a body an intermediary annotated does.
+    DavPropertyMarkupDropped,
+    /// A synchronization token was withheld because the answer it arrived with was truncated.
+    ///
+    /// RFC 6578 section 3.4 makes `DAV:sync-token` a statement about the whole of a report. A
+    /// caller storing the token of a report cut short at its own bound would never be told
+    /// about the changes it did not receive, because no later synchronization mentions them.
+    /// The responses that were read are intact, which is why this is the channel for work cut
+    /// short rather than the one for a fault.
+    DavSyncTokenWithheld,
 }
 
 impl DiagnosticCode {
@@ -550,6 +575,8 @@ impl DiagnosticCode {
             Self::DavStatusUnreadable => "dav-status-unreadable",
             Self::DavResponseWithoutHref => "dav-response-without-href",
             Self::DavResponsesTruncated => "dav-responses-truncated",
+            Self::DavPropertyMarkupDropped => "dav-property-markup-dropped",
+            Self::DavSyncTokenWithheld => "dav-sync-token-withheld",
         }
     }
 }

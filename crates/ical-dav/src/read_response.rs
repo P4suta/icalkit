@@ -22,14 +22,23 @@
 //! returned it. Reading an unstated outcome as `200` is how a client shows an empty calendar
 //! and calls it synchronized.
 //!
-//! **A property whose value has no modeled shape is kept and reported.** `PropValue` has no
-//! list variant and no tree, so a property carrying several `href`s or markup this crate has no
-//! model for becomes [`PropValue::Unmodeled`] with `DiagnosticCode::DavPropertyUnmodeled`
-//! beside it. What `Unmodeled` holds is the character data inside the property, descendants
-//! included, concatenated in document order: the markup between the runs is not reconstructed,
-//! because this reader is handed events and never spans. A caller that needs an extension
-//! property's structure still has the body it was read from; what it does not have to fear is
-//! that the octets were dropped.
+//! **A property whose value has no modeled shape is kept and reported**, in one of the two
+//! shapes a property's value can be. `PropValue` has no list variant and no tree, so a property
+//! carrying several `href`s or an extension this crate has no row for is kept whole and
+//! reported with `DiagnosticCode::DavPropertyUnmodeled`.
+//!
+//! Which shape depends on what was inside the element, because a property's value is character
+//! data or it is elements. Content that is elements with nothing but layout between them is the
+//! peer's own structure and becomes [`PropValue::Markup`]: the subtree re-serialized in this
+//! crate's prefixes, each element declaring the namespace it resolved to, every text run
+//! escaped. Content that is character data becomes [`PropValue::Unmodeled`], the octets
+//! concatenated in document order, and it is written back *escaped* — text a peer escaped stays
+//! text, or a proxy would promote a peer's string into markup of its own.
+//!
+//! A property that carries both keeps its character data and reports
+//! `DiagnosticCode::DavPropertyMarkupDropped` at `Severity::Violation`. One `Box<[u8]>` cannot
+//! say where a peer's markup sat among a peer's text without inventing an order between them,
+//! and saying so is better than inventing one. No mainstream server writes that shape.
 //!
 //! **A response naming no resource is not delivered.** RFC 4918 section 14.24 requires an
 //! `href`, [`DavResponse::href`] is not an `Option`, and a response that names nothing cannot
@@ -52,12 +61,13 @@ use alloc::vec::Vec;
 use ical_core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
 
 use crate::codec::{ResponseSource, XmlEvent, XmlPull};
-use crate::element::{ElementName, QName};
+use crate::element::{ElementName, Namespace, QName};
 use crate::failure::DavError;
 use crate::policy::{DecodeContext, UnknownPolicy};
+use crate::reader::XML_URI;
 use crate::request::PropName;
 use crate::response::{CalendarPayload, DavProperty, DavResponse, ErrorBody, PropStat, PropValue};
-use crate::text::DecodedText;
+use crate::text::{DecodedText, LineEndings, TextRun, write_escaped_attribute, write_escaped_text};
 use crate::value::{ETag, ExtensionName, Href, ResourceType, Status, copy};
 
 /// The status a group of properties carries when the server stated none this reader can read.
@@ -86,6 +96,8 @@ pub struct MultiStatusReader<'body, 'pull> {
     stage: Stage,
     /// The RFC 6578 token the body ended with, once it has been reached.
     token: Option<Box<[u8]>>,
+    /// Whether a bound ended the stream before the body did.
+    truncated: bool,
 }
 
 /// How far through the document a reader has got.
@@ -111,6 +123,7 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
             events,
             stage: Stage::Unopened,
             token: None,
+            truncated: false,
         }
     }
 
@@ -212,6 +225,7 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
                     at,
                 );
                 self.stage = Stage::Finished;
+                self.truncated = true;
                 Ok(false)
             },
             Err(other) => Err(DavError::Limit(other)),
@@ -263,13 +277,16 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
                     group.status = self.status_of(child.depth, context)?;
                     stated = true;
                 },
-                // RFC 4918 section 14.22 permits an `error` inside a `propstat` and this crate
-                // carries one error body per response. The conditions are the same closed
-                // vocabulary either way, and dropping them would discard the only
-                // machine-readable reason a property was refused.
+                // RFC 4918 section 14.22's grammar is `propstat (prop, status, error?,
+                // responsedescription?)`, so an error inside a group explains *that group*.
+                // It stays on the group: two propstats naming two different preconditions
+                // have said two different things, and merging them into the response's own
+                // bag left a client unable to read the condition that belongs to the
+                // property it asked about — and left the writing direction with nowhere to
+                // put it back.
                 Some(ElementName::Error) => {
                     let named = self.error_body(child.depth, context)?;
-                    parts.absorb_error(named, context.meter)?;
+                    absorb_into(&mut group.error, named, context.meter)?;
                 },
                 Some(_) => self.events.skip_element(context)?,
                 None => self.foreign(context)?,
@@ -322,12 +339,28 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         while let Some(event) = self.events.next_event(context)? {
             match event {
                 XmlEvent::End { depth: at, .. } if at <= child.depth => break,
-                XmlEvent::Text(run) => parts.absorb(run, context)?,
+                // A run belongs to the property itself only when nothing is open inside it.
+                // Text under a child element is that child's content, not character data
+                // beside it, so it does not make the property mixed.
+                XmlEvent::Text(run) => {
+                    let own = self.events.depth() <= child.depth;
+                    parts.absorb(run, own, context)?;
+                },
                 XmlEvent::Start { name, known, depth } => {
                     let inner = Opened { name, known, depth };
+                    // The start tag is recorded before the child is acted on, because acting
+                    // on it may consume the whole subtree and the fragment has to stay
+                    // balanced whichever branch was taken.
+                    if parts.markup {
+                        open_in_fragment(&*self.events, &mut parts, name, context)?;
+                    }
                     self.in_property(&mut parts, inner, context)?;
                 },
-                XmlEvent::End { .. } => {},
+                XmlEvent::End { name, .. } => {
+                    if parts.markup {
+                        close_in_fragment(&mut parts, name, context)?;
+                    }
+                },
             }
         }
         let at = self.events.offset();
@@ -344,11 +377,23 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         parts.child_count = parts.child_count.saturating_add(1);
         if let Some(holder) = parts.resource.as_mut() {
             claim(holder, child, context.meter)?;
+            // A `resourcetype` answers with its claims and never with a fragment, so the one
+            // being built cannot be its value and is dropped rather than left half-written by
+            // the subtree this skips.
+            parts.drop_fragment();
             return self.events.skip_element(context);
         }
         if parts.shape == Shape::Reference && child.known == Some(ElementName::Href) {
             parts.href_count = parts.href_count.saturating_add(1);
             let found = self.href_of(child.depth, context)?;
+            // `href_of` consumed the element's own end tag, so the fragment is closed here
+            // with the value that came out of it — a reference-shaped property whose children
+            // turn out not to be the one `href` this shape admits still has to be keepable.
+            if parts.markup {
+                let octets = found.as_ref().map(Href::as_bytes).unwrap_or_default();
+                parts.push_escaped_text(octets, context)?;
+                close_in_fragment(parts, child.name, context)?;
+            }
             if parts.first_href.is_none() {
                 parts.first_href = found;
             }
@@ -434,28 +479,48 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         Ok(())
     }
 
-    /// Read one element's character data, skipping any markup inside it.
+    /// Read one element's character data whole, skipping any markup inside it.
+    ///
+    /// Every run, not the first one. An XML comment carries no event and therefore splits a
+    /// text node in two, so `<D:href>/c/1.ics<!-- --># /2.ics</D:href>` reaches this loop as
+    /// two runs of one value. Keeping the first and discarding the rest with nothing reported
+    /// made an `href` and a `DAV:sync-token` into values the peer never sent — and a token is
+    /// the one value a client hands straight back to the server, so an earlier-looking one is
+    /// a resynchronization that silently covers changes it never received.
     fn text_of(
         &mut self,
         depth: u16,
         context: &mut DecodeContext<'_>,
     ) -> Result<Option<DecodedText<'body>>, DavError> {
         let mut held: Option<DecodedText<'body>> = None;
-        loop {
-            let Some(event) = self.events.next_event(context)? else {
-                return Ok(held);
-            };
+        let mut joined: Vec<u8> = Vec::new();
+        while let Some(event) = self.events.next_event(context)? {
             match event {
-                XmlEvent::End { depth: at, .. } if at <= depth => return Ok(held),
+                XmlEvent::End { depth: at, .. } if at <= depth => break,
                 XmlEvent::Text(run) => {
-                    if held.is_none() && !is_blank(run.run.as_bytes()) {
+                    let Some(first) = held.as_ref() else {
                         held = Some(run);
+                        continue;
+                    };
+                    if joined.is_empty() {
+                        append(&mut joined, first.run.as_bytes(), context)?;
                     }
+                    append(&mut joined, run.run.as_bytes(), context)?;
                 },
                 XmlEvent::Start { .. } => self.events.skip_element(context)?,
                 XmlEvent::End { .. } => {},
             }
         }
+        if joined.is_empty() {
+            return Ok(held);
+        }
+        // The witness belongs to the octets it travels with, so a value assembled out of
+        // several runs is classified over the assembly rather than over the first of them.
+        let line_endings = LineEndings::of(&joined);
+        Ok(Some(DecodedText {
+            run: TextRun::Reassembled(joined.into_boxed_slice()),
+            line_endings,
+        }))
     }
 
     /// The next child of the element that opened at `depth`, or `None` at its end.
@@ -515,6 +580,10 @@ impl ResponseSource for MultiStatusReader<'_, '_> {
 
     fn sync_token(&self) -> Option<&[u8]> {
         self.token.as_deref()
+    }
+
+    fn was_truncated(&self) -> bool {
+        self.truncated
     }
 }
 
@@ -598,19 +667,9 @@ impl ResponseParts {
         }
     }
 
-    /// Add the conditions an error body named to the ones already collected.
+    /// Add the conditions a response-level error body named to the ones already collected.
     fn absorb_error(&mut self, named: ErrorBody, meter: &mut Meter) -> Result<(), DavError> {
-        if self.error.is_none() {
-            self.error = Some(named);
-            return Ok(());
-        }
-        let Some(holding) = self.error.as_mut() else {
-            return Ok(());
-        };
-        for condition in named.conditions() {
-            holding.push(condition.clone(), meter)?;
-        }
-        Ok(())
+        absorb_into(&mut self.error, named, meter)
     }
 
     /// The response these parts amount to, or `None` for one that names no resource.
@@ -657,8 +716,17 @@ enum Shape {
     Resource,
     /// A property whose value is one `DAV:href`.
     Reference,
-    /// Anything else, whose value is its character data if it has any.
+    /// A property of the closed vocabulary whose value is its character data.
     Plain,
+    /// A property outside the vocabulary, whose value this crate never interpreted.
+    ///
+    /// Apart from [`Shape::Plain`] because the two are different claims and one direction has
+    /// to be able to state the one the other reads. `PropValue::Text` says "this crate read
+    /// this property's value as text"; `PropValue::Unmodeled` says "this crate has no model
+    /// for this property and kept what was inside it". A reader that answered `Text` for an
+    /// extension property made the second unstatable, so a server proxying one wrote a value
+    /// its own client could not read back as the value it wrote.
+    Foreign,
 }
 
 impl Shape {
@@ -681,7 +749,8 @@ impl Shape {
                 | ElementName::ScheduleInboxUrl
                 | ElementName::ScheduleOutboxUrl,
             ) => Self::Reference,
-            _ => Self::Plain,
+            Some(_) => Self::Plain,
+            None => Self::Foreign,
         }
     }
 }
@@ -699,6 +768,15 @@ struct ValueParts<'body> {
     first_href: Option<Href>,
     /// A `DAV:resourcetype`'s claims, built only for that shape.
     resource: Option<ResourceType>,
+    /// The peer's own elements, re-serialized in this crate's spelling.
+    fragment: Vec<u8>,
+    /// Whether that fragment is still a value this property could have.
+    ///
+    /// It starts true and is put out for one reason: a run of character data that is more
+    /// than layout. A property's value is text or it is elements, and one that carries both
+    /// keeps its text — so the fragment stops being built at the first non-blank run rather
+    /// than being grown to no purpose behind every `calendar-data` payload in a body.
+    markup: bool,
     /// Elements seen inside this property, at any depth.
     child_count: u32,
     /// `DAV:href` children seen.
@@ -717,9 +795,40 @@ impl<'body> ValueParts<'body> {
                 Shape::Resource => Some(ResourceType::new(limits)),
                 _ => None,
             },
+            fragment: Vec::new(),
+            markup: true,
             child_count: 0,
             href_count: 0,
         }
+    }
+
+    /// Stop building a fragment, and release what has been built.
+    fn drop_fragment(&mut self) {
+        self.markup = false;
+        self.fragment = Vec::new();
+    }
+
+    /// Append literal octets to the fragment, bounded and charged like any other retention.
+    fn push_fragment(
+        &mut self,
+        bytes: &[u8],
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        append(&mut self.fragment, bytes, context)
+    }
+
+    /// Append character data to the fragment, escaped as this crate escapes every other run.
+    ///
+    /// The escaping is what keeps the security property: a fragment holds markup a peer really
+    /// sent, and text a peer sent stays text inside it rather than becoming a second element.
+    fn push_escaped_text(
+        &mut self,
+        bytes: &[u8],
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        let mut escaped: Vec<u8> = Vec::new();
+        write_escaped_text(&mut escaped, bytes)?;
+        self.push_fragment(&escaped, context)
     }
 
     /// The character data collected so far.
@@ -735,15 +844,26 @@ impl<'body> ValueParts<'body> {
     }
 
     /// Record one run of character data.
+    ///
+    /// Every run, whatever is in it. A blank run used to be dropped as layout, on the
+    /// reasoning that the newline a pretty-printer puts inside `<D:resourcetype>` is not a
+    /// value — which is true of `resourcetype` and of nothing else. Applied unconditionally it
+    /// deleted the `CRLF` that terminates a content line whenever two comments left it alone
+    /// in a run inside a `calendar-data`, welding two iCalendar properties into one and
+    /// changing the object's `UID`; and it read a `DAV:displayname` whose value is a space as
+    /// a property that arrived empty, which is a different fact. The shapes that really do
+    /// have layout around them — `resourcetype`, a reference-shaped property — answer out of
+    /// their children and never out of this text at all.
     fn absorb(
         &mut self,
         decoded: DecodedText<'body>,
+        own: bool,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
-        if is_blank(decoded.run.as_bytes()) {
-            // Layout between child elements is not a value: the newline a pretty-printer puts
-            // inside `<D:resourcetype>` must not make an empty property look text-valued.
-            return Ok(());
+        if own && !is_blank(decoded.run.as_bytes()) {
+            self.drop_fragment();
+        } else if self.markup {
+            self.push_escaped_text(decoded.run.as_bytes(), context)?;
         }
         let Some(held) = self.text.take() else {
             self.text = Some(decoded);
@@ -772,6 +892,7 @@ impl<'body> ValueParts<'body> {
             Shape::Entity => self.entity(at, context),
             Shape::Reference => self.reference(at, context),
             Shape::Resource | Shape::Plain => self.plain(at, context),
+            Shape::Foreign => self.unmodeled(at, context),
         }
     }
 
@@ -825,12 +946,178 @@ impl<'body> ValueParts<'body> {
         self.unmodeled(at, context)
     }
 
-    /// Keep the octets and say that nothing interpreted them.
+    /// Keep what the property held and say that nothing interpreted it.
+    ///
+    /// Two answers, because a property's value is two different kinds of thing. Elements with
+    /// nothing but layout between them are the peer's own structure and are kept as a
+    /// fragment — RFC 4918 section 9.1.3's own example is `<R:bigbox><R:BoxType>…`, and
+    /// flattening that to `Box type A` is a loss the next reader cannot detect. Character data
+    /// is kept as character data and written back escaped, so that a string a peer wrote
+    /// cannot become an element this crate did not receive.
+    ///
+    /// A property carrying both keeps the text and reports the elements dropped. One
+    /// `Box<[u8]>` cannot say where a peer's markup sat among a peer's text without inventing
+    /// an order between them, and inventing one is worse than saying so.
     fn unmodeled(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
         context.report(DiagnosticCode::DavPropertyUnmodeled, Severity::Note, at);
+        if self.child_count > 0 && self.markup {
+            return Ok(PropValue::Markup(self.fragment.into_boxed_slice()));
+        }
+        if self.child_count > 0 {
+            context.report(
+                DiagnosticCode::DavPropertyMarkupDropped,
+                Severity::Violation,
+                at,
+            );
+        }
         let kept = retain(self.bytes(), context)?;
         Ok(PropValue::Unmodeled(kept))
     }
+}
+
+/// The prefix a kept fragment writes one namespace under.
+///
+/// This crate's own output prefixes for the three namespaces it has a table for, and one
+/// spelling for everything else. A prefix is the document's choice and never the vocabulary's,
+/// so re-spelling a peer's is not a loss — what would be a loss is writing the peer's prefix
+/// into a document that never bound it.
+fn fragment_prefix(namespace: Namespace<'_>) -> &'static [u8] {
+    match namespace {
+        Namespace::Dav => b"D",
+        Namespace::CalDav => b"C",
+        Namespace::CalendarServer => b"CS",
+        // XML Namespaces 1.0 section 3 binds this URI to `xml` and to nothing else, so a
+        // generated prefix for it would be a declaration the specification forbids.
+        Namespace::Other(uri) if uri == XML_URI => b"xml",
+        Namespace::Other([]) => b"",
+        Namespace::Other(_) => b"X",
+    }
+}
+
+/// Write one element's start tag into the fragment a property is keeping.
+///
+/// Every element declares the namespace it resolved to, so the fragment is self-contained: the
+/// peer's own bindings were scoped to the peer's document and do not travel with the octets.
+fn open_in_fragment(
+    events: &dyn XmlPull<'_>,
+    parts: &mut ValueParts<'_>,
+    name: QName<'_>,
+    context: &mut DecodeContext<'_>,
+) -> Result<(), DavError> {
+    parts.push_fragment(b"<", context)?;
+    push_qualified_name(parts, name, context)?;
+    push_declaration(
+        parts,
+        fragment_prefix(name.namespace),
+        name.namespace,
+        context,
+    )?;
+    for index in 0..events.attribute_count() {
+        let Some((held, value)) = events.attribute_at(index) else {
+            continue;
+        };
+        push_fragment_attribute(parts, index, held, value, context)?;
+    }
+    parts.push_fragment(b">", context)
+}
+
+/// Write one element's end tag into the fragment a property is keeping.
+fn close_in_fragment(
+    parts: &mut ValueParts<'_>,
+    name: QName<'_>,
+    context: &mut DecodeContext<'_>,
+) -> Result<(), DavError> {
+    parts.push_fragment(b"</", context)?;
+    push_qualified_name(parts, name, context)?;
+    parts.push_fragment(b">", context)
+}
+
+/// Write a name under the prefix this crate spells its namespace with.
+fn push_qualified_name(
+    parts: &mut ValueParts<'_>,
+    name: QName<'_>,
+    context: &mut DecodeContext<'_>,
+) -> Result<(), DavError> {
+    let prefix = fragment_prefix(name.namespace);
+    if !prefix.is_empty() {
+        parts.push_fragment(prefix, context)?;
+        parts.push_fragment(b":", context)?;
+    }
+    parts.push_fragment(name.local_name, context)
+}
+
+/// Declare one prefix on the element being written, unless the prefix declares itself.
+fn push_declaration(
+    parts: &mut ValueParts<'_>,
+    prefix: &[u8],
+    namespace: Namespace<'_>,
+    context: &mut DecodeContext<'_>,
+) -> Result<(), DavError> {
+    if prefix == b"xml" {
+        return Ok(());
+    }
+    parts.push_fragment(b" xmlns", context)?;
+    if !prefix.is_empty() {
+        parts.push_fragment(b":", context)?;
+        parts.push_fragment(prefix, context)?;
+    }
+    parts.push_fragment(b"=\"", context)?;
+    let mut escaped: Vec<u8> = Vec::new();
+    write_escaped_attribute(&mut escaped, namespace.uri())?;
+    parts.push_fragment(&escaped, context)?;
+    parts.push_fragment(b"\"", context)
+}
+
+/// Write one attribute of a kept element, with whatever prefix its own namespace needs.
+///
+/// An unprefixed attribute is in no namespace (XML Namespaces 1.0 section 6.2) and is written
+/// back unprefixed. One that is in a namespace gets a prefix of its own — `A0`, `A1` — rather
+/// than the element's, because the two namespaces need not be the same and a shared prefix
+/// would silently move the attribute into the element's.
+fn push_fragment_attribute(
+    parts: &mut ValueParts<'_>,
+    index: usize,
+    name: QName<'_>,
+    value: &[u8],
+    context: &mut DecodeContext<'_>,
+) -> Result<(), DavError> {
+    parts.push_fragment(b" ", context)?;
+    if name.namespace.uri().is_empty() {
+        parts.push_fragment(name.local_name, context)?;
+    } else {
+        let mut prefix: Vec<u8> = Vec::new();
+        if name.namespace.uri() == XML_URI {
+            prefix.extend_from_slice(b"xml");
+        } else {
+            prefix.push(b'A');
+            push_decimal(&mut prefix, index);
+        }
+        parts.push_fragment(&prefix, context)?;
+        parts.push_fragment(b":", context)?;
+        parts.push_fragment(name.local_name, context)?;
+        push_declaration(parts, &prefix, name.namespace, context)?;
+    }
+    parts.push_fragment(b"=\"", context)?;
+    let mut escaped: Vec<u8> = Vec::new();
+    write_escaped_attribute(&mut escaped, value)?;
+    parts.push_fragment(&escaped, context)?;
+    parts.push_fragment(b"\"", context)
+}
+
+/// Append a number's decimal digits, which a generated prefix needs and nothing else does.
+fn push_decimal(out: &mut Vec<u8>, value: usize) {
+    let mut digits: Vec<u8> = Vec::new();
+    let mut left = value;
+    loop {
+        let digit = u8::try_from(left.checked_rem(10).unwrap_or(0)).unwrap_or(0);
+        digits.push(b'0'.saturating_add(digit));
+        left = left.checked_div(10).unwrap_or(0);
+        if left == 0 {
+            break;
+        }
+    }
+    digits.reverse();
+    out.extend_from_slice(&digits);
 }
 
 /// Record one child of a `DAV:resourcetype`.
@@ -862,6 +1149,26 @@ fn name_of(child: Opened<'_>, meter: &mut Meter) -> Result<PropName, DavError> {
 /// The name of an element outside the vocabulary, kept as a namespace and a local name.
 fn extension_of(child: Opened<'_>, meter: &mut Meter) -> Result<ExtensionName, DavError> {
     ExtensionName::new(child.name.namespace.uri(), child.name.local_name, meter)
+}
+
+/// Merge the conditions one `DAV:error` named into whatever is already held at that position.
+///
+/// RFC 4918 permits more than one `error` in the same position, and two in one position are
+/// two statements about one thing. Two in *different* positions are not, which is why this
+/// takes the slot it is merging into rather than always reaching for the response's.
+fn absorb_into(
+    holder: &mut Option<ErrorBody>,
+    named: ErrorBody,
+    meter: &mut Meter,
+) -> Result<(), DavError> {
+    let Some(holding) = holder.as_mut() else {
+        *holder = Some(named);
+        return Ok(());
+    };
+    for condition in named.conditions() {
+        holding.push(condition.clone(), meter)?;
+    }
+    Ok(())
 }
 
 /// Whether a run of character data is layout rather than a value.
@@ -1128,7 +1435,13 @@ mod tests {
             },
             PropName::Known(known) => panic!("{known:?}"),
         }
-        assert_eq!(vendor.value, PropValue::Text(b"36".to_vec().into()));
+        // `Unmodeled` rather than `Text`, and the difference is a claim rather than a shade of
+        // one. `Text` says this crate read the value; `Unmodeled` says it has no model for
+        // this property and kept what was inside it. A property outside the vocabulary is
+        // always the second, and a reader that answered the first left the writing direction
+        // unable to state a value its own reading direction would give back.
+        assert_eq!(vendor.value, PropValue::Unmodeled(b"36".to_vec().into()));
+        assert!(codes(&reported).contains(&DiagnosticCode::DavPropertyUnmodeled));
     }
 
     /// The other half of the same policy: a caller that will not tolerate an extension.
@@ -1322,19 +1635,26 @@ mod tests {
     fn a_value_with_no_modeled_shape_is_kept_and_said_to_be_uninterpreted() {
         let (read, reported) = drain(UNMODELED, Limits::DEFAULT);
         let first = read.first().unwrap();
-        // RFC 6638 section 2.4.1 makes this a set, and `PropValue` holds one reference.
+        // RFC 6638 section 2.4.1 makes this a set, and `PropValue` holds one reference — so
+        // the value has no modeled shape and is kept as the peer's own elements. Both
+        // addresses are there, and so is the structure that says they are two of them: a
+        // caller re-encoding this property emits a set and not a concatenation.
         let wanted = prop_name(ElementName::CalendarUserAddressSet);
         let addresses = match first.successful_value(&wanted) {
-            Some(PropValue::Unmodeled(kept)) => kept.clone(),
+            Some(PropValue::Markup(kept)) => kept.clone(),
             other => panic!("{other:?}"),
         };
-        // Both addresses are still there: what is lost is the markup, not the octets.
         assert!(
             addresses
                 .windows(26)
                 .any(|at| at == b"mailto:ann@example.invalid")
         );
         assert!(addresses.windows(17).any(|at| at == b"urn:uuid:0f5c1e2a"));
+        let tags = addresses.iter().fold(0_usize, |seen, byte| match *byte {
+            b'<' => seen.saturating_add(1),
+            _ => seen,
+        });
+        assert_eq!(tags, 4, "two `href` elements, opened and closed");
         assert!(codes(&reported).contains(&DiagnosticCode::DavPropertyUnmodeled));
 
         // One `href` under a name modeled as a reference is a reference.
@@ -1857,18 +2177,30 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
                 .map(|held| Namespace::from_uri(held.value))
         }
 
-        fn attribute(&self, name: QName<'_>) -> Option<&'body [u8]> {
-            self.attributes.iter().find_map(|held| {
-                let (prefix, local) = Self::split_name(held.prefix);
-                // XML Namespaces 1.0 section 6.2: a default declaration never reaches an
-                // attribute, so an unprefixed one is in no namespace at all.
-                let space = if prefix.is_empty() {
-                    Namespace::Other(&[])
-                } else {
-                    self.lookup(prefix)
-                };
-                (space.is(name.namespace) && local == name.local_name).then_some(held.value)
-            })
+        fn attribute(&self, name: QName<'_>) -> Option<&[u8]> {
+            (0..self.attribute_count())
+                .filter_map(|index| self.attribute_at(index))
+                .find(|(held, _)| {
+                    held.namespace.is(name.namespace) && held.local_name == name.local_name
+                })
+                .map(|(_, value)| value)
+        }
+
+        fn attribute_count(&self) -> usize {
+            self.attributes.len()
+        }
+
+        fn attribute_at(&self, index: usize) -> Option<(QName<'body>, &[u8])> {
+            let held = self.attributes.get(index)?;
+            let (prefix, local) = Self::split_name(held.prefix);
+            // XML Namespaces 1.0 section 6.2: a default declaration never reaches an
+            // attribute, so an unprefixed one is in no namespace at all.
+            let space = if prefix.is_empty() {
+                Namespace::Other(&[])
+            } else {
+                self.lookup(prefix)
+            };
+            Some((QName::new(space, local), held.value))
         }
     }
 }

@@ -83,7 +83,26 @@ pub trait XmlPull<'a> {
     /// An unprefixed attribute is in no namespace at all — XML Namespaces 1.0 section 6.2 is
     /// explicit that a default declaration does not apply to attributes — so `start` and `end`
     /// on a `time-range` are looked up with [`Namespace::Other`] over an empty URI.
-    fn attribute(&self, name: QName<'_>) -> Option<&'a [u8]>;
+    ///
+    /// The value is the one XML 1.0 section 3.3.3 defines and not the octets between the
+    /// quotes: references are resolved and a literal tab, line feed or carriage return has
+    /// become a space. It therefore borrows the tokenizer rather than the body, and it is only
+    /// about the element whose `Start` was handed back last.
+    fn attribute(&self, name: QName<'_>) -> Option<&[u8]>;
+
+    /// How many attributes that element carries, namespace declarations excluded.
+    ///
+    /// Present with [`XmlPull::attribute_at`] so that a reader keeping a foreign subtree can
+    /// keep what was written *on* its elements too. Looking a name up requires knowing it, and
+    /// the whole point of a foreign element is that this crate does not.
+    fn attribute_count(&self) -> usize;
+
+    /// One of those attributes, by index, resolved and normalized like [`XmlPull::attribute`].
+    ///
+    /// The order is the tokenizer's own and is not the document's: XML gives attribute order
+    /// no meaning, and this reader sorts them so that a repeated name is found by a walk
+    /// rather than by comparing every pair with every other.
+    fn attribute_at(&self, index: usize) -> Option<(QName<'a>, &[u8])>;
 }
 
 /// A value that can be read out of a document.
@@ -125,4 +144,17 @@ pub trait ResponseSource {
     /// RFC 6578 section 3 puts the token after the responses, so this answers `None` until the
     /// source has been drained. Reading it early is not an error and not a promise.
     fn sync_token(&self) -> Option<&[u8]>;
+
+    /// Whether this source stopped short of the body's own end.
+    ///
+    /// A source that cut the stream at a bound has delivered part of an answer, and RFC 6578
+    /// section 3.4 makes `sync_token` a statement about the whole of one. A consumer needs the
+    /// two facts together or it cannot tell "the server sent no token" from "the token this
+    /// source is holding covers changes it never handed over".
+    ///
+    /// The default is `false`, which is the honest answer for a source that has no bound of
+    /// its own to stop at.
+    fn was_truncated(&self) -> bool {
+        false
+    }
 }

@@ -188,6 +188,12 @@ pub enum ValueError {
     EtagSyntax,
     /// A value that must be text was not valid UTF-8.
     NotUtf8,
+    /// A `calendar-data` selection states "every property" and names properties beside it.
+    ///
+    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two
+    /// halves of each pair are alternatives. A value holding both is one no body can express,
+    /// and reducing it to one of them silently would send a request the caller did not write.
+    SelectionContradiction,
     /// A filter states a condition and its own negation.
     ///
     /// RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test in the
@@ -220,6 +226,9 @@ impl Display for ValueError {
             Self::StatusLine => "a status element carrying no readable status line",
             Self::EtagSyntax => "an ETag that is not a quoted string",
             Self::NotUtf8 => "text that is not valid UTF-8",
+            Self::SelectionContradiction => {
+                "a calendar-data selection naming properties beside allprop"
+            },
             Self::FilterContradiction => "a filter stating a condition and its own negation",
             Self::TimeUnrepresentable => "an instant no UTC date-time can write",
             Self::DepthValue => "a Depth other than 0, 1 or infinity",

@@ -115,6 +115,12 @@ impl Status {
     ///
     /// The grammar is RFC 9110 section 15's: a version, a space, three digits, a space, and a
     /// reason phrase that may be empty. Only the digits are kept.
+    ///
+    /// `status-code` is *exactly* three digits, so what follows them must end the line or be
+    /// the space that begins the reason phrase. A reader that took the first three octets and
+    /// looked no further read `HTTP/1.1 2000 OK` as a `200` the server never stated and
+    /// `HTTP/1.1 4045` as a `404`, which promotes a malformed group inside a `DAV:propstat`
+    /// into a success — the outcome [`crate::UNREADABLE_STATUS`] exists to prevent.
     pub fn parse_status_line(line: &[u8]) -> Result<Self, DavError> {
         let trimmed = trim_ascii(line);
         let after_version = trimmed
@@ -123,6 +129,10 @@ impl Status {
             .and_then(|space| trimmed.get(space.saturating_add(1)..))
             .ok_or(ValueError::StatusLine)?;
         let digits = after_version.get(..3).ok_or(ValueError::StatusLine)?;
+        match after_version.get(3) {
+            None | Some(b' ') => {},
+            Some(_) => return Err(DavError::Invalid(ValueError::StatusLine)),
+        }
         let mut code: u16 = 0;
         for byte in digits {
             let digit = char::from(*byte)
@@ -170,6 +180,16 @@ impl ETag {
     /// Refuses anything that is not a quoted string, optionally prefixed by `W/`. An unquoted
     /// tag is a real server bug and reading one leniently means this crate cannot tell a tag
     /// from a tag with quotes in it.
+    ///
+    /// Every octet between the quotes is held to RFC 9110 section 8.8.3's `etagc` production —
+    /// `"!" / %x23-7E / obs-text` — and that is a security bound rather than pedantry.
+    /// [`ETag::write_value`] renders an accepted tag straight into an `If-Match` header
+    /// *value* for a caller to frame, so an octet a header field value may not carry is an
+    /// octet a server could otherwise use to choose the caller's other headers: a `getetag`
+    /// spelling `&#13;&#10;If-Match: *` would turn the caller's conditional write into an
+    /// unconditional one and silently replace whatever another client had stored. `SP`, every
+    /// control character including `CR` and `LF`, and `DEL` are outside the production and are
+    /// refused here, where the octets first become a value.
     pub fn parse(value: &[u8]) -> Result<Self, DavError> {
         let trimmed = trim_ascii(value);
         let (weak, rest) = match trimmed.strip_prefix(b"W/".as_slice()) {
@@ -180,7 +200,7 @@ impl ETag {
             .strip_prefix(b"\"".as_slice())
             .and_then(|open| open.strip_suffix(b"\"".as_slice()))
             .ok_or(ValueError::EtagSyntax)?;
-        if quoted.contains(&b'"') {
+        if !quoted.iter().copied().all(is_etagc) {
             return Err(DavError::Invalid(ValueError::EtagSyntax));
         }
         Ok(Self {
@@ -229,6 +249,97 @@ impl ETag {
         out.write(b"\"")?;
         Ok(())
     }
+}
+
+/// Whether an octet may appear between an entity tag's quotes, RFC 9110 section 8.8.3.
+///
+/// `etagc = "!" / %x23-7E / obs-text`. The exclusions are the octets that would end or extend a
+/// header field: `SP`, the C0 controls, `DEL`, and the double quote that closes the tag.
+const fn is_etagc(byte: u8) -> bool {
+    byte == 0x21 || (byte >= 0x23 && byte <= 0x7e) || byte >= 0x80
+}
+
+/// An `If-Match` or `If-None-Match` header value, as the server on the other end reads it.
+///
+/// The reading door for the header [`Precondition`] renders. Without one a server assembled
+/// from this crate has no way to separate `If-Match: *` — replace whatever is stored — from a
+/// header value it could not parse, and the two demand opposite outcomes on a write: the first
+/// must land and the second must be refused with `400`, because treating an unreadable
+/// precondition as an absent one overwrites the edit the header existed to protect.
+///
+/// The list form is here because RFC 9110 section 13.1.1 defines it (`If-Match: "v1", "v2"`)
+/// and a server that refused it would fail a conformant client. `Precondition` stays the
+/// writing shape: a client this crate builds sends one tag, and reading is where the whole
+/// grammar has to be met.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MatchHeader {
+    /// `*` — the header is about the existence of a stored copy and not about its revision.
+    Any,
+    /// One or more entity tags, in the order the header listed them.
+    Tags(crate::bound::Bounded<ETag>),
+}
+
+impl MatchHeader {
+    /// Read an `If-Match` or `If-None-Match` header value.
+    ///
+    /// Charged and bounded like every other reading door: a header is octets a peer chose, and
+    /// a list of them is a collection whose length the peer picks.
+    pub fn parse(value: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
+        let trimmed = trim_ascii(value);
+        if trimmed == b"*" {
+            return Ok(Self::Any);
+        }
+        if trimmed.is_empty() {
+            return Err(DavError::Invalid(ValueError::EtagSyntax));
+        }
+        let mut tags = crate::bound::Bounded::with_cap(
+            bounded_cap(limits.max_props_per_response()),
+            LimitExceeded::Properties,
+        );
+        for entry in split_list(trimmed) {
+            tags.push(ETag::parse(entry)?, meter)?;
+        }
+        if tags.is_empty() {
+            return Err(DavError::Invalid(ValueError::EtagSyntax));
+        }
+        Ok(Self::Tags(tags))
+    }
+
+    /// Whether a stored revision satisfies this header read as `If-Match`.
+    ///
+    /// RFC 9110 section 13.1.1: the wildcard needs a stored copy of any revision, and a list
+    /// is satisfied by a *strong* match against any member — which is the comparison that
+    /// keeps a conditional `PUT` from landing on a revision the client never read.
+    #[must_use]
+    pub fn if_match_is_satisfied_by(&self, stored: Option<&ETag>) -> bool {
+        match (self, stored) {
+            (Self::Any, held) => held.is_some(),
+            (Self::Tags(_), None) => false,
+            (Self::Tags(listed), Some(held)) => {
+                listed.iter().any(|wanted| wanted.strongly_matches(held))
+            },
+        }
+    }
+
+    /// Whether a stored revision satisfies this header read as `If-None-Match`.
+    ///
+    /// RFC 9110 section 13.1.2 uses the weak comparison and inverts the outcome: the wildcard
+    /// requires that nothing is stored, and a list is satisfied when no member matches.
+    #[must_use]
+    pub fn if_none_match_is_satisfied_by(&self, stored: Option<&ETag>) -> bool {
+        match (self, stored) {
+            (Self::Any, held) => held.is_none(),
+            (Self::Tags(_), None) => true,
+            (Self::Tags(listed), Some(held)) => {
+                !listed.iter().any(|wanted| wanted.weakly_matches(held))
+            },
+        }
+    }
+}
+
+/// The comma-separated members of a header list value, each with its whitespace dropped.
+fn split_list(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    value.split(|byte| *byte == b',').map(trim_ascii)
 }
 
 /// An RFC 6578 synchronization token, which is opaque and stays opaque.
@@ -511,8 +622,61 @@ mod tests {
 
     use ical_core::{Limits, Meter};
 
-    use super::{Depth, ETag, Href, Precondition, Status, SyncToken};
+    use super::{Depth, ETag, Href, MatchHeader, Precondition, Status, SyncToken, is_etagc};
     use crate::failure::{DavError, ValueError};
+
+    #[test]
+    fn a_status_code_is_three_digits_and_a_fourth_is_not_a_status_line() {
+        // RFC 9110 section 15: `status-code` is exactly three digits, so what follows them
+        // ends the line or begins the reason phrase. Reading the first three and looking no
+        // further promoted a malformed group inside a `propstat` into a success.
+        assert_eq!(
+            Status::parse_status_line(b"HTTP/1.1 2000 OK"),
+            Err(DavError::Invalid(ValueError::StatusLine))
+        );
+        assert_eq!(
+            Status::parse_status_line(b"HTTP/1.1 4045"),
+            Err(DavError::Invalid(ValueError::StatusLine))
+        );
+        assert_eq!(
+            Status::parse_status_line(b"HTTP/1.1 20"),
+            Err(DavError::Invalid(ValueError::StatusLine))
+        );
+    }
+
+    #[test]
+    fn an_entity_tag_holds_only_the_octets_a_header_value_may_hold() {
+        // RFC 9110 section 8.8.3's `etagc`. The exclusions are what makes `ETag::write_value`
+        // safe to frame as a header: a server that could put a `CRLF` inside a `getetag` could
+        // choose the caller's other headers, and an `If-Match: *` it chose turns a conditional
+        // write into an unconditional one.
+        for byte in 0_u8..=255 {
+            let read = ETag::parse(&[b'"', b'a', byte, b'"']).is_ok();
+            assert_eq!(read, is_etagc(byte), "octet {byte}");
+        }
+        assert!(ETag::parse(b"\"a\r\nIf-Match: *\"").is_err());
+        assert!(ETag::parse(b"\"a b\"").is_err());
+    }
+
+    #[test]
+    fn a_server_reads_the_wildcard_and_the_list_and_refuses_neither_as_a_typo() {
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::new(limits);
+        let held = ETag::parse(b"\"v1\"").unwrap();
+        let any = MatchHeader::parse(b"*", limits, &mut meter).unwrap();
+        assert_eq!(any, MatchHeader::Any);
+        assert!(any.if_match_is_satisfied_by(Some(&held)));
+        assert!(!any.if_match_is_satisfied_by(None));
+        assert!(!any.if_none_match_is_satisfied_by(Some(&held)));
+        assert!(any.if_none_match_is_satisfied_by(None));
+
+        let listed = MatchHeader::parse(b"\"v0\", \"v1\"", limits, &mut meter).unwrap();
+        assert!(listed.if_match_is_satisfied_by(Some(&held)));
+        assert!(!listed.if_none_match_is_satisfied_by(Some(&held)));
+
+        // The whole point of the door: a header nothing can read is not the wildcard.
+        assert!(MatchHeader::parse(b"nonsense", limits, &mut meter).is_err());
+    }
 
     #[test]
     fn a_status_line_is_read_for_its_code_and_nothing_else() {

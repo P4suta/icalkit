@@ -146,8 +146,8 @@ pub use crate::policy::{DecodeContext, UnknownPolicy};
 pub use crate::request::SyncCollection;
 pub use crate::request::{
     CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
-    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, SyncLevel, TextMatch,
-    TimeRange,
+    FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, QueryShape, SyncLevel,
+    TextMatch, TimeRange,
 };
 pub use crate::response::{
     CalendarPayload, DavProperty, DavResponse, ErrorBody, MultiStatus, PropStat, PropValue,
@@ -159,7 +159,8 @@ pub use crate::text::{
     write_escaped_text,
 };
 pub use crate::value::{
-    Depth, ETag, ExtensionName, Href, Precondition, Prefer, ResourceType, Status, SyncToken,
+    Depth, ETag, ExtensionName, Href, MatchHeader, Precondition, Prefer, ResourceType, Status,
+    SyncToken,
 };
 
 // Unit re-exports. One line per unit, appended by that unit and by nothing else.

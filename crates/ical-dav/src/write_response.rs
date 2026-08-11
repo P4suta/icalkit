@@ -45,14 +45,24 @@
 //! conformant reader reconstruct the octets the server stored. No `CDATA` section is written,
 //! ever, so a literal `]]>` inside a `DESCRIPTION` is not an escaping bug waiting to happen.
 //!
-//! [`PropValue::Unmodeled`] leaves as the octets it kept, which is what makes a server proxying
-//! another server's properties lossless — but octets that arrived from a peer are not octets to
-//! be pasted into a document unread. They are refused unless their tags balance, so a kept value
-//! cannot close an element this writer opened, and they carry no `DOCTYPE`, comment, `CDATA`
-//! section or processing instruction, because this crate's own reader refuses those and a body
-//! it cannot read back is a body it must not write. That guard is a refusal filter and not a
-//! parser: what passes it is well-formed enough not to forge structure, which is the property
-//! that matters here.
+//! A property this crate has no model for leaves in one of two shapes, and which one it is
+//! decides how it is written. [`PropValue::Unmodeled`] is *character data* and is escaped like
+//! any other run: what a peer sent as a string leaves here as a string. That is not tidiness.
+//! A peer writing `&lt;D:href&gt;/calendars/ann/private/secret.ics&lt;/D:href&gt;` inside its
+//! own extension property is writing a string, and a proxying server that copied the decoded
+//! octets out unescaped would put a `DAV:href` element into its own multistatus that the peer
+//! never sent — an element RFC 4918 gives meaning to, chosen by the peer.
+//!
+//! [`PropValue::Markup`] is the other shape: elements a peer really did send, re-serialized by
+//! the reader in this crate's own prefixes with every text run already escaped. Those octets go
+//! to the sink as they stand, which is what makes a proxy lossless over a peer's structure. A
+//! caller may also build one by hand, so they are screened first: the tags must balance, so a
+//! kept value cannot close an element this writer opened; there is no `DOCTYPE`, comment,
+//! `CDATA` section or processing instruction, because this crate's own reader refuses those and
+//! a body it cannot read back is a body it must not write; every `&` must begin a reference a
+//! reader would resolve, so the emitted document is XML; and the octets must be UTF-8, because
+//! the document declares that it is. That guard is a refusal filter and not a parser: what
+//! passes it is well-formed enough not to forge structure, which is the property that matters.
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -60,7 +70,7 @@ use ical_core::{LimitExceeded, Limits, Meter};
 
 use crate::codec::WriteXml;
 use crate::element::{ElementName, Namespace};
-use crate::failure::{DavError, SyntaxError};
+use crate::failure::{DavError, SyntaxError, ValueError};
 use crate::request::PropName;
 use crate::response::{
     CalendarPayload, DavProperty, DavResponse, ErrorBody, MultiStatus, PropStat, PropValue,
@@ -303,6 +313,11 @@ impl WriteXml for PropStat {
         }
         close(out, meter, ElementName::Prop)?;
         write_status(out, meter, self.status)?;
+        // RFC 4918 section 14.22's grammar puts the error after the status and inside the
+        // group, which is where the condition it explains belongs.
+        if let Some(named) = self.error.as_ref() {
+            named.write_xml(out, limits, meter)?;
+        }
         close(out, meter, ElementName::Propstat)
     }
 }
@@ -349,15 +364,16 @@ impl WriteXml for PropValue {
     ) -> Result<(), DavError> {
         match self {
             Self::Empty => Ok(()),
-            Self::Text(octets) => {
+            Self::Text(octets) | Self::Unmodeled(octets) => {
                 charge_text(octets, meter)?;
+                check_text_is_utf8(octets)?;
                 write_escaped_text(out, octets)
             },
             Self::Reference(target) => write_href(out, limits, meter, target),
             Self::Resource(claimed) => write_resource_type(out, meter, claimed),
             Self::Entity(tag) => write_entity_tag(out, meter, tag),
             Self::CalendarData(payload) => write_calendar_data(out, meter, payload),
-            Self::Unmodeled(octets) => write_kept(out, limits, meter, octets),
+            Self::Markup(octets) => write_kept(out, limits, meter, octets),
         }
     }
 }
@@ -468,10 +484,33 @@ fn write_calendar_data(
 ) -> Result<(), DavError> {
     let octets = payload.as_bytes();
     charge_text(octets, meter)?;
+    check_text_is_utf8(octets)?;
     write_escaped_text(out, octets)
 }
 
-/// Write the octets of a property this crate has no model for, unchanged.
+/// Refuse octets no XML document can carry, at the door that would otherwise emit them.
+///
+/// An XML document declares an encoding and this crate's declares UTF-8, so a payload that is
+/// not UTF-8 makes the *whole* multistatus unreadable to any conformant processor — not one
+/// property, the entire response, and with nothing on the wire to say why. There is no
+/// escaping that helps: a character reference names a code point and these octets are not one.
+///
+/// Two real resources land here and are refused rather than mangled. A `.ics` a store holds in
+/// some other encoding is one. The other is a resource `docs/adr/0001` guarantees this
+/// workspace round-trips byte for byte: an RFC 5545 fold that falls between the lead octet of
+/// a multi-octet character and its continuations. That file is a file this workspace reads and
+/// writes losslessly and has **no CalDAV representation at all**, which is a fact about the
+/// envelope rather than about the file. A refusal a caller can see is the only honest answer;
+/// the other one was a body the peer discards whole.
+fn check_text_is_utf8(octets: &[u8]) -> Result<(), DavError> {
+    if core::str::from_utf8(octets).is_ok() {
+        Ok(())
+    } else {
+        Err(DavError::Invalid(ValueError::NotUtf8))
+    }
+}
+
+/// Write the octets of a property whose value is markup this crate has no model for.
 fn write_kept(
     out: &mut dyn ByteSink,
     limits: Limits,
@@ -479,6 +518,7 @@ fn write_kept(
     octets: &[u8],
 ) -> Result<(), DavError> {
     charge_text(octets, meter)?;
+    check_text_is_utf8(octets)?;
     check_fragment(
         octets,
         limits.max_xml_depth().saturating_sub(PROPERTY_DEPTH),
@@ -787,7 +827,14 @@ fn apply_shape(shape: TagShape, depth: u16, budget: u16) -> Result<u16, DavError
     }
 }
 
-/// Refuse a `&` that no `;` terminates within the ceiling a reference is scanned under.
+/// Refuse a `&` that does not begin a reference this crate's own reader would resolve.
+///
+/// Asking only whether a `;` appears within the scanning ceiling was two bugs at once. A value
+/// holding `AT&T` has no `;` nearby and was refused outright, so a response this crate had
+/// read could not be written at all; a value holding `a & b; c` has one, so a bare `&` reached
+/// the sink and the emitted document was not well-formed XML — this crate's own reader
+/// answered `SyntaxError::UndefinedEntity` on it, and so would any other. What has to hold is
+/// the actual property: every `&` in a fragment is the start of a reference a reader resolves.
 fn check_reference(octets: &[u8], start: usize) -> Result<(), DavError> {
     let window = octets
         .get(start..)
@@ -796,11 +843,20 @@ fn check_reference(octets: &[u8], start: usize) -> Result<(), DavError> {
                 .unwrap_or(rest)
         })
         .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
-    if window.contains(&b';') {
-        Ok(())
-    } else {
-        Err(DavError::Syntax(SyntaxError::Malformed))
+    let end = window
+        .iter()
+        .position(|byte| *byte == b';')
+        .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
+    let name = window
+        .get(1..end)
+        .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
+    if matches!(name, b"amp" | b"lt" | b"gt" | b"quot" | b"apos") {
+        return Ok(());
     }
+    // A numeric character reference is resolvable exactly when `crate::text` would resolve
+    // it, so the two doors agree on what a document may hold rather than on what it may say.
+    let mut resolved: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    crate::text::push_reference(octets, start, &mut resolved).map(|_| ())
 }
 
 #[cfg(test)]
@@ -977,7 +1033,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
             .push(
                 DavProperty {
                     name: PropName::Known(ElementName::SupportedReportSet),
-                    value: PropValue::Unmodeled(
+                    value: PropValue::Markup(
                         b"<D:supported-report><D:report><C:calendar-multiget/></D:report>\
 </D:supported-report>"
                             .to_vec()
@@ -1054,7 +1110,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
 <D:error><C:allowed-organizer-scheduling-object-change/></D:error></D:response>",
             ),
             (
-                "a property with no model, handed back as the octets it kept",
+                "a property whose value is markup, handed back as the markup it kept",
                 proxied_property,
                 b"<D:response><D:href>/calendars/ann/work/</D:href><D:propstat><D:prop>\
 <D:supported-report-set><D:supported-report><D:report><C:calendar-multiget/></D:report>\
@@ -1264,7 +1320,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
         for (what, octets, wanted) in cases {
             let limits = Limits::DEFAULT;
             let mut meter = Meter::new(limits);
-            let value = PropValue::Unmodeled((*octets).to_vec().into_boxed_slice());
+            let value = PropValue::Markup((*octets).to_vec().into_boxed_slice());
             let mut out: Vec<u8> = Vec::new();
             assert_eq!(
                 value.write_xml(&mut out, limits, &mut meter),
@@ -1280,7 +1336,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
         // level under a policy that admits exactly six, and the fragment below wants two.
         let limits = Limits::DEFAULT.with_max_xml_depth(6);
         let mut meter = Meter::new(limits);
-        let value = PropValue::Unmodeled(
+        let value = PropValue::Markup(
             b"<D:supported-report><D:report><C:calendar-multiget/></D:report>\
 </D:supported-report>"
                 .to_vec()
