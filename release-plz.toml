@@ -20,14 +20,19 @@ git_release_enable = false
 changelog_update = false
 
 # `ical-core` carries the changelog because every other crate is a layer over its model, so
-# its history is the stack's history. Five parallel changelogs would describe one release.
+# its history is the stack's history. One changelog per published crate, six of them, would
+# describe one release six times.
+#
+# The crate set is written here and in the root manifest's `members`, and `xtask purity` reads
+# the two against each other: this file described a seven-crate workspace for a full landing
+# after `ical-grammar` was folded into `ical-core`, because the release path is the one path no
+# gate runs (docs/adr/0004, D-0003).
 [[package]]
 name = "ical-core"
 version_group = "icalkit"
 changelog_update = true
 changelog_path = "./CHANGELOG.md"
 changelog_include = [
-  "ical-grammar",
   "ical-recur",
   "ical-tz",
   "ical-itip",
@@ -38,10 +43,6 @@ git_tag_enable = true
 git_tag_name = "v{{ version }}"
 git_release_enable = true
 git_release_draft = true
-
-[[package]]
-name = "ical-grammar"
-version_group = "icalkit"
 
 [[package]]
 name = "ical-recur"
