@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10, 2026-08-11
+- Amended: 2026-08-10, 2026-08-11 (sixteen amendments)
 
 ## Context
 
@@ -105,8 +105,9 @@ DTD, no external entities, no processing instructions, UTF-8 only, size and dept
 ADR-0002's posture toward hostile input. It stays inside `ical-dav` rather than a sibling
 crate or a shared `webdav-core` until a second DAV-shaped consumer — CardDAV, WebDAV-sync —
 exists in this workspace to justify the extraction; that extraction is a deferred cost, not a
-rejected one. Three obligations are load-bearing and enforced in code, not documented as
-intent.
+rejected one. **Amendment 11 gives that deferral a mechanism and a trigger instead of an
+intention: the untangling happens now, the crate does not.** Three obligations are
+load-bearing and enforced in code, not documented as intent.
 
 The size and depth bounds are checked on every event rather than declared as a struct field,
 and the tokenizer is an iterative state machine, so adversarial nesting costs no stack.
@@ -192,7 +193,11 @@ the argument for the seam shrinks — and byte-identical re-serialization alread
 positional and formatting fidelity from the grammar layer, which made that saving look
 overstated before this amendment raised it further. The seam is insurance, not demonstrated
 demand. If no real caller ever wants grammar-without-model, the honest move is to collapse
-`ical-grammar` back into `ical-core` before 1.0, and nothing here decides that.
+`ical-grammar` back into `ical-core` before 1.0, and nothing here decides that. **Amendment 12
+decides it. The trigger as written could never be evaluated — "if no real caller ever wants" is
+a proposition about unbounded future time — so what replaces it is a measured baseline and a
+numeric re-opening threshold, and the collapse happens before the first publish rather than
+before 1.0.**
 
 Where tree construction lives was left unstated and M0 placed it. Unfolding and content-line
 lexing belong to `ical-grammar` and the typed view belongs to `ical-core`, and the `BEGIN`/`END`
@@ -229,7 +234,9 @@ and less than resolution: a package reaching a core crate through another worksp
 invisible here, and so is anything a build script pulls in at build time. And the gate has no
 custodian of its own — `xtask` is governed by no purity rule, so the same pull request that
 breaks the rule can weaken the check that enforces it, and `ical-conform`'s exemption is
-still just absence from a hand-maintained const.
+still just absence from a hand-maintained const. **Amendment 16 gives it one, inside the
+mechanism this ADR already has rather than by adopting a tool: what closes is "nobody checks
+the checker's manifest", and the first sentence of this paragraph is untouched.**
 
 Two costs of the zero-dependency rule stand unpaid. `ical-tz` and `ical-recur` compute over
 data that has already been parsed, yet they live under the same rule as the crates that read
@@ -246,7 +253,9 @@ private is now a namespace-resolving, reference-resolving reader and writer rath
 small tag matcher, and it is what CardDAV or WebDAV-sync would have to migrate on the day
 either arrives. The deferral stands, and the panel's top-scored reading — extract now, before
 external users depend on `ical-dav`'s internals — is the first thing to revisit if CardDAV is
-closer on the roadmap than this assumed.
+closer on the roadmap than this assumed. **Amendment 11 answers the panel's reading without
+adopting it: the harm it guards against is caused by *exporting* the grammar, not by leaving
+it in place, so the grammar is untangled and unexported and the crate name is not spent.**
 
 The fidelity retraction is scoped to this ADR and nowhere else. ADR-0001 still says
 byte-identical and ADR-0006 still says round-tripped byte-for-byte, both without
@@ -265,7 +274,10 @@ conformant processor selects. `xml:space` and whitespace in element content have
 nor has the question of whether either touches an `href` or a
 `getetag`. The size cap is likewise untuned: one fixed number either rejects a legitimate
 large multiget response or is loose enough to weaken the memory guarantee, and the binding
-stack now draws on the same budget without anyone having named the numbers.
+stack now draws on the same budget without anyone having named the numbers. **That last
+sentence is answered by [ADR 0010](0010-shared-resource-limits.md)'s Amendment 1, which makes
+the response cap the stated envelope a policy declares rather than a number nobody chose, and
+requires every other DAV dimension to say how it was arrived at.**
 
 The incremental codec pair is load-bearing and it compiles. It is the shared encode/decode trait
 this decision listed as debt and then promoted to prerequisite, and the one proposal that
@@ -462,7 +474,9 @@ representation at all.** That is a fact about the envelope and not about the fil
 workspace still reads and writes byte for byte; it is recorded in ADR 0001's register as well as
 here. The remaining hole is named rather than closed: a non-UTF-8 `DAV:href` is still written
 through, because percent-encoding it on the way out without decoding on the way in would break the
-round trip and decoding it would erase the difference between `%2F` and `/`.
+round trip and decoding it would erase the difference between `%2F` and `/`. **Amendment 13
+closes it, and pays the round trip for it: the encoding happens, the decoding does not, and the
+inverse is offered as a segment-wise equivalence rather than as a decoded byte string.**
 
 **8. An attribute value is the value XML 1.0 section 3.3.3 defines.** `XmlPull::attribute` answered
 the octets between the quotes, with the reader's own justification that "the attributes this crate's
@@ -506,3 +520,304 @@ stored. Thirty-four octets outside the production were accepted before, `CR` and
 `Status::parse_status_line` is held to section 15's three digits for the same class of reason: a
 fourth digit read as a success the server never stated, which promotes a malformed `DAV:propstat`
 into a property `DavResponse::successful_value` hands back.
+
+**11. The `webdav-core` deferral gets a mechanism and a trigger, and the graph change it was
+tangled with is decided in its own ADR.** This document defers the extraction twice, once as "a
+deferred cost, not a rejected one" and once as the panel's top-scored reading to revisit. Both
+sentences describe an intention with nothing behind it, and the Consequences already record that
+what is being kept private grew from a tag matcher into a namespace-resolving reader and writer.
+[ADR 0012](0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md) decides the whole
+boundary — it adds `ical-query` above the spine and it does *not* publish `webdav-core` — and
+takes this ADR's own instruction seriously that a graph change of that size be justified in its
+own document rather than ride in on this one.
+
+What changes here is the deferral's shape. The expensive half of the extraction — untangling the
+tokenizer, namespace stack and writer from the CalDAV vocabulary — happens in that restructuring
+rather than on the day a second consumer arrives, and the result is a module that may not name a
+CalDAV type and exports nothing, including through `#[doc(hidden)] pub`. The trigger is therefore
+no longer "when CardDAV is closer than this assumed" but "when a second DAV-shaped consumer is
+accepted", and on that day the extraction is a file move plus a manifest rather than a redesign.
+The panel's reading — extract before external users depend on `ical-dav`'s internals — is honored
+without being adopted, because the harm it names is caused by *exporting* the grammar and not by
+leaving it in place, and not exporting it costs a gate where publishing costs a crate name that
+cannot be withdrawn.
+
+The cost is that `ical-dav` carries a boundary and a gate forbidding CalDAV names inside its own
+tokenizer, paid on every future XML fix, for one consumer that may never get a second — if none
+arrives, that friction bought nothing. And the bet is bounded rather than eliminated: if a second
+consumer arrives after `ical-dav` reaches 1.0, moving the module out is still a semver event for
+its callers even though the code moves cleanly. Keeping the grammar private makes the move
+mechanical, not free.
+
+**12. `ical-grammar` collapses into `ical-core` before the first publish, and the layering rule it
+existed to hold becomes a compilation instead of a crate boundary.** The Consequences say the
+honest move is to collapse the crate if no real caller ever wants grammar-without-model, and
+"ever" is why that sentence survived five milestones: it is a proposition about unbounded future
+time, so today's observed zero is not evidence about it and the conditional can be evaluated at no
+date. The principle of DP-17 is untouched — the content-line grammar is a layer that must not know
+the object model — and only its mechanism moves, from a separate published crate to a separate
+compilation unit.
+
+The fact that decides it is not in the crate graph at all. `#[non_exhaustive]` is inert inside the
+defining crate, so after the collapse an exhaustive `match` on `Token` with no wildcard compiles in
+`ical-core` while external callers are still forced to write one. That reorders everything, because
+the one correctness-grade defect in this area — the tree builder's wildcard arm silently dropping
+octets, in a workspace whose ADR 0001 is a byte-identical round trip — has two fixes and they are
+not equally priced. Deleting the attribute removes the arm and makes every future `Token` variant a
+major bump across all seven crates under one `version_group`. Collapsing the crate removes the arm
+*and* keeps the attribute, so external additions stay minor. The collapse strictly dominates on the
+axis that actually mattered, and the wildcard arm is deleted with `unreachable_patterns = "deny"`
+behind it so it cannot come back.
+
+The seam's stated product was insurance — "the grammar could be extracted later" — which is a
+promise. What replaces it is the same insurance as a structural property: a zero-dependency,
+`publish = false` workspace member under `gates/` whose entire source `#[path]`-includes the
+grammar subtree into a crate root containing no model, so the same bytes compile twice per
+workspace build and an upward reference is a rustc error with a file and a line rather than a
+review comment. It lives under `gates/` and not `crates/` deliberately, because the purity gate's
+own unregistered-crate walk covers `crates/` and would otherwise flag it on day one. The arrow of
+irreversibility also runs against the incumbent: nothing is published and every version is `0.0.0`,
+so collapsing costs zero and *publishing* `ical-grammar` is the act that incurs the irreversibility
+cited against collapsing it. Collapse-now and re-extract-later is a minor release, because
+restoring a glob re-export preserves type identity and every root path; publish-now and
+collapse-later is a permanent name or a permanent shim.
+
+The footprint claim the seam rested on is settled with numbers rather than withdrawn, so a later
+challenger beats a measurement instead of a preference. Measured 2026-08: x86_64 release linked
+executable identical either way; under opt-level `z` with fat LTO and stripping, the collapsed
+build is 512 octets *smaller*; `wasm32` cdylib is 93 octets larger, 0.59%; and a sensitivity
+control moves 24,576 octets when one `Document::parse` call is linked, which is what makes the null
+result a measurement rather than a broken harness. Clean-build wall clock is the only real delta:
++4.18s x86_64 release, +1.94s dev, +7.63s `thumbv7em-none-eabi`. Re-extraction requires a *named*
+consumer wanting grammar without model **and** either a 5% artifact-size reduction on one shipped
+target or a 10s clean-build reduction, taken with `cargo build --timings`. On today's numbers it
+fails both.
+
+What this makes worse, in order of weight. The only measured saving the seam delivers is discarded
+and the workspace pays more rather than less: the layering crate compiles roughly four thousand
+lines a second time on every workspace build, so contributors pay a small permanent tax to hold a
+guarantee outsiders cannot buy, and the plain collapse would have been cheaper for us. A `#[path]`
+member is an unfamiliar construct with measured friction — a lint on a grammar file is reported
+once per compilation unit, coverage tooling attributes those files across two units, the module
+root can carry no crate-level inner attributes, and a lateral reference spelled `crate::X` compiles
+in `ical-core` and fails the gate, which is a good failure that contributors must be taught. Nobody
+has run this repository's full gate set against such a member: `cargo-semver-checks`,
+`cargo llvm-cov` attribution, REUSE header scanning and `cargo package --verify` are unprobed, and
+that is where this decision is most likely to be embarrassed — if any of them breaks, the dissent's
+failure condition has fired and the collapse must be re-argued without the layering crate. One
+textual assertion also survives, in a gate family with no custodian: nothing stops a pull request
+from deleting the layering member alongside the violation it would have caught, and the mitigation
+is a string-equality check narrower than a name scanner but not zero. `unreachable_patterns` is
+adopted workspace-wide for one match and will fire somewhere nobody was thinking about. Eleven
+prose sites are falsified at once, two of which are not merely stale but *incorrect* and must be
+corrected rather than deleted, since both assert that `#[non_exhaustive]` is what the split
+spends — a claim that is false inside the defining crate. And the `ical-grammar` name is left
+unclaimed on crates.io, because claiming it defensively is precisely the irreversible act being
+argued against.
+
+The dissent is preserved in full force because its central observation is true: the deletion of
+`#[non_exhaustive]` is severable from the boundary, the edit that has a *deadline* is the attribute
+rather than the collapse, and the ecosystem survey measures packaging rather than layering — six
+deployed implementations keep the grammar seam at a module or interface boundary inside one
+distribution unit, and not one reports the discipline was a mistake. It wins outright if the
+`#[path]` member breaks one of the four unprobed gates, and in that case keeping the crate boundary
+and paying a seven-crate major bump for a rare `Token` variant is the better trade. Also recorded
+so it is not re-proposed: `publish = false` on `ical-grammar` with `ical-core` re-exporting it is
+*infeasible* rather than unattractive, because `cargo publish` requires every dependency of a
+published crate to resolve from the registry.
+
+**13. A non-UTF-8 `DAV:href` is percent-encoded on the way out, never decoded on the way in, and
+the inverse is an equivalence rather than a decoded byte string.** Amendment 7 closed by naming
+the hole and the two answers that fail. The third is that both failures belong to the same
+mistake — treating the inverse as a flattening. `write_href` emits `%XX` in uppercase hex for
+every octet the crate's own RFC 3986 predicate rejects — controls, space, `"`, `<`, `>`, `\`,
+`^`, backtick, `{`, `|`, `}`, `0x7F`, and every octet at or above `0x80` — and for every `%` not
+followed by two hex digits, and passes everything else through. So `/` stays `/`, `%2F` stays
+`%2F`, `%zz` becomes `%25zz`, and `\xe9` becomes `%E9`; the output is always a legal
+URI-reference, which is the postcondition a test pins. There is one octet table, `ical-core`'s,
+made public and called from `ical-dav`, because a second copy of an RFC 3986 table in this
+workspace is the divergence this item's blast radius exists to prevent.
+
+The reader is unchanged: nothing is decoded, and `Href` keeps the byte shape Amendment 7 carved
+out of the `Char` production. What is added is the two doors the earlier statement was missing.
+`Href::is_as_sent` answers, before a write, whether the octets held are the octets going out —
+the same meaning `CalendarPayload::is_as_sent` carries, in the other direction. And
+`Href::addresses_same` splits both values on unencoded `/` and compares segment by segment with
+percent-decoding inside each segment and hex case folded, so `%E9` and `\xe9` name one resource,
+`%e9` and `%E9` name one resource, and `%2F` and `/` do not. That is what dissolves the objection
+that retired decode-on-read: the distinction between `%2F` and `/` is erased only by flattening a
+path to bytes, and RFC 3986 section 3.3 decides segment structure before percent-decoding. It is
+also what a server actually needs, since the only use for the inverse is deciding whether two
+hrefs name one resource. `PartialEq`, `Ord` and `Hash` stay byte-wise and are documented as not
+being resource identity, and `addresses_same` normalizes nothing else — not scheme case, not host
+case, not dot segments, not trailing slashes.
+
+The failure this repairs was real and was this crate's own: nothing in `ical-dav` decodes, so a
+client that reads `\xe9` and echoes `%E9` in a `calendar-multiget` was not matched by a server
+built on this crate comparing with `==`. A byte shape that can model a response one can read and
+then cannot address what it modeled is the same failure one step later.
+
+The bound now applies to the emitted length rather than the held length, because `max_href_bytes`
+is a wire bound and the peer's reader applies it to what arrives — so an `href` that was legal to
+read can be illegal to write back, as `LimitExceeded::Href`, on a round trip that previously
+completed. Beyond that: ADR 0001's round trip becomes conditional for this one value, recorded in
+that document's own register; the identity is restored only by a call the type does not force, so
+`==` where `addresses_same` was meant is a silent wrong answer; `addresses_same` is a pairwise
+linear scan with no canonical form to hash, so a large collection normalizes its own keys or
+compares pairwise; an `href` already carrying a literal `%` followed by two hex digits goes out as
+an escape it never was, an ambiguity that existed before the octets were handed in; and `ical-core`
+gains an RFC 3986 name in an RFC 5545 crate, which is surface added to the spine for a consumer
+above it.
+
+The strongest rejected alternative is refusal on write, exactly as Amendment 7 refuses a non-UTF-8
+`calendar-data` — this workspace's own precedent, on the same wire, in the same document, and the
+cleanest statement of ADR 0001 anyone offered, since write-then-read stays identity-or-error with
+no third outcome. It is rejected on a distinction worth recording so it is not relitigated: a
+non-UTF-8 `calendar-data` payload has no CalDAV representation at all, so refusal loses nothing
+that could have been sent, while a non-conformant path has exactly one representation and RFC 3986
+section 2.1 is it. Refusal is right where the protocol has no spelling and wrong where it has one
+and this crate declined to write it — a client able to read a `PROPFIND` listing a member it can
+then never fetch is a worse outcome than a transformed octet.
+
+**14. The vocabulary does not extend past RFC 4791 in behavior, and does extend past it in names.**
+DP-14 closes the element vocabulary over the `DAV:` and CalDAV tables, and the roadmap asks whether
+RFC 3744's ACL vocabulary and the principal-discovery reports come in. Those are two questions.
+Whether this workspace implements another specification's *semantics* is a scope call, and the
+answer is no: ACL's semantics are privilege aggregation, inheritance and principal resolution, this
+workspace has no conformance corpus for any of them, and M4 already produced the standing lesson
+that a vocabulary without an evaluator is half a feature. RFC 3744 and the discovery reports are
+therefore written into the Non-goals beside CardDAV, and they do not migrate into
+[ADR 0012](0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md)'s boundary either —
+whatever is untangled there inherits this limit rather than becoming the place ACL was always
+going to live.
+
+Whether the protocol layer may *name* what it declines is a different question, and there the
+answer is yes, on this crate's own stated principle: a row exists for every element unconditionally
+so that a build without a feature refuses the `REPORT` it cannot answer instead of quietly ignoring
+it. Refusing a standard report without being able to say which one arrived is that same
+silent-collapse defect one step out. So six recognition-only rows join the closed table —
+`DAV:acl-principal-prop-set`, `DAV:principal-match`, `DAV:principal-property-search`,
+`DAV:principal-search-property-set`, `DAV:expand-property` and `DAV:acl` — each unconditionally
+unsupported in every feature combination, with no reader, no writer and no request-body variant.
+They arrive as `DavError::Unsupported(name)` where today they are indistinguishable from a root an
+attacker invented.
+
+The justification is *not* that a server owes a `403` carrying `DAV:supported-report`. It is that a
+server must recognize a standard report by name before it can choose any of the three answers
+deployments actually send — an empty `207`, that `403`, or a `400` — and the empty `207` is the
+observed one: Radicale handles `principal-search-property-set`, `principal-property-search` and
+`expand-property` together, logs a warning, and returns an empty multistatus, its own comment
+recording that a known client stops working if an error code is returned. `DavError::Foreign`
+carries nothing by construction, so a server built on today's crate can implement that behavior
+only for every unrecognized root including genuine junk, which converts a client-compatibility
+workaround into a policy of answering nonsense with success. `DavError::Unsupported` therefore
+prescribes no HTTP status, and its documentation must say so in those words.
+
+Four costs. The closed table stops meaning "every element this crate can act on" and starts meaning
+"every element this crate can name", which is a weaker and less legible invariant held by
+documentation rather than by shape. `Unsupported` now spans two facts that call for opposite
+responses — "this build lacks a feature", fixed by a rebuild, and "no build will ever answer this"
+— with an identical value, so a caller logging "rebuild with the feature enabled" becomes silently
+wrong for six rows. The correct-status obligation is prose only, because the mapping happens in the
+caller's HTTP layer, which this ADR's sans-I/O choice puts outside the crate: this is that choice's
+bill arriving. And declaring ACL out of scope tells a reader who wants a multi-user server no
+rather than not-yet — the narrow reopening, preserved so the whole question need not be reopened
+for it, is `DAV:expand-property` read and write alone, one report, client direction, if evidence
+appears that a client built on this crate cannot discover a principal's collections.
+
+**15. `calendar-multiget` carries `QueryShape`, and the rule that decides which bodies do is the
+production rather than symmetry.** M4 gave `calendar-query` a shape because RFC 4791 section 9.5's
+own production is a body this crate reads and writes rather than one it answers `DavError::
+Unexpected` to, and left the identical alternation in section 9.10 refused on the ground that
+nobody is known to send it. That is the argument M4 declined one element over, and no protocol
+layer can answer it for a caller it has never met — a client of this crate is exactly the thing
+that could start sending it. So `CalendarMultiget` gains `shape: QueryShape`, defaulting to
+`Named`, read and written exactly as `CalendarQuery::shape` is.
+
+Deciding it by the production also *closes* the set, which is the part worth holding code against.
+`QueryShape` is carried by exactly the two bodies whose grammar contains
+`(DAV:allprop | DAV:propname | DAV:prop)?` and by nothing else. Not `DAV:propfind`, where RFC 4918
+section 14.20 requires exactly one of the three, which is why `PropFind` is a three-variant enum
+and not a field. Not `DAV:sync-collection`, whose RFC 6578 production requires `prop`. Not RFC
+3744's `principal-match` or `principal-property-search`, both of which are `prop?` and take an
+optional property request. The mechanism becomes specific in both directions rather than growing by
+analogy.
+
+Two things ride with it because the same reading exposes them. The double choice is refused in both
+bodies: `CalendarQuery::read_xml` currently sets a shape on `allprop`/`propname` without the
+accept-once guard `read_propfind_child` uses, so a body carrying both `<prop>` and `<allprop/>`
+reads as `AllProp` with a populated list and re-encodes with the list silently gone — a body that
+read one way and wrote another, which is what DP-15 forbids. And the writer refuses a hand-built
+value whose shape and property list disagree, rather than dropping the list, since after the reader
+fix such a value can only be a caller error and silently discarding it is the same defect arriving
+from the other side.
+
+Four things get worse. This ships a code path for traffic nobody has observed. It hands callers a
+working way to build a request the field may refuse — RFC 4791 section 9.6 puts `calendar-data`
+inside `DAV:prop`, so `allprop` on a multiget cannot ask for the one payload a multiget exists to
+fetch, and against the most widely deployed server the answer is not a `400` but a `207` with
+nothing in it, which is quieter and worse; the doc comment carries that in prose because no type
+can. The illegal state stays representable in a second public type instead of one, excluded by a
+runtime refusal rather than by shape, and this knowingly duplicates the weaker representation the
+`PropFind` enum next door does not have. And a writer that could not fail for this reason now can.
+
+The alternative rejected, whose factual core survives as the doc comment `shape` must carry: keep
+the refusal and record it as deliberate, on the ground that section 7.9 makes a multiget a report
+about specific resources and `allprop` structurally cannot request calendar data. It applies word
+for word to `calendar-query`, where M4 heard it and declined it, and deciding that a conformant
+body is useless is a server's judgment rather than a sans-I/O layer's. Also recorded: collapsing
+`QueryShape` and `PropFind` into one sum type that owns the property request, so the illegal pair
+is unrepresentable everywhere. It loses because the three bodies disagree about *absence* — one
+requires a member of the group and two make the group optional — so one type would blur an absent
+group into an empty one. It is worth revisiting before 1.0, while nothing is published.
+
+**16. The purity gate gets a custodian, and the two lists that are documented to agree are made to
+agree.** The Consequences name three holes in one sentence: `xtask` is governed by no purity rule,
+the same pull request that breaks the rule can weaken the check, and `ical-conform`'s exemption is
+absence from a hand-maintained const. The rule that closes them is already written down twice — the
+tool that enforces "the core has no outside dependencies" may not acquire one — so what was left
+was to say which mechanism carries it, and the answer is the gate itself rather than a new tool.
+
+Four legs. `collect_purity_violations` reads `xtask`'s own manifest with the same
+`declared_dependencies` scanner it applies to core manifests, and any entry in any dependency table
+is a violation, which turns that manifest's comment from a promise into a checked claim. The
+governed crate list and the Justfile's `core_crates` are cross-read, so a name in one and not the
+other fails — the const's own doc comment already asserted the mirror and nothing enforced it.
+Every directory under `crates/` holding a manifest must appear in exactly one of the governed set
+or a new exempt set where `ical-conform` is written down by name, and absence from both is the
+violation, whether or not the crate declares `#![no_std]`; the `#![no_std]` heuristic stops being
+how the gate notices a new crate. And a named list of member roots — `crates/` and `gates/` —
+bounds a check that the root manifest's members equal `xtask` plus every manifest-bearing directory
+under each root that exists on disk, with a root that does not exist yet not an error.
+
+The last two legs are stated over sets and roots rather than over one const and one hard-coded
+directory, deliberately, because Amendments 11 and 12 move both in the same wave: Amendment 12
+registers a member under `gates/`, which a rule written over `crates/` would reject on the day it
+lands, and ADR 0012 replaces the governed const with a per-crate permitted-dependency map, which a
+leg naming the const would either outlive as dead text or reintroduce. The two walks keep different
+domains on purpose — `gates/` is inside the membership check and outside the purity partition —
+because Amendment 12 places the layering member outside `crates/` precisely so the purity walk does
+not govern it, and unifying them would overturn that silently.
+
+Four costs, and the first is a sequencing obligation rather than a design one. `xtask purity` is
+rewritten three times in one landing, so this edit lands last or lands merged with the other two;
+in any other order the gate is red on the day the layering member is registered, or a leg is
+written against a const that no longer exists. The totality claim is only as wide as the member-root
+list, which is a hand-maintained list — a smaller copy of the staleness this closes rather than its
+elimination, and a crate parked in a third top-level directory stays invisible. Naming
+`ical-conform` in an exempt set makes the exemption cheap and *blessed*: granting one becomes the
+same single line that absence costs today, and it now looks approved, while the gate records who is
+exempt and still cannot say why. And the cross-read couples the gate to the Justfile's textual form,
+scanned by hand because the tool may have no dependencies, so a `just` refactor turns a green gate
+red for a reason unrelated to purity. Leg one is also only manifest-deep: a `[patch]`, a vendored
+registry or a build script defeats the custodian for `xtask` exactly as the paragraph above says
+they defeat it for the core crates.
+
+The alternative that would delete the question rather than answer it — move the check into
+`cargo deny` bans plus a `cargo metadata` walk, which would also see the resolved graph — is
+rejected on this document's own recorded ground: that reader would be this tool's first dependency,
+and buying a custodian by acquiring the dependency the rule forbids inverts the rule it enforces.
+It stays the right answer if this project ever decides the zero-dependency rule does not extend to
+its own tooling. Folding `xtask` into the governed set instead is rejected for a duller reason: it
+is not `no_std`, has no library target, and would fail three legs of the core rule for reasons
+having nothing to do with dependency purity. The custodian needs its own rule.
