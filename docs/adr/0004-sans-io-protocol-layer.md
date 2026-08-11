@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10, 2026-08-11 (sixteen amendments)
+- Amended: 2026-08-10, 2026-08-11 (seventeen amendments)
 
 ## Context
 
@@ -604,7 +604,11 @@ in `ical-core` and fails the gate, which is a good failure that contributors mus
 has run this repository's full gate set against such a member: `cargo-semver-checks`,
 `cargo llvm-cov` attribution, REUSE header scanning and `cargo package --verify` are unprobed, and
 that is where this decision is most likely to be embarrassed — if any of them breaks, the dissent's
-failure condition has fired and the collapse must be re-argued without the layering crate. One
+failure condition has fired and the collapse must be re-argued without the layering crate.
+**Amendment 17 is that re-argument. The precondition fired — three gates broke, `cargo test --doc`
+among them, which this paragraph does not list — and two of this verdict's own claims are corrected
+there: the `#[path]` string its recipe hands forward is off by one directory level, and the
+sentence above saying a lateral `crate::X` fails the gate is withdrawn, because it does not.** One
 textual assertion also survives, in a gate family with no custodian: nothing stops a pull request
 from deleting the layering member alongside the violation it would have caught, and the mitigation
 is a string-equality check narrower than a name scanner but not zero. `unreachable_patterns` is
@@ -821,3 +825,127 @@ It stays the right answer if this project ever decides the zero-dependency rule 
 its own tooling. Folding `xtask` into the governed set instead is rejected for a duller reason: it
 is not `no_std`, has no library target, and would fail three legs of the core rule for reasons
 having nothing to do with dependency purity. The custodian needs its own rule.
+
+**17. Amendment 12's own precondition fired. Three of the four unprobed gates broke, their whole
+repair is two manifest lines and one `just` flag, and the collapse stands narrowed rather than
+defeated.** Amendment 12 named four gates nobody had run against a `#[path]` member —
+`cargo semver-checks`, `cargo llvm-cov` attribution, REUSE header scanning and
+`cargo package --verify` — called them the place this decision was most likely to be embarrassed,
+and attached a failure condition to them: if any breaks, the dissent's case has fired and the
+collapse is re-argued without the layering crate. A faithful two-member workspace ran all four,
+and the rest of this repository's gate set with them, before a byte moved here. Three broke.
+**The cost of finding that out was one throwaway workspace instead of a red CI on the landing
+commit**, which is the entire purchase a precondition written into a decision makes, and it is why
+this amendment narrows the verdict rather than explaining a revert.
+
+The failure condition is taken as written and then declined on the evidence, which is worth doing
+out loud rather than by omission. It was aimed at a construct that would not survive this
+repository's gate set. What the probe found instead is three tools that count one file twice or
+look for it where cargo does not put it, repaired by `test = false`, `doc = false` and one
+`--exclude`; and it found that every claim this decision actually rests on holds under test — the
+layering crate cannot ship the grammar, an upward reference is a rustc error with a file and a
+line, `#[non_exhaustive]` is inert in the defining crate and live outside it, and the purity walk
+does not see `gates/`. A condition written before the evidence does not get to bind against the
+evidence's shape, so what carries the day below is the reasoning and not the word "breaks".
+
+*The doc tests, which are `just test` and `just test-ci`, and the only break in a gate this
+repository runs.* A doc example on a grammar item is compiled a second time inside the layering
+crate, which declares no dependencies, so the crate the example names cannot resolve and
+`Doc-tests ical-grammar-layering` fails with `error[E0432]: unresolved import`. This is not
+hypothetical: five of the ten doc examples under `crates/ical-grammar/src/` open with
+`use ical_grammar::`, which the collapse rewrites to `use ical_core::`, and each one then fails
+inside the gate. CI would be red on the landing commit. The fix is `--exclude
+ical-grammar-layering` on both of the Justfile's doc-test invocations. **The trap is worth naming
+because it will cost the next person an afternoon: `[lib] doctest = false` does not fix this.**
+`cargo metadata` reports `doctest = False` for the member and `cargo test --doc` runs the examples
+anyway — the merged-doctest runner of cargo 1.97.1 — verified three separate times, twice in
+isolation. Anyone who repairs this in the manifest and does not re-run the gate will believe it
+fixed and be wrong.
+
+*Coverage, and it errs in the flattering direction.* Under `cargo llvm-cov` the grammar files
+appear as two rows carrying identical numbers and the total sums both: 96 regions where there are
+54, 58 lines where there are 32, and 83.33% where the true figure is 74.07%. The error is
+systematic rather than noisy — well-covered grammar is double-weighted against uncovered model —
+so it always overstates, which is the direction a number nobody re-derives is least likely to be
+questioned in. The fix is `test = false` in the gate's `[lib]`, which returns the report to 54
+regions and 74.07%. The same one line is also what stops every grammar unit test running twice:
+without it nextest starts two binaries for one `#[test]`, and the real tree's 81 grammar tests
+would run 162 times.
+
+*`cargo package --verify`, permanently, for the gate member.* The member's tarball contains only
+`src/lib.rs` — cargo does not follow `#[path]` — so the verification build cannot find the grammar
+and exits 101, and `cargo package --workspace` fails with it, because `publish = false` does not
+exclude a member from `cargo package --workspace` the way it excludes one from publishing. This is
+written down as a limitation and not repaired. It is not a gate this repository runs:
+`cargo package` appears nowhere in the Justfile or in `ci.yml`. And the real release path is
+untouched — `cargo publish --workspace --dry-run` skips a `publish = false` member entirely and
+never packages it, which is the mechanism release-plz sits on, and `cargo semver-checks` skips it
+for the same reason. **Anyone later adding `cargo package --workspace` to CI or to the Justfile is
+the reader this paragraph is addressed to: that command needs `--exclude ical-grammar-layering`
+too, or it is red the moment it is added, for a reason that has nothing to do with the change that
+added it.**
+
+Two corrections to this verdict's own text, and the second is a correction to what it *claimed*
+rather than to how it spelled something. The `#[path]` string the recipe handed forward is off by
+one directory level: `#[path]` on a `mod` declared in `src/lib.rs` resolves relative to `src/`, so
+`"../../crates/ical-core/src/grammar/mod.rs"` lands on `gates/crates/…` and fails with os error 3.
+It must be `"../../../crates/ical-core/src/grammar/mod.rs"`. And amendment 12 says that a lateral
+reference spelled `crate::X` "compiles in `ical-core` and fails the gate, which is a good failure
+that contributors must be taught". It does not fail the gate. `use crate::Token;` inside a grammar
+file compiles in both crates on a clean build, because the gate's own root does
+`pub use crate::grammar::*;`, which puts every grammar item at the gate's crate root as well. That
+sentence is withdrawn.
+
+What survives the withdrawal, and it is the part that decides how much act 2 is owed, is that the
+leak is bounded to grammar items and does not reach the model. A model item named at the crate
+root — `use crate::CivilDate;`, the most seductive spelling precisely because it looks lateral —
+fails in the layering crate with file and line: `error[E0432]: unresolved import crate::CivilDate`,
+`no CivilDate in the root`. The gate's root carries the grammar's glob and nothing else, so every
+path out of a grammar file that names a model item lands in a root that has no model in it,
+whether it is spelled `crate::tree::Node`, `crate::CivilDate` or `super::super::CivilDate`. The
+layering guarantee is therefore exactly as strong as amendment 12 claimed; what the gate does not
+see is a *grammar* item reached through the parent crate's root re-export, which is a hygiene
+defect and not a layering violation. Act 2 is a rule about hygiene wearing a layering rule's
+clothes, and it needed saying because a reader of amendment 12 would price it as the latter.
+
+Act 2 is therefore enforced textually, as a leg of `xtask purity`, and is no longer described
+anywhere as something the gate catches. No path inside `crates/ical-core/src/grammar/` may resolve
+above the grammar root: in `grammar/mod.rs` neither `crate::` nor `super::`, in the files beside it
+neither `crate::` nor `super::super::`, outside comments and string literals; and the tree stays
+flat, because a subdirectory changes that arithmetic and a check that quietly stops applying is
+worse than none. It goes in `purity` rather than in a new `just` recipe because that task already
+walks this tree and already holds this ADR's structural rules, and a third recipe plus two CI lines
+to read one directory is more mechanism than the rule is worth. What it costs: `purity` now means
+two rules rather than one, and a contributor grepping for a gate called "layering" finds nothing;
+the check is textual, in the same family as the golden-list scan and defeated by the same things —
+a macro, a generated path, a spelling it was not taught; it makes the flat grammar tree
+load-bearing for a reason that is not about layering; and it is a fourth rewrite of `xtask` in the
+landing that amendment 16 already sequences three into. The alternative of writing the rule into
+CONTRIBUTING with no gate is rejected on the ground this workspace has just spent a workflow
+clearing: an asserted rule with nothing behind it reads exactly like an enforced one and decays
+without anybody noticing.
+
+The rest of the gate set is confirmed rather than assumed, which is the other half of what the
+probe bought. `cargo package --list` on the member emits exactly `Cargo.lock`, `Cargo.toml`,
+`Cargo.toml.orig` and `src/lib.rs`, so the layering crate can never accidentally ship the grammar —
+this decision's load-bearing packaging claim, tested. `cargo semver-checks` is clean and attributes
+grammar items through the private module and the glob. REUSE is unaffected, a file compiled twice
+being one file on disk. `cargo shear` objects neither to `#[path]`-included sources nor to a member
+with no `[dependencies]` table. Clippy is clean under `--all-features` and `--no-default-features`,
+the gate satisfying `missing_docs`, `missing_debug_implementations` and `unreachable_pub` with a
+two-line module doc; a doubled clippy diagnostic is noise here, since every gate is `-D warnings`
+and nothing counts them. `[lib] doc = false` does its one job and no other — no duplicate rustdoc
+page, no effect whatever on doctests. One incidental worth a line because it presents as a
+different failure entirely: a stale `target/package/` directory makes `cargo semver-checks` abort
+with "package is ambiguous: defined by multiple manifests", and cleaning it is the fix.
+
+Four costs this decision had not admitted. Its correctness now depends on three textual facts that
+no manifest reader can derive — `test = false` and `doc = false` in the gate's `[lib]`, and
+`--exclude ical-grammar-layering` on two Justfile lines — in a gate family amendment 12 already
+recorded as having no custodian; deleting the coverage line in particular fails nothing and
+silently flatters the number. The doc-test exclusion buys CI green by putting doc examples on
+grammar items outside the layering gate, so an example may freely name a model item and nothing
+objects: the layer is checked in the code and not in its prose. `cargo package --workspace` is
+permanently unavailable to this workspace as written. And act 2, one of the six acts, turns out to
+need a gate of its own to mean anything, which is a leg of `xtask` and a maintenance surface that
+the version of this decision scored in the bake-off did not include.
