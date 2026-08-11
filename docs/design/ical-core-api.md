@@ -875,7 +875,8 @@ owns the vocabulary the other five spell differently.
 The grammar seam of [ADR 0004](../adr/0004-sans-io-protocol-layer.md) is real: the items under
 `grammar` shipped from `ical-grammar`, and `ical-core` re-exported them. **D-0003 has since
 collapsed the crate into this one; the seam is a module layer and the three consequences below
-were recorded when it was a crate boundary.** Three consequences were not visible on paper. `Instant` went down with them — `Diagnostic` names an instant, because
+were recorded when it was a crate boundary.** Three consequences were not visible on paper.
+`Instant` went down with them — `Diagnostic` names an instant, because
 `ical-recur` and `ical-tz` report about occurrences that exist at no byte offset, so the type has
 to sit under the diagnostic vocabulary; `Instant::to_civil` became `CivilDateTime::from_instant`,
 since a crate may not write an inherent method for another crate's type, and
@@ -888,10 +889,12 @@ no longer breaks the one consumer that must handle it, which is a guarantee the 
 **That last clause is false and is corrected rather than reinterpreted: the attribute binds only
 crates other than the defining one, so the catch-all arm was never what the split bought. It was
 a silent-loss path against ADR 0001, and the collapse deleted it — both of them, since `mutate`
-carried one too — while keeping the attribute; `unreachable_patterns = "deny"` is what keeps
-another from being written. The three constructors named above are still public and are still
-owed the change to crate-private, which the collapse did not carry: they are named only by this
-crate now, so nothing outside it would notice.**
+carried one too — while keeping the attribute. `unreachable_patterns = "deny"` was recorded here
+as what keeps another from being written and does not: it rejects a catch-all after every variant
+is covered, while the shape that drops a payload omits a variant. The fourth rule of
+`xtask purity` reads the arms (ADR 0004 amendment 18). The three constructors named above are
+still public and are still owed the change to crate-private, which the collapse did not carry:
+they are named only by this crate now, so nothing outside it would notice.**
 
 `DiagnosticCode` is one enum in the grammar layer carrying every code in the workspace, including
 the ones only `ical-tz` or `ical-dav` can produce. ADR 0004 says `ical-core` "adds only the kinds

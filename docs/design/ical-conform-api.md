@@ -434,7 +434,7 @@ built: `docs/diagnostic-codes.md` carries a row per code and `xtask codes` refus
 meaning or channel moved without a rename. What this document requires and does not build is a
 case of its own vocabulary hung on that list.
 
-The crate did not stay `#![no_std]`: it links `std`, `just no-std` names the six core crates and
+The crate did not stay `#![no_std]`: it links `std`, `just no-std` names the five core crates and
 not this one, and the `thumbv7em-none-eabi` claim is theirs rather than the workspace's. The
 `no_std` + `alloc` vocabulary this document describes is therefore a shape still to be built, not
 a property the crate has — which matters, because a `std`-only feature added here later would

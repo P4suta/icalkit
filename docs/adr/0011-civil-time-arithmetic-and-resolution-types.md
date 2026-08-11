@@ -33,10 +33,11 @@ the resolution types live in `ical-tz`, and every operation on any of them is `c
 follows the crate graph rather than the subject matter: [ADR 0004](0004-sans-io-protocol-layer.md)
 makes `ical-recur` and `ical-tz` siblings and leaves `ical-dav` depending on `ical-core` alone,
 so a primitive all three speak cannot live in one of them. `Instant` sits one layer lower
-still, in `ical-core`'s grammar layer, because a diagnostic may name an occurrence rather than a byte
-offset and the diagnostic vocabulary is the grammar's; `ical-core` re-exports it and owns
-every conversion between it and a civil date-time, which is arithmetic rather than syntax. No `Duration`-shaped type carries years or months, so "one month later" is a
-method on a date rather than a value that can be added to one.
+still, in `ical-core`'s grammar layer, because a diagnostic may name an occurrence rather than a
+byte offset and the diagnostic vocabulary is the grammar's; `ical-core` re-exports it and owns
+every conversion between it and a civil date-time, which is arithmetic rather than syntax. No
+`Duration`-shaped type carries years or months, so "one month later" is a method on a date rather
+than a value that can be added to one.
 
 `CivilDate::add_months` returns `MonthAddOutcome` — `Exact`, `Clamped`, `Overflow` —
 `#[non_exhaustive]`, deriving `Debug`, `Clone` and `PartialEq` so corpus cases can assert on it.
@@ -216,7 +217,7 @@ fidelity; it loses because defaulting to a specification's MUST that implementat
 
 **5. `MonthAddOutcome` faces every caller, and convenience lives on the outcome rather than on the
 date.** The Consequences leave standing the objection that ordinary callers should not face a
-three-way enum, and the count answers it: across seven crates and roughly ninety thousand lines,
+three-way enum, and the count answers it: across six crates and roughly ninety thousand lines,
 `add_months` has exactly one non-test call site and it is inside the `RRULE` path the objection
 proposed reserving the enum for. The "ordinary caller" a convenience default would serve is empty
 in-tree, and the enum's measured cost is one `let`-else. A reserved default would also be the same

@@ -29,12 +29,22 @@ use super::{FoldPoint, LineEnding, ParseError};
 /// [`GrammarLimits::max_header_bytes`](crate::GrammarLimits::max_header_bytes), because they
 /// have a bound and values do not.
 ///
-/// `#[non_exhaustive]` so that adding a variant is a minor release for a caller outside this
-/// workspace rather than a break. It buys nothing inside the crate that defines the type: an
-/// in-crate match must be exhaustive whatever the attribute says, so adding a variant is a
-/// compile error at every consumer here, which is the answer wanted at both distances. A
-/// wildcard arm over this type anywhere in `ical-core` is a variant silently ignored, and
-/// `unreachable_patterns = "deny"` is what stops one being written.
+/// `#[non_exhaustive]` so that adding a *variant* is a minor release for a caller outside this
+/// workspace rather than a break. It says nothing about the fields: the variants are not
+/// individually non-exhaustive, external code writes `Token::Value { bytes, more }` with a
+/// complete field list — a `ContentLineSource` implementor has to — and adding a field to one is
+/// a major release. Growth in that direction is the likelier one, and it is a decision rather
+/// than an oversight: destructuring a token is what consuming it *is*, and hiding the fields
+/// behind accessors would buy compatibility with a shape nobody wants to write.
+///
+/// Inside the crate that defines the type the attribute buys nothing at all: an in-crate match
+/// must be exhaustive whatever it says, so adding a variant is a compile error at every consumer
+/// here, which is the answer wanted at both distances. A wildcard arm over this type is therefore
+/// a variant silently ignored. `unreachable_patterns = "deny"` was recorded as what stops one
+/// being written and does not: that lint fires on a catch-all after every variant is already
+/// covered, and the shape that loses data is a match that omits a variant and adds `_`, which is
+/// reachable and which the lint is silent about. The fourth rule of `xtask purity` is what
+/// refuses it (`docs/adr/0004`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Token<'a> {

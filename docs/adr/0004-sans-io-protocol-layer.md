@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Amended: 2026-08-10, 2026-08-11 (seventeen amendments)
+- Amended: 2026-08-10, 2026-08-11 (eighteen amendments)
 
 ## Context
 
@@ -66,7 +66,7 @@ alone did not capture the wiring that actually broke: a panel proposal's
 `Vec<Response>: Slots<Response>` failed to compile at the `ical-core`/`ical-dav` seam under
 `alloc:false`, and no manifest diff can see that. No crate carries such an example, so that
 class of break is still invisible until somebody wires two crates together and tries to compile
-the result. What CI builds is `just no-std` and `just wasm` over the six core crates, which
+the result. What CI builds is `just no-std` and `just wasm` over the five core crates, which
 proves the targets and says nothing about the seam. A compiled minimal-usage example per crate
 at its declared `alloc` setting is the mechanism this paragraph wants and the workspace does not
 have.
@@ -207,17 +207,16 @@ demand. If no real caller ever wants grammar-without-model, the honest move is t
 decides it. The trigger as written could never be evaluated — "if no real caller ever wants" is
 a proposition about unbounded future time — so what replaces it is a measured baseline and a
 numeric re-opening threshold, and the collapse happens before the first publish rather than
-before 1.0. It has landed: six crates are published, not seven, and what holds the layer in
+before 1.0. It has landed: six crates are publishable, not seven, and what holds the layer in
 its place is `gates/grammar-layering` plus the second rule of `xtask purity`.**
 
-Where tree construction lives was left unstated and M0 placed it. Unfolding and content-line
-lexing belong to the grammar layer and the typed view belongs to the model above it, and the `BEGIN`/`END`
-stack went to `ical-core` with them: a nesting mismatch — a `VEVENT` closed by `END:VTODO` —
-needs no typed interpretation and is not content-line grammar either, but it is the tree
-builder's own stack that sees it, and `unmatched-end`, `mismatched-end-name` and
-`unclosed-component` are how it reports. That the crate owning the construction also owns the
-report is the rule this section wanted; what it did not settle was which crate, and the first
-compile did.
+Where tree construction lives was left unstated and M0 placed it. Unfolding and content-line lexing
+belong to the grammar layer and the typed view belongs to the model above it, and the `BEGIN`/`END`
+stack went to `ical-core` with them: a nesting mismatch — a `VEVENT` closed by `END:VTODO` — needs
+no typed interpretation and is not content-line grammar either, but it is the tree builder's own
+stack that sees it, and `unmatched-end`, `mismatched-end-name` and `unclosed-component` are how it
+reports. That the crate owning the construction also owns the report is the rule this section
+wanted; what it did not settle was which crate, and the first compile did.
 
 The `alloc` column makes the `ical-core`/`ical-dav` wiring visible at the seam; it does not
 decide what `ical-dav` holds when `alloc` is off. The incremental decoder is most of that
@@ -578,7 +577,8 @@ not equally priced. Deleting the attribute removes the arm and makes every futur
 major bump across all seven crates under one `version_group`. Collapsing the crate removes the arm
 *and* keeps the attribute, so external additions stay minor. The collapse strictly dominates on the
 axis that actually mattered, and the wildcard arm is deleted with `unreachable_patterns = "deny"`
-behind it so it cannot come back.
+behind it so it cannot come back. **That lint cannot see the shape that loses data; amendment 18
+withdraws the clause and puts the fourth rule of `xtask purity` behind it instead.**
 
 The seam's stated product was insurance — "the grammar could be extracted later" — which is a
 promise. What replaces it is the same insurance as a structural property: a zero-dependency,
@@ -861,17 +861,18 @@ evidence's shape, so what carries the day below is the reasoning and not the wor
 
 *The doc tests, which are `just test` and `just test-ci`, and the only break in a gate this
 repository runs.* A doc example on a grammar item is compiled a second time inside the layering
-crate, which declares no dependencies, so the crate the example names cannot resolve and
-`Doc-tests ical-grammar-layering` fails with `error[E0432]: unresolved import`. This is not
-hypothetical: five of the ten doc examples under `crates/ical-grammar/src/` open with
-`use ical_grammar::`, which the collapse rewrites to `use ical_core::`, and each one then fails
-inside the gate. CI would be red on the landing commit. The fix is `--exclude
-ical-grammar-layering` on both of the Justfile's doc-test invocations. **The trap is worth naming
-because it will cost the next person an afternoon: `[lib] doctest = false` does not fix this.**
-`cargo metadata` reports `doctest = False` for the member and `cargo test --doc` runs the examples
-anyway — the merged-doctest runner of cargo 1.97.1 — verified three separate times, twice in
-isolation. Anyone who repairs this in the manifest and does not re-run the gate will believe it
-fixed and be wrong.
+crate, which declares no dependencies, so the crate the example names cannot resolve and `Doc-tests
+ical-grammar-layering` fails with `error[E0432]: unresolved import`. This is not hypothetical: **all
+five** doc examples under `crates/ical-grammar/src/` open with `use ical_grammar::`, which the
+collapse rewrites to `use ical_core::`, and each one then fails inside the gate. (This sentence said
+"five of the ten" until amendment 18: ten is the count of ````` fences, which is two per example, so
+the denominator was the fence count and every example was affected rather than half of them.) CI
+would be red on the landing commit. The fix is `--exclude ical-grammar-layering` on both of the
+Justfile's doc-test invocations. **The trap is worth naming because it will cost the next person an
+afternoon: `[lib] doctest = false` does not fix this.** `cargo metadata` reports `doctest = False`
+for the member and `cargo test --doc` runs the examples anyway — the merged-doctest runner of cargo
+1.97.1 — verified three separate times, twice in isolation. Anyone who repairs this in the manifest
+and does not re-run the gate will believe it fixed and be wrong.
 
 *Coverage, and it errs in the flattering direction.* Under `cargo llvm-cov` the grammar files
 appear as two rows carrying identical numbers and the total sums both: 96 regions where there are
@@ -927,7 +928,8 @@ flat, because a subdirectory changes that arithmetic and a check that quietly st
 worse than none. It goes in `purity` rather than in a new `just` recipe because that task already
 walks this tree and already holds this ADR's structural rules, and a third recipe plus two CI lines
 to read one directory is more mechanism than the rule is worth. What it costs: `purity` now means
-two rules rather than one, and a contributor grepping for a gate called "layering" finds nothing;
+two rules rather than one **— five, after amendment 18 —** and a contributor grepping for a gate
+called "layering" finds nothing;
 the check is textual, in the same family as the golden-list scan and defeated by the same things —
 a macro, a generated path, a spelling it was not taught; it makes the flat grammar tree
 load-bearing for a reason that is not about layering; and it is a fourth rewrite of `xtask` in the
@@ -936,19 +938,22 @@ CONTRIBUTING with no gate is rejected on the ground this workspace has just spen
 clearing: an asserted rule with nothing behind it reads exactly like an enforced one and decays
 without anybody noticing.
 
-The rest of the gate set is confirmed rather than assumed, which is the other half of what the
-probe bought. `cargo package --list` on the member emits exactly `Cargo.lock`, `Cargo.toml`,
-`Cargo.toml.orig` and `src/lib.rs`, so the layering crate can never accidentally ship the grammar —
-this decision's load-bearing packaging claim, tested. `cargo semver-checks` is clean and attributes
-grammar items through the private module and the glob. REUSE is unaffected, a file compiled twice
-being one file on disk. `cargo shear` objects neither to `#[path]`-included sources nor to a member
-with no `[dependencies]` table. Clippy is clean under `--all-features` and `--no-default-features`,
-the gate satisfying `missing_docs`, `missing_debug_implementations` and `unreachable_pub` with a
-two-line module doc; a doubled clippy diagnostic is noise here, since every gate is `-D warnings`
-and nothing counts them. `[lib] doc = false` does its one job and no other — no duplicate rustdoc
-page, no effect whatever on doctests. One incidental worth a line because it presents as a
-different failure entirely: a stale `target/package/` directory makes `cargo semver-checks` abort
-with "package is ambiguous: defined by multiple manifests", and cleaning it is the fix.
+The rest of the gate set is confirmed rather than assumed, which is the other half of what the probe
+bought. `cargo package --list` on the member emits `.cargo_vcs_info.json`, `Cargo.lock`,
+`Cargo.toml`, `Cargo.toml.orig` and `src/lib.rs` — five entries in this repository, four in the
+throwaway workspace the probe ran in, which was not a git checkout and so had no VCS record to
+write. No grammar source is among them either way, so the layering crate can never accidentally ship
+the grammar — this decision's load-bearing packaging claim, tested. `cargo semver-checks` is clean
+and attributes grammar items through the private module and the glob. REUSE is unaffected, a file
+compiled twice being one file on disk. `cargo shear` objects neither to `#[path]`-included sources
+nor to a member with no `[dependencies]` table. Clippy is clean under `--all-features` and
+`--no-default-features`, the gate satisfying `missing_docs`, `missing_debug_implementations` and
+`unreachable_pub` with a two-line module doc; a doubled clippy diagnostic is noise here, since every
+gate is `-D warnings` and nothing counts them. `[lib] doc = false` does its one job and no other —
+no duplicate rustdoc page, no effect whatever on doctests. One incidental worth a line because it
+presents as a different failure entirely: a stale `target/package/` directory makes `cargo
+semver-checks` abort with "package is ambiguous: defined by multiple manifests", and cleaning it is
+the fix.
 
 Four costs this decision had not admitted. Its correctness now depends on three textual facts that
 no manifest reader can derive — `test = false` and `doc = false` in the gate's `[lib]`, and
@@ -960,3 +965,89 @@ objects: the layer is checked in the code and not in its prose. `cargo package -
 permanently unavailable to this workspace as written. And act 2, one of the six acts, turns out to
 need a gate of its own to mean anything, which is a leg of `xtask` and a maintenance surface that
 the version of this decision scored in the bake-off did not include.
+
+**18. Act 2 was walked around in four spellings, the guard against a wildcard `Token` arm could
+not fire on the shape that loses data, and the release configuration described a workspace that no
+longer existed. All three are now rules of `xtask purity`, and the footprint figures amendment 12
+sold as measurements are withdrawn as unreproducible and re-measured against a harness this file
+records.** Four lenses attacked the landing rather than the decision, which is the review a gate
+family with no custodian is owed, and everything below reproduced before it was repaired.
+
+*A wildcard arm over `Token`.* `unreachable_patterns = "deny"` was adopted workspace-wide and
+written into two files as what keeps such an arm from being added back. It does not. That lint
+rejects a catch-all placed after every variant is already covered; a match that omits one variant
+and adds `_` is a *reachable* wildcard and the lint is silent. Deleting `parse.rs`'s `Token::Value`
+arm and appending `_ => self.take_value(b"", meter)` — `LineBuilder::take` swallowing every
+property value — compiles with zero warnings under `-D warnings` and passes `purity`. It is also
+the only shape a hand remembering the old cross-crate rule would write, since that rule *required*
+the match to be partial. The fourth rule of `purity` now reads the arms: a `match` whose arm
+patterns name `Token::` may not also carry a `_` arm, anywhere under `crates/`. The lint is kept —
+a dead arm is still worth refusing — but it is no longer described as the thing that holds this.
+`SyncToken::` ends in the same seven characters and is a different type, so the name is matched at
+its boundary; a scrutinee written across lines is the documented cost.
+
+*Four ways out of the layer.* Act 2 reads text, and text has more than one spelling for the same
+import. `use crate ::Token;` compiles, means what `use crate::Token;` means, and was caught only by
+`cargo fmt` — a gate held by a formatter is a formatter, so lines are now read with the whitespace
+around `::` closed up. `extern crate self as ical_core;` inside a grammar file gives the layer a
+name for its own crate root that is neither `crate::` nor `super::super::`, so `ical_core::` is
+refused as a path and `extern crate` is refused outright; nothing in the layer needs one, because
+`alloc` is declared by each root that compiles these sources. `#[path = "../launder.rs"]` in
+`grammar/mod.rs` pulls a file into the layer that a rule reading the *directory* never opens, and
+`cargo shear` caught it only by misdiagnosing the file as unlinked. And the mirror of that: a `.rs`
+file the module root never declares is scanned by act 2 and compiled by nobody, so it is invisible
+to `gates/grammar-layering`. The last two are one rule — the directory's files and `mod.rs`'s `mod`
+declarations must be the same set, in both directions, and `#[path]` is refused inside the layer.
+
+*The member with no custodian.* This decision recorded, at the paragraph on unclaimed assertions,
+that nothing stops a pull request from deleting the layering member alongside the violation it
+would have caught, and that "the mitigation is a string-equality check narrower than a name scanner
+but not zero". There was no such check. A simulated deletion — the member line out of `members`,
+the directory moved away, the two `--exclude` flags and the `msrv` line removed — passed `purity`,
+`clippy`, `fmt` and `shear`, and with it gone `use crate::CivilDate;` inside a grammar file passed
+too. The third rule of `purity` is that check: the member line, the package name, `publish = false`,
+both `[lib]` switches, and the `#[path]` string, each compared against what this ADR says they must
+be. The three textual facts amendment 17 admitted no manifest reader can derive now have a reader.
+
+*`release-plz.toml`.* It declared a `[[package]]` block for `ical-grammar` and folded that name
+into `ical-core`'s `changelog_include` for a full landing after the crate ceased to exist, because
+the release path is the one path this repository runs no gate over — `ci.yml` reads fifteen gates
+and none of them opens that file. The two stale references are removed and the fifth rule of
+`purity` reads the published members out of the root manifest and holds the configuration to them:
+one `[[package]]` block each, no block for a package the workspace does not build, and
+`changelog_include` naming every published member but the one carrying the changelog. This is the
+rule the next crate meets: `ical-query` fails `purity` until it has both.
+
+*The footprint figures do not reproduce, and nothing in the tree said how they were taken.*
+Amendment 12 sells them as settled with numbers "so a later challenger beats a measurement instead
+of a preference", and hangs a numeric re-opening threshold on them, but records no profile, no
+probe source and no exported symbol set: a grep of `docs/` for the profile, the artifact kind or
+the control's figure returns only the claim itself. Reconstructing both trees with `git archive`
+and measuring gives deltas of zero where 512 smaller and 93 larger were claimed, and a sensitivity
+control roughly a third of the 24,576 octets stated. The three figures are therefore **withdrawn as
+unreproducible**; the null result they were used to argue is *strengthened* rather than overturned,
+and the threshold now has a harness to be evaluated against. The harness, so that the next
+challenger inherits a measurement rather than a number: a `cdylib` probe crate outside the
+workspace, `[profile.release]` with `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`,
+`strip = true` and `panic = "abort"`, a bump allocator and a `#[panic_handler]` so that nothing of
+`std` is linked, one `extern "C"` export driving `ContentLineReader::new` and `next_token` to
+exhaustion, built for `wasm32-unknown-unknown` against `crates/ical-core` of each tree by path.
+Measured 2026-08-11 on cargo 1.97.1: **3,089 octets against the split tree and 3,089 against the
+collapsed one — identical to the octet**. With one `Document::parse` call added to the same probe:
+10,427 split against 10,562 collapsed, the collapse 135 octets *larger*, 1.3%. That second pair is
+also the sensitivity control — linking `parse` moves 7,338 octets — so the null on the first pair
+is a measurement and not a broken harness. Re-extraction still requires a named consumer wanting
+grammar without model **and** a 5% artifact-size reduction on one shipped target or a 10s
+clean-build reduction; on these numbers the collapse is 1.3% the wrong way, so it fails that half
+by a wider margin than before.
+
+*Two smaller corrections, and one scope note.* `#[non_exhaustive]` on `Token` buys a minor release
+for an added *variant* and says nothing about fields: the variants are not individually
+non-exhaustive, and a `ContentLineSource` implementor outside the workspace necessarily writes
+`Token::Parameter { name, value, has_value }` with a complete field list, so adding a field is a
+major release. That is a decision — destructuring a token is what consuming it is — and it is now
+written where the attribute is. And "one public spelling per grammar item" is exact for `Token` and
+deliberately false for three others: `Limits` and `Meter` have three public spellings and `Instant`
+two, because `ical-tz` and `ical-itip` re-export them at their own roots so that a caller names one
+crate for one concept. The postcondition is about the item the collapse moved, not about every item
+in the layer.

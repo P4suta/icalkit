@@ -128,7 +128,7 @@ as an undecided scope rather than a non-goal.
   publish, and the layering rule becomes a second compilation under `gates/`. Recorded as ADR
   0004 amendment 12, re-argued against its own probe as amendment 17, and **executed**: the
   sources are `crates/ical-core/src/grammar/`, `gates/grammar-layering` is a registered member,
-  and six crates are published rather than seven. Half of act 2 came back textual — the layering
+  and six crates are publishable rather than seven. Half of act 2 came back textual — the layering
   member cannot see a `crate::X` the crate root re-exports from the grammar — so that half is a
   second rule of `xtask purity` and is described nowhere as something the compiler catches.
 
@@ -605,7 +605,7 @@ does not put it back on a docket, and each names where it actually goes.
 | A `TZID`-qualified `RECURRENCE-ID` inside a repeated hour | `ROADMAP.md:173`, `docs/adr/0011-civil-time-arithmetic-and-resolution-types.md:135` | document-only. ADR 0005 amendment 3 decides it and argues it: comparison is three-valued, `InstanceMatch::Ambiguous` is `AuthorizationDenied::AmbiguousInstance`, and "a guess between the two halves cancels somebody else's meeting". That the denial is common is a cost of a made decision, and ADR 0011 amendment 3 records that the shape which would close it — a fold side on a `RECURRENCE-ID` — is defined by no RFC. | — |
 | A cached typed value if the accessors are ever measured hot | `docs/adr/0001-lossless-round-trip.md:168` | work-not-decision. The answer is recorded in advance — "a `OnceCell` bound to the same `RawText`, or a generation counter — never a bare second field" — and what is missing is a benchmark. | Debt |
 | The uniform-`Result` accessor and parameter-granular dirty-flag dissents | `docs/adr/0001-lossless-round-trip.md:181`, `docs/design/ical-core-api.md:843` | document-only. ADR 0001's Decision fixes both mechanisms — one wrapper for the three states across every accessor, and a guard whose unit "is the whole property — its name, its parameters, and its value together" — and M0 shipped them. The invalidation-granularity question deferred to ADR 0004 was answered there by `Revision` binding an `ETag` rather than by a finer dirty flag. | Debt (dissent record) |
-| The two unpaid costs of the zero-dependency rule | `docs/adr/0004-sans-io-protocol-layer.md:234` | document-only. The Decision states the rule for all six core crates and `xtask purity` enforces it; what the paragraph records is a weakness in the *argument* for a rule that is made, and this project's own convention is to amend a mechanism rather than overturn a principle. | — |
+| The two unpaid costs of the zero-dependency rule | `docs/adr/0004-sans-io-protocol-layer.md:234` | document-only. The Decision states the rule for all five core crates and `xtask purity` enforces it; what the paragraph records is a weakness in the *argument* for a rule that is made, and this project's own convention is to amend a mechanism rather than overturn a principle. | — |
 | The deferred override index for paged stores | `docs/adr/0002-bounded-lazy-recurrence.md:87` | document-only for v1. The ADR states the v1 answer in the same sentence — "v1 callers flatten to a borrowed sorted slice" — and the later observation that a paged store must answer "maximum absolute shift" without materializing itself sharpens the cost of a deferral already taken. | Debt |
 | No rule relating an attacker-controlled skew to the budget | `docs/adr/0002-bounded-lazy-recurrence.md:150` | document-only. The ADR answers it in the same paragraph: the candidate budget bounds the skew into a reported outcome, "which is this ADR working as designed", and "a hostile shift and a legitimate one are textually identical", so no rule can separate them. | — |
 | The `ical-core` / `ical-itip` change-vocabulary coupling | `docs/adr/0005-scheduling-apart-from-the-model.md:89` | document-only. The ADR states its own revisit trigger — "revisit it if that vocabulary grows to where most properties are never iTIP-relevant" — and the trigger is not met. A dissent with a stated, unmet condition is not an open decision. | — |
@@ -776,23 +776,33 @@ than summaries, and every line is holdable against a pull request.
   with the act-2 rule amendment 17 added and the `CORE_CRATES`/`core_crates` cross-read: the
   member root walk now covers `crates/` and `gates/`, and the purity partition still covers
   `crates/` alone. The two edits still owed to this file are ADR 0012's and amendment 16's, and
-  they are owed against the shape as it now stands.**
+  they are owed against the shape as it now stands.** **Amendment 18 added three more rules to
+  the same file — the layering member's string equality, the wildcard `Token` arm, and
+  `release-plz.toml` against the published members — so the shape those two edits are owed
+  against is now a five-rule `purity`, and the crate set is read out of the root manifest rather
+  than written down a third time.**
 - **Answered.** The four gates were run against a throwaway `#[path]` member before a byte moved,
   three broke, the precondition fired, and ADR 0004 amendment 17 is the re-argument that narrows
   the verdict rather than defeating it. Their whole repair is `test = false`, `doc = false` and
   one `--exclude`, and all three are in the tree. `cargo package --workspace` stays permanently
   unavailable for this workspace, which is addressed to whoever later adds that command rather
   than to anyone today.
-- **Discharged, and these are the properties to keep true.** Six published crates, not seven. One
+- **Discharged, and these are the properties to keep true.** Six publishable crates, not seven. One
   public spelling for every grammar item: no `ical_core::grammar::` path and no `ical_grammar::`
   path. Files under the grammar directory use `super::`-relative intra-layer imports and carry no
   crate-level inner attributes; naming a model item there fails in `gates/grammar-layering` with
   a file and a line, and naming a grammar item through the crate root fails the second rule of
-  `xtask purity`, which is textual. The grammar tree stays flat, because a subdirectory changes
-  the depth that rule is stated in. A wildcard arm over `Token` anywhere in `ical-core` is a
-  defect, and `unreachable_patterns = "deny"` is what says so. Adding a `Token` variant is a
-  minor release for external callers and a compile error in-tree — anything pricing it as a
-  seven-crate major is pricing the rejected shape.
+  `xtask purity`, which is textual — as do an `extern crate`, a `#[path]` and a file that
+  directory holds without `mod.rs` declaring it. The grammar tree stays flat, because a
+  subdirectory changes the depth that rule is stated in. `gates/grammar-layering` is itself held
+  to the workspace by the third rule, because deleting the member used to pass every gate here.
+  A wildcard arm over `Token` anywhere under `crates/` is a defect, and the fourth rule is what
+  says so: `unreachable_patterns = "deny"` was recorded as saying it and cannot, since the shape
+  that loses data omits a variant rather than following all of them. Adding a `Token` variant is
+  a minor release for external callers and a compile error in-tree — anything pricing it as a
+  seven-crate major is pricing the rejected shape; adding a *field* to one is a major release
+  either way, because the variants are not individually non-exhaustive. `release-plz.toml` names
+  the published members and nothing else, held by the fifth rule (ADR 0004 amendment 18).
 - Do not add a fourth outcome to the token source, and do not add feed, resume or a reader-state
   type. Do not add a second value-chunk protocol beside the existing flag, and do not add a
   pull-layer value ceiling: the absence of one is now a stated capability (ADR 0007 amendment 1).

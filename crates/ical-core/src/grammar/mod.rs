@@ -16,10 +16,13 @@
 //! grammar without the model, `docs/adr/0004` said out loud that the honest move was to fold it
 //! back if no such caller appeared, and none did. What survives the fold is the layer, and the
 //! rule that keeps it one: nothing here names anything above this directory. Not `crate::`, not
-//! `super::` from this file, not `super::super::` from the files beside it, and the tree stays
-//! flat. `gates/grammar-layering` compiles these sources in a crate that has no model, which
-//! turns naming a model item into a compile error; it cannot see a `crate::X` that the crate
-//! root re-exports from here, so the second rule of `just purity` reads this directory for one
+//! `super::` from this file, not `super::super::` from the files beside it, not `ical_core::`,
+//! and no `extern crate` to make that spelling available. The tree stays flat, `#[path]` is
+//! refused, and every `.rs` file beside this one is declared by it, so that the directory this
+//! rule reads and the module tree the compiler reads are the same set of files.
+//! `gates/grammar-layering` compiles these sources in a crate that has no model, which turns
+//! naming a model item into a compile error; it cannot see a `crate::X` that the crate root
+//! re-exports from here, so the second rule of `just purity` reads this directory for one
 //! textually. That is hygiene about not routing a lateral import through the parent crate's
 //! public surface, and no compiler enforces it.
 //!
@@ -48,9 +51,9 @@
 //!
 //! Two readings this layer had to choose are permissive, and both are now pinned by a corpus
 //! case rather than owed one. A bare `LF` or a bare `CR` followed by whitespace is lexed as a
-//! fold, recording which terminator arrived rather than refusing it, because [`FoldPoint`]
-//! exactly that. And a `DQUOTE` opens a quoted parameter value only where a value may begin,
-//! so one unbalanced quote inside a `CN` cannot swallow the rest of the line. Both readings
+//! fold, recording which terminator arrived rather than refusing it, because [`FoldPoint`] exists
+//! to carry exactly that. And a `DQUOTE` opens a quoted parameter value only where a value may
+//! begin, so one unbalanced quote inside a `CN` cannot swallow the rest of the line. Both readings
 //! round-trip; they disagree with a stricter one about where the header ends. RFC 6868's
 //! caret encoding is a codec rather than a storage rule: storage keeps the octets a producer
 //! wrote, so a `DQUOTE` written `^'` stays `^'` on the wire and is a `"` only in the decoded

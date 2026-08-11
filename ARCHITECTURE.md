@@ -28,9 +28,12 @@ second time in a crate root holding no model, so a reference to `CivilDate` from
 grammar is `error[E0432]` with a file and a line rather than a review comment. What that
 member cannot catch is `crate::X` for an `X` the crate root re-exports from the grammar
 itself — it resolves there too — so `just purity` carries a second, textual rule: no path
-under `crates/ical-core/src/grammar/` may resolve above that directory, and the tree stays
+under `crates/ical-core/src/grammar/` may resolve above that directory, no `extern crate` and
+no `#[path]` inside it, every `.rs` file there declared by its `mod.rs`, and the tree stays
 flat. That rule is hygiene about not routing a lateral import through the parent crate's
-public surface. It is not what the layering member proves, and no compiler enforces it.
+public surface. It is not what the layering member proves, and no compiler enforces it. The
+member itself is held to the workspace by a third rule of the same task, because a pull request
+deleting it used to pass every gate here (ADR 0004, amendment 18).
 
 **One change to this shape is decided and has not landed.** `ical-query` joins the graph
 *above* `ical-core`, `ical-recur`, `ical-tz` and `ical-dav` as the filter evaluator, with
@@ -129,7 +132,8 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 | `ical-conform` | all of them | yes | yes | no | grows with each milestone (M5) |
 
 One row is owed and does not exist yet: `ical-query` (`ical-core`, `ical-recur`, `ical-tz`,
-`ical-dav`; no std, alloc, no clock). Six crates are published, not seven.
+`ical-dav`; no std, alloc, no clock). Six crates are publishable, not seven — nothing has been
+published yet, and that is the count the release configuration is held to.
 `gates/grammar-layering` is a workspace member and is deliberately not a row here: it declares
 no dependencies, publishes nothing, and compiles `ical-core`'s own sources, so a row claiming
 otherwise would describe a crate that does not exist.
@@ -151,7 +155,7 @@ instant the caller passed in.
 A panel proposal's `Vec<Response>: Slots<Response>` failed to compile at the
 `ical-core`/`ical-dav` seam under an allocation-free reading of these crates, and no
 dependency diff can see that. No crate carries a compiled minimal-usage example at its declared
-setting: `just no-std` and `just wasm` build the six core crates for a bare-metal and a browser
+setting: `just no-std` and `just wasm` build the five core crates for a bare-metal and a browser
 target, which proves the targets and says nothing about the seam. So the column is a claim the
 workspace holds to by hand, and that class of break stays invisible until somebody wires two
 crates together and tries to compile the result.

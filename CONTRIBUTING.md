@@ -23,8 +23,8 @@ fix the cause rather than narrowing the gate.
 - **No `allow` and no `ignore`.** Every gate is strict on purpose. Make the code pass
   instead of suppressing the finding. If a lint is genuinely wrong for this codebase,
   change the shared configuration and say why in the commit message.
-- **The core stays `no_std` and sans-I/O.** `ical-core`, `ical-recur`,
-  `ical-tz`, `ical-itip`, and `ical-dav` must not gain `std`, a bundled time zone database, a
+- **The core stays `no_std` and sans-I/O.** `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`,
+  and `ical-dav` must not gain `std`, a bundled time zone database, a
   clock, or a transport. `just purity`, `just no-std`, and `just wasm` enforce it. A zone
   answer comes from a caller-supplied source and names that source
   ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md)); "now" is an instant the caller
@@ -61,8 +61,10 @@ fix the cause rather than narrowing the gate.
   no model, so naming one is a compile error there. That member cannot see a `crate::X` for an
   `X` the root re-exports from the grammar itself, so the rest is the second rule of
   `just purity`: in `mod.rs` neither `crate::` nor `super::`, in the files beside it neither
-  `crate::` nor `super::super::`. The check is textual and a macro or a generated path goes
-  through it ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendment 17).
+  `crate::` nor `super::super::`, no `ical_core::`, no `extern crate`, no `#[path]`, and every
+  `.rs` file beside `mod.rs` declared by it. The check is textual and a macro or a generated
+  path goes through it ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendments 17 and
+  18).
 - **Time arithmetic is checked and never coerces.** `checked_*`, `div_euclid`, `rem_euclid`;
   no `Duration` carries years or months; a recurrence instance whose date or local time does
   not exist is filtered per RFC 5545 section 3.3.10, never moved to a nearby one

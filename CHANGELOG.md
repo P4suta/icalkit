@@ -659,10 +659,23 @@ the other order. What version this becomes is a decision nobody has made.
 - **`ical-grammar` is gone as a crate and survives as a layer.** Its sources are
   `crates/ical-core/src/grammar/`, a private module tree whose every item the crate root
   re-exports, so `ical_core::Token` is the one spelling and `ical_grammar::Token` names
-  nothing. Six crates are published, not seven. The seam was insurance against a caller that
-  wanted the grammar without the model; ADR 0004 said what to do if none appeared, and none
-  did. What replaces the crate boundary is `gates/grammar-layering`, an unpublished workspace
-  member that compiles the same sources where no model exists, plus a second rule in
-  `just purity` for the spelling that member cannot see. `Token` keeps `#[non_exhaustive]`,
-  which now means what it says: a minor release outside this workspace, a compile error inside
-  it, with `unreachable_patterns = "deny"` keeping a wildcard arm from taking that back.
+  nothing. Six crates are publishable, not seven; nothing is published yet. The seam was
+  insurance against a caller that wanted the grammar without the model; ADR 0004 said what to
+  do if none appeared, and none did. What replaces the crate boundary is
+  `gates/grammar-layering`, an unpublished workspace member that compiles the same sources
+  where no model exists, plus a second rule in `just purity` for the spelling that member
+  cannot see. `Token` keeps `#[non_exhaustive]`, which now means what it says: a minor release
+  outside this workspace, a compile error inside it. This entry originally credited
+  `unreachable_patterns = "deny"` with keeping a wildcard arm from taking that back; the entry
+  below corrects that.
+- **`just purity` gained the three rules the collapse turned out to need, and lost a claim it
+  could not hold.** A wildcard arm over `Token` is now refused by reading the arms, because
+  `unreachable_patterns` fires only on a catch-all after every variant is covered and the shape
+  that silently drops a payload omits a variant instead. The layering member is held to the
+  workspace by string equality — the member line, the package name, `publish = false`, both
+  `[lib]` switches and the `#[path]` string — because deleting it passed every gate here.
+  `release-plz.toml` is read against the root manifest's published members, which is how it
+  came to name `ical-grammar` for a whole landing after the crate ceased to exist; both stale
+  references are gone. Act 2 itself gained the four spellings that walked around it: whitespace
+  inside a path, `extern crate self as ical_core;`, `#[path]` into the layer, and a `.rs` file
+  the module root never declares. See `docs/adr/0004`, amendment 18.
