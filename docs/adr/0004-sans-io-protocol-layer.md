@@ -59,9 +59,12 @@ vocabulary rather than two that must be reconciled.
 The crate table in ARCHITECTURE.md gains an `alloc` column beside `std`, because `no_std`
 alone did not capture the wiring that actually broke: a panel proposal's
 `Vec<Response>: Slots<Response>` failed to compile at the `ical-core`/`ical-dav` seam under
-`alloc:false`, and no manifest diff can see that. Every crate therefore carries a compiled
-minimal-usage example, built in CI at its declared `alloc` setting, so a break of that class
-fails at the seam where it occurs instead of waiting for whoever next tries to use the crate.
+`alloc:false`, and no manifest diff can see that. No crate carries such an example, so that
+class of break is still invisible until somebody wires two crates together and tries to compile
+the result. What CI builds is `just no-std` and `just wasm` over the six core crates, which
+proves the targets and says nothing about the seam. A compiled minimal-usage example per crate
+at its declared `alloc` setting is the mechanism this paragraph wants and the workspace does not
+have.
 
 ### What the purity gate actually proves (DP-18)
 
@@ -162,9 +165,11 @@ one breaking a rule the wire format never had.
 
 The envelope is opaque to iCalendar internals by design and not by omission: `calendar-data`
 is carried as opaque bytes and parsed by `ical-core`. Depth bounding of recursive
-`CompFilter` on a server's parse of an untrusted REPORT body, and the HTTP envelope itself —
-`Depth`, method, `Content-Type` — are out of scope here and tracked as follow-ups rather than
-quietly treated as solved.
+`CompFilter` on a server's parse of an untrusted REPORT body was out of scope here and is not
+any more: Amendment 4 names the dimension and the filter read refuses at it. `Depth` became a
+value under Amendment 3. What is still out of scope, and tracked as a follow-up rather than
+quietly treated as solved, is the rest of the HTTP envelope — the method, `Content-Type`, and
+the framing a header value sits inside.
 
 ## Consequences
 
@@ -186,11 +191,14 @@ overstated before this amendment raised it further. The seam is insurance, not d
 demand. If no real caller ever wants grammar-without-model, the honest move is to collapse
 `ical-grammar` back into `ical-core` before 1.0, and nothing here decides that.
 
-Where tree construction lives is still unstated. Unfolding and content-line lexing belong to
-`ical-grammar` and the typed view belongs to `ical-core`, but a `BEGIN`/`END` nesting
-mismatch — a `VEVENT` closed by `END:VTODO` — is a structural violation that needs no typed
-interpretation and is not content-line grammar either. Whichever crate owns it also reports
-it, and that is the same un-placed responsibility this section exists to fix one layer down.
+Where tree construction lives was left unstated and M0 placed it. Unfolding and content-line
+lexing belong to `ical-grammar` and the typed view belongs to `ical-core`, and the `BEGIN`/`END`
+stack went to `ical-core` with them: a nesting mismatch — a `VEVENT` closed by `END:VTODO` —
+needs no typed interpretation and is not content-line grammar either, but it is the tree
+builder's own stack that sees it, and `unmatched-end`, `mismatched-end-name` and
+`unclosed-component` are how it reports. That the crate owning the construction also owns the
+report is the rule this section wanted; what it did not settle was which crate, and the first
+compile did.
 
 The `alloc` column makes the `ical-core`/`ical-dav` wiring visible at the seam; it does not
 decide what `ical-dav` holds when `alloc` is off. The incremental decoder is most of that
@@ -247,21 +255,23 @@ terminator — so it is filed as a conformance case addressed to `ical-core`, wh
 on the corpus and not a gate; a strict-CRLF unfolder is a defensible reading of RFC 5545
 section 3.1 and would invalidate the repair silently.
 
-The XML audit is unfinished. Newline normalization is one place where XML's own rules bite
-calendar data; attribute-value normalization, `xml:space`, and whitespace in element content
-have not been swept, nor has the question of whether any of them touch an `href` or a
+The XML audit is unfinished, and one line of it is closed. Newline normalization is one place
+where XML's own rules bite calendar data, and attribute-value normalization was the second:
+Amendment 8 swept it, because a `comp-filter name="VE&#78;T"` selected a component here that no
+conformant processor selects. `xml:space` and whitespace in element content have not been swept,
+nor has the question of whether either touches an `href` or a
 `getetag`. The size cap is likewise untuned: one fixed number either rejects a legitimate
 large multiget response or is loose enough to weaken the memory guarantee, and the binding
 stack now draws on the same budget without anyone having named the numbers.
 
-The incremental codec pair is load-bearing and has never been compiled. It is the shared
-encode/decode trait this decision listed as debt, promoted to prerequisite, and the one
-proposal that attempted something like it failed `cargo check` on an `alloc` contradiction
-and scored last. Whether a dyn-safe sink-driven encoder and a pull decoder are expressible in
-`ical-dav` under `#![no_std]`, a zero-dependency gate, and `alloc:false` on
-`thumbv7em-none-eabi` is genuinely unknown; if they are not, this section reopens rather than
-degrading gracefully. That the trait-object design is untested rather than refuted is the
-fairest reading of the bake-off, and it is not evidence in its favor.
+The incremental codec pair is load-bearing and it compiles. It is the shared encode/decode trait
+this decision listed as debt and then promoted to prerequisite, and the one proposal that
+attempted something like it failed `cargo check` on an `alloc` contradiction and scored last. M4
+answered most of what this paragraph asked: a dyn-safe sink-driven encoder and a pull decoder
+are expressible in `ical-dav` under `#![no_std]` and the zero-dependency gate, and the
+cross-target jobs build them. The `alloc:false` half was not answered and was not asked again —
+this crate declares `alloc` — so what `ical-dav` holds on a target without one is still unknown,
+exactly as the paragraph above it says.
 
 Streaming removes the memory amplification and leaves the work amplification. A client that
 decodes 40,000 `href`s one at a time still has 40,000 resources to fetch and 40,000 events to
@@ -271,9 +281,12 @@ real 40,000-event collection from a forged one, and the amendment only makes tha
 unnecessary for staying inside memory, not available for deciding whether to believe a
 server.
 
-Two protocol debts are untouched and one is sharper for the change. `CompFilter` recursion
-depth on a server's parse of an untrusted REPORT body is still unbounded in the decision, and
-a streaming decoder does not bound nesting depth for free. The HTTP envelope is still
+One protocol debt is paid and one is sharper for the change. `CompFilter` recursion depth on a
+server's parse of an untrusted REPORT body is bounded — `read_comp_filter` counts its own
+nesting and refuses `LimitExceeded::Depth` on the way down, at the same number
+`Limits::max_xml_depth` gives the tokenizer — precisely because a streaming decoder does not
+bound nesting depth for free and the filter tree is a second recursion beside the element tree.
+The HTTP envelope is still
 unmodeled, which now matters more: a producer that hits its own resource wall mid-encode has
 no in-scope way to say so, because `507` lives at the layer this ADR declines to describe.
 

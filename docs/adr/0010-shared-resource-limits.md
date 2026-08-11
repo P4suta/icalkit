@@ -26,7 +26,9 @@ reports a clean result; the total is whatever the attacker chose N to be.
 ## Decision
 
 A limit is two things, and this ADR names both. `Limits` is the caller's immutable policy: the
-thresholds, cheap to copy, identical for every call, owned by `ical-core`. `Meter` is the
+thresholds, cheap to copy, identical for every call, declared in `ical-grammar` and re-exported
+by `ical-core`. The grammar charges octets before a tree exists, so the policy had to sit under
+the seam ADR 0004 cut; a caller still names one crate for it. `Meter` is the
 caller's mutable ledger: a running count of work already done under that policy. Every
 hostile-input entry point takes both, `&Limits` and `&mut Meter` — parsing in `ical-core`,
 expansion in `ical-recur`, zone-transition resolution in `ical-tz`, and the `REPORT` and
@@ -96,8 +98,10 @@ period in one series of a fan-out ends the fan-out, and a caller that wants each
 on its own gives each its own meter — which is the same visible act, in the other direction, that
 `!Copy` plus `!Default` exists to make visible.
 
-The DAV field list is not proven complete. Bytes, element count, and depth do not bound entity
-expansion, attribute count per element, or namespace declarations, so a small inbound body can
-still expand into unbounded work through a dimension none of these fields counts. Whether that
-needs a typed `XmlLimits` sibling is deferred, not settled, and it is the likeliest place the
-next review lands.
+The DAV field list was not proven complete, and the next review landed here as predicted.
+Namespace declarations are bounded now — `max_prefix_bindings`, because one element at depth one
+can carry a thousand of them — and entity expansion is refused rather than counted, since a body
+that declares a `DOCTYPE` is turned back before an expansion can begin. Attribute count per
+element is still bounded by nothing, which is the dimension left. What is settled is the shape
+rather than the list: there is no typed `XmlLimits` sibling, the DAV dimensions are fields of the
+one `Limits`, and the next one will be too.

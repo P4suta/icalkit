@@ -180,8 +180,9 @@ parameters. A future `*_mut` body can still reach past its own storage, policed 
 and not by the compiler; the audit itself trusts span-cutting it cannot verify. A reasonable
 reviewer would have decided two of these differently — uniform `Result` accessors, and a
 parameter-granular dirty flag answering the invalidation-scope question deferred to ADR-0004 — and
-both remain live. None of it has been compiled: `ical-core` is doc comments and `#![no_std]`, so
-every mechanism above is a promise about a repository that does not yet exist.
+both remain live. All of it has been compiled. `ical-core` shipped in M0, the amendments below
+are what an adversarial pass found wrong with it, and every mechanism above is now a claim the
+corpus measures rather than a promise about a repository that does not exist.
 
 ## Amendments
 

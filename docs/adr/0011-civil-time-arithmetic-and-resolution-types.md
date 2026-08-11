@@ -85,14 +85,16 @@ Composition of the two gates is mandated and not designed. Nothing here names th
 or owner of the thing joining `MonthAddOutcome` to the resolution type, and that follow-up is now
 correctness-critical rather than plumbing — a larger debt than before, not a smaller one.
 
-Budget accounting under nested filtering is still not tight enough to assert on. 0010 charges
-candidates generated per period, but one `FREQ=MONTHLY` period can produce hundreds through
-`BYDAY` and `BYSETPOS`, and no document says whether a candidate filtered here before `BYSETPOS`
-selection counts as generated, or whether the per-instance zone query the second gate needs debits
-anything at all. Two conforming implementations can therefore differ by orders of magnitude in
-when they report exhaustion for one rule, so 0002's claim that the budget is observable enough for
-the conformance suite to assert on is not yet true. Nor is the denial all of this rests on
-unconditional: it holds only while every lint invocation remembers `-D warnings`.
+Budget accounting under nested filtering is tight on one side and absent on the other. 0010
+charges candidates generated per period, and one `FREQ=MONTHLY` period can produce hundreds
+through `BYDAY` and `BYSETPOS`; 0002's amendment 7 puts the charge at exactly one site, inside
+the expansion where a candidate is generated and where a nonexistent date is discovered, so a
+candidate filtered before `BYSETPOS` selection has already been paid for and the conformance
+suite can assert on the number. The per-instance zone query the second gate needs debits nothing
+at all — `ZonedSeries::admits` takes no ledger — so two conforming implementations can still
+differ by orders of magnitude in when they report exhaustion for a rule whose cost is mostly zone
+lookups. Nor is the denial all of this rests on unconditional: it holds only while every lint
+invocation remembers `-D warnings`.
 
 ## Amendments
 

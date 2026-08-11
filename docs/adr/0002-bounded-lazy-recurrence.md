@@ -129,9 +129,9 @@ negative `BYSETPOS` rule that cannot exceed budget inside one `next()`; `count()
 search; a `THISANDFUTURE` override changing only `LOCATION` with no time shift, which guards
 against sliding back to a scalar delta; an instant in both `EXDATE` and the override table; two
 chained anchors whose second diff is minimal; and a window whose upper edge falls between a
-cadence key and its shifted effective start. One case is filed without an answer: an
-`RDATE`-added instant colliding on the same effective start as a diff-moved one has no dedup rule
-here. The case exists to force that choice, which is open.
+cadence key and its shifted effective start. One case was filed without an answer: an
+`RDATE`-added instant colliding on the same effective start as a diff-moved one had no dedup
+rule here. The case existed to force that choice, and amendment 6 makes it.
 
 Two dissents are kept rather than settled. The sealed non-`Iterator` cursor scored higher than
 the item type adopted here and was rejected for a by-value-move trap and a `next()` sketch that
@@ -141,8 +141,9 @@ judged on the trap and the sketch alone. The scalar-delta reading of `THISANDFUT
 higher, on the reasonable ground that most real edits are time shifts and that full RFC
 generality could wait for usage data; it was overruled on the text of 3.8.4.4, and zero of three
 independent architects reached the diff-based shape on their own. The first implementation of
-both mechanisms should be treated as unverified: the composed-diff fold and the skew widening
-have no compile evidence behind them, and ical-recur today is doc comments and `#![no_std]`.
+both mechanisms was to be treated as unverified, and that instruction earned its keep. M1 built
+the composed-diff fold and the skew widening, neither had blind convergence behind it, and
+amendments 9 through 14 below are what four lenses found wrong with them.
 
 Skew is attacker-controlled. A file may declare a `THISANDFUTURE` shift of years and force
 cadence generation far outside a one-month view. The candidate budget bounds that into a reported

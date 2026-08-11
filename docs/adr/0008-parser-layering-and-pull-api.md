@@ -39,11 +39,13 @@ byte-identical round trip that is M0's sole acceptance criterion over the real-c
 only in the typed view, where failure is a diagnostic and the preserved bytes are still written
 back.
 
-A token may deliver its value in more than one chunk, and a source may answer that it needs more
-input, so a 400 MB inline `ATTACH` is never required to be resident for a token to exist; the
-caller's limit meter is charged per appended chunk rather than per completed value. Two gates keep
-both claims honest: the token layer compiles for `thumbv7em-none-eabi` without default features, and
-a structural test proves `Document` is built from the public token path.
+A token may deliver its value in more than one chunk — `Token::Value` carries whether another
+follows — and the caller's limit meter is charged per appended chunk rather than per completed
+value, so a 400 MB inline `ATTACH` is refused at the octet that crosses the budget rather than
+after it is resident. What a source may *not* do is answer that it needs more input: `next_token`
+yields a token, a refusal, or the end, and ADR 0007's Consequences record what that costs. Two
+gates keep both claims honest: the token layer compiles for `thumbv7em-none-eabi` without
+default features, and a structural test proves `Document` is built from the public token path.
 
 ## Consequences
 
@@ -59,13 +61,16 @@ honest rather than fixed: an implied whole-crate guarantee becomes an explicit c
 which a 64 KB device may use only the pull path. A caller who wants a document view on a
 constrained device is out of luck, and this says so instead of solving it.
 
-Charging per appended chunk is an enforcement point, and the allocation-policy decision recorded
-separately charges at node construction. Two documents naming different points for the same meter is
-a conflict to reconcile at integration, not to assume away; whichever ships first will look right.
+Charging per appended chunk was an enforcement point, and the allocation-policy decision recorded
+separately charged at node construction. Integration made them one site rather than choosing
+between them: the tree builder charges each value chunk before it appends it, and the grammar
+beneath charges nothing — every door there documents that its caller already has.
 
-Dyn-safety is more urgent now and still unsettled. A need-more-input outcome and a chunk-carrying
-associated type make the source trait harder to make object-safe, exactly when `ical-dav` and
-`ical-recur` are most likely to want some pull parser without a generic parameter.
+Dyn-safety was more urgent and is settled the way the pressure suggested. `ContentLineSource` has
+one method yielding a borrowed `Token`, no associated type and no need-more-input outcome, so
+`&mut dyn ContentLineSource` is a legal argument and a blanket impl over `&mut T` lets a generic
+consumer take one. The price is the second clause of the Decision above: the outcome that was
+going to cost object safety was the one dropped.
 
 Cross-property gaps in the typed view stay out of scope and are worse than unfinished. `UNTIL`'s
 value type agreeing with `DTSTART`'s, `RANGE=THISANDFUTURE` matched against the master, and

@@ -73,8 +73,9 @@ requirement.
 
 ## Consequences
 
-A caller who only reads calendars never compiles the scheduling crate — now a checked claim rather
-than an asserted one, since `xtask` compiles a minimal usage example per crate.
+A caller who only reads calendars never compiles the scheduling crate. That is still an asserted
+claim rather than a checked one: `xtask` runs `purity` and `codes` and nothing else, no crate
+carries a minimal-usage example, and the crate graph is all that stands behind the sentence.
 
 The transition being a value rather than a mutation means it can be shown to a user before being
 applied, which is what a mail client actually needs when it displays "this meeting was moved —
@@ -92,15 +93,20 @@ grows to where most properties are never iTIP-relevant.
 Re-evaluating at the confirming turn closes forgery but not staleness. Nothing forces the second
 call to read the component fresh rather than replay a snapshot from the first, and a genuine
 `AuthorizedTransition` over a stale snapshot is still wrong. Binding a transition to an `ETag` or
-sync-token is ADR-0004 territory and undesigned, so this remains a caller obligation with a
-fixture behind it: the propose-and-confirm flow is not safe against a racing organizer update and
-should not be described as if it were.
+sync-token was ADR-0004 territory and undesigned, and M4 designed it: `ical_dav::Revision`
+carries what the first turn read into the `Precondition` the second turn writes under. What that
+closes is the plumbing and not the guarantee — the freshness a caller gets is the freshness the
+*server* enforces when it compares the `If-Match` — so this remains a caller obligation with a
+fixture behind it, and the propose-and-confirm flow is still not safe against a racing organizer
+update on its own.
 
-Two questions stay open underneath the gate. Whether a field diff compares preserved octets or
-parsed values is settled nowhere; if it is octet-level, a CP1252-mangled value could report
-"unchanged" for an organizer-only field an attendee touched, and the field-permission check has a
-hole beneath it. The CAL-ADDRESS / `SENT-BY` / `SCHEDULE-AGENT` delegation rules are gestured at
-above rather than specified. Beyond both, `RANGE=THISANDFUTURE` splitting, VALUE=DATE-safe
+Two questions stay open underneath the gate, and one of them is now half answered. A field diff
+compares preserved octets — `diff.rs` chose that in M3 on the ground that its failure direction
+is refusal rather than permission, and amendments 6 and 7 below reason from it. The hole beneath
+it is exactly the one named here and is not closed: a CP1252-mangled value can report
+"unchanged" for an organizer-only field an attendee touched, and no gate above the diff sees it.
+The CAL-ADDRESS / `SENT-BY` / `SCHEDULE-AGENT` delegation rules are gestured at above rather
+than specified. Beyond both, `RANGE=THISANDFUTURE` splitting, VALUE=DATE-safe
 `DTSTART`, negative `BYSETPOS` and a fold across a codepoint remain unexercised through the reused
 type: `ical-itip` is not RFC-5546-complete, and nothing here entitles anyone to say it is.
 
