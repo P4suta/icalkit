@@ -45,12 +45,55 @@
 //! may resolve above the grammar root — in `mod.rs` neither `crate::` nor `super::`, in the
 //! files beside it neither `crate::` nor `super::super::` — and the tree stays flat, because a
 //! subdirectory changes the depth that arithmetic is stated in and a rule that quietly stops
-//! applying is worse than no rule. It is in the same family as the golden-list scan and is
-//! defeated by the same things: a macro, a generated path, a spelling it was not taught.
+//! applying is worse than no rule.
+//!
+//! Four spellings were walked around before they were rules. Whitespace: `use crate ::Token;` is
+//! the same import and a substring match does not see it, so every line is read with its
+//! whitespace removed rather than being left to `cargo fmt`. The crate's own name: `extern crate
+//! self as ical_core;` gives the layer a name for the crate root that is neither `crate::` nor
+//! `super::`, so `ical_core::` is refused as a path and `extern crate` is refused outright —
+//! nothing in the layer needs one, since `alloc` is declared by each root that compiles it.
+//! `#[path]`: it maps a module of the layer onto a file this scan never opens, so the layer would
+//! hold code no rule here applies to. And the module tree: the rule reads a directory while the
+//! compiler reads `mod.rs`, so a `.rs` file the module root does not declare is invisible to
+//! `gates/grammar-layering`, and the two sets are held equal in both directions.
+//!
+//! It is still in the same family as the golden-list scan and is still defeated by the same
+//! things: a macro, a generated path, a spelling it was not taught.
 //!
 //! This is hygiene about not routing a lateral import through the parent crate's public
 //! surface. It is not the layering guarantee, and nothing here should be read as saying the
 //! compiler enforces it.
+//!
+//! # `purity`, third rule: the member that makes the layer a fact
+//!
+//! The compile half of the layering guarantee is a workspace member, and a member is deletable.
+//! Before this rule, a pull request that dropped `gates/grammar-layering` from the member list
+//! and moved its directory away passed every gate in this repository: a stale `--exclude` for a
+//! package that no longer exists is not an error, and the membership walk below only ever
+//! reports a directory that declares `#![no_std]`, which that member deliberately does not. So
+//! the member is named here — the member line, the package name, `publish = false`, `[lib] doc`
+//! and `test`, and the `#[path]` that reaches the real sources — by string equality, which
+//! `docs/adr/0004` calls narrower than a name scanner and not zero.
+//!
+//! # `purity`, fourth rule: a wildcard arm over `Token`
+//!
+//! `Token` is `#[non_exhaustive]`, which binds outside this workspace and means nothing inside
+//! it, so `unreachable_patterns = "deny"` was written down as what stops a wildcard arm from
+//! being added back. It does not: that lint fires on a catch-all after every variant is already
+//! covered, and a match that omits one variant and adds `_` is a *reachable* wildcard the lint
+//! is silent about. It is also the only shape that loses data, and the only shape a hand
+//! remembering the old cross-crate rule would write. So the arms are read here: a `match` whose
+//! arm patterns name `Token::` may not also carry a `_` arm. `SyncToken::` ends in the same
+//! seven characters and is a different type, so the name is matched at its boundary.
+//!
+//! # `purity`, fifth rule: the crate set's other copies
+//!
+//! `release-plz.toml` is the one file describing this workspace that no gate compiled, ran, or
+//! read, and it named `ical-grammar` for a full landing after the crate ceased to exist. So the
+//! published members are read out of the root manifest and held against it: one `[[package]]`
+//! block each, no block for a package the workspace does not build, and `changelog_include`
+//! naming every published member but the one that carries the changelog.
 //!
 //! `just no-std` and `just wasm` are the compile-time half: they prove the core builds for
 //! `thumbv7em-none-eabi` and for `wasm32-unknown-unknown`. What they cannot express is the
@@ -120,6 +163,30 @@ const JUSTFILE: &str = "Justfile";
 /// Written out rather than derived, because every message below is about positions relative to
 /// this one directory: it is what `gates/grammar-layering` compiles alone.
 const GRAMMAR_ROOT: &str = "crates/ical-core/src/grammar";
+
+/// The crate the grammar layer sits in, spelled as a path spells it.
+///
+/// A path may name this crate from inside the layer only by way of `extern crate self as`, which
+/// is why both that declaration and this prefix are refused there.
+const GRAMMAR_OWNER: &str = "ical_core";
+
+/// The member that compiles the grammar layer with no model in scope.
+const LAYERING_MEMBER: &str = "gates/grammar-layering";
+
+/// The package name that member declares.
+const LAYERING_PACKAGE: &str = "ical-grammar-layering";
+
+/// The type a wildcard match arm would silently swallow a variant of.
+const GUARDED_ENUM: &str = "Token";
+
+/// The root manifest, relative to the workspace root.
+const ROOT_MANIFEST: &str = "Cargo.toml";
+
+/// The release configuration, relative to the workspace root.
+const RELEASE_CONFIG: &str = "release-plz.toml";
+
+/// The published member whose changelog carries the whole stack's history.
+const CHANGELOG_OWNER: &str = "ical-core";
 
 /// The committed golden list of diagnostic codes, relative to the workspace root.
 const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
@@ -227,7 +294,347 @@ fn collect_purity_violations() -> io::Result<Vec<String>> {
     violations.extend(unregistered);
 
     violations.extend(grammar_layer_violations(&workspace.join(GRAMMAR_ROOT))?);
+    violations.extend(layering_member_violations(&workspace)?);
+    violations.extend(guarded_match_violations(&workspace)?);
+    violations.extend(release_config_violations(&workspace)?);
     Ok(violations)
+}
+
+/// What the workspace says about the member that compiles the grammar alone.
+///
+/// That member is the layering guarantee. Deleted, the grammar is a directory inside `ical-core`
+/// again and `use crate::CivilDate;` from inside it compiles; nothing else here would notice,
+/// because every other mention of it is a comment, an `--exclude` that is not an error once the
+/// package is gone, or a membership walk that reports only a directory declaring `#![no_std]`.
+/// So each part the guarantee rests on is named and compared: the member line, the package name,
+/// `publish = false`, the two `[lib]` switches that keep the grammar's tests and docs from being
+/// counted twice, and the `#[path]` that reaches the real sources rather than a copy.
+fn layering_member_violations(workspace: &Path) -> io::Result<Vec<String>> {
+    let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
+    let directory = workspace.join(LAYERING_MEMBER);
+    let manifest_path = directory.join("Cargo.toml");
+    let lib_path = directory.join("src").join("lib.rs");
+    let member = if manifest_path.is_file() && lib_path.is_file() {
+        Some((
+            fs::read_to_string(&manifest_path)?,
+            fs::read_to_string(&lib_path)?,
+        ))
+    } else {
+        None
+    };
+    Ok(layering_violations(
+        &root,
+        member
+            .as_ref()
+            .map(|(manifest, lib)| (manifest.as_str(), lib.as_str())),
+    ))
+}
+
+/// The rule itself, over the three files' text rather than over the workspace.
+fn layering_violations(root: &str, member: Option<(&str, &str)>) -> Vec<String> {
+    let mut violations = Vec::new();
+    if !members(root).iter().any(|name| name == LAYERING_MEMBER) {
+        violations.push(format!(
+            "{ROOT_MANIFEST}: does not register `{LAYERING_MEMBER}`; that member is what makes \
+             the grammar a layer rather than a directory, and it is nothing once it is not built \
+             (ADR 0004)"
+        ));
+    }
+
+    let Some((manifest, lib)) = member else {
+        violations.push(format!(
+            "{LAYERING_MEMBER}: has no Cargo.toml and src/lib.rs; the compile half of the \
+             layering guarantee is this member and nothing else (ADR 0004)"
+        ));
+        return violations;
+    };
+
+    for declaration in [
+        format!("name = \"{LAYERING_PACKAGE}\""),
+        "publish = false".to_owned(),
+        "doc = false".to_owned(),
+        "test = false".to_owned(),
+    ] {
+        if !declares(manifest, &declaration) {
+            violations.push(format!(
+                "{LAYERING_MEMBER}/Cargo.toml: does not declare `{declaration}`; the member is a \
+                 gate rather than a crate, and without both `[lib]` switches the grammar's tests \
+                 and documentation are counted twice (ADR 0004)"
+            ));
+        }
+    }
+
+    let expected = format!("#[path = \"../../../{GRAMMAR_ROOT}/mod.rs\"]");
+    if !declares(lib, &expected) {
+        violations.push(format!(
+            "{LAYERING_MEMBER}/src/lib.rs: does not declare `{expected}`; a gate that compiles \
+             anything other than the shipped sources proves something about a copy (ADR 0004)"
+        ));
+    }
+    violations
+}
+
+/// Every wildcard arm over the guarded type, across the crates.
+///
+/// Stated over `crates/` rather than over `ical-core` alone: the type is re-exported at that
+/// crate's root, so any crate that names it can write the arm this rule is about.
+fn guarded_match_violations(workspace: &Path) -> io::Result<Vec<String>> {
+    let mut violations = Vec::new();
+    let mut sources = Vec::new();
+    collect_rust_sources(&workspace.join("crates"), &mut sources)?;
+    sources.sort();
+    for path in sources {
+        let label = path
+            .strip_prefix(workspace)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        violations.extend(match_arm_violations(&label, &fs::read_to_string(&path)?));
+    }
+    Ok(violations)
+}
+
+/// Every `.rs` file under `root`, at any depth, gathered into `sources`.
+fn collect_rust_sources(root: &Path, sources: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, sources)?;
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_rust_source)
+        {
+            sources.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// One `match` block whose arms are being read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OpenMatch {
+    /// The brace depth this block's arms sit at.
+    arms: usize,
+    /// Whether an arm pattern names the guarded type.
+    guarded: bool,
+    /// The lines a wildcard arm was written on.
+    wildcards: Vec<usize>,
+}
+
+/// The wildcard arms of every match over the guarded type in one file.
+///
+/// Brace depth is counted over the code with comments and literals already removed, and an arm is
+/// a line that begins at the depth the block's arms sit at. What that costs is a match whose
+/// scrutinee is written across lines, because the rule finds a block by the `match` and the brace
+/// arriving together; what it buys is a rule with no parser and no dependency, which is the trade
+/// every scan in this file makes.
+fn match_arm_violations(label: &str, source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut open: Vec<OpenMatch> = Vec::new();
+    let mut depth = 0usize;
+
+    for (number, code) in code_lines(source) {
+        while open.last().is_some_and(|block| depth < block.arms) {
+            if let Some(block) = open.pop() {
+                violations.extend(closed_match_violations(label, &block));
+            }
+        }
+        let line = code.trim();
+        if let Some(block) = open.last_mut() {
+            if depth == block.arms {
+                let pattern = line.split("=>").next().unwrap_or(line).trim();
+                block.guarded |= names_path(pattern, &format!("{GUARDED_ENUM}::"));
+                if is_wildcard(pattern) {
+                    block.wildcards.push(number);
+                }
+            }
+        }
+
+        let inner = depth
+            .saturating_add(code.matches('{').count())
+            .saturating_sub(code.matches('}').count());
+        if inner > depth && line.contains("match ") && line.ends_with('{') {
+            open.push(OpenMatch {
+                arms: inner,
+                guarded: false,
+                wildcards: Vec::new(),
+            });
+        }
+        depth = inner;
+    }
+
+    while let Some(block) = open.pop() {
+        violations.extend(closed_match_violations(label, &block));
+    }
+    violations.sort();
+    violations
+}
+
+/// What one finished match block is owed, once every arm of it has been read.
+fn closed_match_violations(label: &str, block: &OpenMatch) -> Vec<String> {
+    if !block.guarded {
+        return Vec::new();
+    }
+    block
+        .wildcards
+        .iter()
+        .map(|number| {
+            format!(
+                "{label}:{number}: a wildcard arm over `{GUARDED_ENUM}`. The attribute that makes \
+                 adding a variant a minor release binds outside this workspace and means nothing \
+                 inside it, so a `_` here is a variant whose payload is dropped with no compiler \
+                 error rather than forward compatibility (ADR 0004)"
+            )
+        })
+        .collect()
+}
+
+/// Whether a match arm's pattern is a catch-all.
+fn is_wildcard(pattern: &str) -> bool {
+    pattern == "_"
+        || pattern
+            .strip_prefix("_ ")
+            .is_some_and(|guard| guard.trim_start().starts_with("if "))
+}
+
+/// What `release-plz.toml` and the workspace's own members disagree about.
+fn release_config_violations(workspace: &Path) -> io::Result<Vec<String>> {
+    let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
+    let mut published = Vec::new();
+    let mut violations = Vec::new();
+    for member in members(&root) {
+        let manifest = fs::read_to_string(workspace.join(&member).join("Cargo.toml"))?;
+        if declares(&manifest, "publish = false") {
+            continue;
+        }
+        match package_name(&manifest) {
+            Some(name) => published.push(name),
+            None => violations.push(format!(
+                "{member}/Cargo.toml: declares no package name, so the release configuration \
+                 could not be read against it"
+            )),
+        }
+    }
+    violations.extend(release_violations(
+        &published,
+        &fs::read_to_string(workspace.join(RELEASE_CONFIG))?,
+    ));
+    Ok(violations)
+}
+
+/// The rule itself, over the two lists rather than the two files.
+///
+/// The release path is the one path this repository never runs, so its configuration is the one
+/// place a deleted crate can survive a whole landing. Every published member gets one entry and
+/// one line of the changelog list; a package the workspace does not build gets neither.
+fn release_violations(published: &[String], config: &str) -> Vec<String> {
+    let released = release_packages(config);
+    let included = quoted_values(array_value(config, "changelog_include").unwrap_or_default());
+    let mut violations = Vec::new();
+
+    for name in published {
+        match released.iter().filter(|entry| *entry == name).count() {
+            1 => {},
+            0 => violations.push(format!(
+                "{RELEASE_CONFIG}: `{name}` is a published member with no `[[package]]` block; \
+                 the crates move as one version group, and a member outside it is a member with \
+                 its own release story"
+            )),
+            count => violations.push(format!(
+                "{RELEASE_CONFIG}: `{name}` has {count} `[[package]]` blocks; the last one wins \
+                 silently, which is how a setting comes to be read by nobody"
+            )),
+        }
+        let listed = included.iter().any(|entry| entry == name);
+        if name == CHANGELOG_OWNER && listed {
+            violations.push(format!(
+                "{RELEASE_CONFIG}: `changelog_include` names `{CHANGELOG_OWNER}`, which is the \
+                 crate carrying the changelog rather than a crate folded into it"
+            ));
+        } else if name != CHANGELOG_OWNER && !listed {
+            violations.push(format!(
+                "{RELEASE_CONFIG}: `changelog_include` does not name `{name}`, so that crate's \
+                 history would be missing from the one changelog this stack has"
+            ));
+        }
+    }
+
+    for name in released.iter().chain(&included) {
+        if !published.contains(name) {
+            violations.push(format!(
+                "{RELEASE_CONFIG}: names `{name}`, which this workspace does not publish; a \
+                 release configuration describing a crate set that no longer exists is a release \
+                 nobody can run"
+            ));
+        }
+    }
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
+/// The packages `release-plz.toml` declares a `[[package]]` block for, in file order.
+fn release_packages(config: &str) -> Vec<String> {
+    let mut packages = Vec::new();
+    let mut inside = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == "[[package]]";
+        } else if inside {
+            if let Some(name) = quoted_after(line, "name") {
+                packages.push(name.to_owned());
+                inside = false;
+            }
+        }
+    }
+    packages
+}
+
+/// The `name = "..."` a `[package]` table declares.
+fn package_name(manifest: &str) -> Option<String> {
+    let mut inside = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == "[package]";
+        } else if inside {
+            if let Some(name) = quoted_after(line, "name") {
+                return Some(name.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// The value of `key = "..."` on one line, or `None` when the line assigns something else.
+fn quoted_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let (name, value) = line.split_once('=')?;
+    (name.trim() == key).then(|| value.trim().trim_matches('"'))
+}
+
+/// The members the root manifest registers.
+fn members(manifest: &str) -> Vec<String> {
+    quoted_values(array_value(manifest, "members").unwrap_or_default())
+}
+
+/// The text of a `key = [ ... ]` array, however many lines it is written across.
+fn array_value<'a>(document: &'a str, key: &str) -> Option<&'a str> {
+    let at = document.find(&format!("{key} = ["))?;
+    let rest = document.get(at..)?;
+    let open = rest.find('[')?;
+    let close = rest.find(']')?;
+    rest.get(open.saturating_add(1)..close)
+}
+
+/// Every double-quoted string in one piece of text.
+fn quoted_values(text: &str) -> Vec<String> {
+    text.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect()
 }
 
 /// What the `Justfile`'s `core_crates` and [`CORE_CRATES`] disagree about.
@@ -334,6 +741,8 @@ struct LayerEntry {
 fn layer_violations(entries: &[LayerEntry]) -> Vec<String> {
     let mut violations = Vec::new();
     let mut sources = 0usize;
+    let mut root = None;
+    let mut beside = Vec::new();
 
     for entry in entries {
         let name = &entry.name;
@@ -350,6 +759,11 @@ fn layer_violations(entries: &[LayerEntry]) -> Vec<String> {
         }
         sources = sources.saturating_add(1);
         violations.extend(file_path_violations(name, &entry.source));
+        if name == "mod.rs" {
+            root = Some(entry.source.as_str());
+        } else {
+            beside.push(name.as_str());
+        }
     }
 
     if sources == 0 {
@@ -357,9 +771,68 @@ fn layer_violations(entries: &[LayerEntry]) -> Vec<String> {
             "{GRAMMAR_ROOT}: no source file was found, so a scan that matched nothing would \
              have passed this rule for free (ADR 0004)"
         ));
+    } else {
+        violations.extend(module_tree_violations(root, &beside));
     }
     violations.sort();
     violations
+}
+
+/// What the module root declares against what the directory holds.
+///
+/// Two gates read this layer and they read it differently: `gates/grammar-layering` compiles what
+/// `mod.rs` declares, and the rule above scans what the directory holds. A `.rs` file the module
+/// root never declares is therefore in exactly one of them — the textual half sees it, the
+/// compile half cannot — and a file pulled in from elsewhere by `#[path]` is in the other. Both
+/// are closed by holding the two sets equal in both directions; `#[path]` itself is refused a few
+/// lines below, because it is what lets the equality hold while the layer still gains a file.
+fn module_tree_violations(root: Option<&str>, beside: &[&str]) -> Vec<String> {
+    let Some(source) = root else {
+        return vec![format!(
+            "{GRAMMAR_ROOT}: has no mod.rs, so the files beside it were compared against no \
+             module tree at all (ADR 0004)"
+        )];
+    };
+
+    let declared = declared_modules(source);
+    let mut violations = Vec::new();
+    for name in beside {
+        let stem = name.strip_suffix(".rs").unwrap_or(name);
+        if !declared.iter().any(|module| module == stem) {
+            violations.push(format!(
+                "{GRAMMAR_ROOT}/{name}: mod.rs declares no `mod {stem};`, so the file is part of \
+                 this layer for one of the two gates that read it and invisible to the other \
+                 (ADR 0004)"
+            ));
+        }
+    }
+    for module in &declared {
+        if !beside.iter().any(|name| *name == format!("{module}.rs")) {
+            violations.push(format!(
+                "{GRAMMAR_ROOT}/mod.rs: declares `mod {module};` and there is no {module}.rs \
+                 beside it; the module resolves somewhere this rule does not read (ADR 0004)"
+            ));
+        }
+    }
+    violations
+}
+
+/// The modules one file declares as files of its own directory.
+fn declared_modules(source: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    for (_, code) in code_lines(source) {
+        let Some(declaration) = code.trim().strip_suffix(';') else {
+            continue;
+        };
+        let named = declaration
+            .trim_start_matches("pub(crate)")
+            .trim_start_matches("pub")
+            .trim_start();
+        if let Some(name) = named.strip_prefix("mod ") {
+            modules.push(name.trim().to_owned());
+        }
+    }
+    modules
 }
 
 /// The paths in one file of the layer that resolve above the grammar root.
@@ -368,16 +841,26 @@ fn layer_violations(entries: &[LayerEntry]) -> Vec<String> {
 /// root and `super::super::` names the crate. Comments and string literals are removed first,
 /// which is what lets a doc link keep writing `crate::Token`: the rendered documentation is
 /// `ical-core`'s, and that link is how a reader reaches the item.
+///
+/// Each line is then read with the whitespace around its `::` closed up, because `use crate
+/// ::Token;` is the same import as `use crate::Token;` and only `cargo fmt` stood between the two.
+/// The whitespace elsewhere on the line stays, because it is what tells `crate::` apart from the
+/// tail of `subcrate::`. Two declarations are refused outright beside the paths: `extern crate`,
+/// which is how the layer would acquire a name for the crate above it that is spelled like
+/// neither of them, and `#[path]`, which is how it would acquire a file this scan never opens.
 fn file_path_violations(name: &str, source: &str) -> Vec<String> {
     let climb = if name == "mod.rs" {
         "super::"
     } else {
         "super::super::"
     };
+    let owner = format!("{GRAMMAR_OWNER}::");
     let mut violations = Vec::new();
-    for (number, code) in code_lines(source) {
-        for path in ["crate::", climb] {
-            if code.contains(path) {
+    for (number, line) in code_lines(source) {
+        let text = spaced(&line);
+        let code = tightened(&text);
+        for path in ["crate::", climb, owner.as_str()] {
+            if names_path(&code, path) {
                 violations.push(format!(
                     "{GRAMMAR_ROOT}/{name}:{number}: `{path}` resolves above the grammar root; \
                      a path inside this layer names the layer or something under it, or the \
@@ -385,8 +868,52 @@ fn file_path_violations(name: &str, source: &str) -> Vec<String> {
                 ));
             }
         }
+        if text.contains("extern crate") {
+            violations.push(format!(
+                "{GRAMMAR_ROOT}/{name}:{number}: `extern crate` gives this layer a second name \
+                 for something above it — `extern crate self as {GRAMMAR_OWNER};` names the crate \
+                 root in a spelling no path rule sees. `alloc` is declared by each root that \
+                 compiles these sources, so nothing here needs one (ADR 0004)"
+            ));
+        }
+        if text.replace(' ', "").contains("#[path") {
+            violations.push(format!(
+                "{GRAMMAR_ROOT}/{name}:{number}: `#[path]` maps a module of this layer onto a \
+                 file outside the directory this rule reads, so the layer would hold code no \
+                 rule here applies to (ADR 0004)"
+            ));
+        }
     }
     violations
+}
+
+/// One line with every run of whitespace closed up to a single space.
+///
+/// `extern  crate` is `extern crate`, and a rule that reads the second and not the first is a
+/// rule held by `cargo fmt`.
+fn spaced(code: &str) -> String {
+    code.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One spaced line with the whitespace around each `::` removed.
+///
+/// `use crate ::Token;` compiles and means what `use crate::Token;` means. Only the space beside
+/// the separator goes: the rest is what distinguishes `use crate::x` from `use subcrate::x`, and
+/// removing all of it would make every path the tail of the word in front of it.
+fn tightened(spaced: &str) -> String {
+    spaced.replace(" ::", "::").replace(":: ", "::")
+}
+
+/// Whether `needle` occurs in `code` as something other than the tail of a longer name.
+///
+/// `SyncToken::` ends in `Token::` and is a different type. `$crate::` does not end in a name
+/// character, and is the macro spelling of the path being refused rather than a different one.
+fn names_path(code: &str, needle: &str) -> bool {
+    code.match_indices(needle).any(|(at, _)| {
+        code.get(..at)
+            .and_then(|before| before.chars().next_back())
+            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
+    })
 }
 
 /// One source file with its comments and literals removed, numbered from one.
@@ -1137,7 +1664,8 @@ mod tests {
         LayerEntry, as_str_arms, codes_violations, collect_codes_violations,
         collect_purity_violations, declared_dependencies, declares, dependency_subtable_name,
         enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
-        manifest_violations, recipe_violations,
+        layering_violations, manifest_violations, match_arm_violations, recipe_violations,
+        release_violations,
     };
 
     /// The packages a manifest links, which is what every rule here is stated over.
@@ -1440,6 +1968,7 @@ const HASHED: &str = r#"crate::Token "quoted" inside"#;
     fn a_subdirectory_under_the_grammar_is_a_violation() {
         let entries = [
             source("mod.rs", "mod token;\n"),
+            source("token.rs", ""),
             LayerEntry {
                 name: "value".to_owned(),
                 directory: true,
@@ -1463,8 +1992,294 @@ const HASHED: &str = r#"crate::Token "quoted" inside"#;
             "a scan of nothing finds nothing, which is not the same as finding nothing wrong"
         );
         assert_eq!(
-            layer_violations(&[source("mod.rs", "mod token;\n")]),
+            layer_violations(&[source("mod.rs", "mod token;\n"), source("token.rs", "")]),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_file_the_module_root_does_not_declare_is_a_violation() {
+        let entries = [
+            source("mod.rs", "mod token;\n"),
+            source("token.rs", ""),
+            source("sneak.rs", "pub(crate) const HIDDEN: u8 = 0;\n"),
+        ];
+        assert!(
+            layer_violations(&entries)
+                .iter()
+                .any(|line| line.contains("sneak.rs") && line.contains("mod sneak;")),
+            "an undeclared file is scanned by this rule and never compiled by the layering member"
+        );
+    }
+
+    #[test]
+    fn a_module_the_directory_does_not_hold_is_a_violation() {
+        let entries = [
+            source("mod.rs", "mod token;\nmod launder;\n"),
+            source("token.rs", ""),
+        ];
+        assert!(
+            layer_violations(&entries)
+                .iter()
+                .any(|line| line.contains("mod launder;") && line.contains("launder.rs")),
+            "a module with no file beside it resolves somewhere this rule does not read"
+        );
+    }
+
+    #[test]
+    fn a_path_attribute_inside_the_layer_is_a_violation() {
+        assert!(
+            file_path_violations("mod.rs", "#[path = \"../launder.rs\"]\nmod launder;\n")
+                .iter()
+                .any(|line| line.contains("`#[path]`")),
+            "`#[path]` pulls a file into the layer that the directory listing never shows"
+        );
+    }
+
+    #[test]
+    fn an_extern_crate_declaration_inside_the_layer_is_a_violation() {
+        let violations = file_path_violations(
+            "token.rs",
+            "extern crate self as ical_core;\nuse ical_core::Token as Laundered;\n",
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("`extern crate`")),
+            "the declaration is what makes the spelling below available: {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|line| line.contains("`ical_core::`")),
+            "and the crate's own name is a path above the layer like any other: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn whitespace_does_not_hide_a_path_that_climbs_out() {
+        assert!(
+            !file_path_violations("lexer.rs", "use crate ::Token as Laundered;\n").is_empty(),
+            "the same import with one space in it, which only `cargo fmt` was catching"
+        );
+        assert!(
+            !file_path_violations("token.rs", "use super :: super ::tree::Component;\n").is_empty(),
+            "and the climbing spelling, which rustfmt would also have normalized"
+        );
+    }
+
+    /// A match over the guarded type, in the shape `parse.rs` and `mutate.rs` write one.
+    const EXHAUSTIVE_MATCH: &str = "\
+fn take(token: Token<'_>) -> usize {
+    match token {
+        Token::Name(bytes) => bytes.len(),
+        Token::Parameter {
+            name,
+            value,
+            has_value,
+        } => name.len().saturating_add(value.len()).saturating_add(usize::from(has_value)),
+        Token::Value { bytes, .. } => bytes.len(),
+        Token::EndOfLine { folds, .. } => folds.len(),
+    }
+}
+";
+
+    #[test]
+    fn a_wildcard_arm_over_the_guarded_type_is_a_violation() {
+        assert_eq!(
+            match_arm_violations("parse.rs", EXHAUSTIVE_MATCH),
+            Vec::<String>::new(),
+            "naming every variant is the shape this rule exists to keep"
+        );
+
+        let swallowed = EXHAUSTIVE_MATCH.replace(
+            "        Token::Value { bytes, .. } => bytes.len(),\n",
+            "        _ => 0,\n",
+        );
+        assert!(
+            match_arm_violations("parse.rs", &swallowed)
+                .iter()
+                .any(|line| line.contains("parse.rs:") && line.contains("a wildcard arm over")),
+            "a match that omits a variant and adds `_` is the shape `unreachable_patterns` is \
+             silent about, and the only shape that loses data"
+        );
+
+        let guarded = EXHAUSTIVE_MATCH.replace(
+            "        Token::Value { bytes, .. } => bytes.len(),\n",
+            "        _ if true => 0,\n",
+        );
+        assert!(
+            !match_arm_violations("parse.rs", &guarded).is_empty(),
+            "a guard does not make a catch-all name a variant"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_arm_over_another_type_is_not_this_rule() {
+        let source = "\
+fn label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Note => \"note\",
+        _ => \"else\",
+    }
+}
+";
+        assert_eq!(
+            match_arm_violations("report.rs", source),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_type_whose_name_ends_in_the_guarded_one_is_a_different_type() {
+        let source = "\
+fn stale(token: SyncToken) -> bool {
+    match token {
+        SyncToken::Weak => true,
+        _ => false,
+    }
+}
+";
+        assert_eq!(
+            match_arm_violations("freshness.rs", source),
+            Vec::<String>::new(),
+            "`SyncToken::` ends in `Token::` and is a type this rule states nothing about"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_beside_a_match_over_the_guarded_type_is_read_at_its_own_depth() {
+        let source = "\
+fn take(token: Token<'_>, kind: Kind) -> usize {
+    match kind {
+        Kind::Line => match token {
+            Token::Name(bytes) => bytes.len(),
+            Token::Parameter { .. } => 1,
+            Token::Value { .. } => 2,
+            Token::EndOfLine { .. } => 3,
+        },
+        _ => 0,
+    }
+}
+";
+        assert_eq!(
+            match_arm_violations("mutate.rs", source),
+            Vec::<String>::new(),
+            "the outer match is over another type and the inner one names every variant"
+        );
+    }
+
+    /// The root manifest, the member's manifest and the member's root file, as committed.
+    const LAYERING_ROOT: &str = "\
+[workspace]
+members = [
+  \"crates/ical-core\",
+  \"gates/grammar-layering\",
+  \"xtask\",
+]
+";
+
+    /// The member manifest, with everything the rule is stated over.
+    const LAYERING_MANIFEST: &str = "\
+[package]
+name = \"ical-grammar-layering\"
+publish = false
+
+[lib]
+doc = false
+test = false
+";
+
+    /// The member's root file, which reaches the shipped grammar rather than a copy of it.
+    const LAYERING_LIB: &str = "\
+#[path = \"../../../crates/ical-core/src/grammar/mod.rs\"]
+mod grammar;
+";
+
+    #[test]
+    fn the_member_that_makes_the_layer_a_fact_is_held_by_string_equality() {
+        let committed = Some((LAYERING_MANIFEST, LAYERING_LIB));
+        assert_eq!(
+            layering_violations(LAYERING_ROOT, committed),
+            Vec::<String>::new()
+        );
+
+        let dropped = LAYERING_ROOT.replace("  \"gates/grammar-layering\",\n", "");
+        assert!(
+            layering_violations(&dropped, committed)
+                .iter()
+                .any(|line| line.contains("does not register")),
+            "a pull request that deleted this member used to pass every gate in the repository"
+        );
+
+        assert!(
+            layering_violations(LAYERING_ROOT, None)
+                .iter()
+                .any(|line| line.contains("has no Cargo.toml")),
+            "and one that deleted the files rather than the member line, likewise"
+        );
+
+        let copied = LAYERING_LIB.replace("src/grammar", "src/grammar-copy");
+        assert!(
+            layering_violations(LAYERING_ROOT, Some((LAYERING_MANIFEST, &copied)))
+                .iter()
+                .any(|line| line.contains("shipped sources")),
+            "a gate compiling a copy proves something about the copy"
+        );
+
+        let counted_twice = LAYERING_MANIFEST.replace("test = false\n", "");
+        assert!(
+            layering_violations(LAYERING_ROOT, Some((&counted_twice, LAYERING_LIB)))
+                .iter()
+                .any(|line| line.contains("test = false")),
+            "without it the grammar's tests run twice and its coverage is counted twice"
+        );
+    }
+
+    /// A release configuration for a two-crate workspace, in this repository's shape.
+    const SAMPLE_RELEASE: &str = "\
+[[package]]
+name = \"ical-core\"
+changelog_include = [
+  \"ical-recur\",
+]
+
+[[package]]
+name = \"ical-recur\"
+";
+
+    /// The members that configuration is owed.
+    fn published() -> Vec<String> {
+        vec!["ical-core".to_owned(), "ical-recur".to_owned()]
+    }
+
+    #[test]
+    fn the_release_configuration_is_read_against_the_workspace_members() {
+        assert_eq!(
+            release_violations(&published(), SAMPLE_RELEASE),
+            Vec::<String>::new()
+        );
+
+        let stale = format!("{SAMPLE_RELEASE}\n[[package]]\nname = \"ical-grammar\"\n");
+        assert!(
+            release_violations(&published(), &stale)
+                .iter()
+                .any(|line| line.contains("`ical-grammar`") && line.contains("does not publish")),
+            "the collapse deleted the crate and this file named it for a whole landing"
+        );
+
+        let mut added = published();
+        added.push("ical-query".to_owned());
+        let violations = release_violations(&added, SAMPLE_RELEASE);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("no `[[package]]` block")),
+            "a new crate is released outside the version group until it has one: {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("`changelog_include` does not name")),
+            "and its history is missing from the one changelog this stack has: {violations:?}"
         );
     }
 

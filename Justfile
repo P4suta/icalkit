@@ -69,12 +69,17 @@ wasm:
     rustup target add wasm32-unknown-unknown
     cargo check {{core_crates}} --target wasm32-unknown-unknown --no-default-features
 
-# Two rules, one task, because it already walks this tree and already holds docs/adr/0004's
+# Five rules, one task, because it already walks this tree and already holds docs/adr/0004's
 # structural rules. First: reject std, clock, network, and bundled-tzdb dependencies in the
 # core, and hold this file's core_crates and xtask's CORE_CRATES to each other. Second: reject
-# a path inside ical-core's grammar layer that resolves above the layer's root, and a
-# subdirectory under it. A contributor grepping for a gate called "layering" finds nothing,
-# which is the price of not adding a third recipe and two CI lines to read one directory.
+# a path inside ical-core's grammar layer that resolves above the layer's root, a subdirectory
+# under it, an `extern crate` or `#[path]` inside it, and a file the layer's mod.rs does not
+# declare. Third: hold gates/grammar-layering to what the ADR says that member must be, since
+# deleting it deletes the compile half of the layering guarantee and nothing else noticed.
+# Fourth: reject a wildcard match arm over `Token`, which the lint that claimed to do it cannot
+# see. Fifth: hold release-plz.toml to the workspace's published members. A contributor grepping
+# for a gate called "layering" finds nothing, which is the price of not adding four more recipes
+# and eight CI lines to read files that are already open (docs/adr/0004, amendment 18).
 purity:
     cargo run --quiet -p xtask -- purity
 

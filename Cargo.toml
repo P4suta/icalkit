@@ -43,10 +43,14 @@ missing_errors_doc = "allow"
 [workspace.lints.rust]
 # `Token` is `#[non_exhaustive]` and its consumers now live in the crate that defines it, where
 # that attribute means nothing: an in-crate match must be exhaustive, and a wildcard arm over it
-# is a silently ignored variant rather than forward compatibility. Denying the lint is what
-# keeps such an arm from being added back by a hand that remembers the old rule. Outside this
-# workspace the attribute still binds, so adding a variant stays a minor release there and a
-# compile error here.
+# is a silently ignored variant rather than forward compatibility. Outside this workspace the
+# attribute still binds, so adding a variant stays a minor release there and a compile error here.
+#
+# Denying the lint was written down as what keeps such an arm from being added back and does not:
+# it rejects a catch-all placed after every variant is already covered, while the shape that
+# loses data omits a variant and adds `_`, which is reachable and which this lint says nothing
+# about. It is kept because a dead arm is still worth refusing; the rule that holds the claim is
+# the fourth one of `xtask purity` (docs/adr/0004).
 unreachable_patterns = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
