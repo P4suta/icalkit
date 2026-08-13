@@ -82,7 +82,7 @@ implicitly in the strict kernel. The implementation may retain small internal cr
 migration, but tests and documentation use the facade and those crates are removed from the
 release configuration when the move completes.
 
-Jiff and the future private XML tokenizer dependency are reviewed architecture exceptions,
+Jiff and the private `xmlparser` lexer are reviewed architecture exceptions,
 not permission for arbitrary third-party dependencies in the kernel. All HTTP execution,
 storage, credentials, current-time acquisition, and application ACL policy remain caller
 ports.

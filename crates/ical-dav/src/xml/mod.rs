@@ -44,15 +44,14 @@
 //! crate` and `#[path]` are refused outright, and the files beside `mod.rs` are held equal to
 //! the modules `mod.rs` declares.
 //!
-//! # What is deliberately not here yet
+//! # What deliberately remains above this layer
 //!
-//! The tokenizer's own state machine and the element writer stay in `ical-dav`, because both are
-//! stated over types that *are* CalDAV's — an `ElementName` row on every event, a `Namespace`
-//! classification on every name, a `ByteSink` and a `DavError` in every public signature. Making
-//! those generic over a caller's vocabulary is the remaining half of the extraction, and it is
-//! the half that changes `ical-dav`'s public surface. What is here is the half that does not:
-//! the namespace binding stack in full, the lexical layer in full, and XML 1.0's character and
-//! reference rules in full.
+//! The `xmlparser` token stream is consumed in `ical-dav` because the wrapper is stated over
+//! types that *are* CalDAV's — an `ElementName` row on every event, a `Namespace`
+//! classification on every name, and `DavError` in every public signature. The element writer
+//! stays there for the same reason. What lives here is vocabulary-independent wrapper logic:
+//! namespace bindings, character/reference rules, and byte-oriented scans needed by the two
+//! explicitly octet-preserving text modes.
 
 // The layer is flat and every file beside this one is declared here. `xtask purity` holds the
 // two sets equal in both directions, because a file the module root does not declare is

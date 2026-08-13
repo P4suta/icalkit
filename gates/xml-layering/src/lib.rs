@@ -58,7 +58,7 @@ pub fn roll_call() -> usize {
         xml::scan::is_space(b' '),
         xml::scan::is_name_end(b'>'),
         xml::scan::is_attribute_name_end(b'='),
-        xml::scan::is_name_forbidden(b'<'),
+        xml::scan::check_name(b"D:href").is_ok(),
         xml::chars::escape_for(b'&', false).is_some(),
         xml::scan::declared_prefix(xml::scan::XMLNS).is_some(),
         xml::scan::find(b"ab", b"b").is_some(),

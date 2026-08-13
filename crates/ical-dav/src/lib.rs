@@ -32,13 +32,13 @@
 //!
 //! # Three things a reader should know before using it
 //!
-//! **The XML is this crate's own, and it refuses more than it accepts.** A hand-rolled
-//! tokenizer over the closed `DAV:`, CalDAV and `CalendarServer` vocabulary, resolving
-//! namespaces rather than matching prefixes. There is no `DOCTYPE`, no entity declaration, no
-//! external entity, no processing instruction beyond the XML declaration, no encoding other
-//! than UTF-8, and no entity reference beyond the five XML 1.0 predefines. Each of those is a
-//! refusal rather than a gap, because a reader that is merely incomplete is safer than one
-//! that is accidentally complete (`SECURITY.md`, `docs/adr/0004`).
+//! **The XML wrapper refuses more than it accepts.** The private `xmlparser` dependency
+//! establishes XML 1.0 lexical grammar. This crate then resolves namespaces, checks duplicate
+//! attributes and matching tags, enforces budgets, and maps the closed `DAV:`, CalDAV and
+//! `CalendarServer` vocabulary. There is no `DOCTYPE`, entity declaration, external entity,
+//! processing instruction beyond the XML declaration, non-UTF-8 declaration, or entity
+//! reference beyond the five XML 1.0 predefines. Each is an explicit refusal
+//! (`SECURITY.md`, `docs/adr/0013`).
 //!
 //! **`calendar-data` keeps its line endings, and that is a stated departure from XML 1.0.**
 //! Section 2.11 of XML 1.0 requires every `CRLF` to be folded to `LF` before parsing, and RFC
@@ -56,7 +56,7 @@
 //!
 //! Landed and tested, and the milestone it belongs to is met. Every body RFC 4791 defines for a
 //! `PROPFIND` or a `REPORT` reads and writes from both ends over [`XmlReader`], which is this
-//! crate's own tokenizer and has no dependency — `MKCALENDAR`'s is the one the vocabulary
+//! crate's private lexer wrapper — `MKCALENDAR`'s is the one the vocabulary
 //! paragraph below names as absent: [`RequestBody`] for the five request roots and the filter
 //! tree beneath
 //! them, [`MultiStatusReader`] and [`MultiStatusWriter`] for the multistatus one response at a

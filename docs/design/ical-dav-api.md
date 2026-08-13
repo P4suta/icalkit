@@ -514,11 +514,11 @@ preventing for limits.
 
 ## Consequences
 
-The workspace now maintains an XML tokenizer and writer forever, and this design adds two
-obligations to that burden rather than removing any. Namespace resolution is real machinery — a
+The workspace delegates XML token grammar to the private `xmlparser` dependency and maintains
+the namespace/structure/budget wrapper and writer. Namespace resolution is real machinery — a
 scoped, bounded prefix-binding stack rebuilt at every element — which is why `quick-xml` exposes
 it only through a separate reader mode, and none of the "narrow, closed, cheap to audit"
-argument for hand-rolling priced it in. The line-ending carve-out is worse than machinery: it is a
+argument for a small wrapper makes it disappear. The line-ending carve-out is worse than machinery: it is a
 deliberate, scoped violation of XML 1.0 section 2.11, and while it is stated and confined to one
 element, it means the phrase "auditable against the XML specification" is now false in a way a
 reader has to be told about.

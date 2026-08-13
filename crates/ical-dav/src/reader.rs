@@ -5,10 +5,10 @@
 //! The tokenizer: one contiguous body in, resolved events out, and a stated list of refusals.
 //!
 //! [`XmlReader`] is the only implementation of [`XmlPull`] this crate ships, and it is the
-//! attack surface `SECURITY.md` names. Everything below is written from that posture: a
-//! hand-rolled reader that is merely *incomplete* is safer than one that is accidentally
-//! *complete*, so a construct no `DAV:` or CalDAV body needs is refused under its own name
-//! rather than guessed at, dropped, or passed through.
+//! attack surface `SECURITY.md` names. `xmlparser` is the private lexical authority; this
+//! wrapper supplies the guarantees that lexer deliberately does not: namespace scope,
+//! duplicate attributes after resolution, matching tags, depth and work budgets, explicit
+//! `DOCTYPE`/PI refusal, and the scoped octet-preserving `calendar-data` departure.
 //!
 //! # It iterates, and the stack it uses is one it owns
 //!
@@ -92,6 +92,7 @@
 use alloc::vec::Vec;
 
 use ical_core::{DiagnosticCode, LimitExceeded, Meter, Severity};
+use xmlparser::{Error as LexerError, StreamError, Token, Tokenizer};
 
 use crate::codec::{XmlEvent, XmlPull};
 use crate::element::{ElementName, Namespace, QName};
@@ -105,8 +106,8 @@ use crate::text::{TextMode, check_chars, decode_text, normalize_attribute};
 use crate::xml::bind::PrefixStack;
 use crate::xml::scan::{
     BYTE_ORDER_MARK, CDATA_CLOSE, CDATA_OPEN, COMMENT_CLOSE, COMMENT_OPEN, DECLARATION_OPEN,
-    NO_NAMESPACE, check_encoding, declared_prefix, find, is_attribute_name_end, is_name_end,
-    is_name_forbidden, is_space, space_end, split_name,
+    NO_NAMESPACE, check_encoding, check_name, declared_prefix, find, is_attribute_name_end,
+    is_name_end, is_space, space_end, split_name,
 };
 
 /// The URI XML Namespaces 1.0 section 3 binds the `xml` prefix to, declared or not.
@@ -353,6 +354,7 @@ impl<'a> XmlReader<'a> {
         if length > context.limits.max_response_bytes() {
             return Err(DavError::Limit(LimitExceeded::Budget));
         }
+        self.validate_lexical_grammar()?;
         if self.starts_with(BYTE_ORDER_MARK) {
             self.at = BYTE_ORDER_MARK.len();
             charge_span(context.meter, 0, self.at)?;
@@ -372,6 +374,41 @@ impl<'a> XmlReader<'a> {
         }
         self.check_root_follows()?;
         self.stage = Stage::Content;
+        Ok(())
+    }
+
+    /// Ask xmlparser to establish the XML 1.0 lexical grammar before this wrapper resolves
+    /// namespaces and validates structure.
+    ///
+    /// The compatibility carve-outs for `calendar-data` and `DAV:href` retain arbitrary
+    /// octets, so a document entity that is not UTF-8 stays on the byte-oriented wrapper path.
+    /// That path validates names, attributes, comments and ordinary text independently; only
+    /// the two enclosing elements may ultimately preserve non-text octets.
+    fn validate_lexical_grammar(&self) -> Result<(), DavError> {
+        let Ok(document) = core::str::from_utf8(self.body) else {
+            return Ok(());
+        };
+        for token in Tokenizer::from(document) {
+            match token {
+                Ok(Token::Declaration {
+                    encoding: Some(encoding),
+                    ..
+                }) if !encoding.as_str().eq_ignore_ascii_case("utf-8") => {
+                    return Err(SyntaxError::Encoding.into());
+                },
+                Ok(Token::ProcessingInstruction { .. }) => {
+                    return Err(SyntaxError::ProcessingInstruction.into());
+                },
+                Ok(
+                    Token::DtdStart { .. }
+                    | Token::EmptyDtd { .. }
+                    | Token::EntityDeclaration { .. }
+                    | Token::DtdEnd { .. },
+                ) => return Err(SyntaxError::Doctype.into()),
+                Ok(_) => {},
+                Err(error) => return Err(classify_lexer_error(self.body, error).into()),
+            }
+        }
         Ok(())
     }
 
@@ -437,6 +474,7 @@ impl<'a> XmlReader<'a> {
         let from = self.at.saturating_add(COMMENT_OPEN.len());
         let inside = self.body.get(from..).ok_or(SyntaxError::Truncated)?;
         let end = find(inside, COMMENT_CLOSE).ok_or(SyntaxError::Truncated)?;
+        check_chars(inside.get(..end).ok_or(SyntaxError::Malformed)?)?;
         self.at = from
             .saturating_add(end)
             .saturating_add(COMMENT_CLOSE.len())
@@ -586,13 +624,7 @@ impl<'a> XmlReader<'a> {
             .position(|byte| ends(*byte))
             .ok_or(SyntaxError::Truncated)?;
         let name = rest.get(..length).ok_or(SyntaxError::Malformed)?;
-        if name.is_empty() || name.iter().any(|byte| is_name_forbidden(*byte)) {
-            return Err(SyntaxError::Malformed.into());
-        }
-        // A name is characters too. Without this a `NUL` or an octet sequence that is not
-        // UTF-8 could sit inside an element or attribute name, where `is_name_forbidden` only
-        // ever looked for the five octets that would let a name smuggle markup past the scan.
-        check_chars(name)?;
+        check_name(name)?;
         Ok((name, from.saturating_add(length)))
     }
 
@@ -849,6 +881,45 @@ fn charge_span(meter: &mut Meter, from: usize, to: usize) -> Result<(), DavError
     let octets = u64::try_from(to.saturating_sub(from)).unwrap_or(u64::MAX);
     meter.try_charge_bytes(octets)?;
     Ok(())
+}
+
+/// Map the private lexer's vocabulary onto the stable public syntax vocabulary.
+fn classify_lexer_error(body: &[u8], error: LexerError) -> SyntaxError {
+    if body
+        .windows(b"<!DOCTYPE".len())
+        .any(|window| window.eq_ignore_ascii_case(b"<!DOCTYPE"))
+    {
+        return SyntaxError::Doctype;
+    }
+    match error {
+        LexerError::InvalidComment(
+            StreamError::UnexpectedEndOfStream | StreamError::InvalidString(_, _),
+            _,
+        )
+        | LexerError::InvalidCdata(
+            StreamError::UnexpectedEndOfStream | StreamError::InvalidString(_, _),
+            _,
+        ) => return SyntaxError::Truncated,
+        _ => {},
+    }
+    let stream = match error {
+        LexerError::InvalidDeclaration(cause, _)
+        | LexerError::InvalidComment(cause, _)
+        | LexerError::InvalidPI(cause, _)
+        | LexerError::InvalidDoctype(cause, _)
+        | LexerError::InvalidEntity(cause, _)
+        | LexerError::InvalidElement(cause, _)
+        | LexerError::InvalidAttribute(cause, _)
+        | LexerError::InvalidCdata(cause, _)
+        | LexerError::InvalidCharData(cause, _) => Some(cause),
+        LexerError::UnknownToken(_) => None,
+    };
+    match stream {
+        Some(StreamError::UnexpectedEndOfStream) => SyntaxError::Truncated,
+        Some(StreamError::NonXmlChar(_, _)) => SyntaxError::ForbiddenCharacter,
+        Some(StreamError::InvalidReference) => SyntaxError::UndefinedEntity,
+        Some(_) | None => SyntaxError::Malformed,
+    }
 }
 
 /// Whether two resolved names are the same name.
@@ -1457,6 +1528,32 @@ mod tests {
             assert_eq!(
                 read_default(body),
                 Err(DavError::Syntax(expected)),
+                "{shape}"
+            );
+        }
+    }
+
+    /// The private lexer enforces the productions the namespace wrapper must not duplicate.
+    #[test]
+    fn the_xml_lexer_refuses_invalid_names_and_comment_bodies() {
+        let cases: [(&str, &[u8]); 3] = [
+            (
+                "an element name cannot begin with an ASCII digit",
+                b"<1multistatus/>",
+            ),
+            (
+                "a comment cannot contain a double hyphen",
+                b"<D:x xmlns:D=\"DAV:\"><!-- not -- a comment --></D:x>",
+            ),
+            (
+                "the octet-preserving fallback still validates element names",
+                b"<1x xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><C:calendar-data>\xff</C:calendar-data></1x>",
+            ),
+        ];
+        for (shape, body) in cases {
+            assert_eq!(
+                read_default(body),
+                Err(DavError::Syntax(SyntaxError::Malformed)),
                 "{shape}"
             );
         }

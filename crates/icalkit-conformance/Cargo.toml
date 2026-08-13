@@ -21,6 +21,12 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+# The iTIP chapter harness is deliberately isolated from the JSONL CLI and is
+# path-included by tests/itip_chapter.rs until that corpus moves behind the
+# subject protocol.
+[package.metadata.cargo-shear]
+ignored-paths = ["src/itip.rs"]
+
 [dependencies]
 icalkit = { path = "../icalkit", version = "0.0.0" }
 serde = { version = "1", features = ["derive"] }

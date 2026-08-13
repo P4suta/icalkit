@@ -10,10 +10,9 @@
 //! costs and it is the shape the extraction will take anyway — a `webdav-core` would own this
 //! classification and its consumer would map it, exactly as `ical-dav` does now.
 //!
-//! Several of these refuse constructs XML 1.0 defines and this workspace declines to implement.
-//! That is the posture `SECURITY.md` asks for: a hand-rolled reader that is merely *incomplete*
-//! is safer than one that is accidentally *complete*, so a construct no `DAV:` body needs is
-//! refused under its own name rather than guessed at, dropped, or passed through.
+//! Several of these refuse constructs XML 1.0 defines and this workspace declines to accept.
+//! The private lexer recognizes their grammar; the wrapper refuses anything no `DAV:` body
+//! needs under its own name rather than guessing at, dropping, or passing it through.
 
 use ical_core::LimitExceeded;
 
@@ -35,8 +34,8 @@ pub(crate) enum XmlSyntax {
 
 // Four classes and not the ten `ical-dav`'s own `SyntaxError` carries, because these are the
 // four this layer raises. `Doctype`, `ProcessingInstruction`, `UnboundPrefix`, `MismatchedTag`,
-// `Truncated` and `DuplicateAttribute` are the tokenizer's state machine's, and that half has
-// not moved down here yet. A layer that declared a variant it never constructs would be
+// `Truncated` and `DuplicateAttribute` belong to the lexer wrapper above this layer. A layer
+// that declared a variant it never constructs would be
 // describing somebody else's refusals.
 
 /// A refusal that ends a read or a write inside this layer.

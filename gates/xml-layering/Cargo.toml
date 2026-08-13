@@ -7,10 +7,10 @@
 # with a file and a line rather than a convention somebody remembers. That is what keeps the
 # extraction docs/adr/0012 deferred a file move plus a manifest rather than a redesign.
 #
-# `ical-core` is the one dependency and it is deliberate: the layer names `Limits`, `Meter` and
-# `LimitExceeded`, which are the shared model's and not the protocol's. Everything CalDAV --
-# `ElementName`, `Namespace`, `DavError`, every element of RFC 4791 -- is absent from this root,
-# which is the whole assertion.
+# Both dependencies are deliberate: the layer names `Limits`, `Meter` and `LimitExceeded` from
+# the shared model, and delegates XML 1.0 lexical productions to the private `xmlparser` lexer.
+# Everything CalDAV -- `ElementName`, `Namespace`, `DavError`, every element of RFC 4791 -- is
+# absent from this root, which is the whole assertion.
 #
 # It lives under `gates/` rather than `crates/` because `xtask purity` partitions `crates/` and
 # would otherwise have to carve out an exception for a member that is not a crate (docs/adr/0004).
@@ -29,8 +29,14 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+# The gate path-includes ical-dav's XML layer, where this dependency is imported.
+# cargo-shear cannot associate an import in a file outside this package directory.
+[package.metadata.cargo-shear]
+ignored = ["xmlparser"]
+
 [dependencies]
 ical-core = { path = "../../crates/ical-core", version = "0.0.0" }
+xmlparser = { version = "0.13.6", default-features = false }
 
 # `doc = false` because these are `ical-dav`'s items and documenting them twice would publish a
 # second set of pages for one module. `test = false` because without it every file of the layer

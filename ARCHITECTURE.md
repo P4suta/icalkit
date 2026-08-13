@@ -22,6 +22,10 @@ ancestor; `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, and `ical-dav` rema
 unpublished workspace scaffolding while their sources follow it
 ([ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)).
 
+The DAV implementation uses `xmlparser` as a private no-std lexical authority. Its wrapper
+owns namespace scope, duplicate-attribute and tag validation, budgets, explicit DTD/PI refusal,
+and byte-preserving `calendar-data`; no XML token type reaches the public API.
+
 The content line grammar is still a layer and not a package: during migration it remains a
 private module tree inside `ical-core`, every item of it re-exported at that temporary crate's
 root

@@ -114,9 +114,8 @@ impl Error for DavError {}
 /// What was wrong with the octets, at the XML layer.
 ///
 /// Several of these are refusals of constructs XML 1.0 defines and this crate declines to
-/// implement. That is the posture `SECURITY.md` asks for: a hand-rolled reader that is
-/// merely incomplete is safer than one that is accidentally complete, so a construct this
-/// crate does not need is refused loudly rather than guessed at.
+/// accept. The private lexer recognizes XML grammar; this wrapper still refuses constructs the
+/// DAV vocabulary does not need, loudly rather than guessing at their semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum SyntaxError {

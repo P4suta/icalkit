@@ -10,6 +10,8 @@
 //! `DAV:` body, a CardDAV body and a body of a vocabulary nobody has written yet all answer
 //! these identically, which is what makes this a layer rather than a helper module.
 
+use xmlparser::Stream;
+
 use super::fault::{XmlFault, XmlSyntax};
 
 /// The URI XML Namespaces 1.0 section 3 binds the `xml` prefix to, declared or not.
@@ -72,12 +74,22 @@ pub(crate) fn is_attribute_name_end(byte: u8) -> bool {
     is_name_end(byte) || byte == b'='
 }
 
-/// Whether an octet is one XML 1.0 section 2.3's `Name` production cannot hold.
+/// Validate one already-delimited XML 1.0 `Name`.
 ///
-/// Not the whole production: this is a refusal of the octets that would let a name smuggle
-/// markup past the scanner, not an implementation of the `NameChar` character classes.
-pub(crate) fn is_name_forbidden(byte: u8) -> bool {
-    matches!(byte, b'<' | b'&' | b'"' | b'\'' | b'=')
+/// The whole-document lexer cannot run when a `calendar-data` payload carries arbitrary
+/// octets. Its public stream primitive keeps the same NameStartChar/NameChar authority on that
+/// fallback path without copying or teaching this wrapper a second spelling of the production.
+pub(crate) fn check_name(name: &[u8]) -> Result<(), XmlFault> {
+    let text = core::str::from_utf8(name).map_err(|_| XmlSyntax::ForbiddenCharacter)?;
+    let mut stream = Stream::from(text);
+    let _ = stream
+        .consume_name()
+        .map_err(|_| XmlFault::from(XmlSyntax::Malformed))?;
+    if stream.at_end() {
+        Ok(())
+    } else {
+        Err(XmlSyntax::Malformed.into())
+    }
 }
 
 /// The first position of `needle` in `haystack`.
@@ -159,9 +171,23 @@ fn quoted_value(rest: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        XmlFault, XmlSyntax, check_encoding, declared_prefix, is_attribute_name_end, is_name_end,
-        space_end, split_name,
+        XmlFault, XmlSyntax, check_encoding, check_name, declared_prefix, is_attribute_name_end,
+        is_name_end, space_end, split_name,
     };
+
+    #[test]
+    fn a_name_uses_the_private_lexers_complete_xml_production() {
+        assert!(check_name(b"D:multistatus").is_ok());
+        assert!(check_name("Διακοπές".as_bytes()).is_ok());
+        assert_eq!(
+            check_name(b"1multistatus"),
+            Err(XmlFault::Syntax(XmlSyntax::Malformed))
+        );
+        assert_eq!(
+            check_name(b"name=value"),
+            Err(XmlFault::Syntax(XmlSyntax::Malformed))
+        );
+    }
 
     #[test]
     fn a_qualified_name_has_exactly_one_colon() {

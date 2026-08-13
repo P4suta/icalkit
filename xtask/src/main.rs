@@ -192,7 +192,8 @@ const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 /// This is intentionally keyed by both owner and package. Adding an external dependency to
 /// another core crate, or adding another package to `icalkit`, remains a gate failure until
 /// the architecture records the new boundary explicitly.
-const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[("icalkit", "jiff")];
+const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] =
+    &[("icalkit", "jiff"), ("ical-dav", "xmlparser")];
 
 /// Private tools isolated from the production API and release graph.
 ///
@@ -2131,6 +2132,25 @@ jiff = { version = "0.2.35", default-features = false, features = ["alloc"] }
                 .iter()
                 .any(|line| line.contains("jiff")),
             "split implementation crates must not acquire a second public time boundary"
+        );
+    }
+
+    #[test]
+    fn only_the_dav_implementation_may_own_the_private_xml_lexer() {
+        let manifest = r#"
+[dependencies]
+xmlparser = { version = "0.13.6", default-features = false }
+"#;
+        assert_eq!(
+            manifest_violations("ical-dav", manifest),
+            Vec::<String>::new(),
+            "the DAV wrapper owns namespace and structural checks around the private lexer"
+        );
+        assert!(
+            manifest_violations("ical-core", manifest)
+                .iter()
+                .any(|line| line.contains("xmlparser")),
+            "the lexer must not leak into the pure calendar kernel"
         );
     }
 

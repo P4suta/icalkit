@@ -23,6 +23,9 @@ homepage.workspace = true
 # `calendar-data` is carried as octets rather than parsed, so nothing above the model is
 # reachable from a protocol body (DP-17, ADR-0004).
 ical-core = { path = "../ical-core", version = "0.0.0" }
+# Private lexical authority only. Namespace resolution, structural validation, limits, and
+# octet-preserving calendar-data handling remain in this crate's wrapper.
+xmlparser = { version = "0.13.6", default-features = false }
 
 [features]
 default = []
