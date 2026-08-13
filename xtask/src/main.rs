@@ -515,10 +515,12 @@ fn table_keys(document: &str, table: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == wanted;
-        } else if inside && let Some((key, _)) = line.split_once('=') {
-            let key = key.trim();
-            if !key.is_empty() {
-                keys.push(key.to_owned());
+        } else if inside {
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim();
+                if !key.is_empty() {
+                    keys.push(key.to_owned());
+                }
             }
         }
     }
