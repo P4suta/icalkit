@@ -271,6 +271,12 @@ impl Revision {
     pub fn etag(&self) -> Option<&str> {
         self.etag.as_deref()
     }
+
+    /// Whether this revision represents a resource known not to exist.
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
+        self.absent
+    }
 }
 
 /// Result of CalDAV service discovery.
@@ -811,18 +817,18 @@ struct ScheduleRequest {
 
 impl ScheduleRequest {
     fn parse(headers: &[Header], body: &[u8], policy: ResourcePolicy) -> Result<Self, Error> {
-        let header_octets = headers.iter().fold(0u64, |total, header| {
-            total
-                .saturating_add(u64::try_from(header.name.len()).unwrap_or(u64::MAX))
-                .saturating_add(u64::try_from(header.value.len()).unwrap_or(u64::MAX))
-        });
-        if header_octets > policy.max_input_bytes() {
-            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
-        }
-
-        let content_type = required_single_header(headers, "Content-Type")?;
+        validate_header_budget(headers, policy, "icalkit.caldav.schedule-request-invalid")?;
+        let content_type = required_single_header(
+            headers,
+            "Content-Type",
+            "icalkit.caldav.schedule-request-invalid",
+        )?;
         let method = content_type_method(content_type)?;
-        let originator = required_single_header(headers, "Originator")?;
+        let originator = required_single_header(
+            headers,
+            "Originator",
+            "icalkit.caldav.schedule-request-invalid",
+        )?;
         let originator = str::from_utf8(originator)
             .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?
             .to_string();
@@ -863,18 +869,89 @@ impl ScheduleRequest {
     }
 }
 
-fn required_single_header<'a>(headers: &'a [Header], name: &str) -> Result<&'a [u8], Error> {
+struct PutRequest {
+    calendar: Calendar,
+    revision: Revision,
+}
+
+impl PutRequest {
+    fn parse(request: &WireRequest, policy: ResourcePolicy) -> Result<Self, Error> {
+        const INVALID: &str = "icalkit.caldav.write-request-invalid";
+        validate_header_budget(&request.headers, policy, INVALID)?;
+        let content_type = required_single_header(&request.headers, "Content-Type", INVALID)?;
+        let content_type = str::from_utf8(content_type).map_err(|_| Error::single(INVALID))?;
+        if !content_type
+            .split(';')
+            .next()
+            .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/calendar"))
+        {
+            return Err(Error::single(INVALID));
+        }
+
+        let if_match = optional_single_header(&request.headers, "If-Match", INVALID)?;
+        let if_none_match = optional_single_header(&request.headers, "If-None-Match", INVALID)?;
+        let revision = match (if_match, if_none_match) {
+            (Some(value), None) => {
+                let tag = ETag::parse(value).map_err(|_| Error::single(INVALID))?;
+                if tag.is_weak() {
+                    return Err(Error::single(INVALID));
+                }
+                let tag = str::from_utf8(tag.as_bytes()).map_err(|_| Error::single(INVALID))?;
+                Revision::stored(request.uri.clone(), &format!("\"{tag}\""))
+                    .map_err(|_| Error::single(INVALID))?
+            },
+            (None, Some(value)) => {
+                let value = str::from_utf8(value).map_err(|_| Error::single(INVALID))?;
+                if value.trim() != "*" {
+                    return Err(Error::single(INVALID));
+                }
+                Revision::absent(request.uri.clone()).map_err(|_| Error::single(INVALID))?
+            },
+            _ => return Err(Error::single(INVALID)),
+        };
+        let calendar = Calendar::parse(&request.body).map_err(|_| Error::single(INVALID))?;
+        Ok(Self { calendar, revision })
+    }
+}
+
+fn validate_header_budget(
+    headers: &[Header],
+    policy: ResourcePolicy,
+    error_code: &'static str,
+) -> Result<(), Error> {
+    let header_octets = headers.iter().fold(0u64, |total, header| {
+        total
+            .saturating_add(u64::try_from(header.name.len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(header.value.len()).unwrap_or(u64::MAX))
+    });
+    if header_octets > policy.max_input_bytes() {
+        return Err(Error::single(error_code));
+    }
+    Ok(())
+}
+
+fn optional_single_header<'a>(
+    headers: &'a [Header],
+    name: &str,
+    error_code: &'static str,
+) -> Result<Option<&'a [u8]>, Error> {
     let mut values = headers
         .iter()
         .filter(|header| header.name.eq_ignore_ascii_case(name))
         .map(|header| header.value.as_slice());
-    let value = values
-        .next()
-        .ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+    let value = values.next();
     if values.next().is_some() {
-        return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        return Err(Error::single(error_code));
     }
     Ok(value)
+}
+
+fn required_single_header<'a>(
+    headers: &'a [Header],
+    name: &str,
+    error_code: &'static str,
+) -> Result<&'a [u8], Error> {
+    optional_single_header(headers, name, error_code)?.ok_or_else(|| Error::single(error_code))
 }
 
 fn content_type_method(value: &[u8]) -> Result<&str, Error> {
@@ -1693,6 +1770,7 @@ impl Server {
             "REPORT" => self.handle_query(request),
             "MKCALENDAR" => self.handle_mkcalendar(request),
             "POST" => self.handle_schedule(request),
+            "PUT" => self.handle_put(request),
             _ => Err(Error::single("icalkit.caldav.server-method-unsupported")),
         }
     }
@@ -1830,6 +1908,59 @@ impl Server {
             policy,
         ))
     }
+
+    fn handle_put(&self, request: WireRequest) -> Result<ServerOperation, Error> {
+        let write = PutRequest::parse(&request, self.policy)?;
+        let method = request.method;
+        let uri = request.uri;
+        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let expected = write.revision.clone();
+        let policy = self.policy;
+        Ok(ServerOperation::from_responder(
+            need,
+            Box::new(move |answer| {
+                let ServerAnswerKind::Authorized(authorized) = answer.kind else {
+                    return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                };
+                if !authorized {
+                    return Ok(ServerStep::Done(WireResponse::new(
+                        403,
+                        Vec::new(),
+                        Vec::new(),
+                    )));
+                }
+                let need = ServerNeed::write("caldav.resource.write", &method, &uri, write);
+                Ok(ServerStep::Need(
+                    need,
+                    Box::new(move |answer| {
+                        let ServerAnswerKind::Written(stored) = answer.kind else {
+                            return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                        };
+                        let Some(stored) = stored else {
+                            return Ok(ServerStep::Done(WireResponse::new(
+                                412,
+                                Vec::new(),
+                                Vec::new(),
+                            )));
+                        };
+                        if stored.uri != uri || stored.absent {
+                            return Err(Error::single("icalkit.caldav.write-result-invalid"));
+                        }
+                        let etag = stored
+                            .etag
+                            .ok_or_else(|| Error::single("icalkit.caldav.write-result-invalid"))?;
+                        let status = if expected.absent { 201 } else { 204 };
+                        Ok(ServerStep::Done(WireResponse::new(
+                            status,
+                            vec![Header::new("ETag", etag.into_bytes())],
+                            Vec::new(),
+                        )))
+                    }),
+                ))
+            }),
+            policy,
+        ))
+    }
 }
 
 impl Default for Server {
@@ -1848,6 +1979,8 @@ pub struct ServerNeed {
     message: Option<Box<Message>>,
     originator: Option<String>,
     recipients: Vec<String>,
+    calendar: Option<Box<Calendar>>,
+    revision: Option<Revision>,
 }
 
 impl ServerNeed {
@@ -1862,6 +1995,8 @@ impl ServerNeed {
             message: None,
             originator: None,
             recipients: Vec::new(),
+            calendar: None,
+            revision: None,
         }
     }
 
@@ -1874,6 +2009,8 @@ impl ServerNeed {
             message: None,
             originator: None,
             recipients: Vec::new(),
+            calendar: None,
+            revision: None,
         }
     }
 
@@ -1886,6 +2023,8 @@ impl ServerNeed {
             message: None,
             originator: None,
             recipients: Vec::new(),
+            calendar: None,
+            revision: None,
         }
     }
 
@@ -1898,6 +2037,22 @@ impl ServerNeed {
             message: Some(Box::new(request.message)),
             originator: Some(request.originator),
             recipients: request.recipients,
+            calendar: None,
+            revision: None,
+        }
+    }
+
+    fn write(code: &'static str, method: &str, uri: &str, request: PutRequest) -> Self {
+        Self {
+            code,
+            method: Some(method.to_string()),
+            uri: Some(uri.to_string()),
+            body: Vec::new(),
+            message: None,
+            originator: None,
+            recipients: Vec::new(),
+            calendar: Some(Box::new(request.calendar)),
+            revision: Some(request.revision),
         }
     }
 
@@ -1942,6 +2097,18 @@ impl ServerNeed {
     pub fn recipients(&self) -> &[String] {
         &self.recipients
     }
+
+    /// Strictly validated calendar associated with a resource write need.
+    #[must_use]
+    pub fn calendar(&self) -> Option<&Calendar> {
+        self.calendar.as_deref()
+    }
+
+    /// Client revision precondition associated with a resource write need.
+    #[must_use]
+    pub const fn revision(&self) -> Option<&Revision> {
+        self.revision.as_ref()
+    }
 }
 
 /// An application answer supplied to a server workflow.
@@ -1957,6 +2124,7 @@ enum ServerAnswerKind {
     Created(bool),
     Resources(Vec<StoredResource>),
     Schedule(ScheduleResponse),
+    Written(Option<Revision>),
 }
 
 impl ServerAnswer {
@@ -2000,6 +2168,14 @@ impl ServerAnswer {
         }
     }
 
+    /// Supply the new stored revision, or `None` when the precondition lost a race.
+    #[must_use]
+    pub fn written(revision: Option<Revision>) -> Self {
+        Self {
+            kind: ServerAnswerKind::Written(revision),
+        }
+    }
+
     /// Application answer octets.
     #[must_use]
     pub fn body(&self) -> &[u8] {
@@ -2008,7 +2184,8 @@ impl ServerAnswer {
             ServerAnswerKind::Authorized(_)
             | ServerAnswerKind::Created(_)
             | ServerAnswerKind::Resources(_)
-            | ServerAnswerKind::Schedule(_) => &[],
+            | ServerAnswerKind::Schedule(_)
+            | ServerAnswerKind::Written(_) => &[],
         }
     }
 }

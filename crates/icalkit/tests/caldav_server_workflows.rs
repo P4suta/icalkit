@@ -6,8 +6,8 @@
 
 use icalkit::Calendar;
 use icalkit::caldav::{
-    Client, Header, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer, StoredResource,
-    WireRequest,
+    Client, Header, Revision, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer,
+    StoredResource, WireRequest,
 };
 use icalkit::scheduling::Message;
 use icalkit::time::Timestamp;
@@ -362,5 +362,102 @@ fn server_refuses_incomplete_delivery_results() {
     assert_eq!(
         error.issues()[0].code().as_str(),
         "icalkit.caldav.schedule-response-incomplete"
+    );
+}
+
+#[test]
+fn server_conditional_put_round_trips_a_new_strong_revision() {
+    let calendar = Calendar::parse(MATCHING).unwrap();
+    let expected = Revision::stored("/calendars/alice/work/one.ics", "\"v1\"").unwrap();
+    let mut client_operation = Client::new()
+        .conditional_write(&expected, &calendar)
+        .unwrap();
+    let request = client_operation.next_request().unwrap().clone();
+    let mut server_operation = Server::new().handle(request).unwrap();
+
+    assert_eq!(
+        server_operation.next_need().unwrap().code(),
+        "caldav.authorize"
+    );
+    server_operation
+        .supply(ServerAnswer::authorized(true))
+        .unwrap();
+    let write = server_operation.next_need().unwrap();
+    assert_eq!(write.code(), "caldav.resource.write");
+    assert_eq!(write.calendar().unwrap().to_bytes(), MATCHING);
+    assert_eq!(write.revision().unwrap(), &expected);
+
+    let stored = Revision::stored("/calendars/alice/work/one.ics", "\"v2\"").unwrap();
+    server_operation
+        .supply(ServerAnswer::written(Some(stored.clone())))
+        .unwrap();
+    let wire_response = server_operation.finish().unwrap();
+    assert_eq!(wire_response.status(), 204);
+
+    client_operation.accept(wire_response).unwrap();
+    assert_eq!(client_operation.finish().unwrap(), stored);
+}
+
+#[test]
+fn server_conditional_put_returns_precondition_failed_on_conflict() {
+    let calendar = Calendar::parse(MATCHING).unwrap();
+    let expected = Revision::stored("/calendars/alice/work/one.ics", "\"stale\"").unwrap();
+    let request = Client::new()
+        .conditional_write(&expected, &calendar)
+        .unwrap()
+        .next_request()
+        .unwrap()
+        .clone();
+    let mut operation = Server::new().handle(request).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+    operation.supply(ServerAnswer::written(None)).unwrap();
+
+    assert_eq!(operation.finish().unwrap().status(), 412);
+}
+
+#[test]
+fn server_conditional_put_creates_only_when_the_resource_is_absent() {
+    let calendar = Calendar::parse(MATCHING).unwrap();
+    let expected = Revision::absent("/calendars/alice/work/new.ics").unwrap();
+    let request = Client::new()
+        .conditional_write(&expected, &calendar)
+        .unwrap()
+        .next_request()
+        .unwrap()
+        .clone();
+    let mut operation = Server::new().handle(request).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+    assert!(
+        operation
+            .next_need()
+            .unwrap()
+            .revision()
+            .unwrap()
+            .is_absent()
+    );
+
+    let stored = Revision::stored("/calendars/alice/work/new.ics", "\"created\"").unwrap();
+    operation
+        .supply(ServerAnswer::written(Some(stored)))
+        .unwrap();
+    assert_eq!(operation.finish().unwrap().status(), 201);
+}
+
+#[test]
+fn server_conditional_put_rejects_a_weak_precondition_before_acl() {
+    let request = WireRequest::new(
+        "PUT",
+        "/calendars/alice/work/one.ics",
+        vec![
+            Header::new("Content-Type", b"text/calendar".to_vec()),
+            Header::new("If-Match", b"W/\"v1\"".to_vec()),
+        ],
+        MATCHING.to_vec(),
+    );
+    let error = Server::new().handle(request).unwrap_err();
+
+    assert_eq!(
+        error.issues()[0].code().as_str(),
+        "icalkit.caldav.write-request-invalid"
     );
 }
