@@ -458,25 +458,28 @@ fn every_server_s_spelling_survives_being_re_encoded_as_this_crate_s_own() {
 
 /// What `XmlWriter` emits, `XmlReader` reads — including the payload it was built to carry.
 ///
-/// The two body encoders in this crate are private to their own files and predate `XmlWriter`;
-/// this is the assertion that keeps the public element writer honest against the same
-/// tokenizer they are measured by, rather than against a reading of the specification.
+/// Request and response body encoders both use `XmlWriter`; this cross-layer assertion keeps
+/// their shared primitive honest against the tokenizer rather than only against its own tests.
 #[test]
 fn the_element_writer_writes_what_the_element_reader_reads() {
     let limits = Limits::DEFAULT;
     let mut out: Vec<u8> = Vec::new();
     let mut meter = Meter::new(limits);
     {
-        let mut writer = XmlWriter::new(&mut out, &mut meter);
-        writer.open(ElementName::Multistatus).expect("a root");
-        writer.open(ElementName::Response).expect("a response");
+        let mut writer = XmlWriter::new(&mut out);
         writer
-            .element_text(ElementName::Href, b"/bernard/work/abcd1.ics")
+            .open(ElementName::Multistatus, &mut meter)
+            .expect("a root");
+        writer
+            .open(ElementName::Response, &mut meter)
+            .expect("a response");
+        writer
+            .element_text(ElementName::Href, b"/bernard/work/abcd1.ics", &mut meter)
             .expect("an href");
         writer
-            .element_text(ElementName::CalendarData, PAYLOAD)
+            .element_text(ElementName::CalendarData, PAYLOAD, &mut meter)
             .expect("a payload");
-        writer.finish().expect("it closes what it opened");
+        writer.finish(&mut meter).expect("it closes what it opened");
     }
 
     // Well-formed to this crate's own tokenizer, which refuses more than XML does.

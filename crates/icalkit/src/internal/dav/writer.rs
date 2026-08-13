@@ -98,7 +98,7 @@ enum OpenTag {
     /// A row of the closed vocabulary, whose prefix and local name are both `'static`.
     Known(ElementName),
     /// A name outside it, kept as octets so its end tag can be written.
-    Foreign(Box<[u8]>),
+    Foreign { local: Box<[u8]>, qualified: bool },
 }
 
 impl OpenTag {
@@ -106,7 +106,12 @@ impl OpenTag {
     fn prefix(&self) -> &[u8] {
         match *self {
             Self::Known(name) => name.namespace().write_prefix(),
-            Self::Foreign(_) => EXTENSION_PREFIX,
+            Self::Foreign {
+                qualified: true, ..
+            } => EXTENSION_PREFIX,
+            Self::Foreign {
+                qualified: false, ..
+            } => b"",
         }
     }
 
@@ -114,20 +119,19 @@ impl OpenTag {
     fn local_name(&self) -> &[u8] {
         match self {
             Self::Known(name) => name.local_name().as_bytes(),
-            Self::Foreign(local) => local,
+            Self::Foreign { local, .. } => local,
         }
     }
 }
 
-/// A writer over one document, holding the caller's sink and the caller's ledger.
+/// A writer over one document, holding the caller's sink and element stack.
 ///
-/// Built once per body and driven by the unit that encodes that body. The lifetime is the
-/// borrow of both, so a caller keeps its own `Vec` or its own buffer and gets it back.
+/// Built once per body and driven by the unit that encodes that body. The ledger is passed to
+/// each operation rather than borrowed for this type's lifetime, so an incremental response
+/// writer can retain the stack while its caller retains ownership of the aggregate meter.
 pub struct XmlWriter<'a> {
     /// Where the octets go.
     out: &'a mut dyn ByteSink,
-    /// The caller's ledger, charged before every octet reaches the sink.
-    meter: &'a mut Meter,
     /// The elements opened and not yet closed, innermost last.
     open: Vec<OpenTag>,
     /// The attribute names on the tag still pending, each preceded by its own length.
@@ -136,19 +140,37 @@ pub struct XmlWriter<'a> {
     pending: bool,
     /// Whether the declaration and the root element have been written.
     started: bool,
+    /// Whether the first element is a document root with a declaration and namespace bindings.
+    document: bool,
 }
 
 impl<'a> XmlWriter<'a> {
-    /// A writer that will emit one document into `out`, charging `meter` for it.
+    /// A writer that will emit one document into `out`.
     #[must_use]
-    pub fn new(out: &'a mut dyn ByteSink, meter: &'a mut Meter) -> Self {
+    pub fn new(out: &'a mut dyn ByteSink) -> Self {
         Self {
             out,
-            meter,
             open: Vec::new(),
             attributes: Vec::new(),
             pending: false,
             started: false,
+            document: true,
+        }
+    }
+
+    /// A writer for an XML content fragment below a root that already declared the prefixes.
+    ///
+    /// Unlike a document, a content fragment may contain sibling elements or character data
+    /// without an enclosing element.
+    #[must_use]
+    pub fn fragment(out: &'a mut dyn ByteSink) -> Self {
+        Self {
+            out,
+            open: Vec::new(),
+            attributes: Vec::new(),
+            pending: false,
+            started: false,
+            document: false,
         }
     }
 
@@ -163,19 +185,19 @@ impl<'a> XmlWriter<'a> {
     /// The first call also writes the XML declaration and the fixed namespace declarations, so
     /// a document without them is not a thing an encoder can forget to produce. Attributes may
     /// be added until anything else is written.
-    pub fn open(&mut self, name: ElementName) -> Result<(), DavError> {
+    pub fn open(&mut self, name: ElementName, meter: &mut Meter) -> Result<(), DavError> {
         if !name.is_supported() {
             // The table is unconditional and the build is not. Writing an element this build
             // cannot honor would produce a request it could not then read back.
             return Err(DavError::Unsupported(name));
         }
-        let root = self.begin_element()?;
-        self.emit(b"<")?;
-        self.emit(name.namespace().write_prefix())?;
-        self.emit(b":")?;
-        self.emit(name.local_name().as_bytes())?;
-        if root {
-            self.declare_fixed()?;
+        let root = self.begin_element(meter)?;
+        self.emit(b"<", meter)?;
+        self.emit(name.namespace().write_prefix(), meter)?;
+        self.emit(b":", meter)?;
+        self.emit(name.local_name().as_bytes(), meter)?;
+        if root && self.document {
+            self.declare_fixed(meter)?;
         }
         self.open.push(OpenTag::Known(name));
         Ok(())
@@ -193,20 +215,32 @@ impl<'a> XmlWriter<'a> {
     /// that, and every name this crate writes is ASCII, so a name it cannot verify is refused
     /// rather than emitted unchecked — at the stated cost that a server's non-ASCII property
     /// name is one this crate can read and not write back.
-    pub fn open_extension(&mut self, name: &ExtensionName) -> Result<(), DavError> {
+    pub fn open_extension(
+        &mut self,
+        name: &ExtensionName,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
         let local = name.local_name();
         check_name(local)?;
-        let root = self.begin_element()?;
+        let root = self.begin_element(meter)?;
         let kept = copy(local)?;
-        self.emit(b"<")?;
-        self.emit(EXTENSION_PREFIX)?;
-        self.emit(b":")?;
-        self.emit(local)?;
-        if root {
-            self.declare_fixed()?;
+        let qualified = !name.namespace().is_empty();
+        self.emit(b"<", meter)?;
+        if qualified {
+            self.emit(EXTENSION_PREFIX, meter)?;
+            self.emit(b":", meter)?;
         }
-        self.declare(EXTENSION_PREFIX, name.namespace())?;
-        self.open.push(OpenTag::Foreign(kept));
+        self.emit(local, meter)?;
+        if root && self.document {
+            self.declare_fixed(meter)?;
+        }
+        if qualified {
+            self.declare(EXTENSION_PREFIX, name.namespace(), meter)?;
+        }
+        self.open.push(OpenTag::Foreign {
+            local: kept,
+            qualified,
+        });
         Ok(())
     }
 
@@ -215,7 +249,12 @@ impl<'a> XmlWriter<'a> {
     /// The value is escaped for the rules that apply inside quotes, so a literal tab, newline
     /// or carriage return survives attribute-value normalization as a character reference
     /// rather than being replaced by a space.
-    pub fn attribute(&mut self, name: &[u8], value: &[u8]) -> Result<(), DavError> {
+    pub fn attribute(
+        &mut self,
+        name: &[u8],
+        value: &[u8],
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
         if !self.pending {
             // An attribute belongs to a start tag, and there is no start tag still open.
             return Err(SyntaxError::Malformed.into());
@@ -227,57 +266,95 @@ impl<'a> XmlWriter<'a> {
         }
         check_name(name)?;
         self.note_attribute(name)?;
-        self.emit(b" ")?;
-        self.emit(name)?;
-        self.emit(b"=\"")?;
-        self.emit_escaped(value, true)?;
-        self.emit(b"\"")
+        self.emit(b" ", meter)?;
+        self.emit(name, meter)?;
+        self.emit(b"=\"", meter)?;
+        self.emit_escaped(value, true, meter)?;
+        self.emit(b"\"", meter)
     }
 
     /// Write character data inside the element that is open.
     ///
     /// Escaped so that a conformant reader recovers every octet handed in, which is what makes
     /// the write half of the line-ending resolution cost nothing: `CR` leaves as `&#13;`.
-    pub fn text(&mut self, bytes: &[u8]) -> Result<(), DavError> {
-        if self.open.is_empty() {
+    pub fn text(&mut self, bytes: &[u8], meter: &mut Meter) -> Result<(), DavError> {
+        if self.open.is_empty() && self.document {
             // Character data outside the root element is not a document.
             return Err(SyntaxError::Malformed.into());
         }
-        self.seal()?;
-        self.emit_escaped(bytes, false)
+        let length = u32::try_from(bytes.len()).map_err(|_| LimitExceeded::Text)?;
+        if length > meter.limits().max_xml_text_bytes() {
+            return Err(DavError::Limit(LimitExceeded::Text));
+        }
+        self.seal(meter)?;
+        self.emit_escaped(bytes, false, meter)
+    }
+
+    /// Append already validated, balanced XML markup as content.
+    ///
+    /// The response encoder validates kept extension markup before using this narrow door.
+    /// Everything else must use [`XmlWriter::text`] so peer-controlled octets are escaped.
+    pub(crate) fn validated_markup(
+        &mut self,
+        bytes: &[u8],
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
+        if self.open.is_empty() && self.document {
+            return Err(SyntaxError::Malformed.into());
+        }
+        self.seal(meter)?;
+        self.emit(bytes, meter)
+    }
+
+    /// End the pending start tag without adding content yet.
+    ///
+    /// Body encoders use this before writing a child so an explicitly non-empty grammar keeps
+    /// its paired start/end spelling even when a later optional child is absent.
+    pub(crate) fn begin_content(&mut self, meter: &mut Meter) -> Result<(), DavError> {
+        if self.open.is_empty() {
+            return Err(SyntaxError::Malformed.into());
+        }
+        self.seal(meter)
     }
 
     /// Close the innermost open element.
     ///
     /// An element closed with nothing written inside it becomes `<D:displayname/>` rather than
     /// a pair of tags, which is the same infoset and the shape every deployed server writes.
-    pub fn close(&mut self) -> Result<(), DavError> {
+    pub fn close(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         let tag = self.open.pop().ok_or(SyntaxError::Malformed)?;
-        self.meter.leave_element();
+        meter.leave_element();
         if self.pending {
             self.pending = false;
-            return self.emit(b"/>");
+            return self.emit(b"/>", meter);
         }
-        self.emit(b"</")?;
-        self.emit(tag.prefix())?;
-        self.emit(b":")?;
-        self.emit(tag.local_name())?;
-        self.emit(b">")
+        self.emit(b"</", meter)?;
+        let prefix = tag.prefix();
+        if !prefix.is_empty() {
+            self.emit(prefix, meter)?;
+            self.emit(b":", meter)?;
+        }
+        self.emit(tag.local_name(), meter)?;
+        self.emit(b">", meter)
     }
 
     /// Write one element with nothing inside it.
-    pub fn empty(&mut self, name: ElementName) -> Result<(), DavError> {
-        self.open(name)?;
-        self.close()
+    pub fn empty(&mut self, name: ElementName, meter: &mut Meter) -> Result<(), DavError> {
+        self.open(name, meter)?;
+        self.close(meter)
     }
 
     /// Write one element outside the closed vocabulary with nothing inside it.
     ///
     /// The shape a property *name* takes: a `DAV:prop` request and a `DAV:error` body both
     /// carry names without values.
-    pub fn empty_extension(&mut self, name: &ExtensionName) -> Result<(), DavError> {
-        self.open_extension(name)?;
-        self.close()
+    pub fn empty_extension(
+        &mut self,
+        name: &ExtensionName,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
+        self.open_extension(name, meter)?;
+        self.close(meter)
     }
 
     /// Write one element carrying `bytes` as its character data.
@@ -285,12 +362,17 @@ impl<'a> XmlWriter<'a> {
     /// Empty content writes `<D:displayname/>`, because an element with no character data and
     /// one with an empty run are the same element and the shorter spelling is what servers
     /// send.
-    pub fn element_text(&mut self, name: ElementName, bytes: &[u8]) -> Result<(), DavError> {
-        self.open(name)?;
+    pub fn element_text(
+        &mut self,
+        name: ElementName,
+        bytes: &[u8],
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
+        self.open(name, meter)?;
         if !bytes.is_empty() {
-            self.text(bytes)?;
+            self.text(bytes, meter)?;
         }
-        self.close()
+        self.close(meter)
     }
 
     /// Close every element still open, ending the document.
@@ -298,9 +380,9 @@ impl<'a> XmlWriter<'a> {
     /// Idempotent: a second call has nothing left to close. Calling it is what makes a
     /// truncated document unrepresentable rather than merely unlikely — a caller that forgot a
     /// [`XmlWriter::close`] still hands its peer well-formed XML.
-    pub fn finish(&mut self) -> Result<(), DavError> {
+    pub fn finish(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         while !self.open.is_empty() {
-            self.close()?;
+            self.close(meter)?;
         }
         Ok(())
     }
@@ -309,23 +391,25 @@ impl<'a> XmlWriter<'a> {
     ///
     /// Answers whether this element is the document's root, which is the one that carries the
     /// fixed namespace declarations.
-    fn begin_element(&mut self) -> Result<bool, DavError> {
-        self.seal()?;
+    fn begin_element(&mut self, meter: &mut Meter) -> Result<bool, DavError> {
+        self.seal(meter)?;
         let root = self.open.is_empty();
-        if root && self.started {
+        if root && self.document && self.started {
             // An XML document has exactly one root element, and a second would be octets no
             // parser accepts.
             return Err(SyntaxError::Malformed.into());
         }
-        self.meter.try_charge_element()?;
-        self.meter.try_enter_element()?;
+        meter.try_charge_element()?;
+        meter.try_enter_element()?;
         // Reserved here so the push at the end of an element cannot be the step that fails
         // after the start tag is already on the wire.
         self.open
             .try_reserve(1)
             .map_err(|_| DavError::Limit(LimitExceeded::Budget))?;
+        if root && self.document {
+            self.emit(DECLARATION, meter)?;
+        }
         if root {
-            self.emit(DECLARATION)?;
             self.started = true;
         }
         self.attributes.clear();
@@ -334,29 +418,29 @@ impl<'a> XmlWriter<'a> {
     }
 
     /// Write the `>` that ends a start tag, if one is still waiting for it.
-    fn seal(&mut self) -> Result<(), DavError> {
+    fn seal(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         if self.pending {
             self.pending = false;
-            self.emit(b">")?;
+            self.emit(b">", meter)?;
         }
         Ok(())
     }
 
     /// Declare the three namespaces this crate writes elements in.
-    fn declare_fixed(&mut self) -> Result<(), DavError> {
+    fn declare_fixed(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         for namespace in DECLARED {
-            self.declare(namespace.write_prefix(), namespace.uri())?;
+            self.declare(namespace.write_prefix(), namespace.uri(), meter)?;
         }
         Ok(())
     }
 
     /// Declare one prefix on the element currently pending.
-    fn declare(&mut self, prefix: &[u8], uri: &[u8]) -> Result<(), DavError> {
-        self.emit(b" xmlns:")?;
-        self.emit(prefix)?;
-        self.emit(b"=\"")?;
-        self.emit_escaped(uri, true)?;
-        self.emit(b"\"")
+    fn declare(&mut self, prefix: &[u8], uri: &[u8], meter: &mut Meter) -> Result<(), DavError> {
+        self.emit(b" xmlns:", meter)?;
+        self.emit(prefix, meter)?;
+        self.emit(b"=\"", meter)?;
+        self.emit_escaped(uri, true, meter)?;
+        self.emit(b"\"", meter)
     }
 
     /// Record an attribute name, refusing one this element already carries.
@@ -377,18 +461,23 @@ impl<'a> XmlWriter<'a> {
     ///
     /// Charging first is what makes the bound bind: a body past the caller's budget is refused
     /// before its octets reach a sink that may already have written them somewhere.
-    fn emit(&mut self, bytes: &[u8]) -> Result<(), DavError> {
+    fn emit(&mut self, bytes: &[u8], meter: &mut Meter) -> Result<(), DavError> {
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        self.meter.try_charge_bytes(length)?;
+        meter.try_charge_bytes(length)?;
         self.out.write(bytes)?;
         Ok(())
     }
 
     /// Escape `bytes` into the sink, charging what the escaping actually costs.
-    fn emit_escaped(&mut self, bytes: &[u8], quoted: bool) -> Result<(), DavError> {
+    fn emit_escaped(
+        &mut self,
+        bytes: &[u8],
+        quoted: bool,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
         let mut charged = Charged {
             out: &mut *self.out,
-            meter: &mut *self.meter,
+            meter,
             refused: None,
         };
         let outcome = if quoted {
@@ -543,14 +632,14 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
 
     /// Build one document under default bounds and answer its octets.
     fn write_document(
-        build: impl FnOnce(&mut XmlWriter<'_>) -> Result<(), DavError>,
+        build: impl FnOnce(&mut XmlWriter<'_>, &mut Meter) -> Result<(), DavError>,
     ) -> Result<Vec<u8>, DavError> {
         let mut body: Vec<u8> = Vec::new();
         let mut meter = Meter::new(Limits::DEFAULT);
         {
-            let mut writer = XmlWriter::new(&mut body, &mut meter);
-            build(&mut writer)?;
-            writer.finish()?;
+            let mut writer = XmlWriter::new(&mut body);
+            build(&mut writer, &mut meter)?;
+            writer.finish(&mut meter)?;
         }
         Ok(body)
     }
@@ -576,9 +665,9 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             (ElementName::Multistatus, b"<D:multistatus/>"),
         ];
         for (name, wanted) in cases {
-            let body = write_document(|writer| {
-                writer.open(ElementName::Propfind)?;
-                writer.empty(name)
+            let body = write_document(|writer, meter| {
+                writer.open(ElementName::Propfind, meter)?;
+                writer.empty(name, meter)
             })
             .unwrap();
             assert!(carries(&body, wanted), "{name:?} wrote {body:?}");
@@ -621,9 +710,9 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             let (Some(name), Some(tag)) = (found, wanted) else {
                 continue;
             };
-            let body = write_document(|writer| {
-                writer.open(ElementName::Multistatus)?;
-                writer.empty(name)
+            let body = write_document(|writer, meter| {
+                writer.open(ElementName::Multistatus, meter)?;
+                writer.empty(name, meter)
             })
             .unwrap();
             assert!(carries(&body, tag), "{spelled:?} {local:?} wrote {body:?}");
@@ -646,7 +735,8 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             "the constant the tables are written against"
         );
 
-        let body = write_document(|writer| writer.open(ElementName::Propname)).unwrap();
+        let body =
+            write_document(|writer, meter| writer.open(ElementName::Propname, meter)).unwrap();
         let mut wanted = Vec::from(PRELUDE);
         wanted.extend_from_slice(b"<D:propname");
         wanted.extend_from_slice(DECLARATIONS);
@@ -658,17 +748,18 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
     /// one, out of the same writer the server direction below uses.
     #[test]
     fn a_client_builds_a_multiget_and_the_octets_are_the_ones_a_server_reads() {
-        let body = write_document(|writer| {
-            writer.open(ElementName::CalendarMultiget)?;
-            writer.open(ElementName::Prop)?;
-            writer.empty(ElementName::Getetag)?;
-            writer.empty(ElementName::CalendarData)?;
-            writer.close()?;
+        let body = write_document(|writer, meter| {
+            writer.open(ElementName::CalendarMultiget, meter)?;
+            writer.open(ElementName::Prop, meter)?;
+            writer.empty(ElementName::Getetag, meter)?;
+            writer.empty(ElementName::CalendarData, meter)?;
+            writer.close(meter)?;
             writer.element_text(
                 ElementName::Href,
                 b"/calendars/ann/work/20260105T090000Z-1.ics",
+                meter,
             )?;
-            writer.element_text(ElementName::Href, b"/calendars/ann/work/gone.ics")
+            writer.element_text(ElementName::Href, b"/calendars/ann/work/gone.ics", meter)
         })
         .unwrap();
         assert_eq!(body, MULTIGET);
@@ -683,24 +774,25 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
     /// infosets and not wire strings.
     #[test]
     fn a_server_builds_one_response_whose_properties_disagree_about_their_status() {
-        let body = write_document(|writer| {
-            writer.open(ElementName::Multistatus)?;
-            writer.open(ElementName::Response)?;
+        let body = write_document(|writer, meter| {
+            writer.open(ElementName::Multistatus, meter)?;
+            writer.open(ElementName::Response, meter)?;
             writer.element_text(
                 ElementName::Href,
                 b"/calendars/ann/work/20260105T090000Z-1.ics",
+                meter,
             )?;
-            writer.open(ElementName::Propstat)?;
-            writer.open(ElementName::Prop)?;
-            writer.element_text(ElementName::Getetag, b"\"5f2b8c1e9a04\"")?;
-            writer.close()?;
-            writer.element_text(ElementName::Status, b"HTTP/1.1 200 OK")?;
-            writer.close()?;
-            writer.open(ElementName::Propstat)?;
-            writer.open(ElementName::Prop)?;
-            writer.empty(ElementName::Displayname)?;
-            writer.close()?;
-            writer.element_text(ElementName::Status, b"HTTP/1.1 404 Not Found")
+            writer.open(ElementName::Propstat, meter)?;
+            writer.open(ElementName::Prop, meter)?;
+            writer.element_text(ElementName::Getetag, b"\"5f2b8c1e9a04\"", meter)?;
+            writer.close(meter)?;
+            writer.element_text(ElementName::Status, b"HTTP/1.1 200 OK", meter)?;
+            writer.close(meter)?;
+            writer.open(ElementName::Propstat, meter)?;
+            writer.open(ElementName::Prop, meter)?;
+            writer.empty(ElementName::Displayname, meter)?;
+            writer.close(meter)?;
+            writer.element_text(ElementName::Status, b"HTTP/1.1 404 Not Found", meter)
             // The propstat, the response and the multistatus are left open on purpose: what
             // closes them is `finish`, which is what makes a truncated body unrepresentable.
         })
@@ -730,17 +822,17 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             ),
         ];
         for (from, until, fragment) in cases {
-            let body = write_document(|writer| {
-                writer.open(ElementName::CalendarQuery)?;
-                writer.open(ElementName::Filter)?;
-                writer.open(ElementName::CompFilter)?;
-                writer.attribute(b"name", b"VEVENT")?;
-                writer.open(ElementName::TimeRange)?;
+            let body = write_document(|writer, meter| {
+                writer.open(ElementName::CalendarQuery, meter)?;
+                writer.open(ElementName::Filter, meter)?;
+                writer.open(ElementName::CompFilter, meter)?;
+                writer.attribute(b"name", b"VEVENT", meter)?;
+                writer.open(ElementName::TimeRange, meter)?;
                 if let Some(start) = from {
-                    writer.attribute(b"start", start)?;
+                    writer.attribute(b"start", start, meter)?;
                 }
                 match until {
-                    Some(end) => writer.attribute(b"end", end),
+                    Some(end) => writer.attribute(b"end", end, meter),
                     None => Ok(()),
                 }
             })
@@ -760,9 +852,9 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
     /// reader hands back unchanged.
     #[test]
     fn a_payload_written_here_is_the_payload_read_back_out_of_it() {
-        let body = write_document(|writer| {
-            writer.open(ElementName::CalendarData)?;
-            writer.text(PAYLOAD)
+        let body = write_document(|writer, meter| {
+            writer.open(ElementName::CalendarData, meter)?;
+            writer.text(PAYLOAD, meter)
         })
         .unwrap();
 
@@ -795,14 +887,15 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         let vendor =
             ExtensionName::new(b"http://apple.com/ns/ical/", b"calendar-color", &mut meter)
                 .unwrap();
+        let unqualified = ExtensionName::new(b"", b"unqualified", &mut meter).unwrap();
         let refused =
             ExtensionName::new(b"http://x.invalid/ns", b"not a name", &mut meter).unwrap();
 
-        let body = write_document(|writer| {
-            writer.open(ElementName::Propfind)?;
-            writer.open(ElementName::Prop)?;
-            writer.empty(ElementName::Getetag)?;
-            writer.empty_extension(&vendor)
+        let body = write_document(|writer, meter| {
+            writer.open(ElementName::Propfind, meter)?;
+            writer.open(ElementName::Prop, meter)?;
+            writer.empty(ElementName::Getetag, meter)?;
+            writer.empty_extension(&vendor, meter)
         })
         .unwrap();
         assert!(carries(
@@ -810,9 +903,17 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             b"<X:calendar-color xmlns:X=\"http://apple.com/ns/ical/\"/>"
         ));
 
-        let stopped = write_document(|writer| {
-            writer.open(ElementName::Propfind)?;
-            writer.empty_extension(&refused)
+        let body = write_document(|writer, meter| {
+            writer.open(ElementName::Propfind, meter)?;
+            writer.empty_extension(&unqualified, meter)
+        })
+        .unwrap();
+        assert!(carries(&body, b"<unqualified/>"));
+        assert!(!carries(&body, b"xmlns:X=\"\""));
+
+        let stopped = write_document(|writer, meter| {
+            writer.open(ElementName::Propfind, meter)?;
+            writer.empty_extension(&refused, meter)
         });
         assert_eq!(stopped, Err(DavError::Syntax(SyntaxError::Malformed)));
     }
@@ -821,29 +922,29 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
     #[test]
     fn the_documents_a_peer_would_refuse_are_the_ones_that_cannot_be_written() {
         // Closing more than was opened.
-        let unopened = write_document(|writer| {
-            writer.open(ElementName::Propname)?;
-            writer.close()?;
-            writer.close()
+        let unopened = write_document(|writer, meter| {
+            writer.open(ElementName::Propname, meter)?;
+            writer.close(meter)?;
+            writer.close(meter)
         });
         assert_eq!(unopened, Err(DavError::Syntax(SyntaxError::Malformed)));
 
         // A second root element.
-        let twice = write_document(|writer| {
-            writer.empty(ElementName::Propname)?;
-            writer.open(ElementName::Multistatus)
+        let twice = write_document(|writer, meter| {
+            writer.empty(ElementName::Propname, meter)?;
+            writer.open(ElementName::Multistatus, meter)
         });
         assert_eq!(twice, Err(DavError::Syntax(SyntaxError::Malformed)));
 
         // Character data outside the root.
-        let loose = write_document(|writer| writer.text(b"stray"));
+        let loose = write_document(|writer, meter| writer.text(b"stray", meter));
         assert_eq!(loose, Err(DavError::Syntax(SyntaxError::Malformed)));
 
         // The same attribute twice on one element.
-        let repeated = write_document(|writer| {
-            writer.open(ElementName::CompFilter)?;
-            writer.attribute(b"name", b"VEVENT")?;
-            writer.attribute(b"name", b"VTODO")
+        let repeated = write_document(|writer, meter| {
+            writer.open(ElementName::CompFilter, meter)?;
+            writer.attribute(b"name", b"VEVENT", meter)?;
+            writer.attribute(b"name", b"VTODO", meter)
         });
         assert_eq!(
             repeated,
@@ -856,18 +957,18 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             b"xmlns".as_slice(),
             b"a b".as_slice(),
         ] {
-            let injected = write_document(|writer| {
-                writer.open(ElementName::CompFilter)?;
-                writer.attribute(name, b"http://evil.example/not-dav")
+            let injected = write_document(|writer, meter| {
+                writer.open(ElementName::CompFilter, meter)?;
+                writer.attribute(name, b"http://evil.example/not-dav", meter)
             });
             assert_eq!(injected, Err(DavError::Syntax(SyntaxError::Malformed)));
         }
 
         // An attribute after the start tag has been sealed by the element inside it.
-        let late = write_document(|writer| {
-            writer.open(ElementName::CompFilter)?;
-            writer.empty(ElementName::TimeRange)?;
-            writer.attribute(b"name", b"VEVENT")
+        let late = write_document(|writer, meter| {
+            writer.open(ElementName::CompFilter, meter)?;
+            writer.empty(ElementName::TimeRange, meter)?;
+            writer.attribute(b"name", b"VEVENT", meter)
         });
         assert_eq!(late, Err(DavError::Syntax(SyntaxError::Malformed)));
     }
@@ -878,14 +979,14 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         let mut body: Vec<u8> = Vec::new();
         let mut meter = Meter::new(Limits::DEFAULT);
         {
-            let mut writer = XmlWriter::new(&mut body, &mut meter);
-            writer.open(ElementName::Multistatus).unwrap();
+            let mut writer = XmlWriter::new(&mut body);
+            writer.open(ElementName::Multistatus, &mut meter).unwrap();
             // Escaped content costs more octets than it was handed, which is the amount a
             // charge over the input's length would have missed.
             writer
-                .element_text(ElementName::Displayname, b"Ann & <Work>\r\n")
+                .element_text(ElementName::Displayname, b"Ann & <Work>\r\n", &mut meter)
                 .unwrap();
-            writer.finish().unwrap();
+            writer.finish(&mut meter).unwrap();
         }
         assert!(carries(&body, b"Ann &amp; &lt;Work&gt;&#13;\n"));
         assert_eq!(meter.spent(), u64::try_from(body.len()).unwrap());
@@ -898,16 +999,16 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         let mut meter = Meter::new(Limits::DEFAULT);
         let mut room = SliceSink::new(&mut buffer);
         let filled = {
-            let mut writer = XmlWriter::new(&mut room, &mut meter);
-            writer.open(ElementName::Multistatus)
+            let mut writer = XmlWriter::new(&mut room);
+            writer.open(ElementName::Multistatus, &mut meter)
         };
         assert_eq!(filled, Err(DavError::Output(SinkFull)));
 
         let mut body: Vec<u8> = Vec::new();
         let mut tight = Meter::with_budget(Limits::DEFAULT, 8);
         let spent = {
-            let mut writer = XmlWriter::new(&mut body, &mut tight);
-            writer.open(ElementName::Multistatus)
+            let mut writer = XmlWriter::new(&mut body);
+            writer.open(ElementName::Multistatus, &mut tight)
         };
         assert_eq!(spent, Err(DavError::Limit(LimitExceeded::Budget)));
         assert!(body.is_empty(), "a refused charge writes nothing");
@@ -920,14 +1021,27 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         let mut body: Vec<u8> = Vec::new();
         let mut meter = Meter::new(limits);
         let refused = {
-            let mut writer = XmlWriter::new(&mut body, &mut meter);
-            writer.open(ElementName::CalendarQuery).unwrap();
-            writer.open(ElementName::Filter).unwrap();
-            writer.open(ElementName::CompFilter).unwrap();
+            let mut writer = XmlWriter::new(&mut body);
+            writer.open(ElementName::CalendarQuery, &mut meter).unwrap();
+            writer.open(ElementName::Filter, &mut meter).unwrap();
+            writer.open(ElementName::CompFilter, &mut meter).unwrap();
             assert_eq!(writer.depth(), 3);
-            writer.open(ElementName::CompFilter)
+            writer.open(ElementName::CompFilter, &mut meter)
         };
         assert_eq!(refused, Err(DavError::Limit(LimitExceeded::Depth)));
+    }
+
+    #[test]
+    fn one_character_run_is_no_larger_than_the_policy_admits() {
+        let limits = Limits::DEFAULT.with_max_xml_text_bytes(3);
+        let mut body: Vec<u8> = Vec::new();
+        let mut meter = Meter::new(limits);
+        let refused = {
+            let mut writer = XmlWriter::new(&mut body);
+            writer.open(ElementName::Displayname, &mut meter).unwrap();
+            writer.text(b"four", &mut meter)
+        };
+        assert_eq!(refused, Err(DavError::Limit(LimitExceeded::Text)));
     }
 
     /// An element this build cannot honor is refused rather than written into a request that
@@ -937,7 +1051,8 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         if crate::internal::dav::SYNC_COLLECTION_ENABLED {
             return;
         }
-        let refused = write_document(|writer| writer.open(ElementName::SyncCollection));
+        let refused =
+            write_document(|writer, meter| writer.open(ElementName::SyncCollection, meter));
         assert_eq!(
             refused,
             Err(DavError::Unsupported(ElementName::SyncCollection))

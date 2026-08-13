@@ -18,19 +18,16 @@
 //! deterministic byte string is also what makes the wire column of a test table an assertion
 //! rather than an approximation.
 //!
-//! The prefixes are this crate's own fixed `D:`, `C:` and `CS:`, declared on the root element
-//! and taken from [`crate::internal::dav::Namespace::write_prefix`] rather than written as literals. That
+//! The prefixes are this crate's own fixed `D:`, `C:` and `CS:`, all declared on every root
+//! element by the shared stack-balanced writer. That
 //! they are an output choice and never an input assumption is `element.rs`'s subject: a peer
 //! writing `d:`, or a default declaration, or a different prefix per element, is read
-//! correctly by this crate's own reader. `CS:` is declared only where a `CalendarServer`
-//! property is actually asked for, because a declaration nothing references is noise on every
-//! request a client sends.
+//! correctly by this crate's own reader. A fixed preamble makes request and response output
+//! canonical and keeps namespace selection out of the individual body encoders.
 //!
-//! A property outside the closed vocabulary is written in its own namespace through a default
-//! declaration — `<calendar-color xmlns="http://apple.com/ns/ical/"/>` — rather than under an
-//! invented prefix. XML Namespaces 1.0 section 6.1 makes the two say the same thing, and this
-//! crate has three prefixes it controls and no business minting a fourth for octets a caller
-//! handed it.
+//! A property outside the closed vocabulary is written under the writer's scoped `X:` prefix,
+//! declared on that element alone. Two adjacent extension properties may therefore use
+//! unrelated namespaces without changing any fixed binding.
 //!
 //! # What this unit owns that nothing else does
 //!
@@ -51,29 +48,20 @@
 //! between a caller's own deeply nested selection and a blown stack.
 
 use crate::internal::core::{
-    CivilDateTime, DateTimeValue, EncodeValue, Instant, LimitExceeded, Limits, Meter, UtcOffset,
-    ValueBuf,
+    CivilDateTime, DateTimeValue, EncodeValue, Instant, Limits, Meter, UtcOffset, ValueBuf,
 };
 
 use crate::internal::dav::codec::WriteXml;
-use crate::internal::dav::element::{ElementName, Namespace};
-use crate::internal::dav::failure::{DavError, SyntaxError, ValueError};
+use crate::internal::dav::element::ElementName;
+use crate::internal::dav::failure::{DavError, ValueError};
 use crate::internal::dav::request::{
     CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
     FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, QueryShape, TextMatch,
     TimeRange,
 };
 use crate::internal::dav::sink::ByteSink;
-use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
 use crate::internal::dav::value::ExtensionName;
-
-/// The declaration every request body opens with.
-///
-/// `utf-8` in lower case because that is what RFC 4791's own examples write and what the
-/// deployed servers this crate was measured against send. XML 1.0 section 4.3.3 makes an
-/// encoding name case-insensitive, so a reader that disagreed would already be broken against
-/// `SabreDAV`.
-const DECLARATION: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>";
+use crate::internal::dav::writer::XmlWriter;
 
 /// Write the `YYYYMMDDTHHMMSSZ` an RFC 4791 section 9.9 `time-range` attribute carries.
 ///
@@ -106,14 +94,6 @@ fn asks_for_a_property(wanted: &PropRequest) -> bool {
     !wanted.names().is_empty() || wanted.calendar_data.is_some()
 }
 
-/// Whether a request names a property of the `CalendarServer` vendor namespace.
-fn names_a_vendor_property(wanted: &PropRequest) -> bool {
-    wanted.names().iter().any(|name| match name {
-        PropName::Known(known) => matches!(known.namespace(), Namespace::CalendarServer),
-        PropName::Extension(_) => false,
-    })
-}
-
 /// Whether a `calendar-data` request asks for a shape rather than the whole object.
 fn asks_for_a_shape(request: &CalendarDataRequest) -> bool {
     request.comp.is_some()
@@ -130,161 +110,79 @@ fn selects_inside(selection: &CompSelection) -> bool {
         || !selection.comps().is_empty()
 }
 
-/// Whether octets may be written as an XML element name.
-///
-/// Deliberately narrower than XML 1.0 section 2.3's `Name` production. This crate writes a name
-/// a caller handed it, and refusing a few legal names is better than emitting one octet of a
-/// document that is not well-formed. A colon is excluded on purpose: a colon in a written name
-/// would be a prefix, and the only prefixes this crate writes are its own three.
-fn is_xml_name(octets: &[u8]) -> bool {
-    let Some(&first) = octets.first() else {
-        return false;
-    };
-    if !(first.is_ascii_alphabetic() || first == b'_') {
-        return false;
-    }
-    octets
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.'))
-}
-
 /// The octets an encoder writes into, and the bounds it writes under.
 ///
 /// Two lifetimes rather than one because the sink and the ledger belong to the caller
 /// separately: draining many bodies into one buffer under one meter, which is the aggregate
 /// shape `docs/adr/0010` exists for, does not make them agree.
 struct Encoder<'out, 'ledger> {
-    /// Where the octets go.
-    out: &'out mut dyn ByteSink,
-    /// The caller's bounds.
-    limits: Limits,
+    /// The one stack-balanced writer used by every DAV body encoder.
+    writer: XmlWriter<'out>,
     /// The caller's running ledger.
     meter: &'ledger mut Meter,
-    /// How deep the encoder currently sits, with the root element at one.
-    ///
-    /// Held here rather than on the meter because a write that fails has nothing left to
-    /// close, and a leaked depth on a shared ledger would refuse the *next* body a caller
-    /// writes for a reason belonging to the body before it.
-    depth: u16,
 }
 
 impl<'out, 'ledger> Encoder<'out, 'ledger> {
-    /// An encoder over the caller's sink, bounds and ledger.
-    fn new(out: &'out mut dyn ByteSink, limits: Limits, meter: &'ledger mut Meter) -> Self {
+    /// An encoder for an element fragment below a root owned by its caller.
+    fn new(out: &'out mut dyn ByteSink, _limits: Limits, meter: &'ledger mut Meter) -> Self {
         Self {
-            out,
-            limits,
+            writer: XmlWriter::fragment(out),
             meter,
-            depth: 0,
+        }
+    }
+
+    /// An encoder for a complete XML request document.
+    fn document(out: &'out mut dyn ByteSink, meter: &'ledger mut Meter) -> Self {
+        Self {
+            writer: XmlWriter::new(out),
+            meter,
         }
     }
 }
 
 impl Encoder<'_, '_> {
-    /// Write octets that are markup this encoder produced, and are therefore already correct.
-    fn raw(&mut self, bytes: &[u8]) -> Result<(), DavError> {
-        self.out.write(bytes)?;
-        Ok(())
-    }
-
-    /// Charge one element and one level of nesting.
-    fn enter(&mut self) -> Result<(), DavError> {
-        self.meter.try_charge_element()?;
-        let next = self.depth.checked_add(1).ok_or(LimitExceeded::Depth)?;
-        if next > self.limits.max_xml_depth() {
-            return Err(DavError::Limit(LimitExceeded::Depth));
-        }
-        self.depth = next;
-        Ok(())
-    }
-
-    /// Leave the element that was entered.
-    fn leave(&mut self) {
-        self.depth = self.depth.saturating_sub(1);
-    }
-
     /// Write `<P:local`, leaving the start tag open for attributes.
     fn open(&mut self, name: ElementName) -> Result<(), DavError> {
-        self.enter()?;
-        self.raw(b"<")?;
-        self.raw(name.namespace().write_prefix())?;
-        self.raw(b":")?;
-        self.raw(name.local_name().as_bytes())
+        self.writer.open(name, self.meter)
     }
 
     /// End a start tag whose element has children or character data.
     fn begin_content(&mut self) -> Result<(), DavError> {
-        self.raw(b">")
+        self.writer.begin_content(self.meter)
     }
 
     /// End a start tag whose element has neither.
     fn close_empty(&mut self) -> Result<(), DavError> {
-        self.leave();
-        self.raw(b"/>")
+        self.writer.close(self.meter)
     }
 
     /// Write `</P:local>`.
-    fn close(&mut self, name: ElementName) -> Result<(), DavError> {
-        self.leave();
-        self.raw(b"</")?;
-        self.raw(name.namespace().write_prefix())?;
-        self.raw(b":")?;
-        self.raw(name.local_name().as_bytes())?;
-        self.raw(b">")
+    fn close(&mut self, _name: ElementName) -> Result<(), DavError> {
+        self.writer.close(self.meter)
     }
 
     /// Write one attribute of the start tag that is open.
     ///
-    /// The value goes through [`write_escaped_attribute`], which escapes what XML 1.0
+    /// The value goes through the shared writer's escaping, which preserves what XML 1.0
     /// section 3.3.3's attribute-value normalization would otherwise replace with a space.
     fn attribute(&mut self, name: &[u8], value: &[u8]) -> Result<(), DavError> {
-        let cost = u64::try_from(value.len()).unwrap_or(u64::MAX);
-        self.meter.try_charge_bytes(cost)?;
-        self.raw(b" ")?;
-        self.raw(name)?;
-        self.raw(b"=\"")?;
-        write_escaped_attribute(&mut *self.out, value)?;
-        self.raw(b"\"")
-    }
-
-    /// Declare one of this crate's fixed output prefixes.
-    ///
-    /// The prefix and the URI both come from the namespace, so what a body declares and what a
-    /// writer then uses cannot drift apart.
-    fn declare(&mut self, namespace: Namespace<'static>) -> Result<(), DavError> {
-        self.raw(b" xmlns:")?;
-        self.raw(namespace.write_prefix())?;
-        self.raw(b"=\"")?;
-        write_escaped_attribute(&mut *self.out, namespace.uri())?;
-        self.raw(b"\"")
+        self.writer.attribute(name, value, self.meter)
     }
 
     /// Write the declaration and the root element's start tag.
-    fn open_root(&mut self, name: ElementName, vendor: bool) -> Result<(), DavError> {
-        self.raw(DECLARATION)?;
+    fn open_root(&mut self, name: ElementName) -> Result<(), DavError> {
         self.open(name)?;
-        self.declare(Namespace::Dav)?;
-        self.declare(Namespace::CalDav)?;
-        if vendor {
-            self.declare(Namespace::CalendarServer)?;
-        }
         self.begin_content()
     }
 
     /// An element with no attributes and no content.
     fn empty_element(&mut self, name: ElementName) -> Result<(), DavError> {
-        self.open(name)?;
-        self.close_empty()
+        self.writer.empty(name, self.meter)
     }
 
     /// An element whose content is character data.
     fn text_element(&mut self, name: ElementName, bytes: &[u8]) -> Result<(), DavError> {
-        let cost = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        self.meter.try_charge_bytes(cost)?;
-        self.open(name)?;
-        self.begin_content()?;
-        write_escaped_text(&mut *self.out, bytes)?;
-        self.close(name)
+        self.writer.element_text(name, bytes, self.meter)
     }
 
     /// An element whose content is a decimal count.
@@ -311,34 +209,12 @@ impl Encoder<'_, '_> {
             }
         }
         let rendered = buffer.get(at..).unwrap_or(b"0");
-        self.open(name)?;
-        self.begin_content()?;
-        self.raw(rendered)?;
-        self.close(name)
+        self.writer.element_text(name, rendered, self.meter)
     }
 
     /// A property name outside the closed vocabulary, in its own namespace.
     fn extension_element(&mut self, name: &ExtensionName) -> Result<(), DavError> {
-        if !is_xml_name(name.local_name()) {
-            return Err(SyntaxError::Malformed.into());
-        }
-        self.enter()?;
-        let width = name
-            .namespace()
-            .len()
-            .saturating_add(name.local_name().len());
-        self.meter
-            .try_charge_bytes(u64::try_from(width).unwrap_or(u64::MAX))?;
-        self.raw(b"<")?;
-        self.raw(name.local_name())?;
-        // A default declaration rather than an invented prefix. It is scoped to this element,
-        // which carries nothing, so it changes what no other name in the body means. An empty
-        // URI writes `xmlns=""`, which is XML Namespaces 1.0 section 6.2's way of saying "in
-        // no namespace" — the right answer for a property that arrived unprefixed.
-        self.raw(b" xmlns=\"")?;
-        write_escaped_attribute(&mut *self.out, name.namespace())?;
-        self.raw(b"\"")?;
-        self.close_empty()
+        self.writer.empty_extension(name, self.meter)
     }
 
     /// One requested property name, however this crate knows it.
@@ -402,9 +278,7 @@ impl Encoder<'_, '_> {
             self.attribute(b"negate-condition", b"yes")?;
         }
         self.begin_content()?;
-        let cost = u64::try_from(test.value().len()).unwrap_or(u64::MAX);
-        self.meter.try_charge_bytes(cost)?;
-        write_escaped_text(&mut *self.out, test.value())?;
+        self.writer.text(test.value(), self.meter)?;
         self.close(ElementName::TextMatch)
     }
 
@@ -568,15 +442,11 @@ impl WriteXml for PropFind {
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
-        limits: Limits,
+        _limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let mut encoder = Encoder::new(out, limits, meter);
-        let vendor = match self {
-            Self::AllProp(wanted) | Self::Props(wanted) => names_a_vendor_property(wanted),
-            Self::Names => false,
-        };
-        encoder.open_root(ElementName::Propfind, vendor)?;
+        let mut encoder = Encoder::document(out, meter);
+        encoder.open_root(ElementName::Propfind)?;
         match self {
             Self::AllProp(wanted) => {
                 encoder.empty_element(ElementName::Allprop)?;
@@ -597,12 +467,11 @@ impl WriteXml for CalendarQuery {
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
-        limits: Limits,
+        _limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let vendor = names_a_vendor_property(&self.props);
-        let mut encoder = Encoder::new(out, limits, meter);
-        encoder.open_root(ElementName::CalendarQuery, vendor)?;
+        let mut encoder = Encoder::document(out, meter);
+        encoder.open_root(ElementName::CalendarQuery)?;
         match self.shape {
             QueryShape::AllProp => encoder.empty_element(ElementName::Allprop)?,
             QueryShape::Names => encoder.empty_element(ElementName::Propname)?,
@@ -636,12 +505,11 @@ impl WriteXml for CalendarMultiget {
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
-        limits: Limits,
+        _limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let vendor = names_a_vendor_property(&self.props);
-        let mut encoder = Encoder::new(out, limits, meter);
-        encoder.open_root(ElementName::CalendarMultiget, vendor)?;
+        let mut encoder = Encoder::document(out, meter);
+        encoder.open_root(ElementName::CalendarMultiget)?;
         if asks_for_a_property(&self.props) {
             encoder.prop_list(ElementName::Prop, &self.props)?;
         }
@@ -656,11 +524,11 @@ impl WriteXml for FreeBusyQuery {
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
-        limits: Limits,
+        _limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let mut encoder = Encoder::new(out, limits, meter);
-        encoder.open_root(ElementName::FreeBusyQuery, false)?;
+        let mut encoder = Encoder::document(out, meter);
+        encoder.open_root(ElementName::FreeBusyQuery)?;
         encoder.range(ElementName::TimeRange, self.range)?;
         encoder.close(ElementName::FreeBusyQuery)
     }
@@ -670,12 +538,11 @@ impl WriteXml for crate::internal::dav::request::SyncCollection {
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
-        limits: Limits,
+        _limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let vendor = names_a_vendor_property(&self.props);
-        let mut encoder = Encoder::new(out, limits, meter);
-        encoder.open_root(ElementName::SyncCollection, vendor)?;
+        let mut encoder = Encoder::document(out, meter);
+        encoder.open_root(ElementName::SyncCollection)?;
         match self.token.as_ref() {
             Some(token) => encoder.text_element(ElementName::SyncToken, token.as_bytes())?,
             // RFC 6578 section 3 requires the element and makes an empty one the request for
@@ -812,8 +679,9 @@ mod tests {
     const JANUARY_5: i64 = 1_136_419_200;
 
     /// The root a `PROPFIND` opens with, which three of the cases below share.
-    const PROPFIND_ROOT: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\
-<D:propfind xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">";
+    const PROPFIND_ROOT: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<D:propfind xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
+xmlns:CS=\"http://calendarserver.org/ns/\">";
 
     /// The window RFC 4791 section 7.8.1's example asks over.
     fn january() -> TimeRange {
@@ -847,6 +715,16 @@ mod tests {
     }
 
     #[test]
+    fn request_roots_use_the_shared_canonical_preamble() {
+        let body = wire(&PropFind::Names);
+        assert!(body.starts_with(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<D:propfind xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
+xmlns:CS=\"http://calendarserver.org/ns/\">"
+        ));
+    }
+
+    #[test]
     fn a_calendar_query_is_the_body_rfc_4791_section_7_8_1_shows() {
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
@@ -865,8 +743,9 @@ mod tests {
         // The example of RFC 4791 section 7.8.1 with its indentation removed: the element
         // names, the attribute names, the nesting and the `YYYYMMDDTHHMMSSZ` spelling are the
         // RFC's own, not this writer's habits written down twice.
-        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\
-<C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
+xmlns:CS=\"http://calendarserver.org/ns/\">\
 <D:prop><D:getetag/><C:calendar-data/></D:prop>\
 <C:filter><C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VEVENT\">\
 <C:time-range start=\"20060104T000000Z\" end=\"20060105T000000Z\"/>\
@@ -893,8 +772,9 @@ mod tests {
         }
 
         // RFC 4791 section 7.9.1's shape: the property list once, then one `href` per resource.
-        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\
-<C:calendar-multiget xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<C:calendar-multiget xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
+xmlns:CS=\"http://calendarserver.org/ns/\">\
 <D:prop><D:getetag/><C:calendar-data/></D:prop>\
 <D:href>/calendars/ann/work/1.ics</D:href>\
 <D:href>/calendars/ann/work/2.ics</D:href></C:calendar-multiget>";
@@ -904,8 +784,9 @@ mod tests {
     #[test]
     fn a_free_busy_query_carries_one_window_and_nothing_else() {
         let query = FreeBusyQuery { range: january() };
-        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\
-<C:free-busy-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<C:free-busy-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
+xmlns:CS=\"http://calendarserver.org/ns/\">\
 <C:time-range start=\"20060104T000000Z\" end=\"20060105T000000Z\"/></C:free-busy-query>";
         assert_eq!(wire(&query), expected);
     }
@@ -943,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vendor_namespace_is_declared_where_it_is_used_and_nowhere_else() {
+    fn the_fixed_namespaces_are_declared_on_every_request_root() {
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let mut wanted = PropRequest::new(limits);
@@ -953,17 +834,14 @@ mod tests {
 
         // `getctag` is the property every widely deployed client polls a collection with, and
         // it lives in `http://calendarserver.org/ns/` rather than in `DAV:`.
-        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 <D:propfind xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
 xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
 <D:include><CS:getctag/></D:include></D:propfind>";
         assert_eq!(wire(&PropFind::AllProp(wanted)), expected);
 
         let plain = wire(&PropFind::Names);
-        assert!(
-            !plain.windows(8).any(|at| at == b"xmlns:CS"),
-            "a declaration nothing references is noise on every request"
-        );
+        assert!(plain.windows(8).any(|at| at == b"xmlns:CS"));
     }
 
     #[test]
@@ -975,13 +853,12 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
         let mut wanted = PropRequest::new(limits);
         wanted.push(PropName::Extension(color), &mut meter).unwrap();
 
-        // A default declaration on the element itself, never a prefix this crate invented: the
-        // three prefixes it writes are the three namespaces it has rows for.
+        // The shared writer's scoped extension prefix is rebound on the element itself.
         assert_eq!(
             wire(&PropFind::Props(wanted)),
             joined(
                 PROPFIND_ROOT,
-                b"<D:prop><calendar-color xmlns=\"http://apple.com/ns/ical/\"/></D:prop>\
+                b"<D:prop><X:calendar-color xmlns:X=\"http://apple.com/ns/ical/\"/></D:prop>\
 </D:propfind>"
             )
         );
@@ -1211,8 +1088,9 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
             .push(PropName::Known(ElementName::Getetag), &mut meter)
             .unwrap();
 
-        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\
-<D:sync-collection xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+        let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<D:sync-collection xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
+xmlns:CS=\"http://calendarserver.org/ns/\">\
 <D:sync-token>http://example.invalid/ns/sync/1234</D:sync-token>\
 <D:sync-level>1</D:sync-level><D:limit><D:nresults>100</D:nresults></D:limit>\
 <D:prop><D:getetag/></D:prop></D:sync-collection>";

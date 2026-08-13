@@ -747,27 +747,27 @@ fn mkcalendar_body(
         .map_err(|_| Error::single("icalkit.caldav.request-too-large"))?;
     let mut body = Vec::new();
     {
-        let mut writer = XmlWriter::new(&mut body, &mut meter);
+        let mut writer = XmlWriter::new(&mut body);
         writer
-            .open_extension(&root)
-            .and_then(|()| writer.open_extension(&set))
-            .and_then(|()| writer.open(ElementName::Prop))
-            .and_then(|()| writer.open(ElementName::Displayname))
-            .and_then(|()| writer.text(display_name.as_bytes()))
-            .and_then(|()| writer.close())
+            .open_extension(&root, &mut meter)
+            .and_then(|()| writer.open_extension(&set, &mut meter))
+            .and_then(|()| writer.open(ElementName::Prop, &mut meter))
+            .and_then(|()| writer.open(ElementName::Displayname, &mut meter))
+            .and_then(|()| writer.text(display_name.as_bytes(), &mut meter))
+            .and_then(|()| writer.close(&mut meter))
             .map_err(|_| Error::single("icalkit.caldav.request-too-large"))?;
         if let Some(description) = description {
             writer
-                .open(ElementName::CalendarDescription)
-                .and_then(|()| writer.text(description.as_bytes()))
-                .and_then(|()| writer.close())
+                .open(ElementName::CalendarDescription, &mut meter)
+                .and_then(|()| writer.text(description.as_bytes(), &mut meter))
+                .and_then(|()| writer.close(&mut meter))
                 .map_err(|_| Error::single("icalkit.caldav.request-too-large"))?;
         }
         writer
-            .close()
-            .and_then(|()| writer.close())
-            .and_then(|()| writer.close())
-            .and_then(|()| writer.finish())
+            .close(&mut meter)
+            .and_then(|()| writer.close(&mut meter))
+            .and_then(|()| writer.close(&mut meter))
+            .and_then(|()| writer.finish(&mut meter))
             .map_err(|_| Error::single("icalkit.caldav.request-too-large"))?;
     }
     Ok(body)
@@ -1215,27 +1215,27 @@ fn encode_schedule_response(
         .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
     let mut body = Vec::new();
     {
-        let mut writer = XmlWriter::new(&mut body, &mut meter);
+        let mut writer = XmlWriter::new(&mut body);
         writer
-            .open_extension(&root)
+            .open_extension(&root, &mut meter)
             .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
         for delivery in response.deliveries() {
             writer
-                .open_extension(&response_element)
-                .and_then(|()| writer.open_extension(&recipient))
-                .and_then(|()| writer.open(ElementName::Href))
-                .and_then(|()| writer.text(delivery.recipient().as_bytes()))
-                .and_then(|()| writer.close())
-                .and_then(|()| writer.close())
-                .and_then(|()| writer.open_extension(&request_status))
-                .and_then(|()| writer.text(delivery.request_status().as_bytes()))
-                .and_then(|()| writer.close())
-                .and_then(|()| writer.close())
+                .open_extension(&response_element, &mut meter)
+                .and_then(|()| writer.open_extension(&recipient, &mut meter))
+                .and_then(|()| writer.open(ElementName::Href, &mut meter))
+                .and_then(|()| writer.text(delivery.recipient().as_bytes(), &mut meter))
+                .and_then(|()| writer.close(&mut meter))
+                .and_then(|()| writer.close(&mut meter))
+                .and_then(|()| writer.open_extension(&request_status, &mut meter))
+                .and_then(|()| writer.text(delivery.request_status().as_bytes(), &mut meter))
+                .and_then(|()| writer.close(&mut meter))
+                .and_then(|()| writer.close(&mut meter))
                 .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
         }
         writer
-            .close()
-            .and_then(|()| writer.finish())
+            .close(&mut meter)
+            .and_then(|()| writer.finish(&mut meter))
             .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
     }
     Ok(body)

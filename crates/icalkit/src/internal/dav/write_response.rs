@@ -40,7 +40,7 @@
 //!
 //! # Two values are written back rather than re-rendered
 //!
-//! A `CALDAV:calendar-data` payload goes through [`write_escaped_text`], so each `CR` leaves as
+//! A `CALDAV:calendar-data` payload goes through the shared writer's text escaping, so each `CR` leaves as
 //! `&#13;` — the one construct XML 1.0 section 2.11 does not fold, which is what lets any
 //! conformant reader reconstruct the octets the server stored. No `CDATA` section is written,
 //! ever, so a literal `]]>` inside a `DESCRIPTION` is not an escaping bug waiting to happen.
@@ -69,7 +69,7 @@ use core::fmt::{self, Debug, Formatter};
 use crate::internal::core::{LimitExceeded, Limits, Meter};
 
 use crate::internal::dav::codec::WriteXml;
-use crate::internal::dav::element::{ElementName, Namespace};
+use crate::internal::dav::element::ElementName;
 use crate::internal::dav::failure::{DavError, SyntaxError, ValueError};
 use crate::internal::dav::request::PropName;
 use crate::internal::dav::response::{
@@ -77,25 +77,8 @@ use crate::internal::dav::response::{
     ResponseBody,
 };
 use crate::internal::dav::sink::ByteSink;
-use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
-use crate::internal::dav::value::{
-    ETag, ExtensionName, Href, ResourceType, Status, SyncToken, bounded_cap,
-};
-
-/// The XML declaration every document this module writes begins with.
-///
-/// `UTF-8` because it is the only encoding this crate reads, and stated rather than omitted so
-/// that a reader meeting the body out of context is not left to sniff it.
-const DECLARATION: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
-
-/// The prefix an element outside the closed vocabulary is written under.
-///
-/// Declared on the element itself rather than on the root, because the namespace it names is
-/// the peer's and is known only when that element is reached — and two extension properties in
-/// one body routinely come from two namespaces, which a single root declaration cannot serve.
-/// `X` rather than a letter of its own so that every foreign element this crate writes, from
-/// whichever body, carries the same binding.
-const EXTENSION_PREFIX: &[u8] = b"X";
+use crate::internal::dav::value::{ETag, Href, ResourceType, Status, SyncToken, bounded_cap};
+use crate::internal::dav::writer::XmlWriter;
 
 /// How deep the deepest element of a multistatus sits.
 ///
@@ -129,8 +112,8 @@ const MAX_REFERENCE_BYTES: usize = 12;
 /// already handed to the sink are gone, and pretending otherwise would mean buffering the body
 /// this type exists not to buffer.
 pub struct MultiStatusWriter<'a> {
-    /// Where the octets go.
-    out: &'a mut dyn ByteSink,
+    /// The stack-balanced document writer retained across streamed responses.
+    writer: XmlWriter<'a>,
     /// The bounds every response is written under.
     limits: Limits,
     /// How many responses have been written.
@@ -147,14 +130,11 @@ impl<'a> MultiStatusWriter<'a> {
         if limits.max_xml_depth() < MULTISTATUS_DEPTH {
             return Err(DavError::Limit(LimitExceeded::Depth));
         }
-        meter.try_charge_element()?;
-        meter.try_enter_element()?;
-        out.write(DECLARATION)?;
-        write_name(out, b"<", ElementName::Multistatus)?;
-        write_root_declarations(out)?;
-        out.write(b">")?;
+        let mut writer = XmlWriter::new(out);
+        writer.open(ElementName::Multistatus, meter)?;
+        writer.begin_content(meter)?;
         Ok(Self {
-            out,
+            writer,
             limits,
             written: 0,
         })
@@ -162,7 +142,7 @@ impl<'a> MultiStatusWriter<'a> {
 
     /// Write one more response.
     pub fn push(&mut self, response: &DavResponse, meter: &mut Meter) -> Result<(), DavError> {
-        response.write_xml(&mut *self.out, self.limits, meter)?;
+        write_dav_response(&mut self.writer, self.limits, meter, response)?;
         self.written = self.written.saturating_add(1);
         Ok(())
     }
@@ -177,16 +157,18 @@ impl<'a> MultiStatusWriter<'a> {
     ///
     /// The token goes last because RFC 6578 section 3 puts it last, which is also what lets a
     /// reader answer [`crate::internal::dav::ResponseSource::sync_token`] only once it has been drained.
-    pub fn finish(self, sync_token: Option<&SyncToken>, meter: &mut Meter) -> Result<(), DavError> {
-        let out = self.out;
+    pub fn finish(
+        mut self,
+        sync_token: Option<&SyncToken>,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
         if let Some(token) = sync_token {
             let octets = token.as_bytes();
-            charge_text(octets, meter)?;
-            open(out, meter, ElementName::SyncToken)?;
-            write_escaped_text(out, octets)?;
-            close(out, meter, ElementName::SyncToken)?;
+            check_text_bound(octets, meter)?;
+            self.writer
+                .element_text(ElementName::SyncToken, octets, meter)?;
         }
-        close(out, meter, ElementName::Multistatus)
+        self.writer.close(meter)
     }
 
     /// Close the document by naming the collection itself insufficient, RFC 4918 section 11.5.
@@ -202,17 +184,16 @@ impl<'a> MultiStatusWriter<'a> {
     /// *when* that count is reached and a bound that swallowed its own escape hatch would leave
     /// the server with nothing to say.
     pub fn finish_insufficient_storage(
-        self,
+        mut self,
         collection: &Href,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
         let limits = self.limits;
-        let out = self.out;
-        open(out, meter, ElementName::Response)?;
-        write_href(out, limits, meter, collection)?;
-        write_status(out, meter, Status::INSUFFICIENT_STORAGE)?;
-        close(out, meter, ElementName::Response)?;
-        close(out, meter, ElementName::Multistatus)
+        self.writer.open(ElementName::Response, meter)?;
+        write_href(&mut self.writer, limits, meter, collection)?;
+        write_status(&mut self.writer, meter, Status::INSUFFICIENT_STORAGE)?;
+        self.writer.close(meter)?;
+        self.writer.close(meter)
     }
 }
 
@@ -257,16 +238,8 @@ impl WriteXml for DavResponse {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        meter.try_charge_response()?;
-        open(out, meter, ElementName::Response)?;
-        write_href(out, limits, meter, &self.href)?;
-        self.body.write_xml(out, limits, meter)?;
-        // RFC 4918 section 14.24 puts `error` after the status it explains, which is also the
-        // order a reader wants it in: the refusal is read once the status has said there was one.
-        if let Some(error) = self.error.as_ref() {
-            error.write_xml(out, limits, meter)?;
-        }
-        close(out, meter, ElementName::Response)
+        let mut writer = XmlWriter::fragment(out);
+        write_dav_response(&mut writer, limits, meter, self)
     }
 }
 
@@ -278,20 +251,8 @@ impl WriteXml for ResponseBody {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        match self {
-            Self::Status(status) => write_status(out, meter, *status),
-            Self::PropStats(groups) => {
-                check_cardinality(
-                    groups.len(),
-                    limits.max_props_per_response(),
-                    LimitExceeded::Properties,
-                )?;
-                for group in groups {
-                    group.write_xml(out, limits, meter)?;
-                }
-                Ok(())
-            },
-        }
+        let mut writer = XmlWriter::fragment(out);
+        write_response_body(&mut writer, limits, meter, self)
     }
 }
 
@@ -303,24 +264,8 @@ impl WriteXml for PropStat {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        check_cardinality(
-            self.props().len(),
-            limits.max_props_per_response(),
-            LimitExceeded::Properties,
-        )?;
-        open(out, meter, ElementName::Propstat)?;
-        open(out, meter, ElementName::Prop)?;
-        for property in self.props() {
-            property.write_xml(out, limits, meter)?;
-        }
-        close(out, meter, ElementName::Prop)?;
-        write_status(out, meter, self.status)?;
-        // RFC 4918 section 14.22's grammar puts the error after the status and inside the
-        // group, which is where the condition it explains belongs.
-        if let Some(named) = self.error.as_ref() {
-            named.write_xml(out, limits, meter)?;
-        }
-        close(out, meter, ElementName::Propstat)
+        let mut writer = XmlWriter::fragment(out);
+        write_propstat(&mut writer, limits, meter, self)
     }
 }
 
@@ -335,21 +280,8 @@ impl WriteXml for DavProperty {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let vacant = matches!(self.value, PropValue::Empty);
-        match &self.name {
-            PropName::Known(name) if vacant => empty(out, meter, *name),
-            PropName::Known(name) => {
-                open(out, meter, *name)?;
-                self.value.write_xml(out, limits, meter)?;
-                close(out, meter, *name)
-            },
-            PropName::Extension(name) if vacant => empty_extension(out, meter, name),
-            PropName::Extension(name) => {
-                open_extension(out, meter, name)?;
-                self.value.write_xml(out, limits, meter)?;
-                close_extension(out, meter, name)
-            },
-        }
+        let mut writer = XmlWriter::fragment(out);
+        write_dav_property(&mut writer, limits, meter, self)
     }
 }
 
@@ -364,19 +296,8 @@ impl WriteXml for PropValue {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        match self {
-            Self::Empty => Ok(()),
-            Self::Text(octets) | Self::Unmodeled(octets) => {
-                charge_text(octets, meter)?;
-                check_text_is_utf8(octets)?;
-                write_escaped_text(out, octets)
-            },
-            Self::Reference(target) => write_href(out, limits, meter, target),
-            Self::Resource(claimed) => write_resource_type(out, meter, claimed),
-            Self::Entity(tag) => write_entity_tag(out, meter, tag),
-            Self::CalendarData(payload) => write_calendar_data(out, meter, payload),
-            Self::Markup(octets) => write_kept(out, limits, meter, octets),
-        }
+        let mut writer = XmlWriter::fragment(out);
+        write_prop_value(&mut writer, limits, meter, self)
     }
 }
 
@@ -394,32 +315,161 @@ impl WriteXml for ErrorBody {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        check_cardinality(
-            self.conditions().len(),
-            limits.max_props_per_response(),
-            LimitExceeded::Properties,
-        )?;
-        open(out, meter, ElementName::Error)?;
-        for condition in self.conditions() {
-            match condition {
-                PropName::Known(name) => empty(out, meter, *name)?,
-                PropName::Extension(name) => empty_extension(out, meter, name)?,
-            }
-        }
-        close(out, meter, ElementName::Error)
+        let mut writer = XmlWriter::fragment(out);
+        write_error_body(&mut writer, limits, meter, self)
     }
 }
 
+/// Write one `DAV:response` into an existing document or fragment writer.
+fn write_dav_response(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    response: &DavResponse,
+) -> Result<(), DavError> {
+    meter.try_charge_response()?;
+    writer.open(ElementName::Response, meter)?;
+    write_href(writer, limits, meter, &response.href)?;
+    write_response_body(writer, limits, meter, &response.body)?;
+    if let Some(error) = response.error.as_ref() {
+        write_error_body(writer, limits, meter, error)?;
+    }
+    writer.close(meter)
+}
+
+/// Write the status or property groups that form a response body.
+fn write_response_body(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    body: &ResponseBody,
+) -> Result<(), DavError> {
+    match body {
+        ResponseBody::Status(status) => write_status(writer, meter, *status),
+        ResponseBody::PropStats(groups) => {
+            check_cardinality(
+                groups.len(),
+                limits.max_props_per_response(),
+                LimitExceeded::Properties,
+            )?;
+            for group in groups {
+                write_propstat(writer, limits, meter, group)?;
+            }
+            Ok(())
+        },
+    }
+}
+
+/// Write one property-status group.
+fn write_propstat(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    group: &PropStat,
+) -> Result<(), DavError> {
+    check_cardinality(
+        group.props().len(),
+        limits.max_props_per_response(),
+        LimitExceeded::Properties,
+    )?;
+    writer.open(ElementName::Propstat, meter)?;
+    writer.open(ElementName::Prop, meter)?;
+    for property in group.props() {
+        write_dav_property(writer, limits, meter, property)?;
+    }
+    writer.close(meter)?;
+    write_status(writer, meter, group.status)?;
+    if let Some(error) = group.error.as_ref() {
+        write_error_body(writer, limits, meter, error)?;
+    }
+    writer.close(meter)
+}
+
+/// Write one named property and its value.
+fn write_dav_property(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    property: &DavProperty,
+) -> Result<(), DavError> {
+    let vacant = matches!(property.value, PropValue::Empty);
+    match &property.name {
+        PropName::Known(name) if vacant => writer.empty(*name, meter),
+        PropName::Known(name) => {
+            writer.open(*name, meter)?;
+            write_prop_value(writer, limits, meter, &property.value)?;
+            writer.close(meter)
+        },
+        PropName::Extension(name) if vacant => writer.empty_extension(name, meter),
+        PropName::Extension(name) => {
+            writer.open_extension(name, meter)?;
+            write_prop_value(writer, limits, meter, &property.value)?;
+            writer.close(meter)
+        },
+    }
+}
+
+/// Write the content held by one property.
+fn write_prop_value(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    value: &PropValue,
+) -> Result<(), DavError> {
+    match value {
+        PropValue::Empty => Ok(()),
+        PropValue::Text(octets) | PropValue::Unmodeled(octets) => {
+            check_text_bound(octets, meter)?;
+            check_text_is_utf8(octets)?;
+            writer.text(octets, meter)
+        },
+        PropValue::Reference(target) => write_href(writer, limits, meter, target),
+        PropValue::Resource(claimed) => write_resource_type(writer, meter, claimed),
+        PropValue::Entity(tag) => write_entity_tag(writer, meter, tag),
+        PropValue::CalendarData(payload) => write_calendar_data(writer, meter, payload),
+        PropValue::Markup(octets) => write_kept(writer, limits, meter, octets),
+    }
+}
+
+/// Write a `DAV:error` and its empty precondition elements.
+fn write_error_body(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    error: &ErrorBody,
+) -> Result<(), DavError> {
+    check_cardinality(
+        error.conditions().len(),
+        limits.max_props_per_response(),
+        LimitExceeded::Properties,
+    )?;
+    writer.open(ElementName::Error, meter)?;
+    for condition in error.conditions() {
+        match condition {
+            PropName::Known(name) => writer.empty(*name, meter)?,
+            PropName::Extension(name) => writer.empty_extension(name, meter)?,
+        }
+    }
+    writer.close(meter)
+}
+
 /// Write a `DAV:status`, which carries a whole status line and means only its code.
-fn write_status(out: &mut dyn ByteSink, meter: &mut Meter, status: Status) -> Result<(), DavError> {
-    open(out, meter, ElementName::Status)?;
-    status.write_status_line(out)?;
-    close(out, meter, ElementName::Status)
+fn write_status(
+    writer: &mut XmlWriter<'_>,
+    meter: &mut Meter,
+    status: Status,
+) -> Result<(), DavError> {
+    let code = status.code();
+    let mut line = *b"HTTP/1.1 000 ";
+    line[9] = b'0'.saturating_add(u8::try_from(code / 100).unwrap_or(0));
+    line[10] = b'0'.saturating_add(u8::try_from((code / 10) % 10).unwrap_or(0));
+    line[11] = b'0'.saturating_add(u8::try_from(code % 10).unwrap_or(0));
+    writer.element_text(ElementName::Status, &line, meter)
 }
 
 /// Write a `DAV:href`, charged and bounded exactly as reading one is.
 fn write_href(
-    out: &mut dyn ByteSink,
+    writer: &mut XmlWriter<'_>,
     limits: Limits,
     meter: &mut Meter,
     href: &Href,
@@ -429,29 +479,26 @@ fn write_href(
     if length > limits.max_href_bytes() {
         return Err(DavError::Limit(LimitExceeded::Href));
     }
-    meter.try_charge_bytes(u64::from(length))?;
-    open(out, meter, ElementName::Href)?;
-    write_escaped_text(out, octets)?;
-    close(out, meter, ElementName::Href)
+    writer.element_text(ElementName::Href, octets, meter)
 }
 
 /// Write a `DAV:resourcetype`: the claims this crate models, then the ones it kept by name.
 fn write_resource_type(
-    out: &mut dyn ByteSink,
+    writer: &mut XmlWriter<'_>,
     meter: &mut Meter,
     claimed: &ResourceType,
 ) -> Result<(), DavError> {
     if claimed.collection {
-        empty(out, meter, ElementName::Collection)?;
+        writer.empty(ElementName::Collection, meter)?;
     }
     if claimed.calendar {
-        empty(out, meter, ElementName::Calendar)?;
+        writer.empty(ElementName::Calendar, meter)?;
     }
     if claimed.principal {
-        empty(out, meter, ElementName::Principal)?;
+        writer.empty(ElementName::Principal, meter)?;
     }
     for other in claimed.others() {
-        empty_extension(out, meter, other)?;
+        writer.empty_extension(other, meter)?;
     }
     Ok(())
 }
@@ -461,15 +508,21 @@ fn write_resource_type(
 /// Escaped rather than handed to [`ETag::write_value`], because the octets between the quotes
 /// are the peer's and an `&` among them would otherwise be markup this crate did not intend.
 /// A reader resolves the reference and [`ETag::parse`] sees what the server wrote.
-fn write_entity_tag(out: &mut dyn ByteSink, meter: &mut Meter, tag: &ETag) -> Result<(), DavError> {
+fn write_entity_tag(
+    writer: &mut XmlWriter<'_>,
+    meter: &mut Meter,
+    tag: &ETag,
+) -> Result<(), DavError> {
     let octets = tag.as_bytes();
-    charge_text(octets, meter)?;
+    let weakness = if tag.is_weak() { 2 } else { 0 };
+    let width = octets.len().saturating_add(2).saturating_add(weakness);
+    check_text_width(width, meter)?;
     if tag.is_weak() {
-        out.write(b"W/")?;
+        writer.text(b"W/", meter)?;
     }
-    out.write(b"\"")?;
-    write_escaped_text(out, octets)?;
-    out.write(b"\"")?;
+    writer.text(b"\"", meter)?;
+    writer.text(octets, meter)?;
+    writer.text(b"\"", meter)?;
     Ok(())
 }
 
@@ -480,14 +533,14 @@ fn write_entity_tag(out: &mut dyn ByteSink, meter: &mut Meter, tag: &ETag) -> Re
 /// no departure from the specification at all: what a server stored is what a client that
 /// resolves references gets back, whichever line endings it stored.
 fn write_calendar_data(
-    out: &mut dyn ByteSink,
+    writer: &mut XmlWriter<'_>,
     meter: &mut Meter,
     payload: &CalendarPayload,
 ) -> Result<(), DavError> {
     let octets = payload.as_bytes();
-    charge_text(octets, meter)?;
+    check_text_bound(octets, meter)?;
     check_text_is_utf8(octets)?;
-    write_escaped_text(out, octets)
+    writer.text(octets, meter)
 }
 
 /// Refuse octets no XML document can carry, at the door that would otherwise emit them.
@@ -514,180 +567,34 @@ fn check_text_is_utf8(octets: &[u8]) -> Result<(), DavError> {
 
 /// Write the octets of a property whose value is markup this crate has no model for.
 fn write_kept(
-    out: &mut dyn ByteSink,
+    writer: &mut XmlWriter<'_>,
     limits: Limits,
     meter: &mut Meter,
     octets: &[u8],
 ) -> Result<(), DavError> {
-    charge_text(octets, meter)?;
+    check_text_bound(octets, meter)?;
     check_text_is_utf8(octets)?;
     check_fragment(
         octets,
         limits.max_xml_depth().saturating_sub(PROPERTY_DEPTH),
     )?;
-    out.write(octets)?;
-    Ok(())
+    writer.validated_markup(octets, meter)
 }
 
-/// The three declarations every root this module writes carries.
+/// Check one character run against the per-element ceiling.
 ///
-/// All three unconditionally, whether or not the body uses them: an unused declaration costs a
-/// hundred octets once and a missing one makes the body unreadable, and the alternative is
-/// deciding what a body will contain before it has been written.
-fn write_root_declarations(out: &mut dyn ByteSink) -> Result<(), DavError> {
-    for namespace in [Namespace::Dav, Namespace::CalDav, Namespace::CalendarServer] {
-        out.write(b" xmlns:")?;
-        out.write(namespace.write_prefix())?;
-        out.write(b"=\"")?;
-        write_escaped_attribute(out, namespace.uri())?;
-        out.write(b"\"")?;
+/// The shared writer separately charges every escaped output octet against the aggregate work
+/// budget, so this check must not charge the input a second time.
+fn check_text_bound(octets: &[u8], meter: &Meter) -> Result<(), DavError> {
+    check_text_width(octets.len(), meter)
+}
+
+/// Check a computed character-data width against the per-element ceiling.
+fn check_text_width(width: usize, meter: &Meter) -> Result<(), DavError> {
+    let length = u32::try_from(width).map_err(|_| LimitExceeded::Text)?;
+    if length > meter.limits().max_xml_text_bytes() {
+        return Err(DavError::Limit(LimitExceeded::Text));
     }
-    Ok(())
-}
-
-/// Open one element of the closed vocabulary.
-///
-/// The charge happens before the octets, so a refusal costs no half-written tag. The nesting is
-/// charged too, and released by [`close`]; a write that fails between the two leaves the ledger
-/// holding a level, which is the same posture `Meter::enter` documents — a writer that has been
-/// told it is too deep has nothing left to close.
-fn open(out: &mut dyn ByteSink, meter: &mut Meter, name: ElementName) -> Result<(), DavError> {
-    meter.try_charge_element()?;
-    meter.try_enter_element()?;
-    write_name(out, b"<", name)?;
-    out.write(b">")?;
-    Ok(())
-}
-
-/// Close one element of the closed vocabulary.
-fn close(out: &mut dyn ByteSink, meter: &mut Meter, name: ElementName) -> Result<(), DavError> {
-    write_name(out, b"</", name)?;
-    out.write(b">")?;
-    meter.leave_element();
-    Ok(())
-}
-
-/// Write one element of the closed vocabulary that has no content.
-fn empty(out: &mut dyn ByteSink, meter: &mut Meter, name: ElementName) -> Result<(), DavError> {
-    meter.try_charge_element()?;
-    meter.try_enter_element()?;
-    meter.leave_element();
-    write_name(out, b"<", name)?;
-    out.write(b"/>")?;
-    Ok(())
-}
-
-/// Write `<`, `</` or the start of either, followed by this crate's prefix and the local name.
-///
-/// The table is unconditional and the build is not. Writing an element this build cannot honor
-/// would produce a body it could not then read back, so it is refused here rather than emitted
-/// and discovered by the peer.
-fn write_name(out: &mut dyn ByteSink, opener: &[u8], name: ElementName) -> Result<(), DavError> {
-    if !name.is_supported() {
-        return Err(DavError::Unsupported(name));
-    }
-    out.write(opener)?;
-    out.write(name.namespace().write_prefix())?;
-    out.write(b":")?;
-    out.write(name.local_name().as_bytes())?;
-    Ok(())
-}
-
-/// Open an element outside the vocabulary, declaring its namespace on itself.
-fn open_extension(
-    out: &mut dyn ByteSink,
-    meter: &mut Meter,
-    name: &ExtensionName,
-) -> Result<(), DavError> {
-    meter.try_charge_element()?;
-    meter.try_enter_element()?;
-    write_extension_name(out, meter, b"<", name)?;
-    write_extension_declaration(out, name)?;
-    out.write(b">")?;
-    Ok(())
-}
-
-/// Close an element outside the vocabulary.
-fn close_extension(
-    out: &mut dyn ByteSink,
-    meter: &mut Meter,
-    name: &ExtensionName,
-) -> Result<(), DavError> {
-    write_extension_name(out, meter, b"</", name)?;
-    out.write(b">")?;
-    meter.leave_element();
-    Ok(())
-}
-
-/// Write an element outside the vocabulary that has no content.
-fn empty_extension(
-    out: &mut dyn ByteSink,
-    meter: &mut Meter,
-    name: &ExtensionName,
-) -> Result<(), DavError> {
-    meter.try_charge_element()?;
-    meter.try_enter_element()?;
-    meter.leave_element();
-    write_extension_name(out, meter, b"<", name)?;
-    write_extension_declaration(out, name)?;
-    out.write(b"/>")?;
-    Ok(())
-}
-
-/// Write the name of an element outside the vocabulary, refusing one that is not a name.
-///
-/// A local name cannot be escaped — XML has no reference syntax inside a name — so a name
-/// carrying `<`, a space or a quote is not written differently, it is not written at all.
-/// Without this check a peer's property name would be markup a server pastes into its own body,
-/// which is the whole of the confused-deputy case a proxying server is.
-fn write_extension_name(
-    out: &mut dyn ByteSink,
-    meter: &mut Meter,
-    opener: &[u8],
-    name: &ExtensionName,
-) -> Result<(), DavError> {
-    check_ncname(name.local_name())?;
-    let cost = name
-        .namespace()
-        .len()
-        .saturating_add(name.local_name().len());
-    meter.try_charge_bytes(u64::try_from(cost).unwrap_or(u64::MAX))?;
-    out.write(opener)?;
-    if !name.namespace().is_empty() {
-        out.write(EXTENSION_PREFIX)?;
-        out.write(b":")?;
-    }
-    out.write(name.local_name())?;
-    Ok(())
-}
-
-/// Declare the namespace of an element outside the vocabulary, on that element.
-///
-/// An empty namespace URI gets no declaration and no prefix: XML Namespaces 1.0 section 6.2
-/// makes an unprefixed name with no default declaration in scope a name in no namespace, which
-/// is what an empty URI means, and `xmlns:X=""` is not legal in 1.0 at all.
-fn write_extension_declaration(
-    out: &mut dyn ByteSink,
-    name: &ExtensionName,
-) -> Result<(), DavError> {
-    if name.namespace().is_empty() {
-        return Ok(());
-    }
-    out.write(b" xmlns:")?;
-    out.write(EXTENSION_PREFIX)?;
-    out.write(b"=\"")?;
-    write_escaped_attribute(out, name.namespace())?;
-    out.write(b"\"")?;
-    Ok(())
-}
-
-/// Charge one character run against the per-element ceiling and the shared budget.
-///
-/// The same two bounds the read side charges through `Meter::try_charge_text`, so a payload this
-/// policy will not read is a payload it will not write either.
-fn charge_text(octets: &[u8], meter: &mut Meter) -> Result<(), DavError> {
-    let length = u32::try_from(octets.len()).map_err(|_| LimitExceeded::Text)?;
-    meter.try_charge_text(length)?;
     Ok(())
 }
 
@@ -697,31 +604,6 @@ fn check_cardinality(count: usize, cap: u32, dimension: LimitExceeded) -> Result
         return Err(DavError::Limit(dimension));
     }
     Ok(())
-}
-
-/// Refuse a name this writer cannot emit without inventing markup.
-///
-/// ASCII only, which is narrower than XML 1.0's `NCName`: every name in every DAV vocabulary
-/// deployed is ASCII, and a writer that is merely incomplete refuses what it cannot check
-/// instead of emitting octets it has not verified are a name.
-fn check_ncname(name: &[u8]) -> Result<(), DavError> {
-    let Some((first, rest)) = name.split_first() else {
-        return Err(DavError::Syntax(SyntaxError::Malformed));
-    };
-    if !is_name_start(*first) || !rest.iter().all(|byte| is_name_char(*byte)) {
-        return Err(DavError::Syntax(SyntaxError::Malformed));
-    }
-    Ok(())
-}
-
-/// Whether an octet may begin an `NCName`.
-const fn is_name_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
-}
-
-/// Whether an octet may continue an `NCName`. A colon may not: that is what the `NC` means.
-const fn is_name_char(byte: u8) -> bool {
-    is_name_start(byte) || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
 }
 
 /// What one tag of a kept fragment does to the nesting.
@@ -1463,6 +1345,28 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
             MultiStatusWriter::new(&mut out, limits, &mut meter),
             Err(DavError::Limit(LimitExceeded::Depth))
         ));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn fixed_response_markup_is_charged_against_the_wire_budget() {
+        let limits = Limits::DEFAULT;
+        let mut build_meter = Meter::new(limits);
+        let mut body = MultiStatus::new(limits);
+        body.push(
+            DavResponse::with_status(href(b"/", &mut build_meter), Status::OK),
+            &mut build_meter,
+        )
+        .unwrap();
+
+        // The href alone fits. A writer charging the complete wire representation must refuse
+        // before emitting the declaration and root around it.
+        let mut meter = Meter::with_budget(limits, 1);
+        let mut out: Vec<u8> = Vec::new();
+        assert_eq!(
+            body.write_xml(&mut out, limits, &mut meter),
+            Err(DavError::Limit(LimitExceeded::Budget))
+        );
         assert!(out.is_empty());
     }
 

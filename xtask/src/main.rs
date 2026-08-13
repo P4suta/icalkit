@@ -413,8 +413,13 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let readme = fs::read_to_string(workspace.join("README.md"))?;
     let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
     let example_path = workspace.join("crates/icalkit/examples/golden_path.rs");
+    let request_writer =
+        fs::read_to_string(workspace.join("crates/icalkit/src/internal/dav/write_request.rs"))?;
+    let response_writer =
+        fs::read_to_string(workspace.join("crates/icalkit/src/internal/dav/write_response.rs"))?;
     violations.extend(retired_crate_violations(&root, &facade));
     violations.extend(documentation_violations(&readme, &architecture));
+    violations.extend(xml_writer_violations(&request_writer, &response_writer));
     match fs::read_to_string(&example_path) {
         Ok(example) => violations.extend(basic_example_violations(&example)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => violations.push(
@@ -444,6 +449,41 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// Keep DAV request and response grammars on the one stack-balanced XML primitive.
+fn xml_writer_violations(request: &str, response: &str) -> Vec<String> {
+    const SHARED_IMPORT: &str = "use crate::internal::dav::writer::XmlWriter;";
+    const FORBIDDEN_HELPERS: &[&str] = &[
+        "fn write_root_declarations(",
+        "fn write_name(",
+        "fn open_extension(",
+        "fn close_extension(",
+        "fn empty_extension(",
+    ];
+
+    let mut violations = Vec::new();
+    for (path, source) in [
+        ("crates/icalkit/src/internal/dav/write_request.rs", request),
+        (
+            "crates/icalkit/src/internal/dav/write_response.rs",
+            response,
+        ),
+    ] {
+        if !source.lines().any(|line| line.trim() == SHARED_IMPORT) {
+            violations.push(format!(
+                "{path}: DAV body encoder does not use the shared stack-balanced XmlWriter"
+            ));
+        }
+        for helper in FORBIDDEN_HELPERS {
+            if source.contains(helper) {
+                violations.push(format!(
+                    "{path}: duplicate XML structural helper {helper} bypasses XmlWriter"
+                ));
+            }
+        }
+    }
+    violations
 }
 
 /// Keep the first consumer example at the workflow layer rather than exposing implementation
@@ -2151,6 +2191,7 @@ mod tests {
         golden_rows, is_dependency_table, layer_violations, layering_violations,
         manifest_violations, match_arm_violations, private_crate_violations, recipe_violations,
         release_violations, retired_crate_violations, snapshot_violations, table_keys,
+        xml_writer_violations,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2957,6 +2998,32 @@ name = \"icalkit\"
         assert_eq!(
             collect_architecture_violations().unwrap(),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn dav_body_encoders_cannot_recreate_xml_structure_helpers() {
+        let shared = "use crate::internal::dav::writer::XmlWriter;\n";
+        assert!(xml_writer_violations(shared, shared).is_empty());
+
+        let violations = xml_writer_violations(
+            "fn write_name() {}\n",
+            "use crate::internal::dav::writer::XmlWriter;\nfn open_extension() {}\n",
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("does not use"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("write_name"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("open_extension"))
         );
     }
 
