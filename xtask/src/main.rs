@@ -198,7 +198,7 @@ const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 ///
 /// Their temporary packages may remain as shared-source conformance harnesses while callers are
 /// migrated, but the facade must never depend back on a boundary it already absorbed.
-const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-itip", "ical-recur"];
+const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-itip", "ical-recur", "ical-tz"];
 
 /// Narrow third-party boundaries required by the unified public facade.
 ///
@@ -2854,11 +2854,13 @@ ical-query = { path = "../ical-query" }
 [dependencies]
 ical-itip = { path = "../ical-itip" }
 ical-recur = { path = "../ical-recur" }
+ical-tz = { path = "../ical-tz" }
 "#;
         let violations = migrated_facade_dependency_violations(facade);
-        assert_eq!(violations.len(), 2);
+        assert_eq!(violations.len(), 3);
         assert!(violations.iter().any(|line| line.contains("`ical-itip`")));
         assert!(violations.iter().any(|line| line.contains("`ical-recur`")));
+        assert!(violations.iter().any(|line| line.contains("`ical-tz`")));
         assert_eq!(
             migrated_facade_dependency_violations("[dependencies]\njiff = \"0.2\""),
             Vec::<String>::new()

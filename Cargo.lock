@@ -92,7 +92,6 @@ version = "0.0.0"
 dependencies = [
  "ical-core",
  "ical-dav",
- "ical-tz",
  "jiff",
 ]
 

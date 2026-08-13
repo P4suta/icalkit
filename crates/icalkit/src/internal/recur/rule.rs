@@ -328,7 +328,7 @@ impl<T> From<Vec<T>> for ByList<T> {
 /// the identity and [`UntilClock::Utc`]'s reading above holds verbatim. For a zoned one it is
 /// not: the instant beside the variant is the projection, and the variant records that the
 /// *file* wrote `Z`. A `Z`-terminated `UNTIL` handed over unprojected cuts a zoned series off
-/// an hour early or late for half the year. `ical_tz::seam` states the contract in full, and a
+/// an hour early or late for half the year. `crate::internal::tz::seam` states the contract in full, and a
 /// floating `UNTIL` against a zoned `DTSTART` now travels on
 /// `DiagnosticCode::RecurrenceUntilNotUtc` rather than only being named by this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -517,7 +517,7 @@ impl RecurrenceRule {
     ///
     /// The one edit a parsed rule needs and the one the seam with `ical-tz` cannot do without.
     /// `parse_recur` reads `UNTIL=20260310T120000Z` as the real UTC instant the file wrote, and
-    /// a zoned series is walked on the timeline `ical_tz::seam` describes, so the bound has to
+    /// a zoned series is walked on the timeline `crate::internal::tz::seam` describes, so the bound has to
     /// be projected onto that timeline before it is compared against a cadence key. Until this
     /// existed the only way to substitute the projection was to rebuild the rule through
     /// [`RecurrenceRuleBuilder`] and copy every `BYxxx` list across by hand, which is a

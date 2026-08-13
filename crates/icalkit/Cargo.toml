@@ -32,9 +32,6 @@ ical-core = { path = "../ical-core", version = "0.0.0" }
 ical-dav = { path = "../ical-dav", version = "0.0.0", features = [
   "sync-collection",
 ] }
-ical-tz = { path = "../ical-tz", version = "0.0.0", default-features = false, features = [
-  "vtimezone",
-] }
 jiff = { version = "0.2.35", default-features = false, features = [
   "alloc",
   "tz-fat",

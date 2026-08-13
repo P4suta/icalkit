@@ -133,6 +133,11 @@ pub(crate) mod internal {
     pub(crate) mod recur {
         pub(crate) use ical_recur::*;
     }
+
+    /// Compatibility alias used by the iTIP source now living beside the time-zone source.
+    pub(crate) mod tz {
+        pub(crate) use ical_tz::*;
+    }
 }
 
 pub use crate::authorize::{

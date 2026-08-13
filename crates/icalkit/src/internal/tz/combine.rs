@@ -45,8 +45,8 @@
 //! `answer.rs` gives: a source implementable by a caller who has never heard of a `Meter`
 //! cannot also be the thing that charges one.
 //!
-//! [`PolicyOutcome::diagnostic_code`]: crate::PolicyOutcome::diagnostic_code
-//! [`PolicyOutcome::Neither`]: crate::PolicyOutcome::Neither
+//! [`PolicyOutcome::diagnostic_code`]: crate::internal::tz::PolicyOutcome::diagnostic_code
+//! [`PolicyOutcome::Neither`]: crate::internal::tz::PolicyOutcome::Neither
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -55,7 +55,7 @@ use ical_core::{
     report_diagnostic,
 };
 
-use crate::answer::{
+use crate::internal::tz::answer::{
     AnswerBasis, LocalResolution, OffsetAnswer, PolicyOutcome, Reading, ZoneAnswer, ZoneProvenance,
     ZoneSource,
 };
@@ -337,7 +337,7 @@ fn outcome<A: Copy>(
 /// [`ZoneProvenance::FixedOffset`], because "this is not a zone at all" is a fact about the
 /// source rather than about its role, and a hand-written source already says which it is.
 ///
-/// [`TransitionTable`]: crate::TransitionTable
+/// [`TransitionTable`]: crate::internal::tz::TransitionTable
 fn named_by_its_role(answer: ZoneAnswer) -> ZoneAnswer {
     match answer.source {
         ZoneProvenance::EmbeddedVtimezone => ZoneAnswer::new(
@@ -381,7 +381,7 @@ mod tests {
     };
 
     use super::{CombinedZoneSource, FixedOffsetSource};
-    use crate::answer::{
+    use crate::internal::tz::answer::{
         AnswerBasis, LocalResolution, OffsetAnswer, PolicyOutcome, Reading, ZoneAnswer,
         ZoneProvenance, ZoneSource,
     };

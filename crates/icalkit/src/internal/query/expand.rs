@@ -30,11 +30,11 @@
 //!
 //! # The seam with `ical-tz`, which is not optional
 //!
-//! `ical_tz::seam` states it in full and it is stated again here because getting it wrong puts
+//! `crate::internal::tz::seam` states it in full and it is stated again here because getting it wrong puts
 //! every zoned series an hour out for half the year: `ical-recur` works on the series' own wall
 //! clock projected onto UTC, not on the UTC timeline. Every instant going in — `DTSTART`,
-//! `UNTIL`, each `RDATE`, `EXDATE` and `RECURRENCE-ID` — goes through `ical_tz::nominal`, every
-//! cadence key coming back through `ical_tz::wall_clock`, and each key is resolved against the
+//! `UNTIL`, each `RDATE`, `EXDATE` and `RECURRENCE-ID` — goes through `crate::internal::tz::nominal`, every
+//! cadence key coming back through `crate::internal::tz::wall_clock`, and each key is resolved against the
 //! zone one at a time. Do that through [`crate::internal::query::Zones`], which is the only door in this crate
 //! that reaches a `ZoneSource`.
 //!
@@ -84,13 +84,13 @@ use crate::internal::recur::{
     RecurrenceRule, RuleLimit, UntilClock, ValueKind, Window, generation_window,
     max_absolute_shift,
 };
+use crate::internal::tz::{nominal, wall_clock};
 use ical_core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
     PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
 };
 use ical_dav::TimeRange;
-use ical_tz::{nominal, wall_clock};
 
 use crate::internal::query::overlap::Occupancy;
 use crate::internal::query::vocabulary::{
@@ -144,7 +144,7 @@ pub const ZONE_SLACK_SECONDS: i64 = 86_399;
 
 /// The seconds in a nominal day, which is what RFC 4791 section 9.9's `+P1D` measures.
 ///
-/// Nominal: the projection `ical_tz::seam` describes preserves civil fields, so one day on the
+/// Nominal: the projection `crate::internal::tz::seam` describes preserves civil fields, so one day on the
 /// series' own wall clock is 86,400 seconds on that timeline whatever the zone did inside it.
 /// Placing both ends of the span through the zone separately is what turns that back into the
 /// 23 or 25 real hours the day actually had.
@@ -278,8 +278,8 @@ impl<'a> SeriesClock<'a> {
 /// One component's recurrence set, as the values RFC 5545 section 3.8.5 describes it with.
 ///
 /// Every instant here is **nominal** — the series' own wall clock projected onto UTC, which is
-/// the timeline `ical_tz::seam` puts `ical-recur` on. A caller holding a parsed component gets
-/// them from `ical_tz::nominal` and from `ical_tz::ZonedSeries`; handing in real UTC instants for
+/// the timeline `crate::internal::tz::seam` puts `ical-recur` on. A caller holding a parsed component gets
+/// them from `crate::internal::tz::nominal` and from `crate::internal::tz::ZonedSeries`; handing in real UTC instants for
 /// a zoned series is the mistake the seam exists to name, and it moves the whole series by the
 /// zone's offset.
 #[derive(Clone, Copy, Debug)]
@@ -1771,12 +1771,12 @@ mod tests {
         Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceRule,
         RecurrenceRuleBuilder, RuleLimit, ValueKind,
     };
+    use crate::internal::tz::FixedOffsetSource;
     use ical_core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
         Instant, Limits, Meter, Severity, Subject, UtcOffset,
     };
     use ical_dav::TimeRange;
-    use ical_tz::FixedOffsetSource;
 
     use super::{
         EXPANSION_SECTIONS, Instance, InstanceSpan, SearchBounds, Series, SeriesClock,
@@ -1795,7 +1795,7 @@ mod tests {
 
     // The instants of RFC 4791 section 7.8.3's worked example, transcribed by hand. The nominal
     // ones are the wall clocks the file writes -- `DTSTART;TZID=US/Eastern:20060102T120000` and
-    // the daily keys after it -- projected by `ical_tz::seam`; the UTC ones are what those wall
+    // the daily keys after it -- projected by `crate::internal::tz::seam`; the UTC ones are what those wall
     // clocks name under EST, and what the example's own `>> Response <<` states. Every one of
     // them is checked against `ical-core`'s calendar arithmetic by the first test below, so a
     // transcription slip fails a test rather than quietly moving the example.

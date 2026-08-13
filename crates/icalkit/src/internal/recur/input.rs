@@ -248,7 +248,7 @@ impl<'a> OverrideSet<'a> {
     /// Two overrides on one cadence key had been [`InputError::Duplicated`] — refused input for
     /// the whole series, so a component whose only fault was naming one key twice lost every
     /// occurrence it had. A zoned series produces that shape without anybody making a mistake:
-    /// `ical_tz::seam` walks the series' own wall clock, and the two halves of the hour a zone
+    /// `crate::internal::tz::seam` walks the series' own wall clock, and the two halves of the hour a zone
     /// repeats are one wall clock, so `RECURRENCE-ID:20261101T053000Z` and
     /// `RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants that project
     /// onto one key. Refusing the series is a worse answer than applying one of them.
@@ -440,7 +440,7 @@ impl<'a> RecurrenceInput<'a> {
     /// count is over what survives. It is asked once per key, is not asked about an `RDATE` —
     /// which is an instance the file states outright rather than one the rule produced — and
     /// gets no meter and no sink, because it is the caller's own predicate and the caller
-    /// already holds both. `ical_tz::ZonedSeries::admits` is the one this workspace supplies.
+    /// already holds both. `crate::internal::tz::ZonedSeries::admits` is the one this workspace supplies.
     ///
     /// A gate that rejects everything terminates: the window is tested first, so generation
     /// still stops at the window's edge rather than searching for a key the gate will take.

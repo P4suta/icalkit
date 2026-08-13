@@ -90,10 +90,10 @@ use alloc::vec::Vec;
 
 use ical_core::{CivilDate, CivilDateTime, Instant, UtcOffset};
 
-use crate::answer::{
+use crate::internal::tz::answer::{
     AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
 };
-use crate::model::{Observance, TransitionTable};
+use crate::internal::tz::model::{Observance, TransitionTable};
 
 /// How many years back from a query a rule is asked about.
 ///
@@ -592,11 +592,11 @@ mod tests {
         Meter, UtcOffset, Weekday,
     };
 
-    use crate::answer::{
+    use crate::internal::tz::answer::{
         AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, Reading, ZoneAnswer, ZoneProvenance,
         ZoneSource,
     };
-    use crate::model::{NthWeek, Observance, RuleDay, TransitionTable, YearlyRule};
+    use crate::internal::tz::model::{NthWeek, Observance, RuleDay, TransitionTable, YearlyRule};
 
     fn day(year: u16, month: u8, day_of_month: u8) -> CivilDate {
         CivilDate::from_ymd(year, month, day_of_month).unwrap()

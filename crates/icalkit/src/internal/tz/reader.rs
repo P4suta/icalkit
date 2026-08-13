@@ -84,8 +84,8 @@
 //! recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
 //!
 //! [`Component::audit`]: ical_core::Component::audit
-//! [`TransitionTable::new`]: crate::TransitionTable::new
-//! [`VtimezoneSet::insert`]: crate::VtimezoneSet::insert
+//! [`TransitionTable::new`]: crate::internal::tz::TransitionTable::new
+//! [`VtimezoneSet::insert`]: crate::internal::tz::VtimezoneSet::insert
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -98,7 +98,7 @@ use ical_core::{
     Weekday, report_diagnostic,
 };
 
-use crate::model::{
+use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
 };
 
@@ -130,7 +130,7 @@ const RUN_LENGTH: usize = 7;
 /// bound turned back — and the identifiers those definitions declare are not then reported as
 /// identifiers the calendar never defined, because the calendar did define them.
 ///
-/// [`VtimezoneSet::definitions`]: crate::VtimezoneSet::definitions
+/// [`VtimezoneSet::definitions`]: crate::internal::tz::VtimezoneSet::definitions
 #[must_use]
 pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
     calendar: &Component,
@@ -848,7 +848,9 @@ mod tests {
     };
 
     use super::read_calendar_zones;
-    use crate::model::{NthWeek, Observance, ObservanceReader, RuleDay, VtimezoneSet, YearlyRule};
+    use crate::internal::tz::model::{
+        NthWeek, Observance, ObservanceReader, RuleDay, VtimezoneSet, YearlyRule,
+    };
 
     /// `America/New_York` as every major client exports it since the 2007 rule change.
     const NEW_YORK: &str = "\

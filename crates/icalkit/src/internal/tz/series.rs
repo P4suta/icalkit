@@ -4,7 +4,7 @@
 
 //! Unit 5 — driving one zoned series across the seam, which closes agenda items 1, 2 and 4.
 //!
-//! Read [`crate::seam`] first. This unit is the executable form of the contract stated there
+//! Read [`crate::internal::tz::seam`] first. This unit is the executable form of the contract stated there
 //! and may not restate it, reinterpret it, or introduce a second projection beside it.
 //!
 //! What a series needs and nothing else. [`ZonedSeries::anchor`] projects a `DTSTART`,
@@ -59,11 +59,11 @@
 //! bounded when it was built, so `docs/adr/0010`'s argument is satisfied structurally here and
 //! the meter travels for the sake of a refused diagnostic and for nothing else.
 //!
-//! [`nominal`]: crate::nominal
-//! [`wall_clock`]: crate::wall_clock
-//! [`ResolutionPolicy`]: crate::ResolutionPolicy
-//! [`UntilReading`]: crate::UntilReading
-//! [`GapPolicy::Skip`]: crate::GapPolicy::Skip
+//! [`nominal`]: crate::internal::tz::nominal
+//! [`wall_clock`]: crate::internal::tz::wall_clock
+//! [`ResolutionPolicy`]: crate::internal::tz::ResolutionPolicy
+//! [`UntilReading`]: crate::internal::tz::UntilReading
+//! [`GapPolicy::Skip`]: crate::internal::tz::GapPolicy::Skip
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -72,8 +72,8 @@ use ical_core::{
     Instant, Meter, Severity, UtcOffset, report_diagnostic,
 };
 
-use crate::answer::{AnswerBasis, ZoneAnswer, ZoneSource};
-use crate::seam::{ResolutionPolicy, UntilReading, nominal, wall_clock};
+use crate::internal::tz::answer::{AnswerBasis, ZoneAnswer, ZoneSource};
+use crate::internal::tz::seam::{ResolutionPolicy, UntilReading, nominal, wall_clock};
 
 /// The last second of a day, where [`UntilReading::EndOfDay`] reads an `UNTIL` written as a
 /// `DATE`.
@@ -83,7 +83,7 @@ use crate::seam::{ResolutionPolicy, UntilReading, nominal, wall_clock};
 /// time every day has. The `Option` is carried rather than unwrapped because nothing in this
 /// crate may panic; it is `Some` for these fields and the constructor is what says so.
 ///
-/// [`UntilReading::EndOfDay`]: crate::UntilReading::EndOfDay
+/// [`UntilReading::EndOfDay`]: crate::internal::tz::UntilReading::EndOfDay
 const END_OF_DAY: Option<CivilTime> = CivilTime::from_hms(23, 59, 59);
 
 /// One series, its zone, and the readings the caller stated for it.
@@ -170,7 +170,7 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
     ///
     /// A series anchored here is walked on the real timeline, and its keys are already the
     /// instants the occurrences happen at: [`ZonedSeries::actual`] is neither needed nor correct
-    /// for one, because the keys were never nominal. This is the divergence `crate::seam`
+    /// for one, because the keys were never nominal. This is the divergence `crate::internal::tz::seam`
     /// records — Google's engine gives 25 and libical's local-time expansion gives 24, both
     /// ship, and this workspace offers both readings by making the anchor the caller's stated
     /// choice rather than a consequence of a frequency nobody looked at.
@@ -238,7 +238,7 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
     /// a diagnostic to name, and RFC 5545 section 3.3.4 makes that unreachable for a value read
     /// out of a file.
     ///
-    /// [`UntilReading`]: crate::UntilReading
+    /// [`UntilReading`]: crate::internal::tz::UntilReading
     pub fn project_until<D: DiagnosticSink + ?Sized>(
         &self,
         until: DateTimeValue<'_>,
@@ -283,7 +283,7 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
     /// recognize this identifier. That is also the one condition `actual` cannot tell a caller
     /// apart from a skipped gap, and the reason both methods exist.
     ///
-    /// [`ZoneSource::resolve`]: crate::ZoneSource::resolve
+    /// [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
     #[must_use]
     pub fn answer_for(&self, key: Instant) -> Option<ZoneAnswer> {
         let clock = wall_clock(key)?;
@@ -314,7 +314,7 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
     /// said the local time does not exist, and a gate that dropped every occurrence of a series
     /// whose zone is merely undefined would be answering a question nobody asked it.
     ///
-    /// [`GapPolicy::ShiftForward`]: crate::GapPolicy::ShiftForward
+    /// [`GapPolicy::ShiftForward`]: crate::internal::tz::GapPolicy::ShiftForward
     #[must_use]
     pub fn admits(&self, key: Instant) -> bool {
         let Some(answer) = self.answer_for(key) else {
@@ -351,7 +351,7 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
     /// section 3.3.10's MUST, and the default — or that the source does not know this identifier;
     /// [`ZonedSeries::answer_for`] is where those come apart.
     ///
-    /// [`ResolutionPolicy`]: crate::ResolutionPolicy
+    /// [`ResolutionPolicy`]: crate::internal::tz::ResolutionPolicy
     pub fn actual<D: DiagnosticSink + ?Sized>(
         &self,
         key: Instant,
@@ -474,11 +474,11 @@ mod tests {
     };
 
     use super::ZonedSeries;
-    use crate::answer::{
+    use crate::internal::tz::answer::{
         AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, OffsetAnswer, Reading, ZoneAnswer,
         ZoneProvenance, ZoneSource,
     };
-    use crate::seam::{ResolutionPolicy, UntilReading, nominal};
+    use crate::internal::tz::seam::{ResolutionPolicy, UntilReading, nominal};
 
     /// Seconds in a day, used to walk a cadence the way `ical-recur`'s period walk does.
     const ONE_DAY: i64 = 86_400;

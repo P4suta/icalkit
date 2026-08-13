@@ -59,15 +59,15 @@
 //! "this month has only four Sundays" are different facts about a zone, and a caller deciding
 //! whether a table has run out of data needs the first without the second answering for it.
 //!
-//! [`YearlyRule`]: crate::YearlyRule
-//! [`RuleDay`]: crate::RuleDay
-//! [`NthWeek::Fifth`]: crate::NthWeek::Fifth
-//! [`NthWeek::Last`]: crate::NthWeek::Last
-//! [`ZoneSource::resolve`]: crate::ZoneSource::resolve
+//! [`YearlyRule`]: crate::internal::tz::YearlyRule
+//! [`RuleDay`]: crate::internal::tz::RuleDay
+//! [`NthWeek::Fifth`]: crate::internal::tz::NthWeek::Fifth
+//! [`NthWeek::Last`]: crate::internal::tz::NthWeek::Last
+//! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
 
 use ical_core::{CivilDate, CivilDateTime, Weekday};
 
-use crate::model::{NthWeek, Observance, RuleDay, YearlyRule};
+use crate::internal::tz::model::{NthWeek, Observance, RuleDay, YearlyRule};
 
 impl YearlyRule {
     /// Whether this rule is still in force at any point during `year`.
@@ -212,7 +212,7 @@ fn days_forward(from: Weekday, to: Weekday) -> u8 {
 mod tests {
     use ical_core::{CivilDate, CivilDateTime, CivilTime, UtcOffset, Weekday};
 
-    use crate::model::{NthWeek, Observance, RuleDay, YearlyRule};
+    use crate::internal::tz::model::{NthWeek, Observance, RuleDay, YearlyRule};
 
     /// One case: the rule's month, its day form, the year asked about, the date expected.
     ///

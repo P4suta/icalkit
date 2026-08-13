@@ -92,7 +92,7 @@ impl Reading {
 /// how one participant's meeting moves an hour and another's does not. [`GapPolicy`] is where
 /// a caller states which it wants.
 ///
-/// [`GapPolicy`]: crate::GapPolicy
+/// [`GapPolicy`]: crate::internal::tz::GapPolicy
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum LocalResolution {
@@ -470,7 +470,7 @@ pub trait ZoneSource {
     /// trait says it means. A source with an identifier table overrides it with a lookup, which
     /// is cheaper and is what [`TransitionTable`] does.
     ///
-    /// [`TransitionTable`]: crate::TransitionTable
+    /// [`TransitionTable`]: crate::internal::tz::TransitionTable
     fn recognizes(&self, tzid: &str) -> bool {
         if self.offset_at(tzid, Instant::EPOCH).is_some() {
             return true;

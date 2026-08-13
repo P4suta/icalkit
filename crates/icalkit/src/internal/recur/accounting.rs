@@ -181,15 +181,15 @@ use crate::internal::recur::search::{BudgetExhausted, Occurrence, Window};
 /// and that sentence is a correction of the one this paragraph used to make. An override
 /// carries two instants and this function differences them; which timeline they name is the
 /// caller's decision and not this crate's. For a floating or UTC series it is UTC, and the
-/// count is elapsed seconds. For a zoned series `ical_tz::seam` puts every instant crossing
+/// count is elapsed seconds. For a zoned series `crate::internal::tz::seam` puts every instant crossing
 /// the seam — the `RECURRENCE-ID` and where the override moved to included — on the series'
 /// own wall clock projected onto UTC, so the difference is a *wall-clock* count and the
 /// widening it gives already covers the wall-clock move that is propagated to every later key.
 ///
-/// There is therefore no timeline on which this number and `ical_tz::extra_widening` are two
+/// There is therefore no timeline on which this number and `crate::internal::tz::extra_widening` are two
 /// halves of one quantity: on the nominal timeline the shortfall that function reports is
 /// always zero, and on the real timeline this function is not measuring the move that gets
-/// propagated. `docs/adr/0002` amendment 8 records the correction, and `ical_tz::WallClockShift`
+/// propagated. `docs/adr/0002` amendment 8 records the correction, and `crate::internal::tz::WallClockShift`
 /// is where the two readings of one move are held apart.
 #[must_use]
 pub fn max_absolute_shift(overrides: OverrideSet<'_>) -> i64 {

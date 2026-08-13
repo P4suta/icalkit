@@ -12,17 +12,17 @@ This document states the invariants. The reasoning behind each one lives in
       model · time · recurrence · scheduling · caldav · interop
                               │
                  private implementation layers
-      recurrence · iTIP · query (migrated source) · three temporary path dependencies
+      recurrence · timezone · iTIP · query (migrated source) · two temporary path dependencies
 ```
 
 Nothing here opens a connection, reads a clock, or bundles time zone data unless the
 `system-tz` adapter is enabled. `icalkit` is the one production API and the only future
-registry contract. `internal::query`, `internal::recur`, and `internal::itip` are former
-package implementations moved behind their private ancestor; `ical-core`, `ical-tz`, and
-`ical-dav` remain unpublished workspace scaffolding while their sources follow them. The
-temporary `ical-recur` and `ical-itip` packages compile moved sources through isolation
-bridges for legacy conformance tests, and an architecture gate prevents the facade from
-depending back on either
+registry contract. `internal::query`, `internal::recur`, `internal::tz`, and
+`internal::itip` are former package implementations moved behind their private ancestor;
+`ical-core` and `ical-dav` remain unpublished workspace scaffolding while their sources
+follow them. The temporary `ical-recur`, `ical-tz`, and `ical-itip` packages compile moved
+sources through isolation bridges for legacy conformance tests, and an architecture gate
+prevents the facade from depending back on any of them
 ([ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)).
 The facade's canonical rustdoc surface is committed separately for default and no-default
 features under `api/`; `just public-api` rejects every unreviewed addition, removal, move, or
@@ -147,10 +147,11 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 | `icalkit` | Jiff plus temporary local packages below | optional | yes | no | sole public crate |
 | `internal::query` | core, recurrence, time-zone and DAV internals | no | yes | no | private source |
 | `internal::recur` | core internals | no | yes | no | private source |
+| `internal::tz` | core internals | no | yes | no | private source |
 | `internal::itip` | core, recurrence and time-zone internals | no | yes | no | private source |
 | `ical-core` | — | no | yes | no | unpublished scaffolding (M0) |
 | `ical-recur` | the shared `internal::recur` source | no | yes | no | temporary compatibility harness |
-| `ical-tz` | `ical-core` | no | yes | no | unpublished scaffolding (M2) |
+| `ical-tz` | the shared `internal::tz` source | no | yes | no | temporary compatibility harness |
 | `ical-itip` | the shared `internal::itip` source | no | yes | no | temporary compatibility harness |
 | `ical-dav` | `ical-core` | no | yes | no | unpublished scaffolding (M4) |
 | `icalkit-conformance` | `icalkit` at runtime; split crates in tests | yes | yes | no | private CLI/corpus (M5) |
@@ -158,7 +159,8 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 `icalkit` remains at version `0.0.0`, and publishing is deliberately deferred. The
 `architecture` gate holds the release graph to that one facade, prevents a retired
 `ical-query` package from returning, prevents the facade from depending on the migrated
-`ical-recur` and `ical-itip` harnesses, and freezes Cargo features to `std` and `system-tz`.
+`ical-recur`, `ical-tz` and `ical-itip` harnesses, and freezes Cargo features to `std` and
+`system-tz`.
 `gates/grammar-layering` is a workspace member and is deliberately not a row here: it declares
 no dependencies, publishes nothing, and compiles `ical-core`'s own sources, so a row claiming
 otherwise would describe a crate that does not exist.

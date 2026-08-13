@@ -7,7 +7,7 @@
 //! Specification: RFC 5545 section 3.8.4.4 (`RECURRENCE-ID`), section 3.2.13 (`RANGE`) and
 //! section 3.6.5 (`VTIMEZONE`); RFC 5546 section 3.7.1 for what a `RECURRENCE-ID` addresses in
 //! a scheduling message. Every instant crossing into or out of this module does so under the
-//! contract [`ical_tz::seam`] states, and this module may not restate or reinterpret it.
+//! contract [`crate::internal::tz::seam`] states, and this module may not restate or reinterpret it.
 //!
 //! This is the only place `ical-itip` asks a zone anything. The gate holds no zone by design —
 //! [`crate::internal::itip::evaluate_message`] takes a message, a state and a party, and nothing else — so
@@ -35,12 +35,12 @@
 //!
 //! The other side of a fold is a gap, and it is a different question with a different owner. A
 //! wall clock a zone sprang over names *no* instant until a reading says otherwise, and which
-//! reading applies is [`ical_tz::GapPolicy`] — the same policy the caller's own expansion is
+//! reading applies is [`crate::internal::tz::GapPolicy`] — the same policy the caller's own expansion is
 //! gated by, so an identity resolved under any other rule would name a meeting the caller's
 //! series does not deliver. [`resolve_instance`] therefore asks the series, and the two
-//! permitted readings answer differently: under [`ical_tz::GapPolicy::ShiftForward`] the
+//! permitted readings answer differently: under [`crate::internal::tz::GapPolicy::ShiftForward`] the
 //! identity is [`FoldSide::Once`] at the instant section 3.3.5 reads it as, and under
-//! [`ical_tz::GapPolicy::Skip`] it is [`FoldSide::Nowhere`] and
+//! [`crate::internal::tz::GapPolicy::Skip`] it is [`FoldSide::Nowhere`] and
 //! `scheduling-instance-nonexistent` travels.
 //!
 //! [`FoldSide::Nowhere`] is not [`FoldSide::Unresolved`], and the difference is what a caller
@@ -64,7 +64,7 @@
 //!
 //! A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes names a real instant
 //! that nothing can put on the series' own wall clock; `ical-tz` keeps it in
-//! [`ical_tz::ResolvedExclusions::unplaced`] rather than dropping it. Which instances such a
+//! [`crate::internal::tz::ResolvedExclusions::unplaced`] rather than dropping it. Which instances such a
 //! series has is then not decidable, so an instance-addressed `CANCEL` or `COUNTER` against it
 //! is a **refusal and not a guess**: ignoring the exclusion reinstates a meeting the user
 //! cancelled, and guessing cancels a different one.
@@ -108,11 +108,11 @@
 //! it was the same refusal under both readings of the gap. The identity now says which reading
 //! placed it and the code above says when nothing did.
 
+use crate::internal::tz::{AnswerBasis, ResolvedExclusions, ZoneAnswer, ZoneSource, ZonedSeries};
 use ical_core::{
     CivilDate, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity,
     report_diagnostic,
 };
-use ical_tz::{AnswerBasis, ResolvedExclusions, ZoneAnswer, ZoneSource, ZonedSeries};
 
 use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef};
 
@@ -158,7 +158,7 @@ impl ResolvedInstance {
     /// How much of the source's data stood behind the answer, absent when nothing answered.
     ///
     /// `None` means the source did not recognize this series' identifier at all — the one
-    /// condition [`ical_tz::ZoneSource::resolve`] reserves its own `None` for — and never that
+    /// condition [`crate::internal::tz::ZoneSource::resolve`] reserves its own `None` for — and never that
     /// the zone had no data for the question, which is [`AnswerBasis`]' own business.
     #[must_use]
     pub const fn basis(self) -> Option<AnswerBasis> {
@@ -205,7 +205,7 @@ impl From<ResolvedInstance> for InstanceRef {
 /// - Written with a trailing `Z`, it names a real instant. That instant is projected onto the
 ///   series' own timeline, the wall clock there is resolved, and the instant is compared
 ///   against the two readings of a fold — so it picks its own half.
-/// - Written with a `TZID`, it is already a wall clock on that timeline (`ical_tz::seam`), so
+/// - Written with a `TZID`, it is already a wall clock on that timeline (`crate::internal::tz::seam`), so
 ///   it is resolved as written and names *both* halves of a fold, which is
 ///   [`FoldSide::Unresolved`] and a reported ambiguity.
 /// - Written with neither, it is a wall clock with no zone of its own. It is read on the
@@ -233,7 +233,7 @@ where
         };
     };
     let side = side_of(series, answer, reference);
-    // The ambiguity first and the continuation second, for the reason `ical_tz::series` orders
+    // The ambiguity first and the continuation second, for the reason `crate::internal::tz::series` orders
     // its two the same way: the fact about this identity's own wall clock is the one a reader
     // is looking for, and the fact about the table behind it is the qualification.
     if answer.resolution.is_ambiguous() && !side.is_resolved() {
@@ -311,13 +311,13 @@ where
 ///
 /// A fold and a gap are the two halves of this question and only one of them is settled by the
 /// octets. A repeated wall clock names two instants and nothing but a `Z` in the file picks
-/// between them, so a caller's [`ical_tz::FoldPolicy`] is deliberately **not** read here: that
+/// between them, so a caller's [`crate::internal::tz::FoldPolicy`] is deliberately **not** read here: that
 /// policy exists to render a time and picking a half of a fold to decide *identity* cancels
 /// somebody else's meeting.
 ///
 /// A gap is the opposite. It names no instant at all until a reading says otherwise, and which
-/// reading is the caller's [`ical_tz::GapPolicy`] — RFC 5545 permits the gated and the ungated
-/// reading both, `ical_tz::ZonedSeries::admits` applies it to decide whether the series even
+/// reading is the caller's [`crate::internal::tz::GapPolicy`] — RFC 5545 permits the gated and the ungated
+/// reading both, `crate::internal::tz::ZonedSeries::admits` applies it to decide whether the series even
 /// has that occurrence, and an identity resolved by any other rule than the one the series was
 /// built with would be a different meeting from the one the caller's own expansion delivers. So
 /// the policy is asked, through the same door the expansion asks it through, and the answer is
@@ -354,7 +354,7 @@ where
 
 /// What `series`' zone says about the wall clock `reference` stands for.
 ///
-/// The two directions of `ical_tz::seam`, and the whole of this module's dependence on a zone.
+/// The two directions of `crate::internal::tz::seam`, and the whole of this module's dependence on a zone.
 /// A `Z`-terminated value names a real instant and has to be projected onto the series'
 /// timeline before the zone can be asked about the clock it shows there; every other value is
 /// already on that timeline and is asked about as written.
@@ -414,13 +414,13 @@ mod tests {
     use alloc::vec::Vec;
 
     use crate::internal::recur::OverrideRange;
+    use crate::internal::tz::{
+        AnswerBasis, GapPolicy, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy,
+        ResolvedExclusions, ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,
+    };
     use ical_core::{
         CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, Instant,
         Limits, Meter, Severity, UtcOffset, ValueType,
-    };
-    use ical_tz::{
-        AnswerBasis, GapPolicy, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy,
-        ResolvedExclusions, ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,
     };
 
     use super::{
@@ -523,7 +523,7 @@ mod tests {
             found
         }
 
-        /// The gap `local` fell in, on the readings `ical_tz::LocalResolution` states.
+        /// The gap `local` fell in, on the readings `crate::internal::tz::LocalResolution` states.
         fn gap(&self, local: CivilDateTime) -> Option<LocalResolution> {
             for shift in &self.shifts {
                 let offset_before = UtcOffset::from_seconds(shift.before)?;

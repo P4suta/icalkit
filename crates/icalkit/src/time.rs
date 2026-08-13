@@ -13,10 +13,10 @@ use alloc::string::ToString;
 pub use jiff::civil::{Date, DateTime, Time, Weekday};
 pub use jiff::{SignedDuration, Timestamp};
 
-use ical_core::{CivilDateTime, DateTimeValue, Instant, UtcOffset};
-use ical_tz::{
+use crate::internal::tz::{
     AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
 };
+use ical_core::{CivilDateTime, DateTimeValue, Instant, UtcOffset};
 
 /// Whether a local wall clock is exact, in a gap, or in a fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

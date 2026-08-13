@@ -98,11 +98,11 @@ use core::fmt::{self, Debug, Formatter};
 use core::mem;
 
 use crate::internal::recur::OverrideRange;
+use crate::internal::tz::nominal;
 use ical_core::{
     CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue, Instant,
     Property, PropertyId, RawText, decode_caret,
 };
-use ical_tz::nominal;
 
 use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
 use crate::internal::itip::party::{ANSWERED_AT, Attendee, Party};

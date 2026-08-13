@@ -83,7 +83,7 @@ impl PropertyOccurrence {
 /// that does hold one passes `&component` and never names the trait.
 ///
 /// Deliberately object-safe — index accessors rather than iterators, no generics, no
-/// associated types — matching the posture `ical_tz::ZoneSource` already takes, and costing
+/// associated types — matching the posture `crate::internal::tz::ZoneSource` already takes, and costing
 /// one vtable rather than a monomorphized copy per state carrier on a `thumbv7em` target.
 ///
 /// # What an implementation owes

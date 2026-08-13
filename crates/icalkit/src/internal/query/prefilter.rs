@@ -98,12 +98,12 @@ use core::num::NonZeroU32;
 use alloc::vec::Vec;
 
 use crate::internal::recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
+use crate::internal::tz::nominal;
 use ical_core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, Document,
     Duration, Instant, PropertyId, UtcOffset,
 };
 use ical_dav::{CompFilter, TimeRange};
-use ical_tz::nominal;
 
 use crate::internal::query::{Budget, Zones};
 
@@ -409,7 +409,7 @@ fn placed(value: DateTimeValue<'_>, zones: Zones<'_>) -> Option<Instant> {
 
 /// The instant a value's own wall clock names read at UTC.
 ///
-/// The projection `ical_tz::seam` puts every instant crossing into `ical-recur` through, and the
+/// The projection `crate::internal::tz::seam` puts every instant crossing into `ical-recur` through, and the
 /// timeline a series' cadence is counted on. No zone is consulted and none can be: this is where
 /// the far end of the occupied period is computed, and it is turned back into a claim about
 /// instants by [`ZONE_SLACK_SECONDS`] rather than by a resolution.
@@ -605,12 +605,12 @@ fn cadence_seconds(freq: Freq, day: CivilDate) -> Option<i64> {
 mod tests {
     use alloc::string::String;
 
+    use crate::internal::tz::FixedOffsetSource;
     use ical_core::{
         CivilDate, CivilDateTime, CivilTime, Document, IgnoreDiagnostics, Instant, Limits, Meter,
         UtcOffset,
     };
     use ical_dav::{CompFilter, TimeRange};
-    use ical_tz::FixedOffsetSource;
 
     use super::{Exclusion, excludes};
     use crate::internal::query::{Budget, Zones};

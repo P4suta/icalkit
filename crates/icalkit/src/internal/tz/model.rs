@@ -24,7 +24,7 @@
 //! 2020 by extending its earliest `TZOFFSETFROM` backwards forever, and `America/New_York` was
 //! not on `-05:00` that July.
 //!
-//! [`AnswerBasis::BeforeKnownTransitions`]: crate::AnswerBasis::BeforeKnownTransitions
+//! [`AnswerBasis::BeforeKnownTransitions`]: crate::internal::tz::AnswerBasis::BeforeKnownTransitions
 //!
 //! # Why the rules are a closed form and not a recurrence search
 //!
@@ -48,8 +48,8 @@
 //! not have, and what it would cost is turning an O(1) lookup into a bounded search with a
 //! meter threaded through the one trait `docs/adr/0003` needs a caller to be able to implement.
 //!
-//! [`AnswerBasis::BeyondKnownTransitions`]: crate::AnswerBasis::BeyondKnownTransitions
-//! [`ZoneSource::resolve`]: crate::ZoneSource::resolve
+//! [`AnswerBasis::BeyondKnownTransitions`]: crate::internal::tz::AnswerBasis::BeyondKnownTransitions
+//! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
 //! [`DiagnosticCode::VtimezoneRuleUnsupported`]: ical_core::DiagnosticCode::VtimezoneRuleUnsupported
 
 use alloc::boxed::Box;
@@ -60,7 +60,7 @@ use ical_core::{
     LimitExceeded, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
 
-use crate::ident::Tzid;
+use crate::internal::tz::ident::Tzid;
 
 /// Which occurrence of a weekday inside a month a rule means.
 ///
@@ -289,7 +289,7 @@ impl Observance {
 /// [`ZoneSource`] answer without a meter: the only unbounded quantity a `VTIMEZONE` has is how
 /// many transitions it declares, and that is charged here, once.
 ///
-/// [`ZoneSource`]: crate::ZoneSource
+/// [`ZoneSource`]: crate::internal::tz::ZoneSource
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionTable {
     /// The identifier this table answers to, compared by exact bytes.
@@ -421,7 +421,7 @@ impl TransitionTable {
     /// called it computed. Half of that table ran out; a zone that cannot say when its summer
     /// ends does not know its own future, whatever its other half states.
     ///
-    /// [`AnswerBasis::BeyondKnownTransitions`]: crate::AnswerBasis::BeyondKnownTransitions
+    /// [`AnswerBasis::BeyondKnownTransitions`]: crate::internal::tz::AnswerBasis::BeyondKnownTransitions
     #[must_use]
     pub const fn coverage_end(&self) -> Option<CivilDate> {
         self.coverage_end
@@ -433,7 +433,7 @@ impl TransitionTable {
     /// observance's `TZOFFSETFROM` backwards forever — the whole of what the file states about
     /// that era — and carries [`AnswerBasis::BeforeKnownTransitions`] saying so.
     ///
-    /// [`AnswerBasis::BeforeKnownTransitions`]: crate::AnswerBasis::BeforeKnownTransitions
+    /// [`AnswerBasis::BeforeKnownTransitions`]: crate::internal::tz::AnswerBasis::BeforeKnownTransitions
     #[must_use]
     pub const fn coverage_start(&self) -> Option<CivilDate> {
         self.coverage_start

@@ -20,11 +20,11 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+use crate::internal::tz::wall_clock;
 use ical_core::{
     DateTimeValue, EncodeValue, Instant, ParameterEdit, PropertyId, ProposedChange, RawText,
     ValueBuf,
 };
-use ical_tz::wall_clock;
 
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::Method;
@@ -141,7 +141,7 @@ fn describe_reply(
 /// `instant` written as the UTC `DATE-TIME` a `DTSTAMP` is, or `None` when it is off the
 /// representable calendar.
 ///
-/// Through [`ical_tz::wall_clock`], because that is the inverse of the projection every
+/// Through [`crate::internal::tz::wall_clock`], because that is the inverse of the projection every
 /// timestamp reaching this crate came in on: a `DTSTAMP` is read onto the nominal timeline, and
 /// writing one back through any other offset would move it.
 fn utc_text(instant: Instant) -> Option<RawText> {

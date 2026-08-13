@@ -72,9 +72,9 @@ use ical_core::{
     report_diagnostic,
 };
 
-use crate::answer::ZoneSource;
-use crate::seam::nominal;
-use crate::series::ZonedSeries;
+use crate::internal::tz::answer::ZoneSource;
+use crate::internal::tz::seam::nominal;
+use crate::internal::tz::series::ZonedSeries;
 
 /// How far an override moved an occurrence, measured both ways.
 ///
@@ -144,9 +144,9 @@ impl WallClockShift {
     /// gets from [`ZoneSource::offset_at`] itself, and inventing a third field here would
     /// duplicate a fact that already has a home and a diagnostic code.
     ///
-    /// [`AnswerBasis`]: crate::AnswerBasis
-    /// [`OffsetAnswer`]: crate::OffsetAnswer
-    /// [`ZoneSource::offset_at`]: crate::ZoneSource::offset_at
+    /// [`AnswerBasis`]: crate::internal::tz::AnswerBasis
+    /// [`OffsetAnswer`]: crate::internal::tz::OffsetAnswer
+    /// [`ZoneSource::offset_at`]: crate::internal::tz::ZoneSource::offset_at
     #[must_use]
     pub fn measure<S: ZoneSource + ?Sized>(
         source: &S,
@@ -166,13 +166,13 @@ impl WallClockShift {
     /// [`WallClockShift::measure`] takes two real UTC instants, and the two instants an override
     /// actually carries — its `RECURRENCE-ID` and where it moved to — are neither: everything
     /// crossing the seam is on the series' own wall clock projected onto UTC (see
-    /// [`crate::seam`]), five hours from the real instants in New York. Fed the values the seam
+    /// [`crate::internal::tz::seam`]), five hours from the real instants in New York. Fed the values the seam
     /// carries, `measure` read the offsets at the wrong two points and answered that a move
     /// straddling a spring-forward crossed no transition at all — the one question the type
     /// exists to answer, about the one case it was written for.
     ///
     /// This is the conversion, in the crate that owns it: each key is read back into a wall
-    /// clock, resolved against the zone under the series' own [`crate::ResolutionPolicy`], and
+    /// clock, resolved against the zone under the series' own [`crate::internal::tz::ResolutionPolicy`], and
     /// the two real instants are what get measured. So `elapsed_seconds` is the time the move
     /// really costs and `wall_clock_seconds` is what the organizer saw, which for a move from
     /// 09:00 on the day before a spring-forward to 04:00 on the day after is 64,800 against
@@ -181,7 +181,7 @@ impl WallClockShift {
     /// `None` when either key names no instant this policy takes — a wall clock in a gap under
     /// [`GapPolicy::Skip`] — or on the terms `measure` gives.
     ///
-    /// [`GapPolicy::Skip`]: crate::GapPolicy::Skip
+    /// [`GapPolicy::Skip`]: crate::internal::tz::GapPolicy::Skip
     #[must_use]
     pub fn across<S: ZoneSource + ?Sized>(
         series: &ZonedSeries<'_, S>,
@@ -362,10 +362,10 @@ mod tests {
     };
 
     use super::{OrphanScan, WallClockShift, extra_widening};
-    use crate::answer::{
+    use crate::internal::tz::answer::{
         AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
     };
-    use crate::seam::nominal;
+    use crate::internal::tz::seam::nominal;
 
     // The offsets these zones run, in seconds east of UTC.
 

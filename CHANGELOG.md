@@ -701,3 +701,9 @@ the other order. What version this becomes is a decision nobody has made.
   compiles the same source and fixture for legacy conformance consumers; the architecture
   gate prevents a back-edge, and the in-crate `SearchStep` match is exhaustive without the
   wildcard that its former non-exhaustive crate boundary required.
+- **The RFC 5545 time-zone kernel moved physically behind `icalkit::internal::tz`.** The
+  public Jiff boundary, CalDAV query evaluator, and migrated iTIP kernel now resolve through
+  that private module, and the facade no longer depends on `ical-tz`. The unified crate
+  includes VTIMEZONE support unconditionally under its two-feature contract, while the
+  temporary compatibility package still compiles the same source with and without its
+  legacy `vtimezone` feature for conformance coverage.

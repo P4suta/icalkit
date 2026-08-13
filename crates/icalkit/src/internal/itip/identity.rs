@@ -14,7 +14,7 @@
 //!
 //! # The repeated hour
 //!
-//! M2 left a question this module answers. `ical_tz::seam` walks a series on its own wall
+//! M2 left a question this module answers. `crate::internal::tz::seam` walks a series on its own wall
 //! clock projected onto UTC, so the two halves of the hour a zone repeats are **one cadence
 //! key**: a `REPLY` naming `20261101T063000Z` and one naming `20261101T053000Z` in
 //! `America/New_York` are two real instants and one key, and `crate::internal::recur::OverrideSet` admits
@@ -33,8 +33,8 @@
 //! gets [`FoldSide::Unresolved`] and the conservative answer that follows from it.
 
 use crate::internal::recur::OverrideRange;
+use crate::internal::tz::LocalResolution;
 use ical_core::{Instant, RawText};
-use ical_tz::LocalResolution;
 
 /// One component's `UID`, compared as RFC 5545 section 3.8.4.7 says to.
 ///
@@ -90,8 +90,8 @@ pub enum FoldSide {
     ///
     /// The other side of a fold. A repeated hour names two instants and nothing here picks
     /// between them; an hour a zone sprang over names none, and whether it names one after all
-    /// is the caller's [`ical_tz::GapPolicy`] — [`ical_tz::GapPolicy::ShiftForward`] places it
-    /// and [`ical_tz::GapPolicy::Skip`] does not.
+    /// is the caller's [`crate::internal::tz::GapPolicy`] — [`crate::internal::tz::GapPolicy::ShiftForward`] places it
+    /// and [`crate::internal::tz::GapPolicy::Skip`] does not.
     ///
     /// It is not [`FoldSide::Unresolved`], because the two lead to different refusals: an
     /// identity nothing could tell from its neighbor is ambiguous, and one that names no
@@ -466,8 +466,8 @@ impl MessageIdentity {
 #[cfg(test)]
 mod tests {
     use crate::internal::recur::OverrideRange;
+    use crate::internal::tz::{LocalResolution, Reading};
     use ical_core::{Instant, UtcOffset};
-    use ical_tz::{LocalResolution, Reading};
 
     use super::{
         FoldSide, InstanceClock, InstanceMatch, InstanceRef, MessageIdentity, Revision,

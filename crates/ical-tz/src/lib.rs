@@ -96,21 +96,52 @@ extern crate alloc;
 // own file and appends exactly one `pub use` line to the block at the bottom, in the order this
 // block already has. `seam` is the one public module, because the contract it states is
 // something a caller reads rather than only something a caller calls.
+#[path = "../../icalkit/src/internal/tz/answer.rs"]
 mod answer;
+#[path = "../../icalkit/src/internal/tz/combine.rs"]
 mod combine;
+#[path = "../../icalkit/src/internal/tz/exclusions.rs"]
 mod exclusions;
+#[path = "../../icalkit/src/internal/tz/ident.rs"]
 mod ident;
 #[cfg(feature = "vtimezone")]
+#[path = "../../icalkit/src/internal/tz/model.rs"]
 mod model;
+#[path = "../../icalkit/src/internal/tz/overrides.rs"]
 mod overrides;
 #[cfg(feature = "vtimezone")]
+#[path = "../../icalkit/src/internal/tz/reader.rs"]
 mod reader;
 #[cfg(feature = "vtimezone")]
+#[path = "../../icalkit/src/internal/tz/resolve.rs"]
 mod resolve;
 #[cfg(feature = "vtimezone")]
+#[path = "../../icalkit/src/internal/tz/rules.rs"]
 mod rules;
+#[path = "../../icalkit/src/internal/tz/seam.rs"]
 pub mod seam;
+#[path = "../../icalkit/src/internal/tz/series.rs"]
 mod series;
+
+// Stable crate-shaped root for source shared with `icalkit::internal::tz`.
+pub(crate) mod internal {
+    #[allow(unused_imports)]
+    pub(crate) mod tz {
+        pub(crate) use crate::{
+            AnswerBasis, CivilDate, CivilDateTime, CivilTime, CombinedZoneSource, Duration,
+            ExclusionReading, FixedOffsetSource, FoldPolicy, GapPolicy, Instant, Limits,
+            LocalInterval, LocalResolution, Meter, MonthAddOutcome, OffsetAnswer, OrphanScan,
+            PolicyOutcome, Reading, ResolutionPolicy, ResolvedExclusions, Tzid, TzidForm,
+            UntilReading, UtcOffset, WallClockShift, Weekday, ZoneAnswer, ZoneProvenance,
+            ZoneSource, ZonedSeries, answer, combine, exclusions, ident, overrides, seam, series,
+        };
+        #[cfg(feature = "vtimezone")]
+        pub(crate) use crate::{
+            NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet,
+            YearlyRule, ZoneAdmission, ZoneSetError, model, reader, resolve, rules,
+        };
+    }
+}
 
 // The civil-time vocabulary is re-exported so that a caller names one crate for one concept.
 // `docs/adr/0011` puts the types in `ical-core` and the meaning here; a caller resolving a

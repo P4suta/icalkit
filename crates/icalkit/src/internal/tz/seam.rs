@@ -73,9 +73,9 @@
 //! the zone and not the frequency. So it is the caller's, stated here rather than left to
 //! whichever anchor a caller reached for first.
 //!
-//! [`ZonedSeries::anchor`]: crate::ZonedSeries::anchor
-//! [`ZonedSeries::real_anchor`]: crate::ZonedSeries::real_anchor
-//! [`ZonedSeries::actual`]: crate::ZonedSeries::actual
+//! [`ZonedSeries::anchor`]: crate::internal::tz::ZonedSeries::anchor
+//! [`ZonedSeries::real_anchor`]: crate::internal::tz::ZonedSeries::real_anchor
+//! [`ZonedSeries::actual`]: crate::internal::tz::ZonedSeries::actual
 //!
 //! # Where `COUNT` is applied, which is the other side of the same seam
 //!
@@ -93,7 +93,7 @@
 //! reading — the instance is dropped and the count is spent, which is what a `DTSTART` in a gap
 //! does under section 3.8.5.3 — states it by not passing a gate.
 //!
-//! [`ZonedSeries::admits`]: crate::ZonedSeries::admits
+//! [`ZonedSeries::admits`]: crate::internal::tz::ZonedSeries::admits
 //!
 //! The one place M1's shipped prose and this contract disagree is `UntilClock::Utc`'s doc
 //! comment, which says the instant beside it "is that UTC instant". For a floating or UTC
@@ -110,12 +110,12 @@
 //! `DTSTART`, projecting `UNTIL`, resolving each key, expanding a whole-day exclusion — is the
 //! work of the units above, which read their policy out of [`ResolutionPolicy`].
 //!
-//! [`ZoneSource::resolve`]: crate::ZoneSource::resolve
+//! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
 //! [`DiagnosticCode::RecurrenceUntilNotUtc`]: ical_core::DiagnosticCode::RecurrenceUntilNotUtc
 
 use ical_core::{CivilDateTime, Instant, UtcOffset};
 
-use crate::answer::{FoldPolicy, GapPolicy};
+use crate::internal::tz::answer::{FoldPolicy, GapPolicy};
 
 /// The wall clock `local` spells, as an instant on the nominal timeline.
 ///
@@ -137,7 +137,7 @@ pub fn nominal(local: CivilDateTime) -> Option<Instant> {
 /// [`ZoneSource::resolve`] can be asked about. `None` when the instant is outside the years
 /// RFC 5545 section 3.3.4 can write.
 ///
-/// [`ZoneSource::resolve`]: crate::ZoneSource::resolve
+/// [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
 #[must_use]
 pub fn wall_clock(nominal_instant: Instant) -> Option<CivilDateTime> {
     CivilDateTime::from_instant(nominal_instant, UtcOffset::UTC)
@@ -327,7 +327,7 @@ mod tests {
     use super::{
         ExclusionReading, LocalInterval, ResolutionPolicy, UntilReading, nominal, wall_clock,
     };
-    use crate::answer::{FoldPolicy, GapPolicy};
+    use crate::internal::tz::answer::{FoldPolicy, GapPolicy};
 
     fn stamp(year: u16, month: u8, day: u8, hour: u8) -> CivilDateTime {
         let date = CivilDate::from_ymd(year, month, day).unwrap();

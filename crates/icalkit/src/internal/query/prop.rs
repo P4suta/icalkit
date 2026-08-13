@@ -375,9 +375,9 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use crate::internal::tz::FixedOffsetSource;
     use ical_core::{Component, Instant, Item, Limits, Meter, Parameter, Property, UtcOffset};
     use ical_dav::{Collation, ParamFilter, PropFilter, TextMatch, TimeRange};
-    use ical_tz::FixedOffsetSource;
 
     use super::{PROPERTY_FILTER_SECTIONS, matches_param_filter, matches_prop_filter};
     use crate::internal::query::vocabulary::{Budget, Match, QueryError, Undecided, Zones};

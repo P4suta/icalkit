@@ -49,7 +49,7 @@
 //! # How a day is sized, which is where the assumption would have hidden
 //!
 //! A span here is nominal, because what it is tested against is a cadence key and every cadence
-//! key is nominal (see [`crate::seam`]). Its two ends are the instants at which the zone's own
+//! key is nominal (see [`crate::internal::tz::seam`]). Its two ends are the instants at which the zone's own
 //! clock first reads midnight on the named day and on the day after, each asked of the source
 //! and each read back onto the nominal timeline. On an ordinary day that is 86,400 nominal
 //! seconds and the source has changed nothing. On a day whose *midnight* is in a gap — Cuba and
@@ -80,8 +80,8 @@
 //! source lookups per span and one per foreign identifier is the whole cost, over a slice whose
 //! length that bound already fixed, so the meter is here for the diagnostics a sink refuses.
 //!
-//! [`ExclusionReading::WholeDay`]: crate::ExclusionReading::WholeDay
-//! [`ResolutionPolicy`]: crate::ResolutionPolicy
+//! [`ExclusionReading::WholeDay`]: crate::internal::tz::ExclusionReading::WholeDay
+//! [`ResolutionPolicy`]: crate::internal::tz::ResolutionPolicy
 
 use alloc::vec::Vec;
 
@@ -90,9 +90,9 @@ use ical_core::{
     Instant, Meter, Severity, UtcOffset, ValueType, report_diagnostic,
 };
 
-use crate::answer::{LocalResolution, ZoneSource};
-use crate::seam::{ExclusionReading, LocalInterval, nominal};
-use crate::series::ZonedSeries;
+use crate::internal::tz::answer::{LocalResolution, ZoneSource};
+use crate::internal::tz::seam::{ExclusionReading, LocalInterval, nominal};
+use crate::internal::tz::series::ZonedSeries;
 
 /// What one series' `EXDATE` properties exclude, in the two shapes they can take.
 ///
@@ -131,7 +131,7 @@ impl ResolvedExclusions {
     /// `ical_recur::RecurrenceInput::new` refuses a list that is not and a caller sorting them
     /// again downstream would be paying twice for a promise made here.
     ///
-    /// [`ExclusionReading`]: crate::ExclusionReading
+    /// [`ExclusionReading`]: crate::internal::tz::ExclusionReading
     #[must_use]
     pub fn read<S, D>(
         series: &ZonedSeries<'_, S>,
@@ -298,7 +298,7 @@ impl ResolvedExclusions {
 ///
 /// The four shapes are four different questions. A `DATE` and a floating date-time are wall
 /// clocks and are already nominal; a `Z` value names a real instant and has to be converted
-/// through the zone's offset at it, which is the step [`crate::seam`] calls the one most easily
+/// through the zone's offset at it, which is the step [`crate::internal::tz::seam`] calls the one most easily
 /// forgotten; and a zoned value is nominal exactly when its identifier is the series' own.
 fn project<S>(series: &ZonedSeries<'_, S>, value: DateTimeValue<'_>) -> Option<Instant>
 where
@@ -401,12 +401,12 @@ mod tests {
     };
 
     use super::ResolvedExclusions;
-    use crate::answer::{
+    use crate::internal::tz::answer::{
         AnswerBasis, FoldPolicy, LocalResolution, OffsetAnswer, Reading, ZoneAnswer,
         ZoneProvenance, ZoneSource,
     };
-    use crate::seam::{ExclusionReading, LocalInterval, ResolutionPolicy, nominal};
-    use crate::series::ZonedSeries;
+    use crate::internal::tz::seam::{ExclusionReading, LocalInterval, ResolutionPolicy, nominal};
+    use crate::internal::tz::series::ZonedSeries;
 
     /// One transition of a real zone: when it happened and what the zone ran at afterwards.
     ///
@@ -925,7 +925,7 @@ mod tests {
     }
 
     /// A value type that agrees is not diagnosed, and each of the four shapes crosses the seam
-    /// the way `crate::seam` says it does.
+    /// the way `crate::internal::tz::seam` says it does.
     #[test]
     fn an_agreeing_exclusion_crosses_the_seam_and_is_reported_by_nothing() {
         // 09:00 Berlin on 2026-07-01 is 07:00Z, because CEST is two hours east. All four of
