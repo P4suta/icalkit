@@ -67,13 +67,15 @@ use ical_core::{
 use crate::element::ElementName;
 use crate::failure::{DavError, SyntaxError};
 use crate::sink::ByteSink;
-
-/// The most octets a reference may occupy, `&` and `;` included.
-///
-/// `&#x10FFFF;` is ten, and no predefined entity name is longer than `apos`. A `&` followed by
-/// megabytes of digits is not a reference anybody wrote, and scanning for its terminator
-/// without a ceiling is work an attacker chooses the size of.
-const MAX_REFERENCE_BYTES: usize = 12;
+// The character rules, the reference resolver and the escaping table are XML 1.0's rather than
+// CalDAV's, so they live in the private layer `gates/xml-layering` compiles alone. What stays
+// here is everything stated over an `ElementName` or a `ByteSink`, which is what that layer may
+// not name (docs/adr/0012).
+use crate::xml::chars::{
+    check_chars as check_layer_chars, escape_for, normalize_attribute as normalize_layer, push,
+    push_reference,
+};
+use crate::xml::scan::find;
 
 /// The caller's policy for how character data is delivered.
 ///
@@ -380,7 +382,7 @@ fn reassemble(raw: &[u8], mode: TextMode, out: &mut Vec<u8>) -> Result<bool, Dav
 /// Copy octets that carry no markup, applying section 2.11 where the mode asks for it.
 fn push_literal(run: &[u8], mode: TextMode, out: &mut Vec<u8>) -> Result<bool, DavError> {
     if !mode.normalizes() {
-        return push(out, run).map(|()| false);
+        return push(out, run).map(|()| false).map_err(DavError::from);
     }
     let mut folded = false;
     let mut at = 0;
@@ -397,121 +399,19 @@ fn push_literal(run: &[u8], mode: TextMode, out: &mut Vec<u8>) -> Result<bool, D
 
 /// Refuse octets no conformant XML processor would deliver as characters.
 ///
-/// Two rules in one pass, because they are one question — "is this a run of characters?" —
-/// asked of octets a peer chose. XML 1.0 section 4.3.3 makes the document entity UTF-8, and
-/// section 2.2's `Char` production excludes `U+0000`, the C0 controls other than tab, line
-/// feed and carriage return, the surrogates, and `U+FFFE`/`U+FFFF`.
+/// The rule is XML 1.0 sections 2.2 and 4.3.3 and lives in the layer; this is the door the rest
+/// of the crate reaches it through, so that a refusal arrives as a [`DavError`] like every other
+/// one rather than as a second failure vocabulary spreading upward.
 pub(crate) fn check_chars(bytes: &[u8]) -> Result<(), DavError> {
-    let text = core::str::from_utf8(bytes).map_err(|_| SyntaxError::ForbiddenCharacter)?;
-    if text.chars().all(is_xml_char) {
-        Ok(())
-    } else {
-        Err(SyntaxError::ForbiddenCharacter.into())
-    }
+    check_layer_chars(bytes).map_err(DavError::from)
 }
 
 /// Normalize an attribute value the way XML 1.0 section 3.3.3 requires, into `out`.
 ///
-/// The value between the quotes is not the value the attribute has. Section 3.3.3 resolves
-/// character and entity references in it and replaces every literal tab, line feed and
-/// carriage return — the last two after section 2.11 has already folded `CRLF` to one line
-/// feed — with a single space, all before the value is delivered. Handing back the raw octets
-/// made a `comp-filter name="VE&#78;T"` name a component spelled `VE&#78;T` here and `VENT` in
-/// every conformant processor, so two implementations disagreed about which components a
-/// hostile `calendar-query` selects; it also made the request round trip grow by four octets a
-/// hop, because the encoder escaped the `&` that the reader had never resolved.
-///
-/// This crate's attributes are all `CDATA`-typed, so no further whitespace collapsing applies.
+/// The value between the quotes is not the value the attribute has; the layer states why and
+/// does the work. This is the door, for the reason [`check_chars`] above is one.
 pub(crate) fn normalize_attribute(raw: &[u8], out: &mut Vec<u8>) -> Result<(), DavError> {
-    let mut at = 0;
-    while let Some(&byte) = raw.get(at) {
-        match byte {
-            b'&' => {
-                at = push_reference(raw, at, out)?;
-                continue;
-            },
-            b'\r' => {
-                push(out, b" ")?;
-                // Section 2.11 makes `CRLF` one line break, and section 3.3.3 then makes that
-                // one break one space rather than two.
-                let paired = raw.get(at.saturating_add(1)) == Some(&b'\n');
-                at = at.saturating_add(if paired { 2 } else { 1 });
-                continue;
-            },
-            b'\n' | b'\t' => push(out, b" ")?,
-            _ => push(out, &[byte])?,
-        }
-        at = at.saturating_add(1);
-    }
-    check_chars(out)
-}
-
-/// Resolve one reference into `out` and answer where the octet after its `;` is.
-///
-/// Nothing beyond the five entities XML 1.0 section 4.6 predefines is resolvable, because this
-/// crate accepts no `DOCTYPE` and so nothing can ever have been declared. An undefined name is
-/// refused rather than passed through: a reader that emitted `&file;` unchanged would hand its
-/// caller octets the peer did not write, and one that dropped it would hide an attempt.
-pub(crate) fn push_reference(
-    raw: &[u8],
-    start: usize,
-    out: &mut Vec<u8>,
-) -> Result<usize, DavError> {
-    let window = raw
-        .get(start..)
-        .and_then(|rest| rest.get(..MAX_REFERENCE_BYTES.min(rest.len())))
-        .ok_or(SyntaxError::Malformed)?;
-    let semicolon = window
-        .iter()
-        .position(|byte| *byte == b';')
-        .ok_or(SyntaxError::Malformed)?;
-    let name = window.get(1..semicolon).ok_or(SyntaxError::Malformed)?;
-    match name {
-        b"amp" => push(out, b"&")?,
-        b"lt" => push(out, b"<")?,
-        b"gt" => push(out, b">")?,
-        b"quot" => push(out, b"\"")?,
-        b"apos" => push(out, b"'")?,
-        _ => push_character_reference(name, out)?,
-    }
-    Ok(start
-        .saturating_add(semicolon)
-        .saturating_add(1)
-        .min(raw.len()))
-}
-
-/// Resolve a numeric character reference, which is what carries a `CR` past section 2.11.
-fn push_character_reference(name: &[u8], out: &mut Vec<u8>) -> Result<(), DavError> {
-    let digits = name
-        .strip_prefix(b"#")
-        .ok_or(SyntaxError::UndefinedEntity)?;
-    let (radix, body) = match digits.strip_prefix(b"x") {
-        Some(hex) => (16_u32, hex),
-        None => (10_u32, digits),
-    };
-    if body.is_empty() {
-        return Err(SyntaxError::Malformed.into());
-    }
-    let mut code: u32 = 0;
-    for byte in body {
-        let digit = char::from(*byte)
-            .to_digit(radix)
-            .ok_or(SyntaxError::Malformed)?;
-        code = code
-            .checked_mul(radix)
-            .and_then(|shifted| shifted.checked_add(digit))
-            .ok_or(SyntaxError::ForbiddenCharacter)?;
-    }
-    let character = char::from_u32(code)
-        .filter(|found| is_xml_char(*found))
-        .ok_or(SyntaxError::ForbiddenCharacter)?;
-    let mut encoded = [0_u8; 4];
-    push(out, character.encode_utf8(&mut encoded).as_bytes())
-}
-
-/// Whether a code point is one XML 1.0 section 2.2's `Char` production admits.
-const fn is_xml_char(character: char) -> bool {
-    matches!(character, '\t' | '\n' | '\r' | ' '..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
+    normalize_layer(raw, out).map_err(DavError::from)
 }
 
 /// Copy a `CDATA` section's content and answer where the octet after `]]>` is.
@@ -538,21 +438,6 @@ fn push_cdata(
         .saturating_add(3)
         .min(raw.len());
     Ok((consumed, folded))
-}
-
-/// The first position of `needle` in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-/// Append to a buffer that reports a refusing allocator rather than aborting on one.
-fn push(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), DavError> {
-    out.try_reserve(bytes.len())
-        .map_err(|_| LimitExceeded::Text)?;
-    out.extend_from_slice(bytes);
-    Ok(())
 }
 
 /// Write character data, escaped so that a conformant reader recovers every octet.
@@ -588,20 +473,6 @@ fn write_escaped(out: &mut dyn ByteSink, bytes: &[u8], in_attribute: bool) -> Re
     let tail = bytes.get(run_start..).ok_or(SyntaxError::Malformed)?;
     out.write(tail)?;
     Ok(())
-}
-
-/// What one octet is written as, or `None` when it is written as itself.
-const fn escape_for(byte: u8, in_attribute: bool) -> Option<&'static [u8]> {
-    match byte {
-        b'&' => Some(b"&amp;"),
-        b'<' => Some(b"&lt;"),
-        b'>' => Some(b"&gt;"),
-        b'\r' => Some(b"&#13;"),
-        b'"' if in_attribute => Some(b"&quot;"),
-        b'\n' if in_attribute => Some(b"&#10;"),
-        b'\t' if in_attribute => Some(b"&#9;"),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

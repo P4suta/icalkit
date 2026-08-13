@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Not a crate. A gate: it compiles `crates/ical-dav/src/xml/` in a root that has never heard of
+# CalDAV, so that a path from the WebDAV grammar into the vocabulary above it is a compile error
+# with a file and a line rather than a convention somebody remembers. That is what keeps the
+# extraction docs/adr/0012 deferred a file move plus a manifest rather than a redesign.
+#
+# `ical-core` is the one dependency and it is deliberate: the layer names `Limits`, `Meter` and
+# `LimitExceeded`, which are the shared model's and not the protocol's. Everything CalDAV --
+# `ElementName`, `Namespace`, `DavError`, every element of RFC 4791 -- is absent from this root,
+# which is the whole assertion.
+#
+# It lives under `gates/` rather than `crates/` because `xtask purity` partitions `crates/` and
+# would otherwise have to carve out an exception for a member that is not a crate (docs/adr/0004).
+#
+# A literal version rather than the workspace one: nothing here is released, so this member has
+# no reason to move when the published version does.
+
+[package]
+name = "ical-xml-layering"
+publish = false
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+ical-core = { path = "../../crates/ical-core", version = "0.0.0" }
+
+# `doc = false` because these are `ical-dav`'s items and documenting them twice would publish a
+# second set of pages for one module. `test = false` because without it every file of the layer
+# is compiled into a second test binary: nextest runs its tests twice and `cargo llvm-cov` counts
+# every region twice, which flatters the coverage number in the direction nobody questions.
+# Neither is derivable from reading this manifest, which is why both are written down here
+# (docs/adr/0004, amendment 17).
+[lib]
+doc = false
+test = false
+
+[lints]
+workspace = true

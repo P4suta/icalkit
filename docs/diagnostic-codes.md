@@ -171,3 +171,5 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | dav-responses-truncated | A multistatus carried more responses than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M4 |
 | dav-property-markup-dropped | A property mixed character data with elements, and the elements were not kept. | Violation | M4 |
 | dav-sync-token-withheld | A synchronization token was withheld because the answer it arrived with was truncated. | LimitReached | M4 |
+| query-calendar-data-reduced | A `calendar-data` selection returned a calendar that is not the one the server stored. | Note | M5 |
+| query-filter-undecidable | A filter could not be decided, so the resource was neither matched nor excluded. | Note | M5 |

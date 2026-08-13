@@ -853,10 +853,12 @@ fn check_reference(octets: &[u8], start: usize) -> Result<(), DavError> {
     if matches!(name, b"amp" | b"lt" | b"gt" | b"quot" | b"apos") {
         return Ok(());
     }
-    // A numeric character reference is resolvable exactly when `crate::text` would resolve
-    // it, so the two doors agree on what a document may hold rather than on what it may say.
+    // A numeric character reference is resolvable exactly when the XML layer would resolve it,
+    // so the two doors agree on what a document may hold rather than on what it may say.
     let mut resolved: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    crate::text::push_reference(octets, start, &mut resolved).map(|_| ())
+    crate::xml::chars::push_reference(octets, start, &mut resolved)
+        .map(|_| ())
+        .map_err(DavError::from)
 }
 
 #[cfg(test)]

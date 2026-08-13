@@ -9,7 +9,7 @@ export RUSTDOCFLAGS := "-D warnings"
 
 # The sans-I/O core: no std, no clock, no network, no bundled time zone database
 # (docs/adr/0003, docs/adr/0004).
-core_crates := "-p ical-core -p ical-recur -p ical-tz -p ical-itip -p ical-dav"
+core_crates := "-p ical-core -p ical-recur -p ical-tz -p ical-itip -p ical-dav -p ical-query"
 
 # List the available development commands.
 default:
@@ -35,19 +35,19 @@ lint:
 # Run the workspace suite. Nextest runs normal tests process-per-test; Cargo
 # separately runs doctests, which nextest does not currently support.
 #
-# `ical-grammar-layering` is excluded from the doctests and only from them. It compiles
-# `ical-core`'s grammar a second time, so the doc examples on those items would be compiled
-# inside a crate that declares no dependencies and would fail there. `[lib] doctest = false`
-# reads like the fix and is not one: cargo reports the member's doctests disabled and the
+# The two layering gates are excluded from the doctests and only from them. Each compiles
+# another crate's layer a second time, so the doc examples on those items would be compiled
+# inside a crate that declares almost no dependencies and would fail there. `[lib] doctest =
+# false` reads like the fix and is not one: cargo reports the member's doctests disabled and the
 # merged doctest runner runs them anyway (docs/adr/0004, amendment 17).
 test:
     cargo nextest run --workspace --all-features
-    cargo test --workspace --doc --all-features --exclude ical-grammar-layering
+    cargo test --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
 
 # Run the complete test suite with the non-fail-fast CI profile.
 test-ci:
     cargo nextest run --profile ci --workspace --all-features
-    cargo test --workspace --doc --all-features --exclude ical-grammar-layering
+    cargo test --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
 
 # Build public documentation with warnings denied.
 doc:
@@ -120,8 +120,10 @@ msrv:
     cargo msrv verify --path crates/ical-tz
     cargo msrv verify --path crates/ical-itip
     cargo msrv verify --path crates/ical-dav
+    cargo msrv verify --path crates/ical-query
     cargo msrv verify --path crates/ical-conform
     cargo msrv verify --path gates/grammar-layering
+    cargo msrv verify --path gates/xml-layering
     cargo msrv verify --path xtask
 
 # Fast deterministic checks used during the edit/commit loop.

@@ -10,8 +10,10 @@ members = [
   "crates/ical-tz",
   "crates/ical-itip",
   "crates/ical-dav",
+  "crates/ical-query",
   "crates/ical-conform",
   "gates/grammar-layering",
+  "gates/xml-layering",
   "xtask",
 ]
 

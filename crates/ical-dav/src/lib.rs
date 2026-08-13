@@ -108,6 +108,14 @@ mod value;
 mod write_request;
 mod write_response;
 mod writer;
+// The WebDAV XML grammar, kept private and forbidden to name a CalDAV type. Nothing of it is
+// re-exported below, deliberately and permanently: `docs/adr/0012` decided that `webdav-core` is
+// not published and that the untangling happens anyway, because the harm ADR 0004's ordering bet
+// guards against is caused by *exporting* the grammar rather than by leaving it in place. A
+// published crate name cannot be withdrawn; an unexported module can. `gates/xml-layering`
+// compiles it in a root with no CalDAV vocabulary, and the third rule of `just purity` is what
+// keeps that member from being deleted.
+mod xml;
 
 // The seven modules above that are not the shared foundation, and what each owns. They were
 // written concurrently against the frozen surface and integrated in one pass, which is why

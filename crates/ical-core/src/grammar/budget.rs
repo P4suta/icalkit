@@ -197,6 +197,8 @@ pub struct Limits {
     max_xml_text_bytes: u32,
     /// The most namespace prefix bindings that may be live at once.
     max_prefix_bindings: u16,
+    /// The most busy periods one free-busy report may hold.
+    max_freebusy_periods: u32,
 }
 
 impl Limits {
@@ -235,6 +237,10 @@ impl Limits {
         // CalDAV body carries is a `calendar-data` payload, which is an `.ics` file.
         max_xml_text_bytes: 1_048_576,
         max_prefix_bindings: 64,
+        // The same ceiling an `RDATE` list gets. A free-busy report over a week is a handful
+        // of periods; a report this large is a query whose window is the calibration problem,
+        // and a bound the caller can raise is the honest place to say so.
+        max_freebusy_periods: 4096,
     };
 
     /// The policy for a server that has memory and expects large calendars.
@@ -269,6 +275,7 @@ impl Limits {
         // 64 MiB, tracking `max_value_bytes` for the reason the default tracks it.
         max_xml_text_bytes: 67_108_864,
         max_prefix_bindings: 256,
+        max_freebusy_periods: 65_536,
     };
 
     /// The bounds the content-line grammar observes on its own.
@@ -456,6 +463,18 @@ impl Limits {
     #[must_use]
     pub const fn max_prefix_bindings(self) -> u16 {
         self.max_prefix_bindings
+    }
+
+    /// The most busy periods one free-busy report may hold.
+    ///
+    /// A free-busy report is generated rather than read, so no octet budget reaches it: the
+    /// input is one query and one collection, and the output is however many periods the
+    /// expansion of that collection produces inside the window. The occurrence bound does not
+    /// stand in for it, because one occurrence may contribute several periods and because a
+    /// report merges across resources that were each expanded under their own search.
+    #[must_use]
+    pub const fn max_freebusy_periods(self) -> u32 {
+        self.max_freebusy_periods
     }
 
     /// The same policy with different grammar bounds.
@@ -661,6 +680,15 @@ impl Limits {
             ..self
         }
     }
+
+    /// The same policy with a different free-busy period bound.
+    #[must_use]
+    pub const fn with_max_freebusy_periods(self, periods: u32) -> Self {
+        Self {
+            max_freebusy_periods: periods,
+            ..self
+        }
+    }
 }
 
 impl Default for Limits {
@@ -731,6 +759,8 @@ pub struct Meter {
     observances: u32,
     /// `VTIMEZONE` components admitted so far.
     zones: u32,
+    /// Busy periods admitted so far by every free-busy report this ledger has served.
+    freebusy_periods: u32,
     /// Diagnostics a sink refused, saturating.
     dropped: u32,
     /// Whether the octet budget has been crossed.
@@ -768,6 +798,7 @@ impl Meter {
             overrides: 0,
             observances: 0,
             zones: 0,
+            freebusy_periods: 0,
             dropped: 0,
             exhausted: false,
         }
@@ -1054,6 +1085,28 @@ impl Meter {
     #[must_use]
     pub const fn vtimezone_components(&self) -> u32 {
         self.zones
+    }
+
+    /// Charge one busy period against a free-busy report's bound.
+    ///
+    /// Latching, for the reason [`Meter::try_charge_occurrence`] latches: a report cut off at
+    /// `Limits::max_freebusy_periods` states less busy time than the collection holds, and a
+    /// caller reading it as "free" would double-book somebody. The ledger reading exhausted is
+    /// the report of that which survives being handed on as a plain list of periods.
+    pub fn try_charge_freebusy_period(&mut self) -> Result<(), LimitExceeded> {
+        let next = self.freebusy_periods.saturating_add(1);
+        if next > self.limits.max_freebusy_periods {
+            self.exhausted = true;
+            return Err(LimitExceeded::FreeBusyPeriods);
+        }
+        self.freebusy_periods = next;
+        Ok(())
+    }
+
+    /// Busy periods admitted so far under this ledger.
+    #[must_use]
+    pub const fn freebusy_periods(&self) -> u32 {
+        self.freebusy_periods
     }
 
     /// Recurrence candidates generated inside the period currently open.

@@ -171,6 +171,32 @@ impl Display for SyntaxError {
 
 impl Error for SyntaxError {}
 
+impl From<crate::xml::fault::XmlSyntax> for SyntaxError {
+    /// The one seam between the private XML layer's classification and this public one.
+    ///
+    /// Written out arm by arm rather than shared, because the two types are the same list for a
+    /// reason that will not survive the extraction `docs/adr/0012` deferred: `webdav-core` would
+    /// own the layer's copy and every consumer would map it, exactly as this crate does now.
+    /// Nothing in `src/xml/` may name this type, so the mapping has to live on this side.
+    fn from(error: crate::xml::fault::XmlSyntax) -> Self {
+        match error {
+            crate::xml::fault::XmlSyntax::UndefinedEntity => Self::UndefinedEntity,
+            crate::xml::fault::XmlSyntax::Encoding => Self::Encoding,
+            crate::xml::fault::XmlSyntax::Malformed => Self::Malformed,
+            crate::xml::fault::XmlSyntax::ForbiddenCharacter => Self::ForbiddenCharacter,
+        }
+    }
+}
+
+impl From<crate::xml::fault::XmlFault> for DavError {
+    fn from(fault: crate::xml::fault::XmlFault) -> Self {
+        match fault {
+            crate::xml::fault::XmlFault::Limit(exceeded) => Self::Limit(exceeded),
+            crate::xml::fault::XmlFault::Syntax(error) => Self::Syntax(error.into()),
+        }
+    }
+}
+
 /// A value was read and is not one the protocol defines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]

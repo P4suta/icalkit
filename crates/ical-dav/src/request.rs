@@ -301,6 +301,26 @@ pub struct CalendarDataRequest {
     pub comp: Option<CompSelection>,
 }
 
+impl CalendarDataRequest {
+    /// Whether honoring this request answers with less than the resource holds.
+    ///
+    /// `CALDAV:expand`, `limit-recurrence-set`, `limit-freebusy-set` and `comp` each return a
+    /// calendar that is *not* what the server stored, and the octets that come back say nothing
+    /// about it — they are well-formed iCalendar, so a caller that writes them back deletes what
+    /// was left out. This is the one question a caller has to ask before doing that, and asking
+    /// it used to mean inspecting four fields and knowing which of them reduce.
+    ///
+    /// `false` for a request that asks for the whole object, which is the only shape
+    /// `docs/adr/0001`'s round trip survives.
+    #[must_use]
+    pub const fn is_reducing(&self) -> bool {
+        self.expand.is_some()
+            || self.limit_recurrence_set.is_some()
+            || self.limit_freebusy_set.is_some()
+            || self.comp.is_some()
+    }
+}
+
 /// Which components and properties of a calendar object to return, RFC 4791 section 9.6.1.
 ///
 /// A tree, because the request is one: `VCALENDAR` containing `VEVENT` containing named
@@ -365,6 +385,23 @@ impl CompSelection {
     #[must_use]
     pub fn comps(&self) -> &[Self] {
         self.comps.as_slice()
+    }
+
+    /// Whether the selection states "everything" and names things beside it.
+    ///
+    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two
+    /// halves of each pair are alternatives: a value holding both is one no body can express,
+    /// and reducing it to one of them silently would answer a request nobody wrote.
+    /// [`ValueError::SelectionContradiction`] is the refusal, and this is the predicate that
+    /// finds it — the sibling [`CompFilter::is_contradictory`] and
+    /// [`PropFilter::is_contradictory`] have always had.
+    ///
+    /// It was missing until an evaluator outside this crate needed it, which is the evidence
+    /// `docs/adr/0012` predicted: a filter representation is complete exactly when the thing
+    /// that consumes it can be written without reaching past the accessors.
+    #[must_use]
+    pub fn is_contradictory(&self) -> bool {
+        (self.all_props && !self.props.is_empty()) || (self.all_comps && !self.comps.is_empty())
     }
 }
 

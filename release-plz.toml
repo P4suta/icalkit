@@ -37,6 +37,7 @@ changelog_include = [
   "ical-tz",
   "ical-itip",
   "ical-dav",
+  "ical-query",
   "ical-conform",
 ]
 git_tag_enable = true
@@ -58,6 +59,10 @@ version_group = "icalkit"
 
 [[package]]
 name = "ical-dav"
+version_group = "icalkit"
+
+[[package]]
+name = "ical-query"
 version_group = "icalkit"
 
 [[package]]

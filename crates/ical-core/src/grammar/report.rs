@@ -483,6 +483,23 @@ pub enum DiagnosticCode {
     /// The responses that were read are intact, which is why this is the channel for work cut
     /// short rather than the one for a fault.
     DavSyncTokenWithheld,
+    /// A `calendar-data` selection returned a calendar that is not the one the server stored.
+    ///
+    /// `CALDAV:comp` and `CALDAV:limit-recurrence-set` (RFC 4791 sections 9.6.1 and 9.6.6) both
+    /// answer with less than the resource holds, which is the one place `docs/adr/0001`'s round
+    /// trip is deliberately broken. The octets are still well-formed iCalendar, so nothing about
+    /// them says they are a reduction; a caller that wrote them back would delete whatever the
+    /// selection left out. This is that warning, and it is a note because the reduction is what
+    /// the request asked for.
+    QueryCalendarDataReduced,
+    /// A filter could not be decided, so the resource was neither matched nor excluded.
+    ///
+    /// A floating `DTSTART` compared against a `time-range` needs a zone, and `docs/adr/0003`
+    /// forbids inventing one: a query that carried no `CALDAV:timezone` and a `TZID` no source
+    /// recognizes both leave the comparison with no timeline to make it on. An evaluator that
+    /// answered "no match" there would be reporting an absence it never established, so the
+    /// undecided answer travels to the caller and this says why.
+    QueryFilterUndecidable,
 }
 
 impl DiagnosticCode {
@@ -579,6 +596,8 @@ impl DiagnosticCode {
             Self::DavResponsesTruncated => "dav-responses-truncated",
             Self::DavPropertyMarkupDropped => "dav-property-markup-dropped",
             Self::DavSyncTokenWithheld => "dav-sync-token-withheld",
+            Self::QueryCalendarDataReduced => "query-calendar-data-reduced",
+            Self::QueryFilterUndecidable => "query-filter-undecidable",
         }
     }
 }
@@ -615,7 +634,7 @@ pub struct Subject {
 
 impl Subject {
     /// How many octets of a name are carried.
-    pub const CAPACITY: usize = 48;
+    pub const CAPACITY: usize = 64;
 
     /// The name `octets` spells, truncated to [`Subject::CAPACITY`] if it is longer.
     #[must_use]
@@ -899,8 +918,8 @@ mod tests {
         assert!(format!("{denver}").contains("America/Denver"));
         assert!(denver.subject().is_some_and(|named| !named.is_truncated()));
 
-        let long = "/mozilla.org/20050126_1/Europe/Berlin/and/then/some/more/of/it";
-        let overflowing = Subject::new(long.as_bytes());
+        let long = [b'x'; Subject::CAPACITY + 1];
+        let overflowing = Subject::new(&long);
         assert!(overflowing.is_truncated(), "a longer name says it was cut");
         assert_eq!(overflowing.as_bytes().len(), Subject::CAPACITY);
         assert_eq!(

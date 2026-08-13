@@ -153,6 +153,8 @@ pub enum LimitExceeded {
     VtimezoneObservances,
     /// The number of `VTIMEZONE` components declared by one calendar.
     VtimezoneComponents,
+    /// The number of busy periods one free-busy report may hold.
+    FreeBusyPeriods,
 }
 
 impl Display for LimitExceeded {
@@ -174,6 +176,7 @@ impl Display for LimitExceeded {
             Self::OverrideEntries => "override entry count",
             Self::VtimezoneObservances => "VTIMEZONE observance count",
             Self::VtimezoneComponents => "VTIMEZONE component count",
+            Self::FreeBusyPeriods => "free-busy period count",
         };
         write!(formatter, "the {dimension} limit was exceeded")
     }

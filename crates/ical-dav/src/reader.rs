@@ -98,42 +98,23 @@ use crate::element::{ElementName, Namespace, QName};
 use crate::failure::{DavError, SyntaxError};
 use crate::policy::{DecodeContext, UnknownPolicy};
 use crate::text::{TextMode, check_chars, decode_text, normalize_attribute};
+// The lexical layer and the namespace binding stack are XML's rather than CalDAV's, so they live
+// in the private module `gates/xml-layering` compiles alone (docs/adr/0012). What stays in this
+// file is the state machine, which is stated over `ElementName` and `Namespace` and is therefore
+// the half of the tokenizer that layer may not name.
+use crate::xml::bind::PrefixStack;
+use crate::xml::scan::{
+    BYTE_ORDER_MARK, CDATA_CLOSE, CDATA_OPEN, COMMENT_CLOSE, COMMENT_OPEN, DECLARATION_OPEN,
+    NO_NAMESPACE, check_encoding, declared_prefix, find, is_attribute_name_end, is_name_end,
+    is_name_forbidden, is_space, space_end, split_name,
+};
 
 /// The URI XML Namespaces 1.0 section 3 binds the `xml` prefix to, declared or not.
 ///
-/// RFC 4918 section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, so a
-/// reader that demanded a declaration for it would refuse bodies the specification writes itself.
-pub(crate) const XML_URI: &[u8] = b"http://www.w3.org/XML/1998/namespace";
-
-/// The prefix bound to [`XML_URI`] without a declaration.
-const XML_PREFIX: &[u8] = b"xml";
-
-/// The attribute name that declares a default namespace.
-const XMLNS: &[u8] = b"xmlns";
-
-/// The prefix of an attribute name that declares a prefix.
-const XMLNS_COLON: &[u8] = b"xmlns:";
-
-/// The URI of no namespace at all, which is what an unprefixed attribute is in.
-const NO_NAMESPACE: &[u8] = b"";
-
-/// The UTF-8 byte order mark, which a server is free to put in front of a body.
-const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
-
-/// The head of an XML declaration, which is the one processing instruction this crate reads.
-const DECLARATION_OPEN: &[u8] = b"<?xml";
-
-/// The head of a comment.
-const COMMENT_OPEN: &[u8] = b"<!--";
-
-/// The tail of a comment.
-const COMMENT_CLOSE: &[u8] = b"-->";
-
-/// The head of a `CDATA` section, which is character data rather than markup that ends a run.
-const CDATA_OPEN: &[u8] = b"<![CDATA[";
-
-/// The tail of a `CDATA` section.
-const CDATA_CLOSE: &[u8] = b"]]>";
+/// Re-exported from the private XML layer, which is where the constant now lives: RFC 4918
+/// section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, and reading
+/// that name back is this crate's business rather than the layer's.
+pub(crate) use crate::xml::scan::XML_URI;
 
 /// Where in the document the reader sits, which decides what is legal next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,15 +143,6 @@ struct Open<'a> {
     known: Option<ElementName>,
     /// How many prefix bindings this element declared, and therefore takes away when it closes.
     bindings: u16,
-}
-
-/// A prefix bound to a URI for as long as the element that declared it is open.
-#[derive(Clone, Copy, Debug)]
-struct Binding<'a> {
-    /// The prefix, empty for a default declaration.
-    prefix: &'a [u8],
-    /// The URI it is bound to, exactly as the document spelled it.
-    uri: &'a [u8],
 }
 
 /// One attribute as it lies in the body, before any prefix has been resolved.
@@ -226,8 +198,8 @@ pub struct XmlReader<'a> {
     stage: Stage,
     /// The elements currently open, outermost first. The explicit stack DP-14 promised.
     open: Vec<Open<'a>>,
-    /// Every live binding, in declaration order, so a scope ends by truncating the tail.
-    bindings: Vec<Binding<'a>>,
+    /// Every live binding. The layer holds the stack; this file only asks it questions.
+    bindings: PrefixStack<'a>,
     /// The attributes of the element that has just started, as they lie in the body.
     raw: Vec<RawAttribute<'a>>,
     /// The same attributes with their prefixes resolved, sorted by name.
@@ -255,7 +227,7 @@ impl<'a> XmlReader<'a> {
             at: 0,
             stage: Stage::Prolog,
             open: Vec::new(),
-            bindings: Vec::new(),
+            bindings: PrefixStack::new(),
             raw: Vec::new(),
             resolved: Vec::new(),
             values: Vec::new(),
@@ -598,10 +570,7 @@ impl<'a> XmlReader<'a> {
     /// Close the innermost open element, releasing every binding it declared.
     fn close_open(&mut self, meter: &mut Meter) -> Option<Open<'a>> {
         let open = self.open.pop()?;
-        for _ in 0..open.bindings {
-            self.bindings.pop();
-            meter.unbind_prefix();
-        }
+        self.bindings.unbind(open.bindings, meter);
         meter.leave_element();
         if self.open.is_empty() {
             self.stage = Stage::Epilog;
@@ -712,34 +681,13 @@ impl<'a> XmlReader<'a> {
             if !prefix.is_empty() && attribute.value.is_empty() {
                 return Err(SyntaxError::Malformed.into());
             }
-            if self.declared_here(declared, prefix) {
+            if self.bindings.declared_here(declared, prefix) {
                 return Err(SyntaxError::DuplicateAttribute.into());
             }
-            meter.try_bind_prefix()?;
-            self.bindings
-                .try_reserve(1)
-                .map_err(|_| LimitExceeded::Budget)?;
-            self.bindings.push(Binding {
-                prefix,
-                uri: attribute.value,
-            });
+            self.bindings.bind(prefix, attribute.value, meter)?;
             declared = declared.saturating_add(1);
         }
         Ok(declared)
-    }
-
-    /// Whether the element being read has already declared `prefix` itself.
-    ///
-    /// Only its own declarations: shadowing an outer binding is what a prefix rebound
-    /// mid-document does, and it is ordinary rather than an error.
-    fn declared_here(&self, declared: u16, prefix: &[u8]) -> bool {
-        let held = usize::from(declared);
-        let first = self.bindings.len().saturating_sub(held);
-        self.bindings
-            .get(first..)
-            .unwrap_or(&[])
-            .iter()
-            .any(|binding| binding.prefix == prefix)
     }
 
     /// Resolve and normalize every attribute that is not a declaration, refusing a repeat.
@@ -813,14 +761,9 @@ impl<'a> XmlReader<'a> {
     /// Named apart from the trait method it answers so that no call inside this file depends on
     /// inherent methods winning over trait methods of the same name.
     fn binding_for(&self, prefix: &[u8]) -> Option<Namespace<'a>> {
-        if prefix == XML_PREFIX {
-            return Some(Namespace::from_uri(XML_URI));
-        }
-        self.bindings
-            .iter()
-            .rev()
-            .find(|binding| binding.prefix == prefix)
-            .map(|binding| Namespace::from_uri(binding.uri))
+        // The layer answers with the octets the document bound; classifying those into the
+        // closed vocabulary is this crate's and not the layer's, which is the seam in one line.
+        self.bindings.uri_for(prefix).map(Namespace::from_uri)
     }
 
     /// Consume the element that has just started, and everything inside it.
@@ -919,114 +862,6 @@ fn same_name(left: QName<'_>, right: QName<'_>) -> bool {
 /// The key a name sorts under, which orders the namespace before the local name.
 fn sort_key(name: QName<'_>) -> (&[u8], &[u8]) {
     (name.namespace.uri(), name.local_name)
-}
-
-/// The prefix an attribute name declares, if it is a namespace declaration at all.
-///
-/// `xmlns` declares the default namespace, whose prefix is the empty one; `xmlns:p` declares
-/// `p`. Everything else is an ordinary attribute.
-fn declared_prefix(name: &[u8]) -> Option<&[u8]> {
-    if name == XMLNS {
-        return Some(NO_NAMESPACE);
-    }
-    name.strip_prefix(XMLNS_COLON)
-        .filter(|prefix| !prefix.is_empty())
-}
-
-/// Split a name into its prefix and its local part.
-fn split_name(name: &[u8]) -> Result<(&[u8], &[u8]), DavError> {
-    let Some(colon) = name.iter().position(|byte| *byte == b':') else {
-        return Ok((NO_NAMESPACE, name));
-    };
-    let prefix = name.get(..colon).ok_or(SyntaxError::Malformed)?;
-    let local = name
-        .get(colon.saturating_add(1)..)
-        .ok_or(SyntaxError::Malformed)?;
-    // XML Namespaces 1.0 section 4 gives a qualified name exactly one colon. Two is a name no
-    // vocabulary here defines, and reading it as a prefix and a local name with a colon in it
-    // is the kind of guess this reader does not make.
-    if prefix.is_empty() || local.is_empty() || local.contains(&b':') {
-        return Err(SyntaxError::Malformed.into());
-    }
-    Ok((prefix, local))
-}
-
-/// Whether an octet is XML whitespace.
-const fn is_space(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
-}
-
-/// Where the whitespace starting at `from` ends.
-fn space_end(body: &[u8], from: usize) -> usize {
-    let mut at = from;
-    while body.get(at).is_some_and(|byte| is_space(*byte)) {
-        at = at.saturating_add(1);
-    }
-    at
-}
-
-/// Whether an octet ends an element name.
-fn is_name_end(byte: u8) -> bool {
-    is_space(byte) || matches!(byte, b'/' | b'>')
-}
-
-/// Whether an octet ends an attribute name, which `=` does and an element name's does not.
-fn is_attribute_name_end(byte: u8) -> bool {
-    is_name_end(byte) || byte == b'='
-}
-
-/// Whether an octet is one XML 1.0 section 2.3's `Name` production cannot hold.
-///
-/// Not the whole production: this is a refusal of the octets that would let a name smuggle
-/// markup past the scanner, not an implementation of the `NameChar` character classes.
-fn is_name_forbidden(byte: u8) -> bool {
-    matches!(byte, b'<' | b'&' | b'"' | b'\'' | b'=')
-}
-
-/// The first position of `needle` in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-/// Refuse a declaration naming an encoding this crate does not read.
-///
-/// An absent encoding declaration is UTF-8, which XML 1.0 section 4.3.3 makes the default for
-/// an entity that carries none, and which RFC 4918 section 20 requires of a `DAV:` body anyway.
-fn check_encoding(declaration: &[u8]) -> Result<(), DavError> {
-    let Some(at) = find(declaration, b"encoding") else {
-        return Ok(());
-    };
-    let rest = declaration
-        .get(at.saturating_add(b"encoding".len())..)
-        .unwrap_or(&[]);
-    let named = quoted_value(rest).ok_or(SyntaxError::Malformed)?;
-    if named.eq_ignore_ascii_case(b"utf-8") {
-        Ok(())
-    } else {
-        Err(SyntaxError::Encoding.into())
-    }
-}
-
-/// The value of an `= "..."` at the head of `rest`, quotes excluded.
-///
-/// Both quote characters, because Radicale writes its declaration with apostrophes and a reader
-/// that took only `"` would refuse the body of a server people run.
-fn quoted_value(rest: &[u8]) -> Option<&[u8]> {
-    let at = space_end(rest, 0);
-    if rest.get(at) != Some(&b'=') {
-        return None;
-    }
-    let at = space_end(rest, at.saturating_add(1));
-    let quote = *rest.get(at)?;
-    if quote != b'"' && quote != b'\'' {
-        return None;
-    }
-    let opens = at.saturating_add(1);
-    let tail = rest.get(opens..)?;
-    let end = tail.iter().position(|byte| *byte == quote)?;
-    tail.get(..end)
 }
 
 #[cfg(test)]
