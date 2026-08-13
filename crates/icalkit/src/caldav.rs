@@ -365,6 +365,22 @@ pub struct ScheduleDelivery {
 }
 
 impl ScheduleDelivery {
+    /// Construct one recipient outcome with a syntactically valid iTIP status code.
+    pub fn new(
+        recipient: impl Into<String>,
+        request_status: impl Into<String>,
+    ) -> Result<Self, Error> {
+        let recipient = recipient.into();
+        let request_status = request_status.into();
+        if !is_cal_address(&recipient) || !is_request_status(&request_status) {
+            return Err(Error::single("icalkit.caldav.schedule-delivery-invalid"));
+        }
+        Ok(Self {
+            recipient,
+            request_status,
+        })
+    }
+
     /// Calendar user address this result describes.
     #[must_use]
     pub fn recipient(&self) -> &str {
@@ -391,6 +407,20 @@ pub struct ScheduleResponse {
 }
 
 impl ScheduleResponse {
+    /// Construct a non-empty set of unique recipient outcomes.
+    pub fn new(deliveries: Vec<ScheduleDelivery>) -> Result<Self, Error> {
+        if deliveries.is_empty()
+            || deliveries.iter().enumerate().any(|(index, delivery)| {
+                deliveries[..index]
+                    .iter()
+                    .any(|earlier| earlier.recipient == delivery.recipient)
+            })
+        {
+            return Err(Error::single("icalkit.caldav.schedule-response-invalid"));
+        }
+        Ok(Self { deliveries })
+    }
+
     /// Recipient outcomes in server response order.
     #[must_use]
     pub fn deliveries(&self) -> &[ScheduleDelivery] {
@@ -513,6 +543,27 @@ fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a [u8]> {
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case(name))
         .map(|header| header.value.as_slice())
+}
+
+fn is_cal_address(value: &str) -> bool {
+    !value.is_empty()
+        && !value
+            .bytes()
+            .any(|octet| octet.is_ascii_control() || octet.is_ascii_whitespace())
+}
+
+fn is_request_status(value: &str) -> bool {
+    if value.is_empty() || value.bytes().any(|octet| octet.is_ascii_control()) {
+        return false;
+    }
+    let code = value.split(';').next().unwrap_or("");
+    let Some((class, detail)) = code.split_once('.') else {
+        return false;
+    };
+    !class.is_empty()
+        && !detail.is_empty()
+        && class.bytes().all(|octet| octet.is_ascii_digit())
+        && detail.bytes().all(|octet| octet.is_ascii_digit())
 }
 
 fn encode_xml(
@@ -752,6 +803,121 @@ impl MkCalendarRequest {
     }
 }
 
+struct ScheduleRequest {
+    message: Message,
+    originator: String,
+    recipients: Vec<String>,
+}
+
+impl ScheduleRequest {
+    fn parse(headers: &[Header], body: &[u8], policy: ResourcePolicy) -> Result<Self, Error> {
+        let header_octets = headers.iter().fold(0u64, |total, header| {
+            total
+                .saturating_add(u64::try_from(header.name.len()).unwrap_or(u64::MAX))
+                .saturating_add(u64::try_from(header.value.len()).unwrap_or(u64::MAX))
+        });
+        if header_octets > policy.max_input_bytes() {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        }
+
+        let content_type = required_single_header(headers, "Content-Type")?;
+        let method = content_type_method(content_type)?;
+        let originator = required_single_header(headers, "Originator")?;
+        let originator = str::from_utf8(originator)
+            .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?
+            .to_string();
+        if !is_cal_address(&originator) {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        }
+
+        let mut recipients = Vec::new();
+        for header in headers
+            .iter()
+            .filter(|header| header.name.eq_ignore_ascii_case("Recipient"))
+        {
+            let value = str::from_utf8(&header.value)
+                .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+            for recipient in value.split(',').map(str::trim) {
+                if !is_cal_address(recipient)
+                    || recipients.iter().any(|held: &String| held == recipient)
+                {
+                    return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+                }
+                recipients.push(recipient.to_string());
+            }
+        }
+        if recipients.is_empty() {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        }
+
+        let message = Message::read(body)
+            .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+        if !method.eq_ignore_ascii_case(message.method()) {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        }
+        Ok(Self {
+            message,
+            originator,
+            recipients,
+        })
+    }
+}
+
+fn required_single_header<'a>(headers: &'a [Header], name: &str) -> Result<&'a [u8], Error> {
+    let mut values = headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.as_slice());
+    let value = values
+        .next()
+        .ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+    if values.next().is_some() {
+        return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+    }
+    Ok(value)
+}
+
+fn content_type_method(value: &[u8]) -> Result<&str, Error> {
+    let value = str::from_utf8(value)
+        .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+    let mut parts = value.split(';');
+    if !parts
+        .next()
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/calendar"))
+    {
+        return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+    }
+
+    let mut method = None;
+    for parameter in parts {
+        let (name, value) = parameter
+            .split_once('=')
+            .ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+        if !name.trim().eq_ignore_ascii_case("method") {
+            continue;
+        }
+        if method.is_some() {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        }
+        let value = value.trim();
+        let value = match value.strip_prefix('"') {
+            Some(quoted) => quoted
+                .strip_suffix('"')
+                .ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))?,
+            None => value,
+        };
+        if value.is_empty()
+            || value
+                .bytes()
+                .any(|octet| !octet.is_ascii_alphanumeric() && octet != b'-')
+        {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
+        }
+        method = Some(value);
+    }
+    method.ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))
+}
+
 fn validate_header_text(value: &str) -> Result<(), Error> {
     if value.is_empty() || value.as_bytes().iter().any(u8::is_ascii_control) {
         return Err(Error::single("icalkit.caldav.header-value-invalid"));
@@ -884,9 +1050,8 @@ impl ScheduleParser {
         if self.stage != ScheduleStage::Finished {
             return Err(Error::single("icalkit.caldav.schedule-invalid"));
         }
-        Ok(ScheduleResponse {
-            deliveries: self.deliveries,
-        })
+        ScheduleResponse::new(self.deliveries)
+            .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))
     }
 }
 
@@ -924,6 +1089,47 @@ fn decode_schedule_response(
         parser.event(event)?;
     }
     parser.finish()
+}
+
+fn encode_schedule_response(
+    response: &ScheduleResponse,
+    policy: ResourcePolicy,
+) -> Result<Vec<u8>, Error> {
+    let mut meter = Meter::new(policy.limits);
+    let root = ExtensionName::new(Namespace::CALDAV_URI, b"schedule-response", &mut meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    let response_element = ExtensionName::new(Namespace::CALDAV_URI, b"response", &mut meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    let recipient = ExtensionName::new(Namespace::CALDAV_URI, b"recipient", &mut meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    let request_status = ExtensionName::new(Namespace::CALDAV_URI, b"request-status", &mut meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    let mut body = Vec::new();
+    {
+        let mut writer = XmlWriter::new(&mut body, &mut meter);
+        writer
+            .open_extension(&root)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+        for delivery in response.deliveries() {
+            writer
+                .open_extension(&response_element)
+                .and_then(|()| writer.open_extension(&recipient))
+                .and_then(|()| writer.open(ElementName::Href))
+                .and_then(|()| writer.text(delivery.recipient().as_bytes()))
+                .and_then(|()| writer.close())
+                .and_then(|()| writer.close())
+                .and_then(|()| writer.open_extension(&request_status))
+                .and_then(|()| writer.text(delivery.request_status().as_bytes()))
+                .and_then(|()| writer.close())
+                .and_then(|()| writer.close())
+                .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+        }
+        writer
+            .close()
+            .and_then(|()| writer.finish())
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    Ok(body)
 }
 
 /// An owned sans-I/O HTTP request.
@@ -1486,6 +1692,7 @@ impl Server {
         match request.method.as_str() {
             "REPORT" => self.handle_query(request),
             "MKCALENDAR" => self.handle_mkcalendar(request),
+            "POST" => self.handle_schedule(request),
             _ => Err(Error::single("icalkit.caldav.server-method-unsupported")),
         }
     }
@@ -1568,6 +1775,61 @@ impl Server {
             policy,
         ))
     }
+
+    fn handle_schedule(&self, request: WireRequest) -> Result<ServerOperation, Error> {
+        let schedule = ScheduleRequest::parse(&request.headers, &request.body, self.policy)?;
+        let method = request.method;
+        let uri = request.uri;
+        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let policy = self.policy;
+        Ok(ServerOperation::from_responder(
+            need,
+            Box::new(move |answer| {
+                let ServerAnswerKind::Authorized(authorized) = answer.kind else {
+                    return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                };
+                if !authorized {
+                    return Ok(ServerStep::Done(WireResponse::new(
+                        403,
+                        Vec::new(),
+                        Vec::new(),
+                    )));
+                }
+                let expected_recipients = schedule.recipients.clone();
+                let need = ServerNeed::schedule("caldav.schedule.deliver", &method, &uri, schedule);
+                Ok(ServerStep::Need(
+                    need,
+                    Box::new(move |answer| {
+                        let ServerAnswerKind::Schedule(response) = answer.kind else {
+                            return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                        };
+                        if response.deliveries.len() != expected_recipients.len()
+                            || expected_recipients.iter().any(|recipient| {
+                                !response
+                                    .deliveries
+                                    .iter()
+                                    .any(|delivery| &delivery.recipient == recipient)
+                            })
+                        {
+                            return Err(Error::single(
+                                "icalkit.caldav.schedule-response-incomplete",
+                            ));
+                        }
+                        let body = encode_schedule_response(&response, policy)?;
+                        Ok(ServerStep::Done(WireResponse::new(
+                            200,
+                            vec![Header::new(
+                                "Content-Type",
+                                b"application/xml; charset=utf-8".to_vec(),
+                            )],
+                            body,
+                        )))
+                    }),
+                ))
+            }),
+            policy,
+        ))
+    }
 }
 
 impl Default for Server {
@@ -1583,6 +1845,9 @@ pub struct ServerNeed {
     method: Option<String>,
     uri: Option<String>,
     body: Vec<u8>,
+    message: Option<Box<Message>>,
+    originator: Option<String>,
+    recipients: Vec<String>,
 }
 
 impl ServerNeed {
@@ -1594,6 +1859,9 @@ impl ServerNeed {
             method: None,
             uri: None,
             body: Vec::new(),
+            message: None,
+            originator: None,
+            recipients: Vec::new(),
         }
     }
 
@@ -1603,6 +1871,9 @@ impl ServerNeed {
             method: Some(method.to_string()),
             uri: Some(uri.to_string()),
             body: Vec::new(),
+            message: None,
+            originator: None,
+            recipients: Vec::new(),
         }
     }
 
@@ -1612,6 +1883,21 @@ impl ServerNeed {
             method: Some(method.to_string()),
             uri: Some(uri.to_string()),
             body,
+            message: None,
+            originator: None,
+            recipients: Vec::new(),
+        }
+    }
+
+    fn schedule(code: &'static str, method: &str, uri: &str, request: ScheduleRequest) -> Self {
+        Self {
+            code,
+            method: Some(method.to_string()),
+            uri: Some(uri.to_string()),
+            body: Vec::new(),
+            message: Some(Box::new(request.message)),
+            originator: Some(request.originator),
+            recipients: request.recipients,
         }
     }
 
@@ -1638,6 +1924,24 @@ impl ServerNeed {
     pub fn body(&self) -> &[u8] {
         &self.body
     }
+
+    /// Validated iTIP message associated with a scheduling delivery need.
+    #[must_use]
+    pub fn message(&self) -> Option<&Message> {
+        self.message.as_deref()
+    }
+
+    /// Validated RFC 6638 Originator value associated with a scheduling need.
+    #[must_use]
+    pub fn originator(&self) -> Option<&str> {
+        self.originator.as_deref()
+    }
+
+    /// Validated RFC 6638 recipients associated with a scheduling need.
+    #[must_use]
+    pub fn recipients(&self) -> &[String] {
+        &self.recipients
+    }
 }
 
 /// An application answer supplied to a server workflow.
@@ -1652,6 +1956,7 @@ enum ServerAnswerKind {
     Authorized(bool),
     Created(bool),
     Resources(Vec<StoredResource>),
+    Schedule(ScheduleResponse),
 }
 
 impl ServerAnswer {
@@ -1687,6 +1992,14 @@ impl ServerAnswer {
         }
     }
 
+    /// Supply typed outcomes for every requested scheduling recipient.
+    #[must_use]
+    pub fn schedule_response(response: ScheduleResponse) -> Self {
+        Self {
+            kind: ServerAnswerKind::Schedule(response),
+        }
+    }
+
     /// Application answer octets.
     #[must_use]
     pub fn body(&self) -> &[u8] {
@@ -1694,7 +2007,8 @@ impl ServerAnswer {
             ServerAnswerKind::Bytes(body) => body,
             ServerAnswerKind::Authorized(_)
             | ServerAnswerKind::Created(_)
-            | ServerAnswerKind::Resources(_) => &[],
+            | ServerAnswerKind::Resources(_)
+            | ServerAnswerKind::Schedule(_) => &[],
         }
     }
 }

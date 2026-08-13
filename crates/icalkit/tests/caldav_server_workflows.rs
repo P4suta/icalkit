@@ -5,7 +5,12 @@
 //! CalDAV server workflows with ACL and storage kept outside the crate.
 
 use icalkit::Calendar;
-use icalkit::caldav::{Server, ServerAnswer, StoredResource, WireRequest};
+use icalkit::caldav::{
+    Client, Header, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer, StoredResource,
+    WireRequest,
+};
+use icalkit::scheduling::Message;
+use icalkit::time::Timestamp;
 
 const MATCHING: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
@@ -24,6 +29,21 @@ BEGIN:VEVENT\r\n\
 UID:two@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
 SUMMARY:Finance\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+
+const SCHEDULING_PAYLOAD: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit server tests//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:scheduled@example.test\r\n\
+DTSTAMP:20260813T120000Z\r\n\
+DTSTART:20260814T090000Z\r\n\
+SUMMARY:Planning\r\n\
+ORGANIZER:mailto:alice@example.test\r\n\
+ATTENDEE:mailto:bob@example.test\r\n\
+ATTENDEE:mailto:carol@example.test\r\n\
+SEQUENCE:1\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
 
@@ -68,6 +88,20 @@ fn mkcalendar(body: &[u8]) -> WireRequest {
         Vec::new(),
         body.to_vec(),
     )
+}
+
+fn schedule_operation() -> Option<(icalkit::caldav::Operation<ScheduleResponse>, WireRequest)> {
+    let message = Message::request(SCHEDULING_PAYLOAD, Timestamp::constant(0, 0)).ok()?;
+    let operation = Client::new()
+        .schedule(
+            "/outbox/alice/",
+            "mailto:alice@example.test",
+            &["mailto:bob@example.test", "mailto:carol@example.test"],
+            &message,
+        )
+        .ok()?;
+    let request = operation.next_request()?.clone();
+    Some((operation, request))
 }
 
 #[test]
@@ -214,5 +248,119 @@ fn server_rejects_malformed_mkcalendar_before_asking_for_acl() {
     assert_eq!(
         error.issues()[0].code().as_str(),
         "icalkit.caldav.mkcalendar-invalid"
+    );
+}
+
+#[test]
+fn server_outbox_post_round_trips_typed_delivery_results() {
+    let (mut client_operation, request) = schedule_operation().unwrap();
+    let mut server_operation = Server::new().handle(request).unwrap();
+
+    let acl = server_operation.next_need().unwrap();
+    assert_eq!(acl.code(), "caldav.authorize");
+    assert_eq!(acl.method(), Some("POST"));
+    assert_eq!(acl.uri(), Some("/outbox/alice/"));
+    server_operation
+        .supply(ServerAnswer::authorized(true))
+        .unwrap();
+
+    let delivery = server_operation.next_need().unwrap();
+    assert_eq!(delivery.code(), "caldav.schedule.deliver");
+    assert_eq!(delivery.message().unwrap().method(), "REQUEST");
+    assert_eq!(delivery.originator(), Some("mailto:alice@example.test"));
+    assert_eq!(
+        delivery.recipients(),
+        &[
+            "mailto:bob@example.test".to_string(),
+            "mailto:carol@example.test".to_string()
+        ]
+    );
+
+    let outcomes = ScheduleResponse::new(vec![
+        ScheduleDelivery::new("mailto:carol@example.test", "3.7;Invalid <calendar> & user")
+            .unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", "2.0;Success").unwrap(),
+    ])
+    .unwrap();
+    server_operation
+        .supply(ServerAnswer::schedule_response(outcomes))
+        .unwrap();
+
+    let wire_response = server_operation.finish().unwrap();
+    assert_eq!(wire_response.status(), 200);
+    client_operation.accept(wire_response).unwrap();
+    let decoded = client_operation.finish().unwrap();
+    assert_eq!(decoded.deliveries().len(), 2);
+    assert_eq!(
+        decoded.deliveries()[0].recipient(),
+        "mailto:carol@example.test"
+    );
+    assert_eq!(
+        decoded.deliveries()[0].request_status(),
+        "3.7;Invalid <calendar> & user"
+    );
+    assert_eq!(decoded.deliveries()[1].request_status(), "2.0;Success");
+}
+
+#[test]
+fn server_rejects_an_invalid_scheduling_request_before_acl() {
+    let request = WireRequest::new(
+        "POST",
+        "/outbox/alice/",
+        vec![
+            Header::new("Content-Type", b"text/calendar; method=REQUEST".to_vec()),
+            Header::new("Originator", b"mailto:alice@example.test".to_vec()),
+            Header::new("Recipient", b"mailto:bob@example.test".to_vec()),
+        ],
+        b"not an iTIP message".to_vec(),
+    );
+    let error = Server::new().handle(request).unwrap_err();
+
+    assert_eq!(
+        error.issues()[0].code().as_str(),
+        "icalkit.caldav.schedule-request-invalid"
+    );
+}
+
+#[test]
+fn server_rejects_a_mime_method_that_disagrees_with_itip() {
+    let (_, valid) = schedule_operation().unwrap();
+    let request = WireRequest::new(
+        "POST",
+        valid.uri(),
+        vec![
+            Header::new("Content-Type", b"text/calendar; method=REPLY".to_vec()),
+            Header::new("Originator", b"mailto:alice@example.test".to_vec()),
+            Header::new(
+                "Recipient",
+                b"mailto:bob@example.test, mailto:carol@example.test".to_vec(),
+            ),
+        ],
+        valid.body().to_vec(),
+    );
+    let error = Server::new().handle(request).unwrap_err();
+
+    assert_eq!(
+        error.issues()[0].code().as_str(),
+        "icalkit.caldav.schedule-request-invalid"
+    );
+}
+
+#[test]
+fn server_refuses_incomplete_delivery_results() {
+    let (_, request) = schedule_operation().unwrap();
+    let mut operation = Server::new().handle(request).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+    let incomplete = ScheduleResponse::new(vec![
+        ScheduleDelivery::new("mailto:bob@example.test", "2.0;Success").unwrap(),
+    ])
+    .unwrap();
+
+    let error = operation
+        .supply(ServerAnswer::schedule_response(incomplete))
+        .unwrap_err();
+    assert_eq!(
+        error.issues()[0].code().as_str(),
+        "icalkit.caldav.schedule-response-incomplete"
     );
 }
