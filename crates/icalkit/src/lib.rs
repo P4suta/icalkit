@@ -9,6 +9,13 @@
 
 extern crate alloc;
 
+// Root-local dependency adapter for the XML layer, whose source is also compiled by its
+// standalone layering gate and the temporary DAV compatibility harness. Keeping this spelling
+// stable lets that layer name only its metering dependency and never its protocol parent.
+extern crate self as ical_core;
+#[allow(unused_imports)]
+pub(crate) use crate::internal::core::{LimitExceeded, Limits, Meter};
+
 mod calendar;
 mod engine;
 mod failure;

@@ -73,7 +73,9 @@
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 
-use ical_core::{CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, Weekday};
+use crate::internal::core::{
+    CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, Weekday,
+};
 
 use crate::internal::recur::rule::{Freq, RecurrenceRule};
 
@@ -334,7 +336,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use ical_core::{CivilDate, CivilDateTime, CivilTime, UtcOffset, Weekday};
+    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime, UtcOffset, Weekday};
 
     use super::{Period, PeriodWalk};
     use crate::internal::recur::rule::{

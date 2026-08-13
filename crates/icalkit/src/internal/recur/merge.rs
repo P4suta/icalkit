@@ -51,7 +51,7 @@
 //! # The precedence, stated rather than emergent
 //!
 //! 1. **`EXDATE` wins over an override.** An instant in both an `EXDATE` list and the override
-//!    table is dropped, and [`ical_core::DiagnosticCode::ExdateShadowsOverride`] says so. There
+//!    table is dropped, and [`crate::internal::core::DiagnosticCode::ExdateShadowsOverride`] says so. There
 //!    is no RFC behind this; an intentional deletion beating a modification is this project's
 //!    choice.
 //! 2. **The exclusion is scoped to the instant, never to the override object.** A redundant
@@ -112,8 +112,8 @@
 //! `key + shift` is checked, because it is arithmetic on numbers an attacker supplied: an anchor
 //! may state a shift of half the timeline. When the sum leaves the representable timeline the
 //! occurrence is filtered rather than moved to a nearby one, which is `docs/adr/0011`'s rule, and
-//! it is reported on [`ical_core::DiagnosticCode::OverrideShiftNotRepresentable`]. That is a
-//! different fact from [`ical_core::DiagnosticCode::NonexistentRecurrenceInstance`], which names
+//! it is reported on [`crate::internal::core::DiagnosticCode::OverrideShiftNotRepresentable`]. That is a
+//! different fact from [`crate::internal::core::DiagnosticCode::NonexistentRecurrenceInstance`], which names
 //! a date RFC 5545 section 3.3.10 defines away in a legal file; here the file asked for an
 //! instant no calendar can hold, so the two travel apart.
 //!
@@ -124,16 +124,16 @@
 //!   path.
 //! - It must not filter by window. A window admits by cadence key and an override may move a
 //!   start out of it; the filtering, the widening and
-//!   [`ical_core::DiagnosticCode::OverrideLeftWindow`] are unit 7's.
+//!   [`crate::internal::core::DiagnosticCode::OverrideLeftWindow`] are unit 7's.
 //! - It must not interpret `EXRULE`. RFC 5545 obsoleted it; `ical-core` preserves it.
 //! - It must not merge a second `RRULE`. The extra is dropped with
-//!   [`ical_core::DiagnosticCode::ExtraRecurrenceRuleIgnored`], because `COUNT` is ambiguous
+//!   [`crate::internal::core::DiagnosticCode::ExtraRecurrenceRuleIgnored`], because `COUNT` is ambiguous
 //!   across a union and the cursor carries one counter. [`keep_first_rule`] is where that
 //!   happens, and it is here rather than beside [`crate::internal::recur::input::RecurrenceInput`] because that
 //!   type holds one rule by construction — by the time an input exists the second rule is
 //!   already gone, and a drop nobody reported is the silence this crate is against.
 //! - It must not charge a candidate or an occurrence. Unit 7 owns those two charge sites. The
-//!   meter travels here because [`ical_core::report_diagnostic`] charges a refused diagnostic to
+//!   meter travels here because [`crate::internal::core::report_diagnostic`] charges a refused diagnostic to
 //!   it, and because the three lists were charged to it before this type ever saw them.
 //!
 //! # How it is tested on its own
@@ -146,7 +146,7 @@
 //! anything other than the instant scalar would survive a table of round numbers and fail on
 //! 2024-02-29.
 
-use ical_core::{
+use crate::internal::core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, report_diagnostic,
 };
 
@@ -429,7 +429,7 @@ pub fn keep_first_rule<'a, S: DiagnosticSink + ?Sized>(
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
         Instant, Limits, Meter, Property, PropertyId, UtcOffset,
     };

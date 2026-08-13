@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter};
 
-use ical_core::{Diagnostic, Severity};
+use crate::internal::core::{Diagnostic, Severity};
 
 /// A stable machine-readable diagnostic identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

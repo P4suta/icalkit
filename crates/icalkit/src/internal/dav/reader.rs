@@ -14,8 +14,8 @@
 //!
 //! There is no recursion anywhere in this file. Open elements live in a `Vec` this type holds,
 //! so a body nested a million deep costs a million entries of a heap vector — each one charged
-//! through [`ical_core::Meter::try_enter_element`] and refused at
-//! [`ical_core::Limits::max_xml_depth`] — and never a frame of the caller's stack. That is the
+//! through [`crate::internal::core::Meter::try_enter_element`] and refused at
+//! [`crate::internal::core::Limits::max_xml_depth`] — and never a frame of the caller's stack. That is the
 //! claim `docs/adr/0004` (DP-14) made in prose and nothing backed until this file existed.
 //!
 //! # What it refuses
@@ -91,7 +91,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{DiagnosticCode, LimitExceeded, Meter, Severity};
+use crate::internal::core::{DiagnosticCode, LimitExceeded, Meter, Severity};
 use xmlparser::{Error as LexerError, StreamError, Token, Tokenizer};
 
 use crate::internal::dav::codec::{XmlEvent, XmlPull};
@@ -219,7 +219,7 @@ impl<'a> XmlReader<'a> {
     /// than copy on the caller's behalf.
     ///
     /// Nothing is read here and nothing is charged here. The body's own length is checked
-    /// against [`ical_core::Limits::max_response_bytes`] on the first call that carries a
+    /// against [`crate::internal::core::Limits::max_response_bytes`] on the first call that carries a
     /// policy, because a constructor with no [`DecodeContext`] has none to check against.
     #[must_use]
     pub const fn new(body: &'a [u8]) -> Self {
@@ -939,7 +939,7 @@ fn sort_key(name: QName<'_>) -> (&[u8], &[u8]) {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         Diagnostic, DiagnosticCode, IgnoreDiagnostics, LimitExceeded, Limits, Meter, Severity,
     };
 

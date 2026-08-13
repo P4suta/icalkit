@@ -80,8 +80,8 @@
 //! `start < DTEND`. Every one of those asymmetries is in the RFC, none of them is a typo here, and
 //! normalizing any of them drops or admits resources a conformant server does not.
 
+use crate::internal::core::{ComponentKind, Instant};
 use crate::internal::dav::TimeRange;
-use ical_core::{ComponentKind, Instant};
 
 use crate::internal::query::vocabulary::{BusyPeriod, Match, Undecided};
 
@@ -881,8 +881,8 @@ static ROWS: &[Row] = &[
 
 #[cfg(test)]
 mod tests {
+    use crate::internal::core::{ComponentKind, Instant};
     use crate::internal::dav::TimeRange;
-    use ical_core::{ComponentKind, Instant};
 
     use super::{Occupancy, ROWS, overlaps};
     use crate::internal::query::vocabulary::{BusyPeriod, BusyType, Match, Undecided};

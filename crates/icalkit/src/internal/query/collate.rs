@@ -154,8 +154,8 @@ pub(crate) fn contains_text(value: &[u8], matcher: &TextMatch) -> Result<bool, Q
 
 #[cfg(test)]
 mod tests {
+    use crate::internal::core::{Limits, Meter};
     use crate::internal::dav::{Collation, TextMatch};
-    use ical_core::{Limits, Meter};
 
     use super::{collator_of, contains, contains_text};
     use crate::internal::query::vocabulary::{Collator, QueryError};

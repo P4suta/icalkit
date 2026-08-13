@@ -17,7 +17,7 @@
 
 use alloc::boxed::Box;
 
-use ical_core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
+use crate::internal::core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
 
 use crate::internal::dav::bound::Bounded;
 use crate::internal::dav::codec::ResponseSource;
@@ -424,7 +424,7 @@ impl MultiStatus {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Diagnostic, DiagnosticCode, Limits, Meter};
+    use crate::internal::core::{Diagnostic, DiagnosticCode, Limits, Meter};
 
     use super::{
         CalendarPayload, DavProperty, DavResponse, MultiStatus, PropStat, PropValue, ResponseBody,

@@ -43,10 +43,11 @@ second time in a crate root holding no model, so a reference to `CivilDate` from
 grammar is `error[E0432]` with a file and a line rather than a review comment. What that
 member cannot catch is `crate::X` for an `X` the crate root re-exports from the grammar
 itself — it resolves there too — so `just purity` carries a second, textual rule: no path
-under `crates/ical-core/src/grammar/` may resolve above that directory, no `extern crate` and
-no `#[path]` inside it, every `.rs` file there declared by its `mod.rs`, and the tree stays
-flat. That rule is hygiene about not routing a lateral import through the parent crate's
-public surface. It is not what the layering member proves, and no compiler enforces it. The
+under `crates/icalkit/src/internal/core/grammar/` may resolve above that directory, neither
+`extern crate` nor `#[path]` may appear inside it, every `.rs` file there is declared by its
+`mod.rs`, and the tree stays flat. That rule is hygiene about not routing a lateral import
+through the parent crate's private surface. It is not what the layering member proves, and no
+compiler enforces it. The
 member itself is held to the workspace by a third rule of the same task, because a pull request
 deleting it used to pass every gate here (ADR 0004, amendment 18).
 

@@ -110,6 +110,11 @@ pub mod transition;
 // Isolation bridge for the moved source. The implementation uses one stable, crate-shaped
 // private root in both its real home and this temporary compatibility harness.
 pub(crate) mod internal {
+    /// Compatibility alias used by iTIP source now living above the private kernel.
+    pub(crate) mod core {
+        pub(crate) use ical_core::*;
+    }
+
     #[allow(unused_imports)]
     pub(crate) mod itip {
         #[cfg(feature = "freebusy")]

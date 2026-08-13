@@ -53,7 +53,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{Limits, Meter};
+use crate::internal::core::{Limits, Meter};
 
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::Method;
@@ -472,8 +472,10 @@ impl<'a> Reader<'a> {
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::internal::core::{
+        ComponentKind, GrammarLimits, IgnoreDiagnostics, Instant, Limits, Meter,
+    };
     use crate::internal::recur::OverrideRange;
-    use ical_core::{ComponentKind, GrammarLimits, IgnoreDiagnostics, Instant, Limits, Meter};
 
     use super::{MediaTypeError, MediaTypeParams, sender_is_named};
     use crate::internal::itip::authorize::{AuthorizationDenied, evaluate_message};
@@ -553,7 +555,7 @@ mod tests {
         Result<TransitionReason, AuthorizationDenied>,
     );
 
-    /// A component a test hands to the gate, standing in for an `ical_core::Component`.
+    /// A component a test hands to the gate, standing in for an `crate::internal::core::Component`.
     ///
     /// The structured accessors are what the gate reads; `properties` exists so that the
     /// section 3 conformance table has names to count and the diff has lines to compare. A

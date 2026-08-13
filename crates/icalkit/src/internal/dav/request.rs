@@ -17,7 +17,7 @@
 
 use alloc::boxed::Box;
 
-use ical_core::{Instant, LimitExceeded, Limits, Meter};
+use crate::internal::core::{Instant, LimitExceeded, Limits, Meter};
 
 use crate::internal::dav::bound::Bounded;
 use crate::internal::dav::element::ElementName;
@@ -660,7 +660,7 @@ impl Collation {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{Instant, LimitExceeded, Limits, Meter};
+    use crate::internal::core::{Instant, LimitExceeded, Limits, Meter};
 
     use super::{CompFilter, PropFilter, PropName, PropRequest, TimeRange};
     use crate::internal::dav::element::ElementName;

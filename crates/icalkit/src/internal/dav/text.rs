@@ -59,7 +59,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, LimitExceeded, Location, Meter, Severity,
     report_diagnostic,
 };
@@ -479,7 +479,7 @@ fn write_escaped(out: &mut dyn ByteSink, bytes: &[u8], in_attribute: bool) -> Re
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits, Meter};
+    use crate::internal::core::{Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits, Meter};
 
     use super::{
         DecodedText, LineEndings, TextMode, TextPolicy, decode_text, write_escaped_attribute,

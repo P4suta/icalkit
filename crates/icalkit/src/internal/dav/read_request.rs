@@ -36,7 +36,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     DateTimeValue, DecodeValue, DiagnosticCode, Instant, LimitExceeded, Severity, UtcOffset,
 };
 
@@ -851,7 +851,9 @@ const fn refused() -> DavError {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter};
+    use crate::internal::core::{
+        Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter,
+    };
 
     use super::{RequestBody, Whitespace, read_text};
     use crate::internal::dav::codec::{XmlEvent, XmlPull};

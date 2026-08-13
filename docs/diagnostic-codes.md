@@ -9,7 +9,8 @@ this code, on this channel" across releases, and an edited meaning or a retuned 
 that claim while every variant and every doc comment sits still.
 
 This file is the golden list that makes the freeze enforceable rather than merely documented.
-`just codes` reads it and `crates/ical-core/src/grammar/report.rs`, and nothing else, with the same
+`just codes` reads it and `crates/icalkit/src/internal/core/grammar/report.rs`, and nothing else,
+with the same
 hand-rolled scan `just purity` uses and for the same reason: the tool that enforces "the core
 has no outside dependencies" may not acquire one.
 

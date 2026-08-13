@@ -40,10 +40,10 @@
 use alloc::vec::Vec;
 use core::{mem, slice};
 
-use crate::{FoldPoint, LineEnding, LineLayout};
+use crate::internal::core::{FoldPoint, LineEnding, LineLayout};
 
-use crate::output::Writer;
-use crate::tree::{Boundary, Document, Item, Property};
+use crate::internal::core::output::Writer;
+use crate::internal::core::tree::{Boundary, Document, Item, Property};
 
 /// Octets of line content this crate puts on one physical line when it folds a line itself.
 ///
@@ -155,7 +155,7 @@ impl Line<'_> {
 /// terminator. A parse produces such a line only as the last of the input, so for every
 /// document that was read this flag is false at every write and the octets are the octets that
 /// arrived. It is a tree assembled another way — a property taken out of a truncated export and
-/// pushed above another through [`Component::items_mut`](crate::Component::items_mut) — where
+/// pushed above another through [`Component::items_mut`](crate::internal::core::Component::items_mut) — where
 /// the line stops being last, and writing those two lines with nothing between them would store
 /// two and read back one, with the second line's octets glued to the first one's value.
 ///
@@ -396,12 +396,12 @@ mod tests {
     use alloc::vec::Vec;
     use core::convert::Infallible;
 
-    use crate::{FoldPoint, LineEnding, LineLayout};
+    use crate::internal::core::{FoldPoint, LineEnding, LineLayout};
 
     use super::{REFOLD_WIDTH, fold_at};
-    use crate::octets::RawText;
-    use crate::output::Writer;
-    use crate::tree::{Boundary, Component, Document, Item, Parameter, Property};
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::output::Writer;
+    use crate::internal::core::tree::{Boundary, Component, Document, Item, Parameter, Property};
 
     /// A fold at `offset`, indented with `SP` after a `CRLF`, as most producers write one.
     fn fold(offset: u32) -> FoldPoint {

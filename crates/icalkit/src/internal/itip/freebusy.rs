@@ -50,7 +50,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     ComponentKind, DateTimeValue, DecodeValue, Duration, Instant, Meter, Period, PropertyId,
     UtcOffset,
 };
@@ -477,11 +477,11 @@ fn unquoted(value: &[u8]) -> &[u8] {
 mod tests {
     use alloc::vec::Vec;
 
-    use crate::internal::recur::OverrideRange;
-    use ical_core::{
+    use crate::internal::core::{
         ComponentKind, DateTimeValue, DecodeValue, IgnoreDiagnostics, Instant, Limits, Meter,
         PropertyId, UtcOffset,
     };
+    use crate::internal::recur::OverrideRange;
 
     use super::{
         BusyPeriod, FreeBusyError, FreeBusyKind, busy_periods, line_parameter, requested_window,

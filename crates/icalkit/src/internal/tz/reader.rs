@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 4 — reading a `VTIMEZONE` out of `ical_core::Component`.
+//! Unit 4 — reading a `VTIMEZONE` out of `crate::internal::core::Component`.
 //!
 //! Specification: RFC 5545 section 3.6.5, with section 3.8.3.3 and section 3.8.3.4 for the
 //! offsets and section 3.8.5.2 and section 3.8.5.3 for the two transition forms.
@@ -11,7 +11,7 @@
 //! function needs one appended to the crate root's block:
 //!
 //! ```text
-//! impl ObservanceReader for ical_core::Component { .. }
+//! impl ObservanceReader for crate::internal::core::Component { .. }
 //! pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
 //!     calendar: &Component, meter: &mut Meter, sink: &mut S,
 //! ) -> VtimezoneSet;
@@ -83,7 +83,7 @@
 //! The walk looking for identifiers nothing defines keeps its own worklist rather than
 //! recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
 //!
-//! [`Component::audit`]: ical_core::Component::audit
+//! [`Component::audit`]: crate::internal::core::Component::audit
 //! [`TransitionTable::new`]: crate::internal::tz::TransitionTable::new
 //! [`VtimezoneSet::insert`]: crate::internal::tz::VtimezoneSet::insert
 
@@ -92,7 +92,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::str;
 
-use ical_core::{
+use crate::internal::core::{
     CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
     DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject, UtcOffset,
     Weekday, report_diagnostic,
@@ -229,7 +229,7 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
 /// `None` for an absent, empty, repeated or non-UTF-8 `TZID`. The last is forced rather than
 /// chosen: [`ObservanceReader::read_vtimezone`] answers with a `Box<str>`, and octets that are
 /// not text cannot become one. The repeated case is `None` for the reason
-/// [`ical_core::Component::get`] refuses a duplicate — two identities is not one of them, and
+/// [`crate::internal::core::Component::get`] refuses a duplicate — two identities is not one of them, and
 /// picking the first would file a zone under a name the file does not unambiguously give it.
 fn identifier(component: &Component) -> Option<Box<str>> {
     let wanted = PropertyId::TZID;
@@ -244,7 +244,7 @@ fn identifier(component: &Component) -> Option<Box<str>> {
 
 /// `text` with a matched RFC 5545 section 3.2 `DQUOTE` pair removed, and nothing else done.
 ///
-/// The rule [`ical_core::Parameter::unquoted`] applies on the other side of the comparison. The
+/// The rule [`crate::internal::core::Parameter::unquoted`] applies on the other side of the comparison. The
 /// two sides have to strip alike, or a producer that quoted one of them would declare a zone
 /// that no lookup could ever reach.
 fn unquoted(text: &[u8]) -> &[u8] {
@@ -757,7 +757,7 @@ fn signed_number(bytes: &[u8]) -> Option<i8> {
 /// Report each identifier a `TZID` parameter names that no definition in `zones` backs.
 ///
 /// Once per identifier rather than once per property, and each report *names* the identifier.
-/// A [`Location`] cannot: an [`ical_core::Property`] owns fresh unfolded octets rather than the
+/// A [`Location`] cannot: an [`crate::internal::core::Property`] owns fresh unfolded octets rather than the
 /// offsets they were read from, so any span this produced would address a buffer the caller
 /// never handed in. Without the name three undefined zones arrived as three diagnostics that
 /// were equal as values, which told a caller that something was missing and not what to find.
@@ -842,7 +842,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Component, Diagnostic, DiagnosticCode, Document,
         IgnoreDiagnostics, Limits, Meter, Severity, UtcOffset, Weekday,
     };

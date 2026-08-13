@@ -34,7 +34,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     ComponentKind, Diagnostic, DiagnosticCode, DiagnosticSink, Limits, Meter, Severity,
     report_diagnostic,
 };
@@ -64,7 +64,7 @@ pub enum MessageError {
     /// calendar, which is the one answer that loses the fact that anything was wrong.
     /// [`DiagnosticCode::SchedulingMethodAmbiguous`] travels beside it.
     ///
-    /// [`DiagnosticCode::SchedulingMethodAmbiguous`]: ical_core::DiagnosticCode::SchedulingMethodAmbiguous
+    /// [`DiagnosticCode::SchedulingMethodAmbiguous`]: crate::internal::core::DiagnosticCode::SchedulingMethodAmbiguous
     AmbiguousMethod,
     /// No component RFC 5546 states scheduling semantics for.
     NoPayload,
@@ -249,7 +249,7 @@ fn read_method<S: DiagnosticSink + ?Sized>(
             Diagnostic::new(
                 DiagnosticCode::SchedulingMethodAmbiguous,
                 Severity::Violation,
-                ical_core::Location::NOWHERE,
+                crate::internal::core::Location::NOWHERE,
             ),
         );
         return Err(MessageError::AmbiguousMethod);
@@ -261,7 +261,7 @@ fn read_method<S: DiagnosticSink + ?Sized>(
             Diagnostic::new(
                 DiagnosticCode::SchedulingMethodUnknown,
                 Severity::Violation,
-                ical_core::Location::NOWHERE,
+                crate::internal::core::Location::NOWHERE,
             ),
         );
         MessageError::UnknownMethod

@@ -74,7 +74,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::num::NonZeroI8;
 
-use ical_core::{
+use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, DiagnosticSink, LimitExceeded,
     Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
@@ -193,7 +193,7 @@ pub fn expand_period<S: DiagnosticSink + ?Sized>(
 /// monthly period leaves the day of the month open, a weekly one leaves the weekday open, and
 /// a yearly one leaves both the month and the day open.
 ///
-/// Unrelated to `ical_core::Span`, which is a range of octets in a file. This one is private to
+/// Unrelated to `crate::internal::core::Span`, which is a range of octets in a file. This one is private to
 /// this module and never crosses it, so the two cannot meet; naming both after the same English
 /// word is the cost of that word being right for each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -962,7 +962,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::{NonZeroI8, NonZeroU32};
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, LimitExceeded, Limits,
         Location, Meter, Severity, Weekday,
     };

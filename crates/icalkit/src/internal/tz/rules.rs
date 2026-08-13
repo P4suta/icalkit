@@ -65,7 +65,7 @@
 //! [`NthWeek::Last`]: crate::internal::tz::NthWeek::Last
 //! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
 
-use ical_core::{CivilDate, CivilDateTime, Weekday};
+use crate::internal::core::{CivilDate, CivilDateTime, Weekday};
 
 use crate::internal::tz::model::{NthWeek, Observance, RuleDay, YearlyRule};
 
@@ -210,7 +210,7 @@ fn days_forward(from: Weekday, to: Weekday) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{CivilDate, CivilDateTime, CivilTime, UtcOffset, Weekday};
+    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime, UtcOffset, Weekday};
 
     use crate::internal::tz::model::{NthWeek, Observance, RuleDay, YearlyRule};
 

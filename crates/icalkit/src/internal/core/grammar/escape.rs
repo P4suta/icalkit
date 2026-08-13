@@ -125,8 +125,8 @@ pub fn text_needs_unescaping(bytes: &[u8]) -> bool {
 /// a repair invented here would reach a caller's display and nothing else, while making the
 /// text it showed disagree with the file.
 ///
-/// ```
-/// use ical_core::unescape_text;
+/// ```ignore
+/// use crate::internal::core::unescape_text;
 ///
 /// assert_eq!(unescape_text(br"a\nb").as_ref(), b"a\nb");
 /// assert_eq!(unescape_text(br"ends with \").as_ref(), br"ends with \");
@@ -175,8 +175,8 @@ pub fn text_needs_escaping(bytes: &[u8]) -> bool {
 /// round-trip path passes preserved octets through this function. It is for values this crate
 /// authors, where no spelling is being overwritten.
 ///
-/// ```
-/// use ical_core::escape_text;
+/// ```ignore
+/// use crate::internal::core::escape_text;
 ///
 /// assert_eq!(escape_text(b"a;b\nc").as_ref(), br"a\;b\nc");
 /// assert_eq!(escape_text(b"nothing to do").as_ref(), b"nothing to do");
@@ -298,8 +298,8 @@ impl<'a> UnquotedParameter<'a> {
 /// octets it both starts and ends with a quote, and calling that a well-formed empty value
 /// would silently accept a truncated line.
 ///
-/// ```
-/// use ical_core::{unquote_parameter, ParameterQuoting};
+/// ```ignore
+/// use crate::internal::core::{unquote_parameter, ParameterQuoting};
 ///
 /// let closed = unquote_parameter(b"\"Europe/Paris\"");
 /// assert_eq!(closed.value(), b"Europe/Paris");

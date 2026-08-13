@@ -46,7 +46,7 @@
 use alloc::vec::Vec;
 use core::num::{NonZeroI8, NonZeroU32};
 
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, CivilTime, DateTimeValue, DecodeValue, Diagnostic, DiagnosticCode,
     DiagnosticSink, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
@@ -889,7 +889,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use ical_core::{
+    use crate::internal::core::{
         DecodeValue, Diagnostic, DiagnosticCode, IgnoreDiagnostics, Instant, Limits, Meter,
         Severity, Weekday,
     };

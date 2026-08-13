@@ -35,7 +35,7 @@
 //! # What this unit owns that nothing else does
 //!
 //! The `YYYYMMDDTHHMMSSZ` an RFC 4791 section 9.9 `time-range` attribute carries.
-//! [`ical_core::Instant`] is a bare timeline point with no civil spelling of its own, so
+//! [`crate::internal::core::Instant`] is a bare timeline point with no civil spelling of its own, so
 //! [`write_utc_date_time`] asks `ical-core` for the arithmetic and reports an instant that has
 //! no such spelling as [`ValueError::TimeUnrepresentable`]. It never clamps to one that does:
 //! a `time-range` silently moved to a year that fits is a query returning the wrong events and
@@ -50,7 +50,7 @@
 //! [`CompSelection::push_comp`] takes no bounds at all, so this recursion is the only thing
 //! between a caller's own deeply nested selection and a blown stack.
 
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, DateTimeValue, EncodeValue, Instant, LimitExceeded, Limits, Meter, UtcOffset,
     ValueBuf,
 };
@@ -792,7 +792,7 @@ impl WriteXml for CalendarDataRequest {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Instant, LimitExceeded, Limits, Meter};
+    use crate::internal::core::{Instant, LimitExceeded, Limits, Meter};
 
     use super::write_utc_date_time;
     use crate::internal::dav::codec::WriteXml;

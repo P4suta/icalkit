@@ -58,7 +58,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use ical_core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
+use crate::internal::core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
 
 use crate::internal::dav::codec::{ResponseSource, XmlEvent, XmlPull};
 use crate::internal::dav::element::{ElementName, Namespace, QName};
@@ -1237,7 +1237,9 @@ fn retain(bytes: &[u8], context: &mut DecodeContext<'_>) -> Result<Box<[u8]>, Da
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter};
+    use crate::internal::core::{
+        Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter,
+    };
 
     use super::{MultiStatusReader, UNREADABLE_STATUS};
     use crate::internal::dav::codec::{ResponseSource, XmlEvent, XmlPull};

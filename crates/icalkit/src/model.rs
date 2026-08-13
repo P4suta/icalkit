@@ -6,7 +6,7 @@
 
 use core::str;
 
-use ical_core::{Component, DateTimeValue, DecodeValue as _, Item, Property};
+use crate::internal::core::{Component, DateTimeValue, DecodeValue as _, Item, Property};
 
 use crate::time::IcalDateTime;
 

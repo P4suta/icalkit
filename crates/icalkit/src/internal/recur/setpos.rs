@@ -63,7 +63,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use ical_core::CivilDateTime;
+use crate::internal::core::CivilDateTime;
 
 use crate::internal::recur::byparts::CandidateSet;
 use crate::internal::recur::rule::ByList;
@@ -180,7 +180,7 @@ fn reach(nth: i16, extent: usize) -> usize {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{CivilDate, CivilDateTime, CivilTime};
+    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime};
 
     use super::{select, select_within};
     use crate::internal::recur::byparts::CandidateSet;

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Writing an authorized transition into an [`ical_core::Component`].
+//! Writing an authorized transition into an [`crate::internal::core::Component`].
 //!
 //! Specification: none of RFC 5546. This is ADR-0005's application half, and every refusal
 //! reported here comes from ADR-0001's mutation boundary rather than from a scheduling rule.
@@ -22,14 +22,14 @@
 //! # The address, and why the occurrence door
 //!
 //! A change is addressed to a [`crate::internal::itip::PropertyOccurrence`] — the second `ATTENDEE`, not
-//! `ATTENDEE` — so it goes through [`ical_core::Component::apply_to_occurrence`] and never
-//! through [`ical_core::Component::apply`]. The identity-addressed door writes *every*
+//! `ATTENDEE` — so it goes through [`crate::internal::core::Component::apply_to_occurrence`] and never
+//! through [`crate::internal::core::Component::apply`]. The identity-addressed door writes *every*
 //! occurrence of a name, which is the right rule for a caller naming an identity and the wrong
 //! one for a `REPLY`: it would answer for every attendee on the list at once.
 //!
 //! # The two doors, and the policy each writes under
 //!
-//! [`ical_core::Component::apply_to_occurrence`] needs a [`Limits`], because a replacement is
+//! [`crate::internal::core::Component::apply_to_occurrence`] needs a [`Limits`], because a replacement is
 //! octets off the wire like any other and is read through the same content-line reader a file
 //! is. [`ScheduleTarget::write_change`] takes none, because a transition is a value and a
 //! caller's policy is not part of one. So the policy lives on the target:
@@ -70,12 +70,12 @@
 //! "the target did not take the change" is what every refusal has in common, and a refusal
 //! this crate has never seen is not evidence about the caller's octets.
 
-use ical_core::{Component, Limits, MutationError, ProposedChange};
+use crate::internal::core::{Component, Limits, MutationError, ProposedChange};
 
 use crate::internal::itip::state::PropertyOccurrence;
 use crate::internal::itip::transition::{ScheduleTarget, WriteRejected};
 
-/// An [`ical_core::Component`] to write into, under the caller's own bounds.
+/// An [`crate::internal::core::Component`] to write into, under the caller's own bounds.
 ///
 /// The door for a caller whose [`Limits`] are not the default ones, and the door for a caller
 /// applying a transition it built itself rather than one an [`crate::internal::itip::ItipMessage`] produced.
@@ -107,7 +107,7 @@ impl<'a> ComponentTarget<'a> {
 
     /// The component being written into.
     ///
-    /// The same shape [`ical_core::PropertyMut::property`] takes: while this target lives it
+    /// The same shape [`crate::internal::core::PropertyMut::property`] takes: while this target lives it
     /// holds the only reach into the component, so reading it has to go through here.
     #[must_use]
     pub fn component(&self) -> &Component {
@@ -116,7 +116,7 @@ impl<'a> ComponentTarget<'a> {
 }
 
 impl ScheduleTarget for ComponentTarget<'_> {
-    /// Write one change through [`ical_core::Component::apply_to_occurrence`].
+    /// Write one change through [`crate::internal::core::Component::apply_to_occurrence`].
     ///
     /// # Errors
     ///
@@ -199,7 +199,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         Component, Document, IgnoreDiagnostics, Limits, MutationError, ParameterEdit, Property,
         PropertyId, ProposedChange, RawText,
     };

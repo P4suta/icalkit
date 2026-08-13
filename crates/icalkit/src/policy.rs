@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use ical_core::Limits;
+use crate::internal::core::Limits;
 
 /// Resource ceilings applied across a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

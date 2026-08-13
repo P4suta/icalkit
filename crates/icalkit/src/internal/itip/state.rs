@@ -6,12 +6,12 @@
 //!
 //! Two things live here. [`PropertyOccurrence`] is the address a scheduling transition uses —
 //! the second `ATTENDEE`, not `ATTENDEE` — and [`ScheduledComponent`] is how a caller offers
-//! the state to judge against, whether that state is an [`ical_core::Component`] or a database
+//! the state to judge against, whether that state is an [`crate::internal::core::Component`] or a database
 //! row a server never turns into one.
 
 use core::fmt::Debug;
 
-use ical_core::{ComponentKind, Instant, PropertyId};
+use crate::internal::core::{ComponentKind, Instant, PropertyId};
 
 use crate::internal::itip::identity::{InstanceRef, SequenceRead};
 use crate::internal::itip::party::{Attendee, Party};
@@ -78,8 +78,8 @@ impl PropertyOccurrence {
 ///
 /// This is how ADR-0005's `current: &Component` is spelled, and it is a trait rather than a
 /// concrete type for one reason worth the cost: a CalDAV server whose current state is a
-/// database row must not have to build an `ical_core::Component` in order to answer "who may
-/// change this". `ical-itip` ships an implementation for [`ical_core::Component`], so a caller
+/// database row must not have to build an `crate::internal::core::Component` in order to answer "who may
+/// change this". `ical-itip` ships an implementation for [`crate::internal::core::Component`], so a caller
 /// that does hold one passes `&component` and never names the trait.
 ///
 /// Deliberately object-safe — index accessors rather than iterators, no generics, no
@@ -92,7 +92,7 @@ impl PropertyOccurrence {
 ///   before it reaches [`Party`] or [`Attendee`], per [`crate::internal::itip::party`]'s own contract.
 /// - [`ScheduledComponent::property_line`] hands back the whole content line — name,
 ///   parameters and value together, unfolded, with no terminator — because that is the unit
-///   [`ical_core::ProposedChange::Replace`] takes and the unit a diff compares.
+///   [`crate::internal::core::ProposedChange::Replace`] takes and the unit a diff compares.
 /// - Properties are reported in document order, and only those directly inside this
 ///   component. [`ScheduledComponent::child`] reaches the nested ones.
 /// - Nothing here allocates per call on the hot paths a diff walks, because a diff walks every
@@ -175,7 +175,7 @@ pub trait ScheduledComponent: Debug {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::PropertyId;
+    use crate::internal::core::PropertyId;
 
     use super::PropertyOccurrence;
 

@@ -10,7 +10,9 @@
 
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::{Diagnostic, DiagnosticCode, DiagnosticSink, Limits, Location, Meter, Severity};
+use crate::internal::core::{
+    Diagnostic, DiagnosticCode, DiagnosticSink, Limits, Location, Meter, Severity,
+};
 
 use crate::internal::dav::text::TextPolicy;
 
@@ -79,7 +81,7 @@ impl<'a> DecodeContext<'a> {
     /// content lines, and a zero in a line field would be a claim rather than an absence.
     pub fn report(&mut self, code: DiagnosticCode, severity: Severity, offset: u64) {
         let diagnostic = Diagnostic::new(code, severity, Location::at_offset(offset));
-        ical_core::report_diagnostic(self.sink, self.meter, diagnostic);
+        crate::internal::core::report_diagnostic(self.sink, self.meter, diagnostic);
     }
 }
 
@@ -102,7 +104,7 @@ impl Debug for DecodeContext<'_> {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Diagnostic, DiagnosticCode, Limits, Meter, Severity, Span};
+    use crate::internal::core::{Diagnostic, DiagnosticCode, Limits, Meter, Severity, Span};
 
     use super::{DecodeContext, UnknownPolicy};
     use crate::internal::dav::text::TextPolicy;

@@ -95,21 +95,48 @@
 
 extern crate alloc;
 
-mod access;
-mod arith;
-mod change;
-mod codec;
-mod emit;
-mod grammar;
-mod gregorian;
-mod ident;
-mod mutate;
-mod octets;
-mod output;
-mod parse;
-mod schema;
-mod tree;
-mod view;
+#[path = "../../icalkit/src/internal/core/access.rs"]
+pub(crate) mod access;
+#[path = "../../icalkit/src/internal/core/arith.rs"]
+pub(crate) mod arith;
+#[path = "../../icalkit/src/internal/core/change.rs"]
+pub(crate) mod change;
+#[path = "../../icalkit/src/internal/core/codec.rs"]
+pub(crate) mod codec;
+#[path = "../../icalkit/src/internal/core/emit.rs"]
+pub(crate) mod emit;
+#[path = "../../icalkit/src/internal/core/grammar/mod.rs"]
+pub(crate) mod grammar;
+#[path = "../../icalkit/src/internal/core/gregorian.rs"]
+pub(crate) mod gregorian;
+#[path = "../../icalkit/src/internal/core/ident.rs"]
+pub(crate) mod ident;
+#[path = "../../icalkit/src/internal/core/mutate.rs"]
+pub(crate) mod mutate;
+#[path = "../../icalkit/src/internal/core/octets.rs"]
+pub(crate) mod octets;
+#[path = "../../icalkit/src/internal/core/output.rs"]
+pub(crate) mod output;
+#[path = "../../icalkit/src/internal/core/parse.rs"]
+pub(crate) mod parse;
+#[path = "../../icalkit/src/internal/core/schema.rs"]
+pub(crate) mod schema;
+#[path = "../../icalkit/src/internal/core/tree.rs"]
+pub(crate) mod tree;
+#[path = "../../icalkit/src/internal/core/view.rs"]
+pub(crate) mod view;
+
+// Stable crate-shaped root for source shared with `icalkit::internal::core`.
+pub(crate) mod internal {
+    #[allow(unused_imports)]
+    pub(crate) mod core {
+        pub(crate) use crate::*;
+        pub(crate) use crate::{
+            access, arith, change, codec, emit, grammar, gregorian, ident, mutate, octets, output,
+            parse, schema, tree, view,
+        };
+    }
+}
 
 // The grammar is a private module and every item of it is re-exported here unchanged, so that
 // `ical_core::Token` is the only spelling there is: no caller writes `ical_core::grammar::`

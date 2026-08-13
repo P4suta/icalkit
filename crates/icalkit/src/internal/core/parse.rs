@@ -37,14 +37,14 @@
 use alloc::vec::Vec;
 use core::mem;
 
-use crate::{
+use crate::internal::core::{
     ContentLineReader, ContentLineSource, Diagnostic, DiagnosticCode, DiagnosticSink, FoldPoint,
     Limits, LineEnding, LineLayout, Location, Meter, ParseError, Severity, Span, Token,
     is_control_octet, report_diagnostic, undefined_caret_escapes, unquote_parameter,
 };
 
-use crate::octets::RawText;
-use crate::tree::{Boundary, Component, Document, Item, Parameter, Property};
+use crate::internal::core::octets::RawText;
+use crate::internal::core::tree::{Boundary, Component, Document, Item, Parameter, Property};
 
 impl Document {
     /// Read a document out of `input` under `limits`, reporting what was wrong into `sink`.
@@ -918,13 +918,13 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{
+    use crate::internal::core::{
         ContentLineSource, Diagnostic, DiagnosticCode, FoldPoint, IgnoreDiagnostics, Limits,
         LineEnding, LineLayout, Meter, ParseError, Severity, Token,
     };
 
-    use crate::octets::RawText;
-    use crate::tree::{Boundary, Component, Document, Item, Property};
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::tree::{Boundary, Component, Document, Item, Property};
 
     /// One token as a test writes it: owned, so a source can hand out borrows of it.
     #[derive(Debug)]

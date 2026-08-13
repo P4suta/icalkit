@@ -29,7 +29,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use ical_core::{LimitExceeded, Limits, Meter};
+use crate::internal::core::{LimitExceeded, Limits, Meter};
 
 use crate::internal::dav::failure::{DavError, ValueError};
 use crate::internal::dav::sink::ByteSink;
@@ -620,7 +620,7 @@ fn decimal(mut value: u32) -> Vec<u8> {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Limits, Meter};
+    use crate::internal::core::{Limits, Meter};
 
     use super::{Depth, ETag, Href, MatchHeader, Precondition, Status, SyncToken, is_etagc};
     use crate::internal::dav::failure::{DavError, ValueError};

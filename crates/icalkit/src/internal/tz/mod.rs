@@ -20,7 +20,7 @@ mod rules;
 pub(crate) mod seam;
 mod series;
 
-pub(crate) use ical_core::{
+pub(crate) use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Duration, Instant, Limits, Meter, MonthAddOutcome,
     UtcOffset, Weekday,
 };

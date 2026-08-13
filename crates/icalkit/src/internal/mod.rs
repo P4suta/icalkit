@@ -4,6 +4,11 @@
 
 //! Private implementation layers with no independent semver contract.
 
+// The allocation-aware, sans-I/O foundation. Its former package remains temporarily as a
+// shared-source conformance harness, but this module is the only implementation source.
+#[allow(dead_code, unused_imports, unreachable_pub)]
+pub(crate) mod core;
+
 #[allow(dead_code, unused_imports, unreachable_pub)]
 pub(crate) mod dav;
 

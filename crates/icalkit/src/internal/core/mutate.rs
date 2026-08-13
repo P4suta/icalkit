@@ -35,19 +35,19 @@
 
 use alloc::vec::Vec;
 
-use crate::{
+use crate::internal::core::{
     ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token, encode_caret,
     parameter_is_representable, parameter_name_is_representable, property_name_is_representable,
     quote_parameter_into,
 };
 
-use crate::change::{ParameterEdit, ProposedChange};
-use crate::gregorian::DateTimeValue;
-use crate::ident::PropertyId;
-use crate::octets::RawText;
-use crate::parse::names_a_component_boundary;
-use crate::tree::{Boundary, Component, Item, Parameter, Property};
-use crate::view::{EncodeValue, MutationError, PropertyMut, ValueBuf};
+use crate::internal::core::change::{ParameterEdit, ProposedChange};
+use crate::internal::core::gregorian::DateTimeValue;
+use crate::internal::core::ident::PropertyId;
+use crate::internal::core::octets::RawText;
+use crate::internal::core::parse::names_a_component_boundary;
+use crate::internal::core::tree::{Boundary, Component, Item, Parameter, Property};
+use crate::internal::core::view::{EncodeValue, MutationError, PropertyMut, ValueBuf};
 
 /// Refuse octets carrying an ASCII control character.
 ///
@@ -156,7 +156,7 @@ fn refuse_unwritable_edits(edits: &[ParameterEdit]) -> Result<(), MutationError>
 /// that was read: a parameter keeps the spelling its producer wrote, so a parameter this crate
 /// writes has to carry the spelling its value needs. Which is also the contract this door
 /// states — it takes a value and not a spelling, so a caller moving a parameter from one line
-/// to another resolves it with [`decode_caret`](crate::decode_caret) first.
+/// to another resolves it with [`decode_caret`](crate::internal::core::decode_caret) first.
 fn spelled_parameter(name: &[u8], value: &[u8]) -> Parameter {
     let mut spelled = Vec::new();
     quote_parameter_into(encode_caret(value).as_ref(), &mut spelled);
@@ -181,7 +181,7 @@ impl Parameter {
     ///
     /// The value is what it means rather than how it is spelled: `Doe, John` is written
     /// `"Doe, John"` and `Ann ^n Marie` is written `Ann ^^n Marie`, which is what
-    /// [`decode_caret`](crate::decode_caret) reads back as the value that was handed
+    /// [`decode_caret`](crate::internal::core::decode_caret) reads back as the value that was handed
     /// over.
     ///
     /// # Errors
@@ -201,7 +201,7 @@ impl Property {
     /// A property a caller is assembling, refused where RFC 5545 has no way to write it back.
     ///
     /// This is the tree-building door, and it is the same door
-    /// [`PropertyMut::set_raw`](crate::PropertyMut::set_raw) is: octets a caller hands over have
+    /// [`PropertyMut::set_raw`](crate::internal::core::PropertyMut::set_raw) is: octets a caller hands over have
     /// no producer whose spelling to preserve, so refusing them costs the round-trip guarantee
     /// nothing (`docs/adr/0001`). Without it, a `SUMMARY` taken from a web form could carry its
     /// own `CRLF` into a component through [`Component::items_mut`] and come back on the next
@@ -475,7 +475,7 @@ impl Component {
     /// alternative would be answering `None`, which says "there is no such property" about a
     /// property that is there — collapsing the two states the read side spends a whole enum
     /// to keep apart. A caller that needs to know reads first: the singular accessor reports
-    /// [`DiagnosticCode::DuplicateProperty`](crate::DiagnosticCode::DuplicateProperty)
+    /// [`DiagnosticCode::DuplicateProperty`](crate::internal::core::DiagnosticCode::DuplicateProperty)
     /// and every occurrence stays reachable through the general lookup.
     pub fn get_mut<T>(&mut self, id: &PropertyId) -> Option<PropertyMut<'_, T>> {
         self.property_with_id_mut(id).map(PropertyMut::new)
@@ -484,7 +484,7 @@ impl Component {
     /// A guard over `DTSTART`, RFC 5545 section 3.8.2.4.
     ///
     /// The value written through it states its own zone: writing a
-    /// [`DateTimeValue::Zoned`](crate::DateTimeValue::Zoned) assigns the `TZID` the value
+    /// [`DateTimeValue::Zoned`](crate::internal::core::DateTimeValue::Zoned) assigns the `TZID` the value
     /// names, and writing any of the other three drops the one that was there, because none of
     /// them has a zone to keep.
     pub fn dtstart_mut(&mut self) -> Option<PropertyMut<'_, DateTimeValue<'_>>> {
@@ -504,7 +504,7 @@ impl Component {
     ///
     /// Every variant addresses the *identity* `id` names rather than one occurrence of it.
     /// A component carrying two `DTSTART`s is a component this crate reports
-    /// [`DiagnosticCode::DuplicateProperty`](crate::DiagnosticCode::DuplicateProperty)
+    /// [`DiagnosticCode::DuplicateProperty`](crate::internal::core::DiagnosticCode::DuplicateProperty)
     /// about and refuses to pick a winner in; a change that wrote one of the two and said
     /// nothing would leave the identity the caller addressed carrying two different values,
     /// with no way to see that it half happened. So a replacement writes every occurrence, a
@@ -793,14 +793,16 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{FoldPoint, Limits, LineEnding, LineLayout};
+    use crate::internal::core::{FoldPoint, Limits, LineEnding, LineLayout};
 
     use super::{ParsedLine, read_replacement_line};
-    use crate::change::{ParameterEdit, ProposedChange};
-    use crate::ident::PropertyId;
-    use crate::octets::RawText;
-    use crate::tree::{Boundary, Component, Item, Parameter, Property};
-    use crate::view::{EncodeValue, MutationError, PropertyMut, TextValue, ValueBuf};
+    use crate::internal::core::change::{ParameterEdit, ProposedChange};
+    use crate::internal::core::ident::PropertyId;
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::tree::{Boundary, Component, Item, Parameter, Property};
+    use crate::internal::core::view::{
+        EncodeValue, MutationError, PropertyMut, TextValue, ValueBuf,
+    };
 
     /// A property folded once, so that a write discarding this line's layout is observable and
     /// a neighbor keeping its own is observable beside it.
@@ -1649,7 +1651,7 @@ mod tests {
 
         let event = Component::create(b"VEVENT", vec![Item::Property(attendee)])
             .expect("a well-formed component");
-        let document = crate::tree::Document::new(vec![Item::Component(event)]);
+        let document = crate::internal::core::tree::Document::new(vec![Item::Component(event)]);
         assert_eq!(
             document.to_bytes(),
             b"BEGIN:VEVENT\r\nATTENDEE;CN=\"Doe, John\":mailto:j@example.test\r\nEND:VEVENT\r\n"

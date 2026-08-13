@@ -28,10 +28,10 @@ use core::fmt::{self, Debug, Formatter};
 use core::hash::{Hash, Hasher};
 use core::{mem, slice};
 
-use crate::{LineEnding, LineLayout};
+use crate::internal::core::{LineEnding, LineLayout};
 
-use crate::ident::PropertyId;
-use crate::octets::RawText;
+use crate::internal::core::ident::PropertyId;
+use crate::internal::core::octets::RawText;
 
 /// A `BEGIN` or `END` line, kept in the spelling it arrived in.
 ///
@@ -53,7 +53,7 @@ impl Boundary {
     /// Crate-private, for the reason [`Property::new`] is: the octets are stored as they are,
     /// and a caller that could hand over `VEVENT\r\nATTENDEE:mailto:eve@example.test` as a
     /// component name would have written two content lines through a constructor. The public
-    /// door is [`Component::create`](crate::Component::create), which refuses what section 3.1
+    /// door is [`Component::create`](crate::internal::core::Component::create), which refuses what section 3.1
     /// cannot write back.
     #[must_use]
     pub(crate) fn new(keyword: RawText, name: RawText, layout: LineLayout) -> Self {
@@ -110,7 +110,7 @@ impl Parameter {
     /// A parameter with a value, stored in the section 3.2 spelling it arrived in.
     ///
     /// Crate-private, for the reason [`Property::new`] is. The public door is
-    /// [`Parameter::create`](crate::Parameter::create), which chooses the spelling rather than
+    /// [`Parameter::create`](crate::internal::core::Parameter::create), which chooses the spelling rather than
     /// trusting one.
     #[must_use]
     pub(crate) fn new(name: RawText, value: RawText) -> Self {
@@ -200,7 +200,7 @@ impl Property {
     /// A property with the given name, parameters, value and line syntax, stored unchecked.
     ///
     /// Crate-private, and that is the other half of what makes
-    /// [`PropertyMut::set_raw`](crate::PropertyMut::set_raw)'s refusal true rather than
+    /// [`PropertyMut::set_raw`](crate::internal::core::PropertyMut::set_raw)'s refusal true rather than
     /// customary. The scoped-write door was closed by making the setters below crate-private;
     /// this is the tree-building door, and it was open for as long as this constructor was
     /// public. `Property::new(b"SUMMARY", [], b"a\r\nATTENDEE:mailto:eve@example.test", ..)`
@@ -210,7 +210,7 @@ impl Property {
     /// It stays unchecked because the reader needs it: octets that came out of a file are kept
     /// whatever they hold, control characters included, and a constructor that refused them
     /// would be a parser that discarded the file. The public door is
-    /// [`Property::create`](crate::Property::create), which is for octets that were never read
+    /// [`Property::create`](crate::internal::core::Property::create), which is for octets that were never read
     /// from anywhere and therefore have no producer's spelling to preserve (`docs/adr/0001`).
     #[must_use]
     pub(crate) fn new(
@@ -279,7 +279,7 @@ impl Property {
     /// component still serialize octet for octet.
     ///
     /// Crate-private, and that is the whole of what makes
-    /// [`PropertyMut::set_raw`](crate::PropertyMut::set_raw)'s refusal true rather than
+    /// [`PropertyMut::set_raw`](crate::internal::core::PropertyMut::set_raw)'s refusal true rather than
     /// customary. The refusal is documented as "the one place this crate rejects caller input
     /// outright", which is a claim about the *only* door and not about one of several: a
     /// setter beside it that checks nothing lets a `SUMMARY` taken from a web form carry its
@@ -309,8 +309,8 @@ impl Property {
     /// Crate-private, for the reason [`Property::set_value_text`] gives, and more sharply: a
     /// `&mut Vec` handed to a caller is a door no check can stand in front of, because the
     /// caller writes through it after the check would have run. The public way to change
-    /// parameters is [`Component::apply`](crate::Component::apply) with
-    /// [`ProposedChange::SetParameters`](crate::ProposedChange::SetParameters), which refuses
+    /// parameters is [`Component::apply`](crate::internal::core::Component::apply) with
+    /// [`ProposedChange::SetParameters`](crate::internal::core::ProposedChange::SetParameters), which refuses
     /// what section 3.2 has no way to write.
     pub(crate) fn edit_parameters(&mut self) -> &mut Vec<Parameter> {
         self.layout.mark_refolded();
@@ -772,11 +772,11 @@ mod tests {
     use core::cmp::Ordering;
     use core::hash::{Hash, Hasher};
 
-    use crate::{FoldPoint, LineEnding, LineLayout};
+    use crate::internal::core::{FoldPoint, LineEnding, LineLayout};
 
     use super::{Boundary, Component, Document, Item, Parameter, Property};
-    use crate::ident::PropertyId;
-    use crate::octets::RawText;
+    use crate::internal::core::ident::PropertyId;
+    use crate::internal::core::octets::RawText;
 
     /// FNV-1a, because `core` ships no hasher and these tests need one that answers
     /// differently for octets that differ rather than only for octets that are longer.

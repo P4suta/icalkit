@@ -9,7 +9,7 @@
 //! honor, a value that contradicts itself, a sink with no room left — each of those ends the
 //! read or the write, and there is no partial answer to hand back.
 //!
-//! Everything tolerable travels the other channel instead, as an `ical_core::Diagnostic` on
+//! Everything tolerable travels the other channel instead, as an `crate::internal::core::Diagnostic` on
 //! the caller's sink with the read continuing: a foreign element skipped per RFC 4918
 //! section 17, a property this crate has no model for, a `calendar-data` payload that had to
 //! be copied. A reader that turned any of those into an error would discard a multistatus a
@@ -21,7 +21,7 @@
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 
-use ical_core::LimitExceeded;
+use crate::internal::core::LimitExceeded;
 
 use crate::internal::dav::element::ElementName;
 
@@ -288,7 +288,7 @@ impl Error for SinkFull {}
 mod tests {
     use alloc::format;
 
-    use ical_core::LimitExceeded;
+    use crate::internal::core::LimitExceeded;
 
     use super::{DavError, SinkFull, SyntaxError, ValueError};
     use crate::internal::dav::element::ElementName;

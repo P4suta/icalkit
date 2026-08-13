@@ -16,7 +16,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{LimitExceeded, Meter};
+use crate::internal::core::{LimitExceeded, Meter};
 
 use crate::internal::dav::failure::DavError;
 
@@ -116,7 +116,7 @@ impl<'a, T> IntoIterator for &'a Bounded<T> {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{LimitExceeded, Limits, Meter};
+    use crate::internal::core::{LimitExceeded, Limits, Meter};
 
     use super::Bounded;
     use crate::internal::dav::failure::DavError;

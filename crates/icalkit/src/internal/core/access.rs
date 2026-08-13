@@ -26,12 +26,12 @@
 //! [`Component::properties_named`] — which is the only shape that can name more than one of
 //! them.
 
-use crate::{Diagnostic, DiagnosticCode, Location, Severity};
+use crate::internal::core::{Diagnostic, DiagnosticCode, Location, Severity};
 
-use crate::gregorian::DateTimeValue;
-use crate::ident::PropertyId;
-use crate::tree::{Component, Parameter, Property};
-use crate::view::{DecodeValue, Geo, TextValue, View};
+use crate::internal::core::gregorian::DateTimeValue;
+use crate::internal::core::ident::PropertyId;
+use crate::internal::core::tree::{Component, Parameter, Property};
+use crate::internal::core::view::{DecodeValue, Geo, TextValue, View};
 
 /// A diagnostic about a property whose octets are present and could not be read.
 ///
@@ -169,12 +169,14 @@ mod tests {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::{Diagnostic, DiagnosticCode, Limits, LineEnding, LineLayout, Severity};
+    use crate::internal::core::{
+        Diagnostic, DiagnosticCode, Limits, LineEnding, LineLayout, Severity,
+    };
 
-    use crate::ident::PropertyId;
-    use crate::octets::RawText;
-    use crate::tree::{Boundary, Component, Item, Parameter, Property};
-    use crate::view::{DecodeValue, View};
+    use crate::internal::core::ident::PropertyId;
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::tree::{Boundary, Component, Item, Parameter, Property};
+    use crate::internal::core::view::{DecodeValue, View};
 
     /// A decoder with no dependence on the value codecs, so that what these tests measure is
     /// this unit rather than that one: a non-empty run of ASCII digits, and nothing else.

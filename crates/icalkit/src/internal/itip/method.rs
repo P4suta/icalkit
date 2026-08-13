@@ -13,11 +13,11 @@
 //! the property constraints as transcribed data, so that a reviewer checks a table against the
 //! specification rather than reading control flow.
 
-use ical_core::ComponentKind;
+use crate::internal::core::ComponentKind;
 
 /// One of the eight scheduling methods RFC 5546 section 1.4 defines.
 ///
-/// A closed enum, unlike [`ical_core::PropertyId`], because RFC 5546 closes this set: a
+/// A closed enum, unlike [`crate::internal::core::PropertyId`], because RFC 5546 closes this set: a
 /// `METHOD` value outside it is a message whose semantics nothing here knows, which is a
 /// refusal rather than an extension point. `#[non_exhaustive]` all the same, because a later
 /// specification may define a ninth and adding it must not be a major version here.
@@ -62,7 +62,7 @@ impl Method {
     /// [`DiagnosticCode::SchedulingMethodUnknown`] reports, and is a different fact from a
     /// `METHOD` that is absent — an `.ics` with no `METHOD` is an ordinary calendar.
     ///
-    /// [`DiagnosticCode::SchedulingMethodUnknown`]: ical_core::DiagnosticCode::SchedulingMethodUnknown
+    /// [`DiagnosticCode::SchedulingMethodUnknown`]: crate::internal::core::DiagnosticCode::SchedulingMethodUnknown
     #[must_use]
     pub fn read(value: &[u8]) -> Option<Self> {
         Self::ALL
@@ -188,7 +188,7 @@ impl ActorRole {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::ComponentKind;
+    use crate::internal::core::ComponentKind;
 
     use super::{ActorRole, Method, SenderRule};
 

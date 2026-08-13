@@ -28,7 +28,6 @@ system-tz = [
 ]
 
 [dependencies]
-ical-core = { path = "../ical-core", version = "0.0.0" }
 jiff = { version = "0.2.35", default-features = false, features = [
   "alloc",
   "tz-fat",

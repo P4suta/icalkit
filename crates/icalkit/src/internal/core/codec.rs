@@ -45,13 +45,15 @@ use alloc::vec::Vec;
 use core::fmt::{self, Write as _};
 use core::str;
 
-use crate::{DiagnosticCode, TEXT_ESCAPES};
+use crate::internal::core::{DiagnosticCode, TEXT_ESCAPES};
 
-use crate::change::ParameterEdit;
-use crate::gregorian::{CivilDate, CivilDateTime, CivilTime, DateTimeValue, Duration, UtcOffset};
-use crate::octets::TextError;
-use crate::tree::Property;
-use crate::view::{
+use crate::internal::core::change::ParameterEdit;
+use crate::internal::core::gregorian::{
+    CivilDate, CivilDateTime, CivilTime, DateTimeValue, Duration, UtcOffset,
+};
+use crate::internal::core::octets::TextError;
+use crate::internal::core::tree::Property;
+use crate::internal::core::view::{
     BinaryValue, DecodeValue, EncodeValue, Geo, MutationError, Period, TextValue, UriValue,
     ValueBuf, ValueType,
 };
@@ -1301,16 +1303,16 @@ mod tests {
     use alloc::borrow::Cow;
     use alloc::vec::Vec;
 
-    use crate::{Diagnostic, DiagnosticCode, LineEnding, LineLayout, TEXT_ESCAPES};
+    use crate::internal::core::{Diagnostic, DiagnosticCode, LineEnding, LineLayout, TEXT_ESCAPES};
 
     use super::{decode_date_time_value, decode_duration, decode_geo, decode_utc_offset};
-    use crate::change::ParameterEdit;
-    use crate::gregorian::{
+    use crate::internal::core::change::ParameterEdit;
+    use crate::internal::core::gregorian::{
         CivilDate, CivilDateTime, CivilTime, DateTimeValue, Duration, UtcOffset,
     };
-    use crate::octets::RawText;
-    use crate::tree::{Parameter, Property};
-    use crate::view::{
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::tree::{Parameter, Property};
+    use crate::internal::core::view::{
         BinaryValue, DecodeValue, EncodeValue, Geo, MutationError, Period, PropertyMut, TextValue,
         UriValue, ValueBuf, View,
     };

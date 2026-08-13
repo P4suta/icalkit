@@ -32,9 +32,9 @@
 //! takes the [`LocalResolution`] a caller already holds from `ical-tz`. A caller with no zone
 //! gets [`FoldSide::Unresolved`] and the conservative answer that follows from it.
 
+use crate::internal::core::{Instant, RawText};
 use crate::internal::recur::OverrideRange;
 use crate::internal::tz::LocalResolution;
-use ical_core::{Instant, RawText};
 
 /// One component's `UID`, compared as RFC 5545 section 3.8.4.7 says to.
 ///
@@ -319,7 +319,7 @@ pub enum SequenceRead {
     ///
     /// [`DiagnosticCode::SchedulingSequenceUnreadable`] is what travels beside it.
     ///
-    /// [`DiagnosticCode::SchedulingSequenceUnreadable`]: ical_core::DiagnosticCode::SchedulingSequenceUnreadable
+    /// [`DiagnosticCode::SchedulingSequenceUnreadable`]: crate::internal::core::DiagnosticCode::SchedulingSequenceUnreadable
     Unreadable,
 }
 
@@ -465,9 +465,9 @@ impl MessageIdentity {
 
 #[cfg(test)]
 mod tests {
+    use crate::internal::core::{Instant, UtcOffset};
     use crate::internal::recur::OverrideRange;
     use crate::internal::tz::{LocalResolution, Reading};
-    use ical_core::{Instant, UtcOffset};
 
     use super::{
         FoldSide, InstanceClock, InstanceMatch, InstanceRef, MessageIdentity, Revision,

@@ -25,7 +25,7 @@ use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::num::{NonZeroI8, NonZeroU32};
 
-use ical_core::{Instant, Weekday};
+use crate::internal::core::{Instant, Weekday};
 
 use crate::internal::recur::table::PartsPresent;
 
@@ -195,7 +195,7 @@ impl RulePart {
 
 /// Whether an instant is written as a `DATE` or as a `DATE-TIME`.
 ///
-/// Deliberately narrower than `ical_core::ValueType`, which has fourteen variants. Only these
+/// Deliberately narrower than `crate::internal::core::ValueType`, which has fourteen variants. Only these
 /// two can be the value type of a `DTSTART` or an `UNTIL`, and a two-variant enum makes the
 /// other twelve unrepresentable at the one place RFC 5545 section 3.3.10 requires the two to
 /// agree.
@@ -707,7 +707,7 @@ impl RecurrenceRuleBuilder {
 mod tests {
     use core::num::{NonZeroI8, NonZeroU32};
 
-    use ical_core::Weekday;
+    use crate::internal::core::Weekday;
 
     use super::{
         ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RulePart, WeekdayNum,

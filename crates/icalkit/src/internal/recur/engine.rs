@@ -84,7 +84,7 @@
 use core::fmt::{self, Formatter};
 use core::iter::FusedIterator;
 
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, UtcOffset,
     report_diagnostic,
 };
@@ -818,7 +818,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, Instant, Limits, Meter,
         UtcOffset,
     };
@@ -861,7 +861,7 @@ mod tests {
     /// Drive `search` to its end.
     fn drain<S>(mut search: RecurrenceSearch<'_, S>) -> Run
     where
-        S: ical_core::DiagnosticSink + ?Sized,
+        S: crate::internal::core::DiagnosticSink + ?Sized,
     {
         let mut starts = Vec::new();
         let mut terminal = None;

@@ -29,9 +29,9 @@
 //! `153/5` terms are a closed form of that year's cumulative month lengths, exact over the
 //! whole domain rather than an approximation.
 
-use crate::Instant;
+use crate::internal::core::Instant;
 
-use crate::gregorian::{
+use crate::internal::core::gregorian::{
     CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, UtcOffset, Weekday,
 };
 
@@ -360,9 +360,9 @@ fn time_of_day(second_of_day: i64) -> Option<CivilTime> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Instant;
+    use crate::internal::core::Instant;
 
-    use crate::gregorian::{
+    use crate::internal::core::gregorian::{
         CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, UtcOffset, Weekday,
     };
 

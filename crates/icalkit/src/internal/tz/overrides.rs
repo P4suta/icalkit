@@ -67,7 +67,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity,
     report_diagnostic,
 };
@@ -356,7 +356,7 @@ impl<'a> OrphanScan<'a> {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
         Instant, Limits, Meter, Severity, UtcOffset,
     };

@@ -84,8 +84,10 @@ use core::mem;
 
 use alloc::vec::Vec;
 
+use crate::internal::core::{
+    Component, Document, IgnoreDiagnostics, Item, LimitExceeded, PropertyId,
+};
 use crate::internal::dav::{CompFilter, PropFilter, TextMatch, TimeRange};
-use ical_core::{Component, Document, IgnoreDiagnostics, Item, LimitExceeded, PropertyId};
 
 use crate::internal::query::prefilter::Exclusion;
 use crate::internal::query::{Budget, Match, QueryError, Zones};
@@ -638,14 +640,14 @@ mod tests {
 
     use alloc::vec::Vec;
 
+    use crate::internal::core::{
+        Component, Document, IgnoreDiagnostics, Instant, Item, LimitExceeded, Limits, Meter,
+        UtcOffset,
+    };
     use crate::internal::dav::{
         Collation, CompFilter, ParamFilter, PropFilter, TextMatch, TimeRange,
     };
     use crate::internal::tz::FixedOffsetSource;
-    use ical_core::{
-        Component, Document, IgnoreDiagnostics, Instant, Item, LimitExceeded, Limits, Meter,
-        UtcOffset,
-    };
 
     use super::{Leaves, evaluate};
     use crate::internal::query::{Budget, Match, QueryError, Undecided, Zones};

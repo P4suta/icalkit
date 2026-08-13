@@ -11,12 +11,12 @@
 //! # The vocabulary, and the address
 //!
 //! The words are `ical-core`'s: [`ProposedChange`] and
-//! [`ParameterEdit`](ical_core::ParameterEdit), reused rather than reinvented, which is the
+//! [`ParameterEdit`](crate::internal::core::ParameterEdit), reused rather than reinvented, which is the
 //! coupling DP-13 bought. The *address* is this crate's, because
-//! `ical-core`'s [`PropertyId`](ical_core::PropertyId) names an identity and a scheduling
+//! `ical-core`'s [`PropertyId`](crate::internal::core::PropertyId) names an identity and a scheduling
 //! message changes one attendee among many. [`crate::internal::itip::PropertyOccurrence`] is that address, and
-//! [`ical_core::Component::apply_to_occurrence`] is the door it is applied through — a second
-//! door beside the identity-addressed [`ical_core::Component::apply`], not a widening of it.
+//! [`crate::internal::core::Component::apply_to_occurrence`] is the door it is applied through — a second
+//! door beside the identity-addressed [`crate::internal::core::Component::apply`], not a widening of it.
 //!
 //! The map is keyed on the occurrence, so two conflicting changes to one line cannot both
 //! exist. A `Vec` would admit them and leave the resolution to whoever iterated last.
@@ -26,7 +26,7 @@ use alloc::collections::btree_map;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use ical_core::ProposedChange;
+use crate::internal::core::ProposedChange;
 
 use crate::internal::itip::state::PropertyOccurrence;
 
@@ -230,8 +230,8 @@ pub fn is_time_property(name: &[u8]) -> bool {
 /// Where an authorized transition is written.
 ///
 /// A trait because `ical-itip` owns no storage. It ships an implementation for
-/// [`ical_core::Component`], routing each change through
-/// [`ical_core::Component::apply_to_occurrence`]; a server whose storage is a row implements
+/// [`crate::internal::core::Component`], routing each change through
+/// [`crate::internal::core::Component::apply_to_occurrence`]; a server whose storage is a row implements
 /// this against its rows instead.
 pub trait ScheduleTarget: Debug {
     /// Write one change, or say why this target will not.
@@ -343,7 +343,7 @@ impl ApplyReport {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{ProposedChange, RawText};
+    use crate::internal::core::{ProposedChange, RawText};
 
     use super::{
         ApplyReport, FieldRule, Transition, TransitionReason, WriteRejected, field_rule,

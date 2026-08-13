@@ -67,7 +67,7 @@
 
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::{
+use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, DiagnosticSink,
     Instant, Meter, Severity, UtcOffset, report_diagnostic,
 };
@@ -468,7 +468,7 @@ fn channel_for(code: DiagnosticCode) -> Severity {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, Instant,
         Limits, Meter, Severity, UtcOffset,
     };

@@ -23,7 +23,7 @@
 //! The milestone brief spelled that parameter `ValueKind`, which is `ical-recur`'s two-variant
 //! narrowing of the same question. This crate is `ical-recur`'s sibling and does not depend on
 //! it, so the type is spelled with the name that exists at the common root:
-//! [`ical_core::ValueType`], which is what [`DateTimeValue::value_type`] already answers with.
+//! [`crate::internal::core::ValueType`], which is what [`DateTimeValue::value_type`] already answers with.
 //! Everything that is not [`ValueType::Date`] is read as a date-time, because that is RFC 5545
 //! section 3.8.2.4's default value type for `DTSTART` and because the twelve types that can be
 //! neither are not a third answer this function could have.
@@ -85,7 +85,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, DiagnosticSink,
     Instant, Meter, Severity, UtcOffset, ValueType, report_diagnostic,
 };
@@ -395,7 +395,7 @@ where
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, Instant,
         Limits, Meter, UtcOffset, ValueType,
     };

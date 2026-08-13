@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter};
 
-use ical_core::Meter;
+use crate::internal::core::Meter;
 
 use crate::{Calendar, Error, ResourcePolicy};
 

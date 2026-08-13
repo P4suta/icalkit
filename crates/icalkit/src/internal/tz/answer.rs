@@ -37,7 +37,7 @@
 //! and a continued one are different facts, and a type that reported them alike would turn a
 //! coincidence into confident corroboration by two independent sources.
 
-use ical_core::{CivilDate, CivilDateTime, DiagnosticCode, Instant, UtcOffset};
+use crate::internal::core::{CivilDate, CivilDateTime, DiagnosticCode, Instant, UtcOffset};
 
 /// One reading of a wall clock: the instant it names, the offset that made it so, and whether
 /// that offset is the zone's daylight one.
@@ -539,7 +539,7 @@ pub enum PolicyOutcome<A = ZoneAnswer> {
     /// — states something false about the file at [`Severity::Violation`]. What is wrong with
     /// such a file is `vtimezone-without-observance`, which whoever read it already reported.
     ///
-    /// [`Severity::Violation`]: ical_core::Severity::Violation
+    /// [`Severity::Violation`]: crate::internal::core::Severity::Violation
     Undetermined,
 }
 
@@ -582,7 +582,9 @@ impl<A: Copy> PolicyOutcome<A> {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{CivilDate, CivilDateTime, CivilTime, DiagnosticCode, Instant, UtcOffset};
+    use crate::internal::core::{
+        CivilDate, CivilDateTime, CivilTime, DiagnosticCode, Instant, UtcOffset,
+    };
 
     use super::{
         AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, OffsetAnswer, PolicyOutcome, Reading,

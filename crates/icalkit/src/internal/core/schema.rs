@@ -30,14 +30,14 @@
 //! absence rather than an error, because a component that carries one is a component this crate
 //! must still be able to read.
 
-use crate::{
+use crate::internal::core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Location, Meter, Severity, report_diagnostic,
 };
 
-use crate::gregorian::{DateTimeValue, Duration, UtcOffset};
-use crate::ident::PropertyId;
-use crate::tree::{Component, PropertiesNamed, Property};
-use crate::view::{TextValue, UriValue, ValueType, View};
+use crate::internal::core::gregorian::{DateTimeValue, Duration, UtcOffset};
+use crate::internal::core::ident::PropertyId;
+use crate::internal::core::tree::{Component, PropertiesNamed, Property};
+use crate::internal::core::view::{TextValue, UriValue, ValueType, View};
 
 /// One of the calendar components RFC 5545 defines.
 ///
@@ -46,7 +46,7 @@ use crate::view::{TextValue, UriValue, ValueType, View};
 /// `None` rather than with a variant that would pretend to a schema it has not got.
 ///
 /// The identity is normalized on the way in, as section 3.1 compares every name; the spelling
-/// stays on the [`Boundary`](crate::Boundary), so a producer that wrote `begin:vevent` gets
+/// stays on the [`Boundary`](crate::internal::core::Boundary), so a producer that wrote `begin:vevent` gets
 /// `begin:vevent` back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -838,16 +838,16 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{
+    use crate::internal::core::{
         Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits, LineEnding, LineLayout, Meter,
         Severity,
     };
 
     use super::{Cardinality, ComponentKind, defined_by_rfc5545};
-    use crate::ident::PropertyId;
-    use crate::octets::RawText;
-    use crate::tree::{Boundary, Component, Document, Item, Parameter, Property};
-    use crate::view::{TextValue, ValueType, View};
+    use crate::internal::core::ident::PropertyId;
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::tree::{Boundary, Component, Document, Item, Parameter, Property};
+    use crate::internal::core::view::{TextValue, ValueType, View};
 
     /// A closed component of the given name, carrying the given entries.
     fn component(name: &[u8], items: Vec<Item>) -> Component {

@@ -28,7 +28,7 @@
 
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::{Instant, LimitExceeded, Meter, Property, PropertyId};
+use crate::internal::core::{Instant, LimitExceeded, Meter, Property, PropertyId};
 
 use crate::internal::recur::rule::{RecurrenceRule, RuleLimit, ValueKind};
 
@@ -572,7 +572,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{Instant, Limits, Meter};
+    use crate::internal::core::{Instant, Limits, Meter};
 
     use super::{
         InputError, InputList, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,

@@ -14,7 +14,7 @@
 
 use alloc::vec::Vec;
 
-use crate::octets::RawText;
+use crate::internal::core::octets::RawText;
 
 /// An assignment or an unassignment of one parameter.
 ///
@@ -90,7 +90,7 @@ mod tests {
     use alloc::vec;
 
     use super::{ParameterEdit, ProposedChange};
-    use crate::octets::RawText;
+    use crate::internal::core::octets::RawText;
 
     #[test]
     fn an_edit_distinguishes_assignment_from_unassignment() {

@@ -11,7 +11,7 @@
 //!
 //! [`ScheduledComponent`] is what the rest of this crate reads a calendar through, and
 //! [`ScheduledView`] is the implementation for a caller that holds an
-//! [`ical_core::Component`]. One walk builds it and every later question is a lookup, which is
+//! [`crate::internal::core::Component`]. One walk builds it and every later question is a lookup, which is
 //! what the trait asks for: a diff walks every property of both sides, so nothing on that path
 //! may allocate per call.
 //!
@@ -21,7 +21,7 @@
 //! returned by reference:
 //!
 //! - [`ScheduledComponent::property_line`] hands back a whole content line, because that is the
-//!   unit [`ical_core::ProposedChange::Replace`] takes. A [`ical_core::Component`] stores a
+//!   unit [`crate::internal::core::ProposedChange::Replace`] takes. A [`crate::internal::core::Component`] stores a
 //!   name, an ordered parameter list and a value separately, with the producer's folds recorded
 //!   beside them; the line as one span of octets exists nowhere in the tree.
 //! - Every parameter value handed to [`Party`] or [`Attendee`] is a **value** and not a
@@ -39,9 +39,9 @@
 //!
 //! The contract [`crate::internal::itip::party`] states from the other end. `SENT-BY`, `PARTSTAT`, `ROLE`,
 //! `DELEGATED-FROM` and `DELEGATED-TO` are read as *values*: the section 3.2 `DQUOTE` pair is
-//! removed and then [`ical_core::decode_caret`] is applied, in that order, because that is the
+//! removed and then [`crate::internal::core::decode_caret`] is applied, in that order, because that is the
 //! order a writer applies them in and a reader has to undo them in the reverse one.
-//! [`ical_core::ParameterEdit`] takes a value and picks the spelling itself, so a value that
+//! [`crate::internal::core::ParameterEdit`] takes a value and picks the spelling itself, so a value that
 //! skipped the decode here would be written back as `^^'` where the file had `^'` — a
 //! corruption no other gate in this workspace catches, which is why there is a test for exactly
 //! that round trip below.
@@ -49,7 +49,7 @@
 //! # Present and unusable is an answer
 //!
 //! A name RFC 5545 declares at most once, arriving more than once with **two different lines**,
-//! is not one value — [`ical_core::Component::get`] reports that as `View::Malformed` and this
+//! is not one value — [`crate::internal::core::Component::get`] reports that as `View::Malformed` and this
 //! reports it in the only vocabulary the trait has. `UID`, `METHOD`, `DTSTAMP`, `RECURRENCE-ID`
 //! and `ORGANIZER` answer `None`, which refuses the message rather than picking a winner out of
 //! two. `SEQUENCE` has a third state of its own and answers [`SequenceRead::Unreadable`], which
@@ -90,19 +90,19 @@
 //! name, and a table row of `1` counted over the octets as written admits `DTSTART` beside
 //! `dtstart` as two names appearing once each. Normalizing the name closes that, and it is also
 //! what makes an occurrence found by a diff address the same line
-//! [`ical_core::Component::apply_to_occurrence`] writes, since that door counts by identity.
+//! [`crate::internal::core::Component::apply_to_occurrence`] writes, since that door counts by identity.
 //! The line stays as written because ADR-0001 says the octets are the producer's.
 
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use core::mem;
 
-use crate::internal::recur::OverrideRange;
-use crate::internal::tz::nominal;
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue, Instant,
     Property, PropertyId, RawText, decode_caret,
 };
+use crate::internal::recur::OverrideRange;
+use crate::internal::tz::nominal;
 
 use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
 use crate::internal::itip::party::{ANSWERED_AT, Attendee, Party};
@@ -155,7 +155,7 @@ impl<'a> PropertyLine<'a> {
     }
 }
 
-/// One [`ical_core::Component`], read as the state a scheduling message is judged against.
+/// One [`crate::internal::core::Component`], read as the state a scheduling message is judged against.
 ///
 /// Built once with [`ScheduledView::of`] and then only looked up. It borrows the component, so
 /// the octets a value keeps are not copied twice; what it owns is exactly what the component
@@ -180,7 +180,7 @@ pub struct ScheduledView<'a> {
 /// One component whose nested components are still being read.
 ///
 /// The explicit stack [`ScheduledView::of`] walks with. Recursion here would be bounded by
-/// [`ical_core::Limits::max_component_depth`], which is a `u16` a caller raises through a public
+/// [`crate::internal::core::Limits::max_component_depth`], which is a `u16` a caller raises through a public
 /// builder while the stack gives out several thousand frames sooner — and a stack overflow is an
 /// abort rather than an unwind, so a server that read an untrusted attachment loses the process
 /// instead of the request. `ical-core`'s own tree walks are written this way for the same
@@ -616,7 +616,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         Component, ComponentKind, Document, IgnoreDiagnostics, Item, Limits, Meter, MutationError,
         ProposedChange,
     };

@@ -60,7 +60,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::{LimitExceeded, Meter};
+use crate::internal::core::{LimitExceeded, Meter};
 
 use crate::internal::dav::element::{ElementName, Namespace};
 use crate::internal::dav::failure::{DavError, SinkFull, SyntaxError};
@@ -483,7 +483,7 @@ fn check_name(name: &[u8]) -> Result<(), DavError> {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{IgnoreDiagnostics, LimitExceeded, Limits, Meter};
+    use crate::internal::core::{IgnoreDiagnostics, LimitExceeded, Limits, Meter};
 
     use super::XmlWriter;
     use crate::internal::dav::element::{ElementName, Namespace};

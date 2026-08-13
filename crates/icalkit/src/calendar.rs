@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 use core::str;
 
-use ical_core::{
+use crate::internal::core::{
     Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, Document, Item,
     Meter, Property, PropertyId, TextValue,
 };

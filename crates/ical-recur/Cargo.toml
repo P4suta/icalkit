@@ -22,8 +22,3 @@ ical-core = { path = "../ical-core", version = "0.0.0" }
 
 [lints]
 workspace = true
-
-# This compatibility harness compiles its implementation from `crates/icalkit` through `#[path]`.
-# cargo-shear scans only this package directory and cannot see the ical-core imports there.
-[package.metadata.cargo-shear]
-ignored = ["ical-core"]

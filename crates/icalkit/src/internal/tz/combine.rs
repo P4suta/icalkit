@@ -50,7 +50,7 @@
 
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, UtcOffset,
     report_diagnostic,
 };
@@ -375,7 +375,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::Cell;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
         Instant, Limits, Meter, Severity, UtcOffset,
     };

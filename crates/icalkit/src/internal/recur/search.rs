@@ -45,7 +45,7 @@
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 
-use ical_core::{Instant, PropertyId};
+use crate::internal::core::{Instant, PropertyId};
 
 use crate::internal::recur::input::{AppliedDiffs, Override, OverrideSet, PropertyChange};
 
@@ -378,7 +378,7 @@ impl SearchOutcome {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::Instant;
+    use crate::internal::core::Instant;
 
     use super::{
         BudgetExhausted, Occurrence, OverrideProvenance, SearchOutcome, SearchStep, Window,

@@ -15,7 +15,7 @@
 //! deliberately not an `Iterator`: `Iterator::next` takes nothing but `&mut self`, and every
 //! read here carries the caller's policy, ledger and sink.
 
-use ical_core::{Limits, Meter};
+use crate::internal::core::{Limits, Meter};
 
 use crate::internal::dav::element::{ElementName, Namespace, QName};
 use crate::internal::dav::failure::DavError;

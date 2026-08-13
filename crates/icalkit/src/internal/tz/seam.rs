@@ -111,9 +111,9 @@
 //! work of the units above, which read their policy out of [`ResolutionPolicy`].
 //!
 //! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
-//! [`DiagnosticCode::RecurrenceUntilNotUtc`]: ical_core::DiagnosticCode::RecurrenceUntilNotUtc
+//! [`DiagnosticCode::RecurrenceUntilNotUtc`]: crate::internal::core::DiagnosticCode::RecurrenceUntilNotUtc
 
-use ical_core::{CivilDateTime, Instant, UtcOffset};
+use crate::internal::core::{CivilDateTime, Instant, UtcOffset};
 
 use crate::internal::tz::answer::{FoldPolicy, GapPolicy};
 
@@ -227,7 +227,7 @@ pub enum UntilReading {
 /// [`DiagnosticCode::ExdateValueTypeMismatch`] travels, because a silent no-op is the one
 /// outcome that is indefensible.
 ///
-/// [`DiagnosticCode::ExdateValueTypeMismatch`]: ical_core::DiagnosticCode::ExdateValueTypeMismatch
+/// [`DiagnosticCode::ExdateValueTypeMismatch`]: crate::internal::core::DiagnosticCode::ExdateValueTypeMismatch
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ExclusionReading {
@@ -241,7 +241,7 @@ pub enum ExclusionReading {
 /// Every reading this crate will not decide for a caller, in one value.
 ///
 /// Four policies rather than four arguments threaded through six signatures. `Copy` with
-/// private fields and `with_*` builders, in the shape `ical_core::Limits` already uses, so
+/// private fields and `with_*` builders, in the shape `crate::internal::core::Limits` already uses, so
 /// that adding a fifth reading is not a breaking change and no caller can construct a policy
 /// that leaves one unstated.
 ///
@@ -322,7 +322,7 @@ impl ResolutionPolicy {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{CivilDate, CivilDateTime, CivilTime, Instant, UtcOffset};
+    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime, Instant, UtcOffset};
 
     use super::{
         ExclusionReading, LocalInterval, ResolutionPolicy, UntilReading, nominal, wall_clock,

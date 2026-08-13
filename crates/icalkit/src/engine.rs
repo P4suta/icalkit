@@ -7,7 +7,7 @@ use core::fmt::{self, Debug, Formatter};
 
 use alloc::vec::Vec;
 
-use ical_core::{Diagnostic, Meter};
+use crate::internal::core::{Diagnostic, Meter};
 
 use crate::caldav::Query;
 use crate::calendar::parse_calendar;

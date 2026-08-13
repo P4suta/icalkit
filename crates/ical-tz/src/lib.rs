@@ -125,6 +125,11 @@ mod series;
 
 // Stable crate-shaped root for source shared with `icalkit::internal::tz`.
 pub(crate) mod internal {
+    /// Compatibility alias used by time-zone source now living above the private kernel.
+    pub(crate) mod core {
+        pub(crate) use ical_core::*;
+    }
+
     #[allow(unused_imports)]
     pub(crate) mod tz {
         pub(crate) use crate::{

@@ -156,7 +156,7 @@
 //! not. A widening of zero when no override moves anything, and a widening equal to the
 //! largest shift when one does, across a leap day, a month end and a year boundary.
 
-use ical_core::{
+use crate::internal::core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, report_diagnostic,
 };
 
@@ -424,7 +424,7 @@ impl Charges {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Diagnostic, DiagnosticCode, Instant, Limits, Meter, Severity};
+    use crate::internal::core::{Diagnostic, DiagnosticCode, Instant, Limits, Meter, Severity};
 
     use super::{Charges, admit, generation_window, max_absolute_shift};
     use crate::internal::recur::input::{Override, OverrideRange, OverrideSet, PropertyDiff};

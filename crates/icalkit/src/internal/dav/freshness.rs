@@ -79,7 +79,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{Limits, Meter};
+use crate::internal::core::{Limits, Meter};
 
 use crate::internal::dav::element::ElementName;
 use crate::internal::dav::failure::DavError;
@@ -491,7 +491,7 @@ pub fn write_prefer_value(prefer: Prefer, out: &mut dyn ByteSink) -> Result<bool
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{Limits, Meter};
+    use crate::internal::core::{Limits, Meter};
 
     use super::{IF_SCHEDULE_TAG_MATCH, Presence, Revision, write_depth_value, write_prefer_value};
     use crate::internal::dav::element::{ElementName, Namespace};

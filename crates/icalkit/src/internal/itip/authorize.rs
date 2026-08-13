@@ -54,7 +54,7 @@
 //! exactly one thing — the ability to decline to be told that the target moved — and the gate
 //! below ran fresh either way. Nothing here should ever be changed to grant on a `Commitment`.
 
-use ical_core::{ComponentKind, Instant, PropertyId, ProposedChange};
+use crate::internal::core::{ComponentKind, Instant, PropertyId, ProposedChange};
 
 use crate::internal::itip::diff::{attendee_occurrence_of, describe_payload, reason_for};
 use crate::internal::itip::identity::{MessageIdentity, Revision, Uid};
@@ -93,7 +93,7 @@ pub enum AuthorizationDenied {
     /// look identical to a caller and only one of them means the attendee's answer was dropped.
     /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`] is the same fact reported.
     ///
-    /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`]: ical_core::DiagnosticCode::SchedulingCalendarAddressUnreadable
+    /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`]: crate::internal::core::DiagnosticCode::SchedulingCalendarAddressUnreadable
     CalendarAddressUnreadable,
     /// The sender is not the organizer this component names.
     OrganizerMismatch,
@@ -847,7 +847,7 @@ pub fn apply_transition(
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{ParameterEdit, ProposedChange, RawText};
+    use crate::internal::core::{ParameterEdit, ProposedChange, RawText};
 
     use super::{address_of, keeps_the_actor};
     use crate::internal::itip::party::PartyId;

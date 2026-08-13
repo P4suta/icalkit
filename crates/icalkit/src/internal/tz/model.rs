@@ -50,12 +50,12 @@
 //!
 //! [`AnswerBasis::BeyondKnownTransitions`]: crate::internal::tz::AnswerBasis::BeyondKnownTransitions
 //! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
-//! [`DiagnosticCode::VtimezoneRuleUnsupported`]: ical_core::DiagnosticCode::VtimezoneRuleUnsupported
+//! [`DiagnosticCode::VtimezoneRuleUnsupported`]: crate::internal::core::DiagnosticCode::VtimezoneRuleUnsupported
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use ical_core::{
+use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant,
     LimitExceeded, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
@@ -703,7 +703,7 @@ impl VtimezoneSet {
 /// Reading one `VTIMEZONE` out of whatever holds it.
 ///
 /// A trait rather than an inherent constructor because the thing that holds a `VTIMEZONE` is
-/// `ical_core::Component`, and a caller with its own representation — a database row, a
+/// `crate::internal::core::Component`, and a caller with its own representation — a database row, a
 /// hand-built definition — should be able to feed this crate without going through the model.
 /// The identifier comes back separately from the observances because a `VTIMEZONE` with no
 /// `TZID` is a component this crate cannot file anywhere, which is a different answer from one
@@ -727,7 +727,7 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits,
         Meter, UtcOffset, Weekday,
     };

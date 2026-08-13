@@ -6,11 +6,11 @@
 
 use alloc::vec::Vec;
 
+use crate::internal::core::{Diagnostic, Instant, Meter};
 use crate::internal::recur::{
     OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, SearchCursor, SearchStep,
     ValueKind,
 };
-use ical_core::{Diagnostic, Instant, Meter};
 
 use crate::failure::Issue;
 use crate::time::Timestamp;

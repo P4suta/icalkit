@@ -8,13 +8,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
 
+use crate::internal::core::{
+    CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
+    Property, PropertyId, TextValue, UtcOffset,
+};
 use crate::internal::itip::{
     ComponentTarget, ItipMessage, Method, PartyId, ScheduleTarget, ScheduledComponent,
     ScheduledView, Transition, evaluate_message, inspect_message,
-};
-use ical_core::{
-    CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
-    Property, PropertyId, TextValue, UtcOffset,
 };
 
 use crate::calendar::parse_calendar;

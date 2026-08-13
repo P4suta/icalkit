@@ -34,14 +34,16 @@
 //!
 //! # `purity`, second rule: the grammar layer
 //!
-//! `ical-core` absorbed `ical-grammar` (`docs/adr/0004`, D-0003), and inside one crate nothing
-//! stops a file of `src/grammar/` from naming the model above it. `gates/grammar-layering`
+//! The private `icalkit` kernel absorbed `ical-grammar` (`docs/adr/0004`, D-0003), and inside
+//! one crate nothing stops a file of `internal/core/grammar/` from naming the model above it.
+//! `gates/grammar-layering`
 //! compiles that directory with no dependencies at all and catches every spelling that names a
 //! model item — `use crate::CivilDate;` fails there with a file and a line. What it cannot
 //! catch is `crate::X` for an `X` the crate root re-exports *from the grammar*, because that
 //! resolves in the gate too, and that is the spelling a contributor reaches for.
 //!
-//! So the remaining half is held here, textually: no path under `crates/ical-core/src/grammar/`
+//! So the remaining half is held here, textually: no path under
+//! `crates/icalkit/src/internal/core/grammar/`
 //! may resolve above the grammar root — in `mod.rs` neither `crate::` nor `super::`, in the
 //! files beside it neither `crate::` nor `super::super::` — and the tree stays flat, because a
 //! subdirectory changes the depth that arithmetic is stated in and a rule that quietly stops
@@ -50,8 +52,8 @@
 //! Four spellings were walked around before they were rules. Whitespace: `use crate ::Token;` is
 //! the same import and a substring match does not see it, so every line is read with its
 //! whitespace removed rather than being left to `cargo fmt`. The crate's own name: `extern crate
-//! self as ical_core;` gives the layer a name for the crate root that is neither `crate::` nor
-//! `super::`, so `ical_core::` is refused as a path and `extern crate` is refused outright —
+//! self as icalkit;` gives the layer a name for the crate root that is neither `crate::` nor
+//! `super::`, so `icalkit::` is refused as a path and `extern crate` is refused outright —
 //! nothing in the layer needs one, since `alloc` is declared by each root that compiles it.
 //! `#[path]`: it maps a module of the layer onto a file this scan never opens, so the layer would
 //! hold code no rule here applies to. And the module tree: the rule reads a directory while the
@@ -137,8 +139,9 @@
 //! which is the review a frozen meaning is owed; improving the prose below a variant's first
 //! paragraph stays free, because that prose is not the meaning.
 //!
-//! Exactly two committed files are read, `crates/ical-core/src/grammar/report.rs` and the golden
-//! list, by the same kind of hand-rolled scan and for the same reason: a gate about
+//! Exactly two committed files are read,
+//! `crates/icalkit/src/internal/core/grammar/report.rs` and the golden list, by the same kind of
+//! hand-rolled scan and for the same reason: a gate about
 //! dependencies may not have any. The task fails on a code with no row, on a row no code
 //! declares, on rows out of declaration order, on a meaning that drifted from either side, on
 //! a channel that is not a `Severity` the source declares, and on a milestone `ROADMAP.md`
@@ -198,7 +201,13 @@ const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 ///
 /// Their temporary packages may remain as shared-source conformance harnesses while callers are
 /// migrated, but the facade must never depend back on a boundary it already absorbed.
-const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-dav", "ical-itip", "ical-recur", "ical-tz"];
+const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &[
+    "ical-core",
+    "ical-dav",
+    "ical-itip",
+    "ical-recur",
+    "ical-tz",
+];
 
 /// Narrow third-party boundaries required by the unified public facade.
 ///
@@ -229,13 +238,13 @@ const JUSTFILE: &str = "Justfile";
 ///
 /// Written out rather than derived, because every message below is about positions relative to
 /// this one directory: it is what `gates/grammar-layering` compiles alone.
-const GRAMMAR_ROOT: &str = "crates/ical-core/src/grammar";
+const GRAMMAR_ROOT: &str = "crates/icalkit/src/internal/core/grammar";
 
 /// The crate the grammar layer sits in, spelled as a path spells it.
 ///
 /// A path may name this crate from inside the layer only by way of `extern crate self as`, which
 /// is why both that declaration and this prefix are refused there.
-const GRAMMAR_OWNER: &str = "ical_core";
+const GRAMMAR_OWNER: &str = "icalkit";
 
 /// One member that compiles another crate's layer with nothing above that layer in scope.
 ///
@@ -256,7 +265,7 @@ struct LayeringGate {
 
 /// Every member that makes a layer a fact rather than a directory.
 ///
-/// `gates/grammar-layering` compiles `ical-core`'s content-line grammar with no model in scope
+/// `gates/grammar-layering` compiles `icalkit`'s private content-line grammar with no model in scope
 /// (`docs/adr/0004`, D-0003). `gates/xml-layering` compiles `icalkit`'s private WebDAV XML module with
 /// no CalDAV vocabulary in scope, which is what keeps the extraction `docs/adr/0012` deferred a
 /// file move rather than a redesign.
@@ -300,7 +309,7 @@ const CHANGELOG_OWNER: &str = "icalkit";
 const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
 
 /// The declarations the golden list is checked against, relative to the workspace root.
-const DIAGNOSTIC_SOURCE: &str = "crates/ical-core/src/grammar/report.rs";
+const DIAGNOSTIC_SOURCE: &str = "crates/icalkit/src/internal/core/grammar/report.rs";
 
 /// The facade's committed public API with default features.
 const PUBLIC_API_DEFAULT: &str = "api/icalkit.default.txt";
@@ -2556,7 +2565,7 @@ const HASHED: &str = r#"crate::Token "quoted" inside"#;
     fn an_extern_crate_declaration_inside_the_layer_is_a_violation() {
         let violations = file_paths(
             "token.rs",
-            "extern crate self as ical_core;\nuse ical_core::Token as Laundered;\n",
+            "extern crate self as icalkit;\nuse icalkit::Token as Laundered;\n",
         );
         assert!(
             violations
@@ -2565,7 +2574,7 @@ const HASHED: &str = r#"crate::Token "quoted" inside"#;
             "the declaration is what makes the spelling below available: {violations:?}"
         );
         assert!(
-            violations.iter().any(|line| line.contains("`ical_core::`")),
+            violations.iter().any(|line| line.contains("`icalkit::`")),
             "and the crate's own name is a path above the layer like any other: {violations:?}"
         );
     }
@@ -2706,7 +2715,7 @@ test = false
 
     /// The member's root file, which reaches the shipped grammar rather than a copy of it.
     const LAYERING_LIB: &str = "\
-#[path = \"../../../crates/ical-core/src/grammar/mod.rs\"]
+#[path = \"../../../crates/icalkit/src/internal/core/grammar/mod.rs\"]
 mod grammar;
 ";
 
@@ -2730,7 +2739,7 @@ mod grammar;
             "and one that deleted the files rather than the member line, likewise"
         );
 
-        let copied = LAYERING_LIB.replace("src/grammar", "src/grammar-copy");
+        let copied = LAYERING_LIB.replace("/grammar/", "/grammar-copy/");
         assert!(
             layering(LAYERING_ROOT, Some((LAYERING_MANIFEST, &copied)))
                 .iter()
@@ -2857,13 +2866,15 @@ ical-query = { path = "../ical-query" }
     fn a_migrated_implementation_cannot_return_as_a_facade_dependency() {
         let facade = r#"
 [dependencies]
+ical-core = { path = "../ical-core" }
 ical-dav = { path = "../ical-dav" }
 ical-itip = { path = "../ical-itip" }
 ical-recur = { path = "../ical-recur" }
 ical-tz = { path = "../ical-tz" }
 "#;
         let violations = migrated_facade_dependency_violations(facade);
-        assert_eq!(violations.len(), 4);
+        assert_eq!(violations.len(), 5);
+        assert!(violations.iter().any(|line| line.contains("`ical-core`")));
         assert!(violations.iter().any(|line| line.contains("`ical-dav`")));
         assert!(violations.iter().any(|line| line.contains("`ical-itip`")));
         assert!(violations.iter().any(|line| line.contains("`ical-recur`")));

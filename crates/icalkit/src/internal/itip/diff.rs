@@ -20,11 +20,11 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::internal::tz::wall_clock;
-use ical_core::{
+use crate::internal::core::{
     DateTimeValue, EncodeValue, Instant, ParameterEdit, PropertyId, ProposedChange, RawText,
     ValueBuf,
 };
+use crate::internal::tz::wall_clock;
 
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::Method;

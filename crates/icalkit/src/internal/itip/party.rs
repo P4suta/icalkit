@@ -15,11 +15,11 @@
 //! Every octet slice these types hand back is a **value**: RFC 6868's caret encoding is
 //! already resolved, so `^'` has become `"` and `^^` has become `^`. That is the contract
 //! `docs/adr/0001` amendment 3 states from the other end —
-//! [`Parameter::create`](ical_core::Parameter::create) and
-//! [`ParameterEdit`](ical_core::ParameterEdit) take a value and pick its spelling — and this
+//! [`Parameter::create`](crate::internal::core::Parameter::create) and
+//! [`ParameterEdit`](crate::internal::core::ParameterEdit) take a value and pick its spelling — and this
 //! crate is the one that moves parameters between properties, so the two doors have to agree
 //! about which side of the codec they are on. A reader building these types calls
-//! [`decode_caret`](ical_core::decode_caret); a writer handing one of these values to
+//! [`decode_caret`](crate::internal::core::decode_caret); a writer handing one of these values to
 //! `ParameterEdit::set` does not encode it again. Encoding twice writes `^^'` where the file
 //! had `^'`, and no gate in this workspace catches that.
 
@@ -46,7 +46,7 @@ pub const ANSWERED_AT: &[u8] = b"X-ICALKIT-ANSWERED-AT";
 /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`], and it is a different fact from an
 /// absent property.
 ///
-/// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`]: ical_core::DiagnosticCode::SchedulingCalendarAddressUnreadable
+/// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`]: crate::internal::core::DiagnosticCode::SchedulingCalendarAddressUnreadable
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartyId<'a>(&'a str);
 

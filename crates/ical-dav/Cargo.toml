@@ -38,8 +38,7 @@ sync-collection = []
 [lints]
 workspace = true
 
-# This compatibility harness compiles implementation and XML source that physically lives under
-# `crates/icalkit` through `#[path]`. cargo-shear scans only this package directory and cannot
-# see either production import there.
+# This compatibility harness compiles XML source that physically lives under `crates/icalkit`
+# through `#[path]`. cargo-shear scans only this package directory and cannot see that import.
 [package.metadata.cargo-shear]
-ignored = ["ical-core", "xmlparser"]
+ignored = ["xmlparser"]

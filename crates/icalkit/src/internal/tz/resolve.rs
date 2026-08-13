@@ -88,7 +88,7 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{CivilDate, CivilDateTime, Instant, UtcOffset};
+use crate::internal::core::{CivilDate, CivilDateTime, Instant, UtcOffset};
 
 use crate::internal::tz::answer::{
     AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
@@ -587,7 +587,7 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
 
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, DiagnosticCode, IgnoreDiagnostics, Instant, Limits,
         Meter, UtcOffset, Weekday,
     };

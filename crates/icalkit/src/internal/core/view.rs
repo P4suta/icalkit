@@ -19,12 +19,12 @@ use core::error::Error;
 use core::fmt::{self, Debug, Display, Formatter, Write};
 use core::marker::PhantomData;
 
-use crate::{Diagnostic, DiagnosticCode};
+use crate::internal::core::{Diagnostic, DiagnosticCode};
 
-use crate::change::ParameterEdit;
-use crate::gregorian::{DateTimeValue, Duration};
-use crate::octets::RawText;
-use crate::tree::Property;
+use crate::internal::core::change::ParameterEdit;
+use crate::internal::core::gregorian::{DateTimeValue, Duration};
+use crate::internal::core::octets::RawText;
+use crate::internal::core::tree::Property;
 
 /// The result of reading one typed value out of a component or a property.
 ///
@@ -238,7 +238,7 @@ pub enum MutationError {
     /// a component on, so a write that produced one would move every line after it into a
     /// component nobody added. The reader stores such a line — it has to, since the file holds
     /// one — and this crate declines to author one: a component is built with
-    /// [`Component::create`](crate::Component::create), which writes both of its boundaries.
+    /// [`Component::create`](crate::internal::core::Component::create), which writes both of its boundaries.
     ComponentBoundary,
     /// The written value exceeded the caller's per-value bound.
     ValueTooLarge {
@@ -575,11 +575,11 @@ impl<T> Debug for PropertyMut<'_, T> {
 mod tests {
     use core::fmt::Write;
 
-    use crate::{Diagnostic, DiagnosticCode, Location, Severity};
+    use crate::internal::core::{Diagnostic, DiagnosticCode, Location, Severity};
 
     use super::{MutationError, TextValue, ValueBuf, ValueType, View};
-    use crate::octets::RawText;
-    use crate::tree::Property;
+    use crate::internal::core::octets::RawText;
+    use crate::internal::core::tree::Property;
 
     /// A property with nothing on it, for the shape tests below.
     fn bare_property() -> Property {
@@ -587,7 +587,9 @@ mod tests {
             RawText::from_bytes(b"SUMMARY"),
             alloc::vec::Vec::new(),
             RawText::from_bytes(b"hi"),
-            crate::LineLayout::canonical(crate::LineEnding::CANONICAL),
+            crate::internal::core::LineLayout::canonical(
+                crate::internal::core::LineEnding::CANONICAL,
+            ),
         )
     }
 

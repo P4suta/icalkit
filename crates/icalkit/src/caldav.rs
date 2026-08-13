@@ -13,6 +13,9 @@ use core::fmt::{self, Debug, Formatter};
 
 use core::str;
 
+use crate::internal::core::{
+    Component, ContentLineReader, Diagnostic, Document, Item, Meter, Severity,
+};
 use crate::internal::dav::{
     CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
     ElementName, ExtensionName, Href, MultiStatus, MultiStatusReader, Namespace, PropFind,
@@ -23,7 +26,6 @@ use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
 use crate::scheduling::Message;
 use crate::time::ZoneAdapter;
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
-use ical_core::{Component, ContentLineReader, Diagnostic, Document, Item, Meter, Severity};
 
 /// A CalDAV calendar-query with its XML vocabulary kept private.
 #[derive(Clone, Debug)]

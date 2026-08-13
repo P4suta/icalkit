@@ -66,7 +66,7 @@
 
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::{LimitExceeded, Limits, Meter};
+use crate::internal::core::{LimitExceeded, Limits, Meter};
 
 use crate::internal::dav::codec::WriteXml;
 use crate::internal::dav::element::{ElementName, Namespace};
@@ -867,7 +867,7 @@ fn check_reference(octets: &[u8], start: usize) -> Result<(), DavError> {
 mod tests {
     use alloc::vec::Vec;
 
-    use ical_core::{LimitExceeded, Limits, Meter};
+    use crate::internal::core::{LimitExceeded, Limits, Meter};
 
     use super::MultiStatusWriter;
     use crate::internal::dav::codec::WriteXml;
@@ -1200,7 +1200,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
 
         // And read back by this crate's own character-data rules it is the payload, octet for
         // octet, fold included.
-        let mut sink = ical_core::IgnoreDiagnostics;
+        let mut sink = crate::internal::core::IgnoreDiagnostics;
         let recovered = decode_text(carried, TextMode::Verbatim, 0, &mut meter, &mut sink).unwrap();
         assert_eq!(recovered.run.as_bytes(), PAYLOAD);
         assert!(recovered.run.as_bytes().windows(3).any(|at| at == b"\r\n "));

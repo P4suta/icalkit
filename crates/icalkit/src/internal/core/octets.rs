@@ -18,7 +18,7 @@ use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::str::{self, Utf8Error};
 
-use crate::DiagnosticCode;
+use crate::internal::core::DiagnosticCode;
 
 /// Octets exactly as they were read, or exactly as a caller wrote them.
 ///
@@ -113,7 +113,7 @@ impl TextError {
     /// The diagnostic code an emission site reports for this failure.
     ///
     /// Named here so that the code and the error type cannot drift apart: every site that
-    /// turns a [`TextError`] into a [`Diagnostic`](crate::Diagnostic) reads it from
+    /// turns a [`TextError`] into a [`Diagnostic`](crate::internal::core::Diagnostic) reads it from
     /// the error rather than choosing one.
     pub const CODE: DiagnosticCode = DiagnosticCode::InvalidUtf8Text;
 
@@ -152,7 +152,7 @@ impl Error for TextError {}
 mod tests {
     use alloc::vec;
 
-    use crate::DiagnosticCode;
+    use crate::internal::core::DiagnosticCode;
 
     use super::{RawText, TextError};
 

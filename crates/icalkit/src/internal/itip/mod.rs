@@ -24,6 +24,7 @@ mod table;
 mod target;
 mod transition;
 
+pub(crate) use crate::internal::core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
 pub(crate) use authorize::{
     Authorization, AuthorizationDenied, Commitment, actor_role, apply_transition, attendee_index,
     evaluate_message,
@@ -33,7 +34,6 @@ pub(crate) use diff::{attendee_occurrence_of, describe_message, describe_payload
 pub(crate) use freebusy::{
     BusyPeriod, FreeBusyError, FreeBusyKind, busy_periods, requested_window, window_of,
 };
-pub(crate) use ical_core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
 pub(crate) use identity::{
     FoldSide, InstanceClock, InstanceMatch, InstanceRef, MessageIdentity, Revision, SequenceRead,
     Uid,

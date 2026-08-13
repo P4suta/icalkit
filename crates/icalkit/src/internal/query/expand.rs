@@ -50,7 +50,7 @@
 //! The two timelines are not the same one, so a window stated on the real timeline cannot bound
 //! nominal cadence keys exactly. It can bound them *safely*: a nominal instant and the real
 //! instant it stands for differ by the zone's offset, and RFC 5545 section 3.3.14 writes an
-//! offset as at most `+hhmmss`, which `ical_core::UtcOffset` refuses to hold a whole day of. So
+//! offset as at most `+hhmmss`, which `crate::internal::core::UtcOffset` refuses to hold a whole day of. So
 //! every cadence key whose occurrence starts inside the caller's window lies inside that window
 //! widened by [`ZONE_SLACK_SECONDS`], generation over the widened window is a superset, and the
 //! exact comparison then filters it back down. A series written in UTC needs no slack at all,
@@ -79,6 +79,11 @@
 
 use alloc::vec::Vec;
 
+use crate::internal::core::{
+    CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
+    Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
+    PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
+};
 use crate::internal::dav::TimeRange;
 use crate::internal::recur::{
     InputError, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
@@ -86,11 +91,6 @@ use crate::internal::recur::{
     max_absolute_shift,
 };
 use crate::internal::tz::{nominal, wall_clock};
-use ical_core::{
-    CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
-    Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
-    PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
-};
 
 use crate::internal::query::overlap::Occupancy;
 use crate::internal::query::vocabulary::{
@@ -103,7 +103,7 @@ use crate::internal::query::vocabulary::{
 /// iterator. Keeping the identities here also makes the component-to-series bridge the only
 /// place in this unit that knows how the stored RFC 5545 names map onto [`Series`].
 mod ids {
-    use ical_core::PropertyId;
+    use crate::internal::core::PropertyId;
 
     pub(super) static RRULE: PropertyId = PropertyId::RRULE;
     pub(super) static RDATE: PropertyId = PropertyId::RDATE;
@@ -136,7 +136,7 @@ pub const EXPANSION_SECTIONS: &[&str] = &[
 /// How far a nominal instant and the real instant it stands for can lie apart, in seconds.
 ///
 /// RFC 5545 section 3.3.14 writes a UTC offset as `+hhmmss` at most, and
-/// `ical_core::UtcOffset::from_seconds` refuses a magnitude of a whole day or more, so no zone
+/// `crate::internal::core::UtcOffset::from_seconds` refuses a magnitude of a whole day or more, so no zone
 /// this workspace can hold moves a wall clock further than this from the instant it names. That
 /// makes this an exact bound rather than a margin somebody guessed, which is what lets a window
 /// composed on the real timeline bound the nominal keys of every occurrence inside it.
@@ -625,7 +625,7 @@ fn this_and_future_impacts(
         PropertyDiff::empty(),
     )];
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    let mut diagnostics = ical_core::IgnoreDiagnostics;
+    let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
     let expanded = expand(
         Series {
             dtstart,
@@ -745,7 +745,7 @@ pub(crate) fn expand_component(
     }
     entries.sort_by_key(|entry| entry.recurrence_id());
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    let mut diagnostics = ical_core::IgnoreDiagnostics;
+    let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
     expand(
         Series {
             dtstart,
@@ -1767,16 +1767,16 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
+    use crate::internal::core::{
+        CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
+        Instant, Limits, Meter, Severity, Subject, UtcOffset,
+    };
     use crate::internal::dav::TimeRange;
     use crate::internal::recur::{
         Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceRule,
         RecurrenceRuleBuilder, RuleLimit, ValueKind,
     };
     use crate::internal::tz::FixedOffsetSource;
-    use ical_core::{
-        CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
-        Instant, Limits, Meter, Severity, Subject, UtcOffset,
-    };
 
     use super::{
         EXPANSION_SECTIONS, Instance, InstanceSpan, SearchBounds, Series, SeriesClock,

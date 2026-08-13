@@ -108,11 +108,11 @@
 //! it was the same refusal under both readings of the gap. The identity now says which reading
 //! placed it and the code above says when nothing did.
 
-use crate::internal::tz::{AnswerBasis, ResolvedExclusions, ZoneAnswer, ZoneSource, ZonedSeries};
-use ical_core::{
+use crate::internal::core::{
     CivilDate, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity,
     report_diagnostic,
 };
+use crate::internal::tz::{AnswerBasis, ResolvedExclusions, ZoneAnswer, ZoneSource, ZonedSeries};
 
 use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef};
 
@@ -413,14 +413,14 @@ fn channel_for(code: DiagnosticCode) -> Severity {
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::internal::core::{
+        CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, Instant,
+        Limits, Meter, Severity, UtcOffset, ValueType,
+    };
     use crate::internal::recur::OverrideRange;
     use crate::internal::tz::{
         AnswerBasis, GapPolicy, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy,
         ResolvedExclusions, ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,
-    };
-    use ical_core::{
-        CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, Instant,
-        Limits, Meter, Severity, UtcOffset, ValueType,
     };
 
     use super::{

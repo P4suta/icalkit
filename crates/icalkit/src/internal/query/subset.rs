@@ -97,11 +97,11 @@
 use alloc::vec::{IntoIter, Vec};
 use core::{mem, slice};
 
-use crate::internal::dav::{CompSelection, TimeRange};
-use ical_core::{
+use crate::internal::core::{
     CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration, EncodeValue, Instant,
     Item, LimitExceeded, Limits, Meter, Period, Property, PropertyId, UtcOffset, ValueBuf,
 };
+use crate::internal::dav::{CompSelection, TimeRange};
 
 use crate::internal::query::expand::{
     component_start, expand_component, override_impacts, override_recurrence_id,
@@ -770,7 +770,7 @@ fn step<'a>(
 
 /// Build the component `wanted` selects out of `holder`, counting what was left out.
 ///
-/// Iterative, over an explicit stack, for the reason `ical_core::Component` gives in full: the
+/// Iterative, over an explicit stack, for the reason `crate::internal::core::Component` gives in full: the
 /// nesting depth of a parsed calendar is a bound the caller raises through a public builder, so
 /// a traversal recursing once per level takes the process down on a document the reader
 /// accepted. A stack overflow is an abort rather than an unwind, so a server would lose the
@@ -1236,11 +1236,11 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::internal::dav::{CompSelection, TimeRange};
-    use ical_core::{
+    use crate::internal::core::{
         DateTimeValue, DecodeValue, DiagnosticCode, Document, IgnoreDiagnostics, Instant,
         LimitExceeded, Limits, Meter, PropertyId, UtcOffset,
     };
+    use crate::internal::dav::{CompSelection, TimeRange};
 
     use super::{
         SUBSELECTION_SECTIONS, limit_freebusy_set, limit_recurrence_set, select, without_values,

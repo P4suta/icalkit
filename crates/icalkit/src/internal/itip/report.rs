@@ -9,7 +9,7 @@
 //!
 //! # The division this module exists to draw
 //!
-//! [`ical_core::Component::audit`] reads RFC 5545 section 3.6 and answers *is this property
+//! [`crate::internal::core::Component::audit`] reads RFC 5545 section 3.6 and answers *is this property
 //! here, and how often*. It cannot answer *is what it carries usable*, because usable is a
 //! question about a reading somebody has to have done: an `ORGANIZER` whose `CAL-ADDRESS` is
 //! not UTF-8 is **present**, and it identifies nobody; a `SEQUENCE` of `later` is **present**,
@@ -52,7 +52,7 @@
 
 use alloc::collections::BTreeMap;
 
-use ical_core::{
+use crate::internal::core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject,
     report_diagnostic,
 };
@@ -130,7 +130,7 @@ fn inspect_payload<S: DiagnosticSink + ?Sized>(
 /// Report every `ORGANIZER` or `ATTENDEE` that is present and identifies nobody.
 ///
 /// Only when the property is present: an absent `ORGANIZER` is RFC 5545 section 3.6's
-/// question and `ical_core::Component::audit` answers it. A `SENT-BY` that did not decode is
+/// question and `crate::internal::core::Component::audit` answers it. A `SENT-BY` that did not decode is
 /// not reported, because [`Party`] cannot tell an absent parameter from an unreadable one and
 /// a diagnostic that fires on both would name the wrong fact half the time.
 fn inspect_parties<S: DiagnosticSink + ?Sized>(
@@ -199,7 +199,7 @@ fn inspect_sequence<S: DiagnosticSink + ?Sized>(
 /// narrower than the row's own `admits`. A second `DTSTAMP` fails `1` and is not a payload
 /// that *lacked* one, and `scheduling-required-property-missing` is the only code the closed
 /// golden list has for that row — so the cardinality half stays with
-/// `ical_core::Component::audit`'s `duplicate-property`, which is a claim this pass can make
+/// `crate::internal::core::Component::audit`'s `duplicate-property`, which is a claim this pass can make
 /// without over-claiming. [`crate::internal::itip::evaluate_message`] refuses the over-count either way.
 fn inspect_properties<S: DiagnosticSink + ?Sized>(
     constraints: MethodRule,
@@ -320,8 +320,10 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use crate::internal::core::{
+        ComponentKind, Diagnostic, DiagnosticCode, Instant, Limits, Meter,
+    };
     use crate::internal::recur::OverrideRange;
-    use ical_core::{ComponentKind, Diagnostic, DiagnosticCode, Instant, Limits, Meter};
 
     use super::inspect_message;
     use crate::internal::itip::authorize::{AuthorizationDenied, evaluate_message};

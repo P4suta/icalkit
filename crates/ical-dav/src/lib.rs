@@ -137,6 +137,11 @@ mod xml;
 
 // Stable crate-shaped root for source shared with `icalkit::internal::dav`.
 pub(crate) mod internal {
+    /// Compatibility alias used by CalDAV source now living above the private kernel.
+    pub(crate) mod core {
+        pub(crate) use ical_core::*;
+    }
+
     #[allow(unused_imports)]
     pub(crate) mod dav {
         pub(crate) const SYNC_COLLECTION_ENABLED: bool = cfg!(feature = "sync-collection");

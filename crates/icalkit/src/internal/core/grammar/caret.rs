@@ -138,8 +138,8 @@ pub fn undefined_caret_escapes(bytes: &[u8]) -> bool {
 /// octets are what get written back either way, so a repair invented here would reach a
 /// caller's display and nothing else, while making the text it showed disagree with the file.
 ///
-/// ```
-/// use ical_core::decode_caret;
+/// ```ignore
+/// use crate::internal::core::decode_caret;
 ///
 /// assert_eq!(decode_caret(b"^'quoted^'").as_ref(), b"\"quoted\"");
 /// assert_eq!(decode_caret(b"^x undefined").as_ref(), b"^x undefined");
@@ -193,8 +193,8 @@ pub fn caret_needs_encoding(bytes: &[u8]) -> bool {
 /// overwritten. It is also for a parameter value only, never a property value: RFC 6868 gives
 /// no meaning to a caret outside one.
 ///
-/// ```
-/// use ical_core::encode_caret;
+/// ```ignore
+/// use crate::internal::core::encode_caret;
 ///
 /// assert_eq!(encode_caret(b"say \"hi\"").as_ref(), b"say ^'hi^'");
 /// assert_eq!(encode_caret(b"Europe/Paris").as_ref(), b"Europe/Paris");

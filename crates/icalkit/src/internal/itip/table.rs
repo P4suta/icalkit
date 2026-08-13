@@ -36,7 +36,7 @@
 //! fact about the file, and the same property in a message an attendee sent is a denial. Which
 //! of the two it is belongs to [`crate::internal::itip::authorize`].
 
-use ical_core::ComponentKind;
+use crate::internal::core::ComponentKind;
 
 use crate::internal::itip::method::{Method, SenderRule};
 
@@ -1530,7 +1530,7 @@ pub(crate) static RULES: [MethodRule; 22] = [
 
 #[cfg(test)]
 mod tests {
-    use ical_core::ComponentKind;
+    use crate::internal::core::ComponentKind;
 
     use super::{MethodRule, Presence, PriorState, RULES};
     use crate::internal::itip::method::{Method, SenderRule};

@@ -9,14 +9,14 @@
 //!
 //! Unfolding, lexing, escaping, and the structure of parameters live here; so does the
 //! diagnostic vocabulary the whole workspace reports through. The crate root re-exports every
-//! item of this module unchanged, so `ical_core::Token` is the one spelling of that type and
+//! item of this module unchanged, so `crate::internal::core::Token` is the one spelling of that type and
 //! no caller ever writes this module's path (see `docs/adr/0004`).
 //!
 //! This was a crate of its own until D-0003. It was insurance against a caller that wanted the
 //! grammar without the model, `docs/adr/0004` said out loud that the honest move was to fold it
 //! back if no such caller appeared, and none did. What survives the fold is the layer, and the
 //! rule that keeps it one: nothing here names anything above this directory. Not `crate::`, not
-//! `super::` from this file, not `super::super::` from the files beside it, not `ical_core::`,
+//! `super::` from this file, not `super::super::` from the files beside it, not `crate::internal::core::`,
 //! and no `extern crate` to make that spelling available. The tree stays flat, `#[path]` is
 //! refused, and every `.rs` file beside this one is declared by it, so that the directory this
 //! rule reads and the module tree the compiler reads are the same set of files.

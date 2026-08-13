@@ -16,7 +16,7 @@
 //! obeys the same rule, so that a recurrence instance which does not exist is filtered per
 //! RFC 5545 section 3.3.10 rather than moved to a nearby one.
 
-use crate::view::ValueType;
+use crate::internal::core::view::ValueType;
 
 /// The last year expressible as the four digits RFC 5545 section 3.3.4 gives a `DATE`.
 ///
@@ -374,7 +374,7 @@ impl MonthAddOutcome {
 /// are not the same value; keeping them one variant made [`EncodeValue::coupled_parameters`]
 /// unable to state a `TZID`, so every write of a zoned `DTSTART` dropped the zone.
 ///
-/// [`EncodeValue::coupled_parameters`]: crate::EncodeValue::coupled_parameters
+/// [`EncodeValue::coupled_parameters`]: crate::internal::core::EncodeValue::coupled_parameters
 ///
 /// The zone identifier is borrowed rather than owned so that this type stays `Copy` — it is a
 /// parameter's octets, held by the property the value was read from or by the caller writing
@@ -441,7 +441,7 @@ impl<'a> DateTimeValue<'a> {
 #[cfg(test)]
 mod tests {
     use super::{CivilDate, CivilTime, DateTimeValue, MonthAddOutcome, UtcOffset, Weekday};
-    use crate::view::ValueType;
+    use crate::internal::core::view::ValueType;
 
     #[test]
     fn an_impossible_date_is_refused_rather_than_clamped() {

@@ -55,8 +55,9 @@ fix the cause rather than narrowing the gate.
   path a streaming caller uses; a private fast path is how one name acquires two grammars
   ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). Token payloads are `&[u8]`,
   and UTF-8 is demanded only in the typed view, where failure is a diagnostic.
-- **The grammar is a layer inside `ical-core`, and it names nothing above itself.**
-  `crates/ical-core/src/grammar/` is a private module tree, re-exported at the crate root, and
+- **The grammar is a layer inside `icalkit`'s private kernel, and it names nothing above itself.**
+  `crates/icalkit/src/internal/core/grammar/` is a private module tree inside the unified crate,
+  and
   the tree stays flat. `gates/grammar-layering` compiles the same sources in a crate that has
   no model, so naming one is a compile error there. That member cannot see a `crate::X` for an
   `X` the root re-exports from the grammar itself, so the rest is the second rule of

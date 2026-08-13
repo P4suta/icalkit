@@ -97,13 +97,13 @@ use core::num::NonZeroU32;
 
 use alloc::vec::Vec;
 
-use crate::internal::dav::{CompFilter, TimeRange};
-use crate::internal::recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
-use crate::internal::tz::nominal;
-use ical_core::{
+use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, Document,
     Duration, Instant, PropertyId, UtcOffset,
 };
+use crate::internal::dav::{CompFilter, TimeRange};
+use crate::internal::recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
+use crate::internal::tz::nominal;
 
 use crate::internal::query::{Budget, Zones};
 
@@ -148,7 +148,7 @@ const SECONDS_PER_MINUTE: i64 = 60;
 /// What a bound computed on the nominal timeline is widened by before it is compared.
 ///
 /// Two days, and each of them pays for one conversion between a wall clock and an instant. RFC
-/// 5545 section 3.3.14 writes a `UTC-OFFSET` as at most `+hhmmss` and `ical_core::UtcOffset`
+/// 5545 section 3.3.14 writes a `UTC-OFFSET` as at most `+hhmmss` and `crate::internal::core::UtcOffset`
 /// refuses a whole day, so no zone any source can state moves a value by a day or more: one day
 /// covers reading the last instance's wall clock as an instant, and one more covers an `UNTIL`
 /// that arrived as an instant and bounds a cadence counted in wall clocks. An over-estimate here
@@ -605,12 +605,12 @@ fn cadence_seconds(freq: Freq, day: CivilDate) -> Option<i64> {
 mod tests {
     use alloc::string::String;
 
-    use crate::internal::dav::{CompFilter, TimeRange};
-    use crate::internal::tz::FixedOffsetSource;
-    use ical_core::{
+    use crate::internal::core::{
         CivilDate, CivilDateTime, CivilTime, Document, IgnoreDiagnostics, Instant, Limits, Meter,
         UtcOffset,
     };
+    use crate::internal::dav::{CompFilter, TimeRange};
+    use crate::internal::tz::FixedOffsetSource;
 
     use super::{Exclusion, excludes};
     use crate::internal::query::{Budget, Zones};
