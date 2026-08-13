@@ -21,28 +21,22 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
-# The iTIP chapter harness is deliberately isolated from the JSONL CLI and is
-# path-included by tests/itip_chapter.rs until that corpus moves behind the
-# subject protocol.
+# The private source is path-included from `crates/icalkit`, outside this package directory, so
+# cargo-shear cannot see its direct jiff/xmlparser imports. The iTIP chapter is likewise included
+# by tests/itip_chapter.rs until that corpus moves behind the subject protocol.
 [package.metadata.cargo-shear]
+ignored = ["jiff", "xmlparser"]
 ignored-paths = ["src/itip.rs"]
 
 [dependencies]
 icalkit = { path = "../icalkit", version = "0.0.0" }
+jiff = { version = "0.2.35", default-features = false, features = [
+  "alloc",
+  "tz-fat",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[dev-dependencies]
-# The implementation this workspace supplies for the corpus to run against. A path plus a
-# version so the dependency resolves from inside this workspace rather than from a registry.
-ical-core = { path = "../ical-core", version = "0.0.0" }
-# The CalDAV layer the XML chapter of this corpus is run against.
-ical-dav = { path = "../ical-dav", version = "0.0.0" }
-# The scheduling chapter runs its cases through this crate's own gate, and supplies the state
-# they are judged against through `ScheduledComponent` rather than through a `Component`.
-ical-itip = { path = "../ical-itip", version = "0.0.0" }
-ical-recur = { path = "../ical-recur", version = "0.0.0" }
-ical-tz = { path = "../ical-tz", version = "0.0.0" }
+xmlparser = { version = "0.13.6", default-features = false }
 
 [lints]
 workspace = true

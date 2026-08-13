@@ -29,8 +29,10 @@
 
 use std::time::{Duration, Instant as Clock};
 
-use ical_core::{Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits, Meter, Severity};
-use ical_dav::{
+use icalkit_conformance::internal::core::{
+    Diagnostic, DiagnosticCode, IgnoreDiagnostics, Limits, Meter, Severity,
+};
+use icalkit_conformance::internal::dav::{
     DavError, DavResponse, DecodeContext, ETag, ElementName, Href, MatchHeader, MultiStatus,
     MultiStatusReader, Precondition, PropName, PropStat, PropValue, ResponseBody, ResponseSource,
     Revision, Status, SyncToken, ValueError, WriteXml, XmlReader,

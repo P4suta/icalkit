@@ -21,17 +21,17 @@
 /// code to the lint table as well as to the compiler.
 #[cfg(test)]
 mod attacker {
-    use ical_core::{
+    use icalkit_conformance::internal::core::{
         CivilDate, CivilDateTime, CivilTime, ComponentKind, Diagnostic, Instant, Limits, Meter,
         ProposedChange, RawText,
     };
-    use ical_itip::{
+    use icalkit_conformance::internal::itip::{
         ActorRole, Attendee, AuthorizationDenied, Commitment, InstanceClock, InstanceRef,
         ItipMessage, Party, PartyId, PropertyOccurrence, ScheduleTarget, ScheduledComponent,
         SequenceRead, TransitionReason, WriteRejected, apply_transition, evaluate_message,
     };
-    use ical_recur::OverrideRange;
-    use ical_tz::nominal;
+    use icalkit_conformance::internal::recur::OverrideRange;
+    use icalkit_conformance::internal::tz::nominal;
 
     /// The weekly series the caller holds: `SEQUENCE:2`, two attendees, one organizer.
     const HELD: &[u8] = include_bytes!("fixtures/break_itip_attacker/held_series.ics");
@@ -396,7 +396,7 @@ mod attacker {
         Some(total)
     }
 
-    /// The instant `value` names, projected the way `ical_tz::nominal` projects a wall clock.
+    /// The instant `value` names, projected the way `icalkit_conformance::internal::tz::nominal` projects a wall clock.
     fn instant_of(value: &[u8]) -> Option<Instant> {
         let year = u16::try_from(number(value.get(0..4)?)?).ok()?;
         let month = u8::try_from(number(value.get(4..6)?)?).ok()?;
@@ -513,7 +513,7 @@ mod attacker {
 
     /// An attendee's `COUNTER` may rewrite the `ORGANIZER` line, and the gate authorizes it.
     ///
-    /// `field_rule` gives `ORGANIZER` [`ical_itip::FieldRule::EitherParty`], which is a statement
+    /// `field_rule` gives `ORGANIZER` [`icalkit_conformance::internal::itip::FieldRule::EitherParty`], which is a statement
     /// about a party *echoing* the organizer's own line. The octet diff makes no distinction
     /// between echoing a line and replacing it, so an attendee-authored `COUNTER` whose every other
     /// property is byte-identical to the held copy describes exactly one change — `ORGANIZER`
@@ -590,7 +590,7 @@ mod attacker {
 
     /// An attendee's `COUNTER` may raise `SEQUENCE`, which freezes the real organizer out.
     ///
-    /// `field_rule` gave `SEQUENCE` [`ical_itip::FieldRule::EitherParty`]. RFC 5546 section 2.1.4
+    /// `field_rule` gave `SEQUENCE` [`icalkit_conformance::internal::itip::FieldRule::EitherParty`]. RFC 5546 section 2.1.4
     /// makes `SEQUENCE` the ordering of the *organizer's* revisions, and the gate's own replay
     /// defense reads it: once an attendee has written 99 into the caller's copy, the organizer's
     /// genuine `SEQUENCE:3` update is refused as stale. The attacker cannot forge a newer version,

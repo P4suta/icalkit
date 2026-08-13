@@ -6,11 +6,6 @@
 resolver = "3"
 members = [
   "crates/icalkit",
-  "crates/ical-core",
-  "crates/ical-recur",
-  "crates/ical-tz",
-  "crates/ical-itip",
-  "crates/ical-dav",
   "crates/icalkit-conformance",
   "gates/grammar-layering",
   "gates/xml-layering",

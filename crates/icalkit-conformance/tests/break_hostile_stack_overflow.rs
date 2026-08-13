@@ -33,7 +33,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 
-use ical_core::{Diagnostic, Document, Limits};
+use icalkit_conformance::internal::core::{Diagnostic, Document, Limits};
 
 /// The nesting ladder: sixteen thousand `BEGIN:X` lines and their sixteen thousand `END`s.
 ///

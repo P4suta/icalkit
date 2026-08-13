@@ -9,7 +9,7 @@ export RUSTDOCFLAGS := "-D warnings"
 
 # The sans-I/O core: no std, no clock, no network, no bundled time zone database
 # (docs/adr/0003, docs/adr/0004).
-core_crates := "-p icalkit -p ical-core -p ical-recur -p ical-tz -p ical-itip -p ical-dav"
+core_crates := "-p icalkit"
 
 # List the available development commands.
 default:
@@ -72,7 +72,7 @@ wasm:
 # Five rules, one task, because it already walks this tree and already holds docs/adr/0004's
 # structural rules. First: reject std, clock, network, and bundled-tzdb dependencies in the
 # core, and hold this file's core_crates and xtask's CORE_CRATES to each other. Second: reject
-# a path inside ical-core's grammar layer that resolves above the layer's root, a subdirectory
+# a path inside icalkit's private grammar layer that resolves above the layer's root, a subdirectory
 # under it, an `extern crate` or `#[path]` inside it, and a file the layer's mod.rs does not
 # declare. Third: hold gates/grammar-layering to what the ADR says that member must be, since
 # deleting it deletes the compile half of the layering guarantee and nothing else noticed.
@@ -125,11 +125,6 @@ zizmor:
 # Verify every workspace crate at the shared declared MSRV.
 msrv:
     cargo msrv verify --path crates/icalkit
-    cargo msrv verify --path crates/ical-core
-    cargo msrv verify --path crates/ical-recur
-    cargo msrv verify --path crates/ical-tz
-    cargo msrv verify --path crates/ical-itip
-    cargo msrv verify --path crates/ical-dav
     cargo msrv verify --path crates/icalkit-conformance
     cargo msrv verify --path gates/grammar-layering
     cargo msrv verify --path gates/xml-layering

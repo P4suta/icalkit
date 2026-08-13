@@ -47,11 +47,11 @@
 //! describing what its name says must fail as a named case and never as a panic in a helper
 //! shared by fourteen of them.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, DecodeValue, Diagnostic, DiagnosticCode,
     Document, Instant, Limits, Meter, PropertyId, UtcOffset,
 };
-use ical_recur::{
+use icalkit_conformance::internal::recur::{
     Occurrence, Override, OverrideRange, OverrideSet, PropertyChange, PropertyDiff,
     RecurrenceInput, SearchStep, ValueKind, Window, parse_recur,
 };
@@ -62,7 +62,7 @@ use ical_recur::{
 /// walks for, so an identity built at the call site would not outlive the values read through
 /// it. A `static` is that lifetime, spelled once.
 mod ids {
-    use ical_core::PropertyId;
+    use icalkit_conformance::internal::core::PropertyId;
 
     /// `DTSTART`, the instant a series or an override starts at.
     pub(crate) static DTSTART: PropertyId = PropertyId::DTSTART;

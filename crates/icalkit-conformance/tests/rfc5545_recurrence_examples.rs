@@ -39,11 +39,13 @@
 //! be reached from outside `ical-recur` is a finding about the surface as much as about the
 //! engine.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, Instant, Limits, Meter,
     Severity, UtcOffset,
 };
-use ical_recur::{OverrideSet, RecurrenceInput, SearchStep, ValueKind, Window, parse_recur};
+use icalkit_conformance::internal::recur::{
+    OverrideSet, RecurrenceInput, SearchStep, ValueKind, Window, parse_recur,
+};
 
 /// The hour every example in section 3.8.5.3 that names whole days starts at.
 const NINE_AM: (u8, u8) = (9, 0);
@@ -868,7 +870,7 @@ fn a_caller_outside_the_crate_cannot_flatten_the_terminal_step_away() {
         Some(&rule),
         &[],
         &[],
-        ical_recur::OverrideSet::empty(),
+        icalkit_conformance::internal::recur::OverrideSet::empty(),
         &mut meter,
     )
     .expect("a series with no lists to check");

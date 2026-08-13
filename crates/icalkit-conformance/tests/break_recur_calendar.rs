@@ -29,11 +29,11 @@
 //! passes under either. They disagree the moment a period is skipped, a set is selected from,
 //! or a year's week count is asked about — and those are the three cases below.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, ContentLineReader, Diagnostic, DiagnosticCode, Document,
     Instant, Limits, Meter, PropertyId, UtcOffset,
 };
-use ical_recur::{
+use icalkit_conformance::internal::recur::{
     DEFAULT_CANDIDATE_BUDGET, OverrideSet, RecurrenceInput, SearchOutcome, ValueKind, Window,
     parse_recur,
 };
@@ -323,18 +323,23 @@ fn expected_instants(readings: &[Reading]) -> Option<Vec<Instant>> {
 
 /// The first value in the document carrying `id`, searched depth first.
 fn first_value(document: &Document, id: &PropertyId) -> Option<Vec<u8>> {
-    fn walk(items: &[ical_core::Item], id: &PropertyId) -> Option<Vec<u8>> {
+    fn walk(
+        items: &[icalkit_conformance::internal::core::Item],
+        id: &PropertyId,
+    ) -> Option<Vec<u8>> {
         for entry in items {
             match entry {
-                ical_core::Item::Property(property) if property.has_id(id) => {
+                icalkit_conformance::internal::core::Item::Property(property)
+                    if property.has_id(id) =>
+                {
                     return Some(property.value_text().as_bytes().to_vec());
                 },
-                ical_core::Item::Component(component) => {
+                icalkit_conformance::internal::core::Item::Component(component) => {
                     if let Some(found) = walk(component.items(), id) {
                         return Some(found);
                     }
                 },
-                ical_core::Item::Property(_) => {},
+                icalkit_conformance::internal::core::Item::Property(_) => {},
             }
         }
         None

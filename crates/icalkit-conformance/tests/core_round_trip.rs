@@ -17,7 +17,7 @@
 //! Whether the octets are *right* is `ical-conform`'s question; whether they are *unchanged*
 //! is this one.
 
-use ical_core::{Diagnostic, Document, Limits, ParseError};
+use icalkit_conformance::internal::core::{Diagnostic, Document, Limits, ParseError};
 
 /// Parse `input` and write it back, alongside whatever was diagnosed on the way.
 ///

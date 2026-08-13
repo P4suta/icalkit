@@ -30,7 +30,7 @@
 //! [`CallerZoneinfo`] below is what `docs/adr/0003` asks every caller to supply, written from a
 //! published transition list rather than from anything this workspace computed. Two things about
 //! writing it are findings in their own right and are recorded here rather than in a comment
-//! nobody reads. First, [`ical_tz::VtimezoneSet`] is not a [`ZoneSource`], so wiring "the file's
+//! nobody reads. First, [`icalkit_conformance::internal::tz::VtimezoneSet`] is not a [`ZoneSource`], so wiring "the file's
 //! own definitions" as the embedded half of a pair needs the [`FileZones`] adapter below —
 //! twelve lines every caller writes identically, and the place each of them independently
 //! decides what an empty definition means. Second, building a
@@ -38,11 +38,11 @@
 //! `shifted` and the invariants tying them together, with no constructor or helper in the crate
 //! to do it: the type states the invariants in prose and checks none of them.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, Diagnostic, DiagnosticCode, Document,
     IgnoreDiagnostics, Instant, Limits, Meter, UtcOffset,
 };
-use ical_tz::{
+use icalkit_conformance::internal::tz::{
     AnswerBasis, CombinedZoneSource, LocalResolution, OffsetAnswer, PolicyOutcome, Reading, Tzid,
     TzidForm, VtimezoneSet, ZoneAnswer, ZoneProvenance, ZoneSource, read_calendar_zones,
 };

@@ -26,7 +26,7 @@
 //! stopped being the last one. Each case still names what it caught, so a regression reads as
 //! the finding it was rather than as an unexplained assertion.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Component, Diagnostic, Document, Item, Limits, MutationError, ParameterEdit, ParseError,
     PropertyId, ProposedChange, RawText, TextValue,
 };

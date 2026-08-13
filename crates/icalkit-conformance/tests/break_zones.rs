@@ -47,16 +47,16 @@
 //! hour wide and its fold is half an hour long. A resolver that special-cased one hour
 //! anywhere answers this zone wrongly, which is why it is here.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue, Diagnostic,
     DiagnosticCode, Document, Instant, Limits, Meter, UtcOffset, ValueType,
 };
-use ical_recur::{
+use icalkit_conformance::internal::recur::{
     Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput, RecurrenceRule,
     RecurrenceRuleBuilder, RuleLimit, SearchStep, UntilClock, ValueKind, Window, generation_window,
     parse_recur,
 };
-use ical_tz::{
+use icalkit_conformance::internal::tz::{
     AnswerBasis, CombinedZoneSource, ExclusionReading, FixedOffsetSource, GapPolicy,
     LocalResolution, OrphanScan, PolicyOutcome, Reading, ResolutionPolicy, ResolvedExclusions,
     TransitionTable, Tzid, TzidForm, UntilReading, VtimezoneSet, WallClockShift, ZoneAnswer,
@@ -70,7 +70,7 @@ use ical_tz::{
 /// walks for, so an identity built at the call site would not outlive the values read through
 /// it. A `static` is that lifetime, spelled once.
 mod ids {
-    use ical_core::PropertyId;
+    use icalkit_conformance::internal::core::PropertyId;
 
     /// `DTSTART`, the wall clock a zoned series is anchored at.
     pub(crate) static DTSTART: PropertyId = PropertyId::DTSTART;

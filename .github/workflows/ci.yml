@@ -5,16 +5,12 @@
 # CI for icalkit (iCalendar, recurrence, time zones, iTIP scheduling, and CalDAV).
 #
 # Layout under test:
-#   - ical-core     no_std, sans-I/O. RFC 5545 grammar, model, lossless serializer.
-#   - ical-recur    no_std, sans-I/O. Bounded lazy RRULE, RDATE, and EXDATE expansion.
-#   - ical-tz       no_std, sans-I/O. VTIMEZONE against a caller-supplied zone source.
-#   - ical-itip     no_std, sans-I/O. RFC 5546 scheduling as described transitions.
-#   - ical-dav      no_std, sans-I/O. RFC 4791 requests and responses, from both sides.
+#   - icalkit       the sole production crate; no_std sans-I/O kernel plus the std/system-tz adapter.
 #   - icalkit-conformance  the private conformance JSONL CLI and corpus (docs/adr/0013).
 #   - xtask         repository policy checks shared by Just and CI.
 #
 # Two members under gates/ and xtask/ are not crates and are not published. `gates/` holds
-# compile-only members: `ical-grammar-layering` builds ical-core's grammar layer a second time
+# compile-only members: `ical-grammar-layering` builds icalkit's private grammar a second time
 # with no dependencies, so a path out of that layer is a compile error (docs/adr/0004).
 #
 # Policy:

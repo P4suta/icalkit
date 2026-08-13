@@ -4,9 +4,9 @@
 
 //! Private iTIP scheduling kernel.
 //!
-//! Files in this module are also compiled by the temporary `ical-itip` conformance harness.
-//! Keeping the former crate-shaped root here lets the facade absorb the implementation without
-//! copying it or exposing the old API as a second public path.
+//! The unpublished conformance helper also compiles these files to exercise the low-level
+//! adversarial corpus. The private ancestor prevents the kernel API from becoming a second
+//! production path.
 
 mod authorize;
 mod component;
@@ -24,31 +24,31 @@ mod table;
 mod target;
 mod transition;
 
-pub(crate) use crate::internal::core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
-pub(crate) use authorize::{
+pub use crate::internal::core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
+pub use authorize::{
     Authorization, AuthorizationDenied, Commitment, actor_role, apply_transition, attendee_index,
     evaluate_message,
 };
-pub(crate) use component::ScheduledView;
-pub(crate) use diff::{attendee_occurrence_of, describe_message, describe_payload};
-pub(crate) use freebusy::{
+pub use component::ScheduledView;
+pub use diff::{attendee_occurrence_of, describe_message, describe_payload};
+pub use freebusy::{
     BusyPeriod, FreeBusyError, FreeBusyKind, busy_periods, requested_window, window_of,
 };
-pub(crate) use identity::{
+pub use identity::{
     FoldSide, InstanceClock, InstanceMatch, InstanceRef, MessageIdentity, Revision, SequenceRead,
     Uid,
 };
-pub(crate) use instance::{
+pub use instance::{
     ResolvedInstance, check_exclusions_are_placeable, exclusions_are_placeable, resolve_instance,
 };
-pub(crate) use message::{ItipMessage, MessageError};
-pub(crate) use method::{ActorRole, Method, SenderRule};
-pub(crate) use party::{ANSWERED_AT, Attendee, PartStat, Party, PartyId, Role};
-pub(crate) use report::inspect_message;
-pub(crate) use state::{PropertyOccurrence, ScheduledComponent};
-pub(crate) use table::{MethodRule, Presence, PriorState, Rule};
-pub(crate) use target::ComponentTarget;
-pub(crate) use transition::{
+pub use message::{ItipMessage, MessageError};
+pub use method::{ActorRole, Method, SenderRule};
+pub use party::{ANSWERED_AT, Attendee, PartStat, Party, PartyId, Role};
+pub use report::inspect_message;
+pub use state::{PropertyOccurrence, ScheduledComponent};
+pub use table::{MethodRule, Presence, PriorState, Rule};
+pub use target::ComponentTarget;
+pub use transition::{
     ApplyReport, Changes, FieldRule, RejectedChange, ScheduleTarget, Transition, TransitionReason,
     WriteRejected, field_rule, is_time_property,
 };

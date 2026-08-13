@@ -15,7 +15,7 @@
 //!
 //! `ical-itip` judges a message against *the state the caller holds*, and the trait it takes
 //! that state through — `ScheduledComponent` — exists so a server whose calendar is a database
-//! row never has to build an `ical_core::Component` in order to answer "who may change this".
+//! row never has to build an `icalkit_conformance::internal::core::Component` in order to answer "who may change this".
 //! The design document was candid that until a second implementation appears, the trait "earns
 //! its cost as insurance rather than as demonstrated demand". The subject below is that second
 //! implementation: it reads a committed `.ics` fixture into its own small tree and answers the
@@ -108,7 +108,7 @@
 //! that is the next unit of work rather than a line in this one.
 //!
 //! All ten `scheduling-*` diagnostic codes have an emitter as of the integration pass — six in
-//! `ical_itip::report`, three in `ical_itip::instance`, and `scheduling-method-unknown` where a
+//! `icalkit_conformance::internal::itip::report`, three in `icalkit_conformance::internal::itip::instance`, and `scheduling-method-unknown` where a
 //! message is read — but this chapter drives only the last of them through a live sink. The
 //! other nine have their condition carried by a case and their spelling and severity asserted
 //! against the golden list, which is not the same as watching them arrive; running
@@ -117,18 +117,18 @@
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{
+    use icalkit_conformance::internal::core::{
         CivilDate, CivilDateTime, CivilTime, ComponentKind, Diagnostic, DiagnosticCode, Instant,
         Limits, Location, Meter, PropertyId, ProposedChange, Severity, UtcOffset,
     };
-    use ical_itip::{
+    use icalkit_conformance::internal::itip::{
         ActorRole, ApplyReport, Attendee, AuthorizationDenied, Commitment, FoldSide, InstanceClock,
         InstanceRef, ItipMessage, MessageError, Party, PartyId, PriorState, PropertyOccurrence,
         Revision, ScheduleTarget, ScheduledComponent, SequenceRead, TransitionReason,
         WriteRejected, apply_transition, describe_message, evaluate_message,
     };
-    use ical_recur::OverrideRange;
-    use ical_tz::{LocalResolution, Reading, nominal};
+    use icalkit_conformance::internal::recur::OverrideRange;
+    use icalkit_conformance::internal::tz::{LocalResolution, Reading, nominal};
 
     // The state a caller already holds. A held fixture carries no `METHOD`: it is a calendar,
     // not a message, and the component judged against is its first child.
@@ -375,7 +375,7 @@ mod tests {
     /// One component of a fixture, answering the questions `ical-itip` asks of held state.
     ///
     /// The second implementation of `ScheduledComponent` this workspace has, and the reason the
-    /// trait exists rather than a concrete type: nothing here is an `ical_core::Component`.
+    /// trait exists rather than a concrete type: nothing here is an `icalkit_conformance::internal::core::Component`.
     #[derive(Clone, Debug, Default)]
     struct Subject {
         /// What the `BEGIN` line named, `None` for a name RFC 5545 does not define.
@@ -641,7 +641,7 @@ mod tests {
         Some(total)
     }
 
-    /// The instant `value` names, projected the way `ical_tz::nominal` projects a wall clock.
+    /// The instant `value` names, projected the way `icalkit_conformance::internal::tz::nominal` projects a wall clock.
     ///
     /// A `Z`-terminated value names a real instant and the projection is the identity. A value
     /// written without one names a wall clock, and the nominal timeline is the only thing this

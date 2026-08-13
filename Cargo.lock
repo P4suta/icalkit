@@ -40,49 +40,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "ical-core"
-version = "0.0.0"
-
-[[package]]
-name = "ical-dav"
-version = "0.0.0"
-dependencies = [
- "ical-core",
- "xmlparser",
-]
-
-[[package]]
 name = "ical-grammar-layering"
 version = "0.0.0"
-
-[[package]]
-name = "ical-itip"
-version = "0.0.0"
-dependencies = [
- "ical-core",
- "ical-recur",
- "ical-tz",
-]
-
-[[package]]
-name = "ical-recur"
-version = "0.0.0"
-dependencies = [
- "ical-core",
-]
-
-[[package]]
-name = "ical-tz"
-version = "0.0.0"
-dependencies = [
- "ical-core",
-]
 
 [[package]]
 name = "ical-xml-layering"
 version = "0.0.0"
 dependencies = [
- "ical-core",
  "xmlparser",
 ]
 
@@ -98,14 +62,11 @@ dependencies = [
 name = "icalkit-conformance"
 version = "0.0.0"
 dependencies = [
- "ical-core",
- "ical-dav",
- "ical-itip",
- "ical-recur",
- "ical-tz",
  "icalkit",
+ "jiff",
  "serde",
  "serde_json",
+ "xmlparser",
 ]
 
 [[package]]

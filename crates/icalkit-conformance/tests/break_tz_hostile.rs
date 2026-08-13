@@ -42,11 +42,11 @@
 
 use std::fmt::Write as _;
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, Diagnostic, DiagnosticCode, Document,
     IgnoreDiagnostics, Instant, Limits, Meter, UtcOffset,
 };
-use ical_tz::{
+use icalkit_conformance::internal::tz::{
     AnswerBasis, LocalResolution, Reading, TransitionTable, ZoneAnswer, ZoneSource,
     read_calendar_zones,
 };

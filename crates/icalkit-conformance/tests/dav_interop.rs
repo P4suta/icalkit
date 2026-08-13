@@ -28,8 +28,8 @@
 //! once. `decode -> encode -> decode` is stable; `encode -> decode` is not the identity on that
 //! one redundant input.
 
-use ical_core::{Diagnostic, IgnoreDiagnostics, Instant, Limits, Meter};
-use ical_dav::{
+use icalkit_conformance::internal::core::{Diagnostic, IgnoreDiagnostics, Instant, Limits, Meter};
+use icalkit_conformance::internal::dav::{
     CalendarDataRequest, CalendarMultiget, CalendarPayload, CalendarQuery, CompFilter, DavError,
     DavProperty, DavResponse, DecodeContext, ETag, ElementName, FreeBusyQuery, Href, MultiStatus,
     MultiStatusReader, MultiStatusWriter, PropFind, PropName, PropRequest, PropStat, PropValue,
@@ -222,10 +222,9 @@ fn an_open_bound_stays_open_through_the_encoder_and_the_tokenizer() {
 }
 
 /// The `sync-collection` REPORT, in the two shapes RFC 6578 section 3 defines.
-#[cfg(feature = "sync-collection")]
 #[test]
 fn a_synchronization_reads_back_whether_or_not_it_carries_a_token() {
-    use ical_dav::{SyncCollection, SyncLevel};
+    use icalkit_conformance::internal::dav::{SyncCollection, SyncLevel};
 
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
@@ -242,18 +241,6 @@ fn a_synchronization_reads_back_whether_or_not_it_carries_a_token() {
     resumed.level = SyncLevel::Infinite;
     resumed.limit = Some(100);
     round_trips(RequestBody::SyncCollection, resumed).unwrap();
-}
-
-/// A build without the feature refuses the REPORT rather than answering a different question.
-#[cfg(not(feature = "sync-collection"))]
-#[test]
-fn a_build_without_the_feature_refuses_the_report_it_cannot_honor() {
-    let wire = br#"<D:sync-collection xmlns:D="DAV:"><D:sync-token/><D:sync-level>1</D:sync-level>
-  <D:prop><D:getetag/></D:prop></D:sync-collection>"#;
-    assert_eq!(
-        read_request(wire, Limits::DEFAULT),
-        Err(DavError::Unsupported(ElementName::SyncCollection))
-    );
 }
 
 /// The one input where `encode -> decode` is idempotent rather than the identity.
@@ -499,7 +486,7 @@ fn the_element_writer_writes_what_the_element_reader_reads() {
     let mut events = XmlReader::new(&out);
     let mut seen = Vec::new();
     while let Some(event) = events.next_event(&mut context).expect("it tokenizes") {
-        if let ical_dav::XmlEvent::Start { known, .. } = event {
+        if let icalkit_conformance::internal::dav::XmlEvent::Start { known, .. } = event {
             seen.push(known);
         }
     }
@@ -519,9 +506,9 @@ fn the_element_writer_writes_what_the_element_reader_reads() {
     let closed = find(&out, b"</C:calendar-data>").expect("the element is closed");
     let span = &out[opened.saturating_add(b"<C:calendar-data>".len())..closed];
     assert!(!span.contains(&b'\r'));
-    let decoded = ical_dav::decode_text(
+    let decoded = icalkit_conformance::internal::dav::decode_text(
         span,
-        ical_dav::TextMode::Verbatim,
+        icalkit_conformance::internal::dav::TextMode::Verbatim,
         0,
         &mut Meter::new(limits),
         &mut IgnoreDiagnostics,
@@ -541,11 +528,13 @@ fn a_full_buffer_and_a_crossed_bound_are_different_answers() {
     let query = a_calendar_query(limits).unwrap();
 
     let mut room = [0_u8; 16];
-    let mut cramped = ical_dav::SliceSink::new(&mut room);
+    let mut cramped = icalkit_conformance::internal::dav::SliceSink::new(&mut room);
     let mut meter = Meter::new(limits);
     assert_eq!(
         query.write_xml(&mut cramped, limits, &mut meter),
-        Err(DavError::Output(ical_dav::SinkFull))
+        Err(DavError::Output(
+            icalkit_conformance::internal::dav::SinkFull
+        ))
     );
 
     let tight = Limits::DEFAULT.with_max_xml_depth(2);
@@ -596,7 +585,7 @@ fn a_precondition_stays_in_the_property_group_that_named_it() {
             &mut meter,
         )
         .expect("one property");
-    let mut named = ical_dav::ErrorBody::new(limits);
+    let mut named = icalkit_conformance::internal::dav::ErrorBody::new(limits);
     named
         .push(
             PropName::Known(ElementName::SupportedCalendarData),
@@ -615,7 +604,7 @@ fn a_precondition_stays_in_the_property_group_that_named_it() {
             &mut meter,
         )
         .expect("one property");
-    let mut other = ical_dav::ErrorBody::new(limits);
+    let mut other = icalkit_conformance::internal::dav::ErrorBody::new(limits);
     other
         .push(PropName::Known(ElementName::SupportedFilter), &mut meter)
         .expect("one condition");
@@ -652,9 +641,9 @@ fn a_query_keeps_the_shape_it_asked_with_and_the_zone_it_stated() {
 END:VTIMEZONE\r\nEND:VCALENDAR\r\n"
         .as_slice();
     for shape in [
-        ical_dav::QueryShape::Named,
-        ical_dav::QueryShape::AllProp,
-        ical_dav::QueryShape::Names,
+        icalkit_conformance::internal::dav::QueryShape::Named,
+        icalkit_conformance::internal::dav::QueryShape::AllProp,
+        icalkit_conformance::internal::dav::QueryShape::Names,
     ] {
         let mut query = CalendarQuery::new(limits);
         query.shape = shape;
@@ -689,8 +678,12 @@ END:VTIMEZONE\r\nEND:VCALENDAR\r\n"
 fn a_kept_value_leaves_as_the_kind_of_thing_it_arrived_as() {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
-    let vendor =
-        ical_dav::ExtensionName::new(b"urn:x:vendor", b"note", &mut meter).expect("a vendor name");
+    let vendor = icalkit_conformance::internal::dav::ExtensionName::new(
+        b"urn:x:vendor",
+        b"note",
+        &mut meter,
+    )
+    .expect("a vendor name");
     let mut group = PropStat::new(Status::OK, limits);
     group
         .push(

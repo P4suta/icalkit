@@ -42,7 +42,7 @@
 //! Every fixture here is written back octet for octet under the stated policy, including the
 //! two that earn a diagnostic. "Diagnosed" and "preserved" are two claims and both hold.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Diagnostic, DiagnosticCode, Document, Item, Limits, Parameter, ParameterQuoting, ParseError,
     Property, caret_needs_encoding, decode_caret, encode_caret, parameter_is_representable,
     parameter_name_is_representable, quote_parameter, undefined_caret_escapes, unescape_text,

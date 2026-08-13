@@ -10,7 +10,7 @@
 //! exists after a real parse. So this file is the parse-edit-serialize path, and the
 //! assertions are about the octets that did **not** move.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, Document, Limits, MutationError,
     ParseError, PropertyId, TextValue, View,
 };

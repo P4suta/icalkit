@@ -49,11 +49,11 @@
 //! database written today therefore disagree about the whole of March 2007, which is a fact
 //! `docs/adr/0003` requires to be reported rather than settled.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, Diagnostic, DiagnosticCode, Document, Instant,
     Limits, Meter, UtcOffset, Weekday,
 };
-use ical_tz::{
+use icalkit_conformance::internal::tz::{
     AnswerBasis, CombinedZoneSource, LocalResolution, OffsetAnswer, Reading, TransitionTable,
     VtimezoneSet, ZoneAnswer, ZoneProvenance, ZoneSource, read_calendar_zones,
 };

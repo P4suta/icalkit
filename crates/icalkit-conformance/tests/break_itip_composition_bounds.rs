@@ -17,8 +17,10 @@
 
 use std::time::Instant as WallClock;
 
-use ical_core::{ComponentKind, Diagnostic, Instant, Limits, Meter, ProposedChange};
-use ical_itip::{
+use icalkit_conformance::internal::core::{
+    ComponentKind, Diagnostic, Instant, Limits, Meter, ProposedChange,
+};
+use icalkit_conformance::internal::itip::{
     Attendee, AuthorizationDenied, InstanceRef, ItipMessage, MessageError, Party, PartyId,
     PropertyOccurrence, ScheduledComponent, SequenceRead, TransitionReason, evaluate_message,
 };
@@ -29,7 +31,9 @@ const CHAIR: &str = "mailto:chair@example.com";
 const BO: &str = "mailto:bo@example.test";
 
 /// What the gate answered, as a label a table can compare.
-fn label(answer: Result<ical_itip::Authorization<'_>, AuthorizationDenied>) -> &'static str {
+fn label(
+    answer: Result<icalkit_conformance::internal::itip::Authorization<'_>, AuthorizationDenied>,
+) -> &'static str {
     match answer {
         Ok(authorized) if authorized.reason() == TransitionReason::CounterProposed => {
             "counter-proposed"

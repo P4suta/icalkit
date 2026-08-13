@@ -9,8 +9,7 @@
 //! 3.2.9 (`FBTYPE`), section 3.3.9 (`PERIOD`) and section 3.8.2.2 (`DTEND`).
 //!
 //! This is unconditional in `icalkit`: protocol capabilities are not Cargo features on the
-//! unified public boundary. The temporary compatibility harness may still gate its old module
-//! re-export while legacy consumers migrate.
+//! unified public boundary.
 //!
 //! # The two questions this module answers
 //!

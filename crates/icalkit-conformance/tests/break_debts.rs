@@ -52,7 +52,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Component, Diagnostic, DiagnosticCode, Document, Item, Limits, MutationError, Parameter,
     Property, decode_caret, encode_caret,
 };

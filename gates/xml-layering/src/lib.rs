@@ -11,10 +11,72 @@
 // `#![no_std]`: that attribute is what `xtask purity` reads to decide a directory holds a core
 // crate, and this member is not one.
 extern crate alloc;
+extern crate self as ical_core;
 
 use alloc::vec::Vec;
+use core::error::Error;
+use core::fmt::{self, Display, Formatter};
 
-use ical_core::{LimitExceeded, Limits, Meter};
+/// The three resource dimensions the isolated XML layer can cross.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum LimitExceeded {
+    Budget,
+    Text,
+    PrefixBindings,
+}
+
+impl Display for LimitExceeded {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl Error for LimitExceeded {}
+
+/// The one policy value the isolated namespace stack reads.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    max_prefix_bindings: u16,
+}
+
+impl Limits {
+    pub(crate) const DEFAULT: Self = Self {
+        max_prefix_bindings: 64,
+    };
+
+    pub(crate) const fn with_max_prefix_bindings(mut self, bindings: u16) -> Self {
+        self.max_prefix_bindings = bindings;
+        self
+    }
+}
+
+/// Minimal ledger adapter for compiling the XML layer without its protocol parent.
+#[derive(Debug)]
+pub(crate) struct Meter {
+    limits: Limits,
+    live_prefix_bindings: u16,
+}
+
+impl Meter {
+    pub(crate) const fn new(limits: Limits) -> Self {
+        Self {
+            limits,
+            live_prefix_bindings: 0,
+        }
+    }
+
+    pub(crate) fn try_bind_prefix(&mut self) -> Result<(), LimitExceeded> {
+        if self.live_prefix_bindings >= self.limits.max_prefix_bindings {
+            return Err(LimitExceeded::PrefixBindings);
+        }
+        self.live_prefix_bindings = self.live_prefix_bindings.saturating_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn unbind_prefix(&mut self) {
+        self.live_prefix_bindings = self.live_prefix_bindings.saturating_sub(1);
+    }
+}
 
 #[path = "../../../crates/icalkit/src/internal/dav/xml/mod.rs"]
 mod xml;
@@ -26,7 +88,7 @@ mod xml;
 ///
 /// The layer's items are `pub(crate)` — that is the point of `docs/adr/0012`, which keeps the
 /// grammar unexported so the deferred extraction stays a file move — so there is nothing here to
-/// re-export the way `gates/grammar-layering` re-exports `ical-core`'s grammar, and every item
+/// re-export the way `gates/grammar-layering` re-exports the private core grammar, and every item
 /// the consumers in `icalkit::internal::dav` use is dead code in *this* root. Silencing that with an attribute
 /// is refused by this workspace and would be the wrong fix anyway: a gate that compiles with
 /// half the layer deleted proves nothing about the half that is gone. Naming each item here
@@ -34,7 +96,7 @@ mod xml;
 ///
 /// It is also a smoke test of the only thing this member can assert: that the layer *builds* in
 /// a root that has never heard of CalDAV. Behavior is asserted by the layer's own tests, which
-/// run inside `icalkit` and its temporary `ical-dav` harness — `[lib] test = false` on this
+/// run inside `icalkit` and the conformance isolation helper — `[lib] test = false` on this
 /// member is what stops them gaining a third compilation root.
 #[must_use]
 pub fn roll_call() -> usize {
@@ -87,7 +149,7 @@ fn buffered() -> usize {
 
 /// The layer's own refusal vocabulary, named so that deleting a class is a compile error here.
 ///
-/// Four syntax classes and not the ten `ical-dav`'s public `SyntaxError` carries, because these
+/// Four syntax classes and not the ten CalDAV kernel `SyntaxError` carries, because these
 /// are the four this layer raises; the six the tokenizer's state machine raises stay above it.
 /// Naming them from a root that has never heard of CalDAV is the assertion that the layer
 /// classifies for itself rather than borrowing a protocol's vocabulary to do it.
@@ -106,7 +168,7 @@ fn refusals() -> usize {
 
 /// The namespace binding stack, which is the layer's one piece of state.
 fn bound() -> usize {
-    let mut meter = Meter::new(Limits::DEFAULT);
+    let mut meter = Meter::new(Limits::DEFAULT.with_max_prefix_bindings(64));
     let mut stack = xml::bind::PrefixStack::new();
     if stack.bind(b"D", b"DAV:", &mut meter).is_err() {
         return 0;

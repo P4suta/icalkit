@@ -33,8 +33,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ical_core::{Diagnostic, IgnoreDiagnostics, LimitExceeded, Limits, Meter};
-use ical_dav::{
+use icalkit_conformance::internal::core::{
+    Diagnostic, IgnoreDiagnostics, LimitExceeded, Limits, Meter,
+};
+use icalkit_conformance::internal::dav::{
     DavError, DecodeContext, MultiStatus, MultiStatusReader, PropValue, RequestBody, SyntaxError,
     WriteXml, XmlPull, XmlReader,
 };

@@ -24,7 +24,7 @@ data. See docs/adr/0001. Delete this section if the change cannot reach the mode
 
 ## Scheduling
 
-<!-- Delete this section if `ical-itip` is untouched. -->
+<!-- Delete this section if `icalkit::scheduling` is untouched. -->
 
 - [ ] The result is a described transition the caller can show a user, not a mutation
 - [ ] Authorization is decided by the semantics: an attendee cannot move a meeting by

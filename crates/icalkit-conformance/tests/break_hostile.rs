@@ -27,7 +27,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     ContentLineReader, Diagnostic, Document, Item, Limits, Meter, ParseError, PropertyId, TextValue,
 };
 

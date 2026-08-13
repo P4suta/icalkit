@@ -4,8 +4,8 @@
 
 //! Private bounded recurrence kernel.
 //!
-//! The temporary `ical-recur` compatibility harness compiles these same files while legacy
-//! conformance consumers migrate. This module is the single source of truth.
+//! The unpublished conformance helper also compiles these files to exercise the low-level
+//! adversarial corpus. This module is the single source of truth.
 
 mod accounting;
 mod byparts;
@@ -19,25 +19,25 @@ mod search;
 mod setpos;
 mod table;
 
-pub(crate) use accounting::{Charges, admit, generation_window, max_absolute_shift};
-pub(crate) use byparts::{CandidateSet, expand_period};
-pub(crate) use engine::{RecurrenceSearch, RuleCursorState, SearchCursor};
-pub(crate) use grammar::{RulePartText, parse_recur, parts};
-pub(crate) use input::{
+pub use accounting::{Charges, admit, generation_window, max_absolute_shift};
+pub use byparts::{CandidateSet, expand_period};
+pub use engine::{RecurrenceSearch, RuleCursorState, SearchCursor};
+pub use grammar::{RulePartText, parse_recur, parts};
+pub use input::{
     AppliedDiffs, InputError, InputList, Override, OverrideRange, OverrideSet, PropertyChange,
     PropertyDiff, RecurrenceInput,
 };
-pub(crate) use merge::{Merge, keep_first_rule};
-pub(crate) use period::{Period, PeriodWalk};
-pub(crate) use rule::{
+pub use merge::{Merge, keep_first_rule};
+pub use period::{Period, PeriodWalk};
+pub use rule::{
     ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart,
     UntilClock, ValueKind, WeekdayNum,
 };
-pub(crate) use search::{
+pub use search::{
     BudgetExhausted, Occurrence, OverrideProvenance, SearchOutcome, SearchStep, Window,
 };
-pub(crate) use setpos::{SelectedCandidates, select};
-pub(crate) use table::{Cell, PartEffect, PartsPresent, WeekdayScope, cell, effect};
+pub use setpos::{SelectedCandidates, select};
+pub use table::{Cell, PartEffect, PartsPresent, WeekdayScope, cell, effect};
 
 /// Default aggregate candidate budget for one engine session.
-pub(crate) const DEFAULT_CANDIDATE_BUDGET: u64 = 262_144;
+pub const DEFAULT_CANDIDATE_BUDGET: u64 = 262_144;

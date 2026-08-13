@@ -13,14 +13,14 @@
 
 # Preservation lives here, and every layer above assumes it. A model change is where a
 # round trip quietly stops being byte-identical.
-/crates/ical-core/ @P4suta
+/crates/icalkit/src/internal/core/ @P4suta
 
 # The candidate budget is the only thing standing between a hostile rule and a hang.
-/crates/ical-recur/ @P4suta
+/crates/icalkit/src/internal/recur/ @P4suta
 
 # Scheduling is a security boundary, not just semantics: this is where an attendee either
 # can or cannot move somebody else's meeting.
-/crates/ical-itip/ @P4suta
+/crates/icalkit/src/internal/itip/ @P4suta
 
 # A published corpus of real exports carries a privacy obligation that a normal test
 # directory does not.

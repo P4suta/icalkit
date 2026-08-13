@@ -35,10 +35,12 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Diagnostic, Instant, Limits, Meter, UtcOffset,
 };
-use ical_recur::{OverrideSet, RecurrenceInput, ValueKind, Window, parse_recur};
+use icalkit_conformance::internal::recur::{
+    OverrideSet, RecurrenceInput, ValueKind, Window, parse_recur,
+};
 
 /// One line of a fixture: a rule, a window, and the answer the RFC gives for the pair.
 #[derive(Clone, Debug)]

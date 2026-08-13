@@ -59,7 +59,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Component, Diagnostic, DiagnosticCode, Document, GrammarLimits, Item, Limits, MutationError,
     ParameterEdit, ParseError, PropertyId, ProposedChange, RawText, TextValue,
 };

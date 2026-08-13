@@ -12,20 +12,20 @@
 //! one it took — a value that is the same under both readings, with the same empty report, is
 //! not an answer to the question "which meeting is this message about".
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, ComponentKind, DateTimeValue, Diagnostic, DiagnosticCode,
     Instant, Limits, Meter, Severity, UtcOffset, ValueType,
 };
-use ical_itip::{
+use icalkit_conformance::internal::itip::{
     Attendee, AuthorizationDenied, FoldSide, InstanceClock, InstanceRef, ItipMessage, Party,
     PartyId, PropertyOccurrence, ScheduledComponent, SequenceRead, TransitionReason,
     check_exclusions_are_placeable, evaluate_message, resolve_instance,
 };
-use ical_recur::{
+use icalkit_conformance::internal::recur::{
     OverrideRange, OverrideSet, RecurrenceInput, RecurrenceRule, SearchStep, ValueKind, Window,
     parse_recur,
 };
-use ical_tz::{
+use icalkit_conformance::internal::tz::{
     AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy,
     ResolvedExclusions, ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,
 };
@@ -173,7 +173,7 @@ impl HandZone {
         found
     }
 
-    /// The gap `local` fell in, on the readings `ical_tz::LocalResolution` states.
+    /// The gap `local` fell in, on the readings `icalkit_conformance::internal::tz::LocalResolution` states.
     fn gap(&self, local: CivilDateTime) -> Option<LocalResolution> {
         for shift in &self.shifts {
             let offset_before = UtcOffset::from_seconds(shift.before)?;
@@ -621,7 +621,7 @@ fn number(text: &[u8]) -> Option<u32> {
     Some(total)
 }
 
-/// The instant `value` names, projected the way `ical_tz::nominal` projects a wall clock.
+/// The instant `value` names, projected the way `icalkit_conformance::internal::tz::nominal` projects a wall clock.
 fn instant_of(value: &[u8]) -> Option<Instant> {
     let year = u16::try_from(number(value.get(0..4)?)?).ok()?;
     let month = u8::try_from(number(value.get(4..6)?)?).ok()?;
@@ -754,7 +754,7 @@ fn daily_five(meter: &mut Meter, sink: &mut Vec<Diagnostic>) -> Option<Recurrenc
 /// gap that series carries changes nothing about the answer or the report.
 ///
 /// `ZonedSeries` exists to carry a `ResolutionPolicy`; `ZonedSeries::resolved` and
-/// `ZonedSeries::admits` both apply it. `ical_itip::resolve_instance` takes the same value and
+/// `ZonedSeries::admits` both apply it. `icalkit_conformance::internal::itip::resolve_instance` takes the same value and
 /// reaches past the policy to `answer_for`, so an identity in a gap is `FoldSide::Unresolved`
 /// under all three readings of `GapPolicy` with an empty sink under all three.
 ///

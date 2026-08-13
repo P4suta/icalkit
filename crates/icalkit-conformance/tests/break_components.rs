@@ -21,7 +21,7 @@
 
 use std::collections::BTreeSet;
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Boundary, Component, ComponentKind, ContentLineReader, Diagnostic, DiagnosticCode, Document,
     Item, Limits, Meter, ParseError, Property, PropertyId, ProposedChange, RawText, TextValue,
 };
@@ -744,10 +744,13 @@ struct NoRoom {
     offered: u32,
 }
 
-impl ical_core::DiagnosticSink for NoRoom {
-    fn push(&mut self, _diagnostic: Diagnostic) -> ical_core::SinkOutcome {
+impl icalkit_conformance::internal::core::DiagnosticSink for NoRoom {
+    fn push(
+        &mut self,
+        _diagnostic: Diagnostic,
+    ) -> icalkit_conformance::internal::core::SinkOutcome {
         self.offered = self.offered.saturating_add(1);
-        ical_core::SinkOutcome::Refused
+        icalkit_conformance::internal::core::SinkOutcome::Refused
     }
 }
 

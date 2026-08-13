@@ -26,16 +26,16 @@
 //! `VTIMEZONE` first, so a case that fails fails against two independent statements of the same
 //! rules rather than against one fixture's arithmetic.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue, Diagnostic,
     DiagnosticCode, Document, Instant, Limits, Meter, PropertyId, UtcOffset, ValueType,
 };
-use ical_recur::{
+use icalkit_conformance::internal::recur::{
     Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput, RecurrenceRule,
     RecurrenceRuleBuilder, SearchStep, ValueKind, Window, generation_window, max_absolute_shift,
     parse_recur,
 };
-use ical_tz::{
+use icalkit_conformance::internal::tz::{
     AnswerBasis, ExclusionReading, FoldPolicy, GapPolicy, LocalResolution, OffsetAnswer,
     OrphanScan, Reading, ResolutionPolicy, ResolvedExclusions, WallClockShift, ZoneAnswer,
     ZoneProvenance, ZoneSource, ZonedSeries, extra_widening, nominal, wall_clock,
@@ -44,7 +44,7 @@ use ical_tz::{
 /// The property identities this file reads, as statics for the reason `break_zones` gives:
 /// `Component::properties_named` ties the walk's lifetime to the borrow of the identity.
 mod ids {
-    use ical_core::PropertyId;
+    use icalkit_conformance::internal::core::PropertyId;
 
     /// `UID`, which is how one calendar's several series are told apart.
     pub(crate) static UID: PropertyId = PropertyId::UID;
@@ -472,7 +472,7 @@ fn the_caller_supplied_source_and_the_files_own_vtimezone_agree_about_both_trans
     let source = hand_source();
     let document = parsed(NEW_YORK_SERIES).expect("the fixture parses");
     let (mut meter, mut sink) = ledger();
-    let zones = ical_tz::read_calendar_zones(
+    let zones = icalkit_conformance::internal::tz::read_calendar_zones(
         calendar(&document).expect("a VCALENDAR"),
         &mut meter,
         &mut sink,
@@ -766,10 +766,10 @@ fn a_utc_until_that_falls_on_the_far_side_of_midnight_keeps_the_named_days_insta
 
     let rule = rule_of(component, &mut meter, &mut sink).expect("one RRULE");
     let restated = RecurrenceRuleBuilder::new(rule.freq())
-        .limit(ical_recur::RuleLimit::Until {
+        .limit(icalkit_conformance::internal::recur::RuleLimit::Until {
             at: bound,
             value_kind: ValueKind::DateTime,
-            clock: ical_recur::UntilClock::Utc,
+            clock: icalkit_conformance::internal::recur::UntilClock::Utc,
         })
         .build()
         .expect("a daily rule with a projected bound");
@@ -825,7 +825,7 @@ fn a_utc_until_that_falls_on_the_far_side_of_midnight_keeps_the_named_days_insta
 /// What is asserted is the correction being reachable and right: `project_until` gives the
 /// nominal bound, `with_limit` puts it on the rule the file was read into, and the series ends
 /// on the 9th. That a caller must know to do it at all is the seam's remaining cost, stated in
-/// `ical_tz::seam` and in `ical_recur::RecurrenceRule::with_limit`.
+/// `icalkit_conformance::internal::tz::seam` and in `icalkit_conformance::internal::recur::RecurrenceRule::with_limit`.
 #[test]
 fn a_parsed_rules_utc_until_is_correctable_without_rebuilding_the_rule() {
     let source = hand_source();
@@ -852,10 +852,10 @@ fn a_parsed_rules_utc_until_is_correctable_without_rebuilding_the_rule() {
         cadence((2026, 3, 20, 0, 0)).expect("a real wall clock"),
     )
     .expect("a window is not empty");
-    let bounded = as_parsed.with_limit(ical_recur::RuleLimit::Until {
+    let bounded = as_parsed.with_limit(icalkit_conformance::internal::recur::RuleLimit::Until {
         at: bound,
         value_kind: ValueKind::DateTime,
-        clock: ical_recur::UntilClock::Utc,
+        clock: icalkit_conformance::internal::recur::UntilClock::Utc,
     });
     let input = plain_input(anchor, &bounded, &mut meter).expect("the input assembles");
     let emitted = walk(input, window, &mut meter, &mut sink);
@@ -946,7 +946,7 @@ fn a_this_and_future_shift_keeps_its_wall_clock_across_the_transition_it_reaches
 ///
 /// The documentation used to call the number a count of *elapsed* seconds — "the whole of the
 /// move for a floating or UTC series and only part of it for a zoned one" — with
-/// `ical_tz::extra_widening` there to add back what an elapsed count could not see. That is not
+/// `icalkit_conformance::internal::tz::extra_widening` there to add back what an elapsed count could not see. That is not
 /// a reading of anything. Every instant crossing the seam is nominal, so the two instants an
 /// override names are wall clocks and their difference is the wall-clock count: on that
 /// timeline the shortfall `extra_widening` reports is always zero, and on the real one

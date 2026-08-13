@@ -106,17 +106,15 @@
 //! naming every published member but the one that carries the changelog.
 //!
 //! The published list is also held against [`PUBLIC_CRATES`]. ADR 0013 makes `icalkit` the
-//! single future registry contract; the six old implementation crates and the conformance
-//! helper must all remain explicitly classified and unpublished while sources are migrated
-//! behind that facade.
+//! single future registry contract. The six retired implementation package names are rejected,
+//! and the conformance helper must remain explicitly classified and unpublished.
 //!
 //! # `architecture`
 //!
 //! The architecture task gives that release boundary a discoverable name and also freezes the
 //! facade's Cargo feature vocabulary to `std` and `system-tz`, both enabled by default. It
-//! deliberately checks declarations rather than publishability: `icalkit` still has path
-//! dependencies on the temporary private implementation crates, so publishing remains deferred
-//! until those sources have moved behind the facade.
+//! deliberately checks declarations rather than publishability: implementation lives in
+//! private modules, but publishing remains deferred until an explicit release decision.
 //!
 //! `just no-std` and `just wasm` are the compile-time half: they prove the core builds for
 //! `thumbv7em-none-eabi` and for `wasm32-unknown-unknown`. What they cannot express is the
@@ -173,38 +171,20 @@ use std::process::{Command, ExitCode};
 /// quietly losing a gate. `icalkit-conformance` is deliberately absent: the conformance runner is
 /// allowed `std` and depends on every crate here, which is what makes it a consumer of the
 /// core rather than part of it.
-const CORE_CRATES: &[&str] = &[
-    "icalkit",
-    "ical-core",
-    "ical-recur",
-    "ical-tz",
-    "ical-itip",
-    "ical-dav",
-];
+const CORE_CRATES: &[&str] = &["icalkit"];
 
 /// The sole crate allowed to carry a future registry release contract.
 const PUBLIC_CRATES: &[&str] = &["icalkit"];
 
 /// Temporary implementation crates whose APIs are not production semver contracts.
-const PRIVATE_IMPLEMENTATION: &[&str] = &[
-    "ical-core",
-    "ical-recur",
-    "ical-tz",
-    "ical-itip",
-    "ical-dav",
-];
+const PRIVATE_IMPLEMENTATION: &[&str] = &[];
 
 /// Package boundaries whose sources have moved behind the facade and may not be recreated.
-const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
-
-/// Package implementations already moved behind the facade.
-///
-/// Their temporary packages may remain as shared-source conformance harnesses while callers are
-/// migrated, but the facade must never depend back on a boundary it already absorbed.
-const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &[
+const RETIRED_IMPLEMENTATION: &[&str] = &[
     "ical-core",
     "ical-dav",
     "ical-itip",
+    "ical-query",
     "ical-recur",
     "ical-tz",
 ];
@@ -214,11 +194,8 @@ const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &[
 /// This is intentionally keyed by both owner and package. Adding an external dependency to
 /// another core crate, or adding another package to `icalkit`, remains a gate failure until
 /// the architecture records the new boundary explicitly.
-const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[
-    ("icalkit", "jiff"),
-    ("icalkit", "xmlparser"),
-    ("ical-dav", "xmlparser"),
-];
+const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] =
+    &[("icalkit", "jiff"), ("icalkit", "xmlparser")];
 
 /// Private tools isolated from the production API and release graph.
 ///
@@ -434,7 +411,6 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
     violations.extend(retired_crate_violations(&root, &facade));
-    violations.extend(migrated_facade_dependency_violations(&facade));
     let mut features = table_keys(&facade, "features");
     features.sort();
     let mut expected = vec![
@@ -456,25 +432,6 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
-}
-
-/// Dependencies that would make an absorbed implementation boundary authoritative again.
-fn migrated_facade_dependency_violations(facade: &str) -> Vec<String> {
-    let dependencies = declared_dependencies(facade);
-    MIGRATED_FACADE_DEPENDENCIES
-        .iter()
-        .filter(|migrated| {
-            dependencies
-                .iter()
-                .any(|dependency| dependency.package == **migrated)
-        })
-        .map(|migrated| {
-            format!(
-                "crates/icalkit/Cargo.toml: facade depends on migrated implementation package \
-                 `{migrated}` (ADR 0013)"
-            )
-        })
-        .collect()
 }
 
 /// References that would recreate a retired implementation package boundary.
@@ -2110,9 +2067,9 @@ mod tests {
         collect_architecture_violations, collect_codes_violations, collect_purity_violations,
         core_list_violations, declared_dependencies, declares, dependency_subtable_name,
         enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
-        layering_violations, manifest_violations, match_arm_violations,
-        migrated_facade_dependency_violations, private_crate_violations, recipe_violations,
-        release_violations, retired_crate_violations, snapshot_violations, table_keys,
+        layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
+        recipe_violations, release_violations, retired_crate_violations, snapshot_violations,
+        table_keys,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2214,20 +2171,17 @@ version = "0.2"
     }
 
     #[test]
-    fn an_honest_core_dependency_is_no_violation() {
+    fn recorded_facade_dependencies_are_no_violation() {
         let manifest = r#"
 [package]
-name = "ical-itip"
+name = "icalkit"
 
 [dependencies]
-ical-core = { workspace = true }
-ical-recur = { path = "../ical-recur" }
-
-[dependencies.ical-tz]
-workspace = true
+jiff = { version = "0.2.35", default-features = false }
+xmlparser = { version = "0.13.6", default-features = false }
 "#;
         assert_eq!(
-            manifest_violations("ical-itip", manifest),
+            manifest_violations("icalkit", manifest),
             Vec::<String>::new()
         );
     }
@@ -2236,14 +2190,14 @@ workspace = true
     fn a_formatted_multiline_path_dependency_is_still_local() {
         let manifest = r#"
 [dependencies]
-ical-dav = { path = "../ical-dav", version = "0.0.0", features = [
-  "sync-collection",
+icalkit = { path = "../icalkit", version = "0.0.0", features = [
+  "std",
 ] }
 "#;
         assert_eq!(
             manifest_violations("icalkit", manifest),
             Vec::<String>::new(),
-            "taplo may wrap feature-bearing inline tables without changing their provenance"
+            "taplo may wrap a local feature-bearing inline table without changing its provenance"
         );
     }
 
@@ -2259,41 +2213,39 @@ jiff = { version = "0.2.35", default-features = false, features = ["alloc"] }
             "the unified facade owns the public civil-time boundary"
         );
         assert!(
-            manifest_violations("ical-recur", manifest)
+            manifest_violations("icalkit-conformance", manifest)
                 .iter()
                 .any(|line| line.contains("jiff")),
-            "split implementation crates must not acquire a second public time boundary"
+            "an isolation tool must not acquire a second public time boundary"
         );
     }
 
     #[test]
-    fn only_the_facade_and_its_dav_compatibility_harness_may_own_the_private_xml_lexer() {
+    fn only_the_facade_may_own_the_private_xml_lexer() {
         let manifest = r#"
 [dependencies]
 xmlparser = { version = "0.13.6", default-features = false }
 "#;
-        for package in ["icalkit", "ical-dav"] {
-            assert_eq!(
-                manifest_violations(package, manifest),
-                Vec::<String>::new(),
-                "the facade and temporary DAV harness compile the same private lexer wrapper"
-            );
-        }
+        assert_eq!(
+            manifest_violations("icalkit", manifest),
+            Vec::<String>::new(),
+            "the facade owns the private lexer wrapper"
+        );
         assert!(
-            manifest_violations("ical-core", manifest)
+            manifest_violations("icalkit-conformance", manifest)
                 .iter()
                 .any(|line| line.contains("xmlparser")),
-            "the lexer must not leak into the pure calendar kernel"
+            "an isolation tool must record its dependency independently"
         );
     }
 
     #[test]
     fn a_core_crate_taken_from_a_registry_is_a_violation() {
         let manifest = "[dependencies]
-ical-core = \"0.1\"
+icalkit = \"0.1\"
 ";
         assert!(
-            manifest_violations("ical-recur", manifest)
+            manifest_violations("icalkit", manifest)
                 .iter()
                 .any(|line| line.contains("does not resolve from inside this workspace")),
             "the name is ours; the source is not"
@@ -2339,12 +2291,12 @@ ical-core = \"0.1\"
     fn only_dependencies_from_outside_the_core_are_violations() {
         let manifest = r#"
 [dependencies]
-ical-core = { workspace = true }
+icalkit = { path = "../icalkit" }
 
 [dev-dependencies]
 proptest = "1"
 "#;
-        let violations = manifest_violations("ical-recur", manifest);
+        let violations = manifest_violations("icalkit", manifest);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(
             violations
@@ -2404,11 +2356,11 @@ extern crate alloc;
         );
         assert_eq!(recipe_violations(&recipe), Vec::<String>::new());
 
-        let missing = recipe.replace("-p ical-tz ", "");
+        let missing = recipe.replace("-p icalkit", "");
         assert!(
             recipe_violations(&missing)
                 .iter()
-                .any(|line| line.contains("does not name `ical-tz`")),
+                .any(|line| line.contains("does not name `icalkit`")),
             "a core crate the recipe never compiles for a bare-metal target"
         );
 
@@ -2784,14 +2736,7 @@ mod grammar;
 
     #[test]
     fn private_workspace_crates_are_explicit_and_never_published() {
-        let private = [
-            "icalkit-conformance".to_owned(),
-            "ical-core".to_owned(),
-            "ical-recur".to_owned(),
-            "ical-tz".to_owned(),
-            "ical-itip".to_owned(),
-            "ical-dav".to_owned(),
-        ];
+        let private = ["icalkit-conformance".to_owned()];
         assert_eq!(
             private_crate_violations(&private),
             Vec::<String>::new(),
@@ -2838,14 +2783,27 @@ jiff = "0.2"
     fn a_retired_package_cannot_return_as_a_member_or_facade_dependency() {
         let root = r#"
 [workspace]
-members = ["crates/icalkit", "crates/ical-query"]
+members = [
+  "crates/icalkit",
+  "crates/ical-core",
+  "crates/ical-dav",
+  "crates/ical-itip",
+  "crates/ical-query",
+  "crates/ical-recur",
+  "crates/ical-tz",
+]
 "#;
         let facade = r#"
 [dependencies]
+ical-core = { path = "../ical-core" }
+ical-dav = { path = "../ical-dav" }
+ical-itip = { path = "../ical-itip" }
 ical-query = { path = "../ical-query" }
+ical-recur = { path = "../ical-recur" }
+ical-tz = { path = "../ical-tz" }
 "#;
         let violations = retired_crate_violations(root, facade);
-        assert_eq!(violations.len(), 2);
+        assert_eq!(violations.len(), 12);
         assert!(
             violations
                 .iter()
@@ -2858,29 +2816,6 @@ ical-query = { path = "../ical-query" }
                 "[workspace]\nmembers = [\"crates/icalkit\"]",
                 "[dependencies]\njiff = \"0.2\"",
             ),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn a_migrated_implementation_cannot_return_as_a_facade_dependency() {
-        let facade = r#"
-[dependencies]
-ical-core = { path = "../ical-core" }
-ical-dav = { path = "../ical-dav" }
-ical-itip = { path = "../ical-itip" }
-ical-recur = { path = "../ical-recur" }
-ical-tz = { path = "../ical-tz" }
-"#;
-        let violations = migrated_facade_dependency_violations(facade);
-        assert_eq!(violations.len(), 5);
-        assert!(violations.iter().any(|line| line.contains("`ical-core`")));
-        assert!(violations.iter().any(|line| line.contains("`ical-dav`")));
-        assert!(violations.iter().any(|line| line.contains("`ical-itip`")));
-        assert!(violations.iter().any(|line| line.contains("`ical-recur`")));
-        assert!(violations.iter().any(|line| line.contains("`ical-tz`")));
-        assert_eq!(
-            migrated_facade_dependency_violations("[dependencies]\njiff = \"0.2\""),
             Vec::<String>::new()
         );
     }

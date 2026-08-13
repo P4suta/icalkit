@@ -10,8 +10,8 @@
 //! read off an answer this workspace gave, which is what makes a failure here evidence rather
 //! than a regression.
 //!
-//! The subject is the shipped bridge, [`ical_itip::ScheduledView`] over an
-//! [`ical_core::Component`], and not a second `ScheduledComponent` written for the occasion.
+//! The subject is the shipped bridge, [`icalkit_conformance::internal::itip::ScheduledView`] over an
+//! [`icalkit_conformance::internal::core::Component`], and not a second `ScheduledComponent` written for the occasion.
 //! That matters for this chapter in particular: several of the cases turn on what the bridge
 //! answers when a property RFC 5545 permits once is stated twice, and a hand-written subject
 //! would be answering for itself rather than for the code a caller runs.
@@ -34,11 +34,11 @@
 
 #[cfg(test)]
 mod cases {
-    use ical_core::{
+    use icalkit_conformance::internal::core::{
         Component, ComponentKind, ContentLineReader, Diagnostic, Document, Item, Limits, Meter,
         Property, PropertyId, ProposedChange, decode_caret,
     };
-    use ical_itip::{
+    use icalkit_conformance::internal::itip::{
         AuthorizationDenied, ItipMessage, MessageError, Method, PartyId, PropertyOccurrence,
         ScheduledComponent, ScheduledView, TransitionReason, apply_transition, evaluate_message,
     };

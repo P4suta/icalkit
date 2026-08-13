@@ -16,8 +16,10 @@
 //! declaration with `C:` beside it — because a reader keyed on prefix strings gets two of the
 //! three wrong. The assertions are what this crate's design hands `ical-core`.
 
-use ical_core::{IgnoreDiagnostics, Limits, Meter};
-use ical_dav::{DavError, DecodedText, LineEndings, TextMode, decode_text};
+use icalkit_conformance::internal::core::{IgnoreDiagnostics, Limits, Meter};
+use icalkit_conformance::internal::dav::{
+    DavError, DecodedText, LineEndings, TextMode, decode_text,
+};
 
 /// The `.ics` all three servers are carrying, byte for byte.
 const PAYLOAD: &[u8] =
@@ -128,8 +130,11 @@ fn the_conformant_read_is_available_lossy_and_never_silent() {
     assert_eq!(decoded.line_endings, LineEndings::Folded);
     assert!(!decoded.line_endings.is_as_sent());
     assert_eq!(
-        reported.first().copied().map(ical_core::Diagnostic::code),
-        Some(ical_core::DiagnosticCode::DavCalendarDataLineEndingsFolded)
+        reported
+            .first()
+            .copied()
+            .map(icalkit_conformance::internal::core::Diagnostic::code),
+        Some(icalkit_conformance::internal::core::DiagnosticCode::DavCalendarDataLineEndingsFolded)
     );
     // What was lost is exactly the carriage returns and nothing else, which is why RFC 4791
     // section 9.6 can call the omission legal and this crate can still refuse to hide it.

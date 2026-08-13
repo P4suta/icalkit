@@ -20,20 +20,20 @@ pub(crate) mod schema;
 pub(crate) mod tree;
 pub(crate) mod view;
 
-pub(crate) use self::change::{ParameterEdit, ProposedChange};
-pub(crate) use self::grammar::*;
-pub(crate) use self::gregorian::{
+pub use self::change::{ParameterEdit, ProposedChange};
+pub use self::grammar::*;
+pub use self::gregorian::{
     CivilDate, CivilDateTime, CivilTime, DateTimeValue, Duration, MonthAddOutcome, UtcOffset,
     Weekday,
 };
-pub(crate) use self::ident::PropertyId;
-pub(crate) use self::octets::{RawText, TextError};
-pub(crate) use self::output::Writer;
-pub(crate) use self::schema::*;
-pub(crate) use self::tree::{
+pub use self::ident::PropertyId;
+pub use self::octets::{RawText, TextError};
+pub use self::output::Writer;
+pub use self::schema::*;
+pub use self::tree::{
     Boundary, Component, Document, Item, Parameter, ParametersNamed, PropertiesNamed, Property,
 };
-pub(crate) use self::view::{
+pub use self::view::{
     BinaryValue, DecodeValue, EncodeValue, Geo, MutationError, Period, PropertyMut, TextValue,
     UriValue, ValueBuf, ValueType, View,
 };

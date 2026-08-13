@@ -25,7 +25,9 @@
 //! caller asked for — which is the claim that makes the refusal worth having, because a door
 //! that refused everything would satisfy the first on its own.
 
-use ical_core::{Component, Document, Item, Limits, MutationError, Parameter, Property};
+use icalkit_conformance::internal::core::{
+    Component, Document, Item, Limits, MutationError, Parameter, Property,
+};
 
 /// The octets the debt was recorded with: a value that ends its own line and starts another.
 const INJECTION: &[u8] = b"a\r\nATTENDEE:mailto:eve@example.test";

@@ -4,27 +4,27 @@
 
 //! Private implementation layers with no independent semver contract.
 
-// The allocation-aware, sans-I/O foundation. Its former package remains temporarily as a
-// shared-source conformance harness, but this module is the only implementation source.
+// The allocation-aware, sans-I/O foundation. The unpublished conformance helper compiles this
+// module tree as shared source, while this remains the only production implementation.
 #[allow(dead_code, unused_imports, unreachable_pub)]
-pub(crate) mod core;
+pub mod core;
 
 #[allow(dead_code, unused_imports, unreachable_pub)]
-pub(crate) mod dav;
+pub mod dav;
 
 // The migrated source still contains its former public surface, including units not yet reached
 // by a facade workflow. This private ancestor makes those items unreachable outside icalkit.
 // Keep the exemption on this one migration boundary until each unit is connected or removed.
 #[allow(dead_code, unused_imports, unreachable_pub)]
-pub(crate) mod query;
+pub mod query;
 
 #[allow(dead_code, unused_imports, unreachable_pub)]
-pub(crate) mod recur;
+pub mod recur;
 
 #[allow(dead_code, unused_imports, unreachable_pub)]
-pub(crate) mod tz;
+pub mod tz;
 
-// The former crate remains temporarily as a shared-source conformance harness. Its source of
-// truth is this module; the facade may not depend back on that compatibility package.
+// The unpublished conformance helper compiles this module tree as shared source. Production
+// code reaches it only through the public scheduling workflow.
 #[allow(dead_code, unused_imports, unreachable_pub)]
-pub(crate) mod itip;
+pub mod itip;

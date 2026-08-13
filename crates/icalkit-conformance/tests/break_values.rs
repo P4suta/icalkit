@@ -25,7 +25,7 @@
 //! careful to say is not a zone is one the write side will happily write. Each is a failing
 //! case below, addressed to the section it is about.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     BinaryValue, Component, DateTimeValue, DecodeValue, Diagnostic, DiagnosticCode, Document,
     Duration, EncodeValue, Geo, IgnoreDiagnostics, Item, Limits, Meter, MutationError, ParseError,
     Period, Property, PropertyId, TextValue, UriValue, UtcOffset, View,

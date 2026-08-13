@@ -30,7 +30,7 @@
 //! Where the specification permits a choice, both permitted outcomes are recorded here rather
 //! than one becoming the answer because it was written first (`docs/adr/0006`).
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Component, Diagnostic, Document, Item, Limits, MutationError, ParameterEdit, ParseError,
     Property, PropertyId, ProposedChange, RawText, TextValue, decode_caret,
 };

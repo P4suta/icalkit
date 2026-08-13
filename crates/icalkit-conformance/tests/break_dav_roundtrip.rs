@@ -25,8 +25,10 @@
 //! The last case runs the other way: a server builds a multistatus around a `CRLF` calendar,
 //! writes it, and the bytes are read back and compared against the calendar's own.
 
-use ical_core::{Diagnostic, DiagnosticCode, Document, IgnoreDiagnostics, Limits, Meter};
-use ical_dav::{
+use icalkit_conformance::internal::core::{
+    Diagnostic, DiagnosticCode, Document, IgnoreDiagnostics, Limits, Meter,
+};
+use icalkit_conformance::internal::dav::{
     CalendarPayload, DavProperty, DavResponse, DecodeContext, ElementName, Href, LineEndings,
     MultiStatus, MultiStatusReader, MultiStatusWriter, PropName, PropStat, PropValue, ResponseBody,
     ResponseSource, Status, TextPolicy, WriteXml, XmlReader,
@@ -171,7 +173,9 @@ fn is_writable(case: &Case) -> bool {
 }
 
 /// Read a whole multistatus through the tokenizer and reader that ship.
-fn read(body: &[u8]) -> Result<(MultiStatus, Vec<Diagnostic>), ical_dav::DavError> {
+fn read(
+    body: &[u8],
+) -> Result<(MultiStatus, Vec<Diagnostic>), icalkit_conformance::internal::dav::DavError> {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
     let mut reported: Vec<Diagnostic> = Vec::new();
@@ -514,7 +518,7 @@ fn nothing_this_crate_writes_carries_a_carriage_return_a_conformant_peer_would_f
 fn read_under(
     body: &[u8],
     policy: TextPolicy,
-) -> Result<(MultiStatus, Vec<Diagnostic>), ical_dav::DavError> {
+) -> Result<(MultiStatus, Vec<Diagnostic>), icalkit_conformance::internal::dav::DavError> {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
     let mut reported: Vec<Diagnostic> = Vec::new();

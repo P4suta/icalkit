@@ -35,6 +35,6 @@ body:
     id: version
     attributes:
       label: Version
-      placeholder: "ical-core 0.1.0, rustc 1.85.0, x86_64-unknown-linux-gnu"
+      placeholder: "icalkit 0.0.0, rustc 1.85.0, x86_64-unknown-linux-gnu"
     validations:
       required: true

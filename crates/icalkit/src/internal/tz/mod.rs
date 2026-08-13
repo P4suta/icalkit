@@ -4,9 +4,8 @@
 
 //! Private RFC 5545 time-zone kernel.
 //!
-//! Files in this module are also compiled by the temporary `ical-tz` conformance harness.
-//! The unified crate always includes VTIMEZONE support; the former package's feature remains
-//! only long enough to exercise its legacy compatibility surface.
+//! The unpublished conformance helper also compiles these files to exercise the low-level
+//! adversarial corpus. The unified crate always includes VTIMEZONE support.
 
 mod answer;
 mod combine;
@@ -17,28 +16,28 @@ mod overrides;
 mod reader;
 mod resolve;
 mod rules;
-pub(crate) mod seam;
+pub mod seam;
 mod series;
 
-pub(crate) use crate::internal::core::{
+pub use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Duration, Instant, Limits, Meter, MonthAddOutcome,
     UtcOffset, Weekday,
 };
 
-pub(crate) use answer::{
+pub use answer::{
     AnswerBasis, FoldPolicy, GapPolicy, LocalResolution, OffsetAnswer, PolicyOutcome, Reading,
     ZoneAnswer, ZoneProvenance, ZoneSource,
 };
-pub(crate) use combine::{CombinedZoneSource, FixedOffsetSource};
-pub(crate) use exclusions::ResolvedExclusions;
-pub(crate) use ident::{Tzid, TzidForm};
-pub(crate) use model::{
+pub use combine::{CombinedZoneSource, FixedOffsetSource};
+pub use exclusions::ResolvedExclusions;
+pub use ident::{Tzid, TzidForm};
+pub use model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
     ZoneAdmission, ZoneSetError,
 };
-pub(crate) use overrides::{OrphanScan, WallClockShift, extra_widening};
-pub(crate) use reader::read_calendar_zones;
-pub(crate) use seam::{
+pub use overrides::{OrphanScan, WallClockShift, extra_widening};
+pub use reader::read_calendar_zones;
+pub use seam::{
     ExclusionReading, LocalInterval, ResolutionPolicy, UntilReading, nominal, wall_clock,
 };
-pub(crate) use series::ZonedSeries;
+pub use series::ZonedSeries;

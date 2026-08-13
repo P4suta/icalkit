@@ -25,7 +25,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Component, Diagnostic, Document, GrammarLimits, Item, Limits, ParameterEdit, ParseError,
     Property, PropertyId, ProposedChange, TextValue,
 };

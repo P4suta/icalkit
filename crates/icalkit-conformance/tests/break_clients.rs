@@ -30,7 +30,7 @@
 
 use std::collections::BTreeSet;
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     Boundary, Component, ContentLineReader, Diagnostic, DiagnosticCode, Document, Item, Limits,
     Meter, MutationError, ParseError, Property, PropertyId, TextValue,
 };
@@ -369,10 +369,10 @@ fn p2_five_generations_of_open_edit_and_save() {
 
 /// P3 across a save and a reload, which is the only way a second client sees an edit.
 ///
-/// The refusal that makes a scoped write safe lives on [`ical_core::PropertyMut::set_raw`], and
+/// The refusal that makes a scoped write safe lives on [`icalkit_conformance::internal::core::PropertyMut::set_raw`], and
 /// the design calls it "the one place the crate rejects caller input outright". That sentence is
 /// a claim about the *only* door, and it was once false: `Property::set_value_text` was public,
-/// reachable through [`ical_core::Component::items_mut`], and checked nothing, so a `SUMMARY`
+/// reachable through [`icalkit_conformance::internal::core::Component::items_mut`], and checked nothing, so a `SUMMARY`
 /// taken from a web form carried its own terminator into the file, serialization duly wrote it,
 /// and the second client read back a component with an `ATTENDEE` nobody added — one write
 /// moving six of twelve lines once the file was saved and reopened.

@@ -19,10 +19,10 @@
 //!
 //! Every test here drives the public surface only.
 
-use ical_core::{
+use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Diagnostic, Instant, Limits, Meter, UtcOffset,
 };
-use ical_recur::{
+use icalkit_conformance::internal::recur::{
     DEFAULT_CANDIDATE_BUDGET, Occurrence, Override, OverrideRange, OverrideSet, PropertyDiff,
     RecurrenceInput, RecurrenceRule, SearchOutcome, SearchStep, ValueKind, Window, parse_recur,
 };
@@ -281,10 +281,11 @@ fn the_accessor_composes_into_a_one_line_discard_of_the_terminal_state() {
 fn the_result_shaped_idioms_the_adr_names_do_not_compile() {
     // The compile probe is in this test's history; what remains asserted here is that the
     // accessor the crate offers instead is deliberately not named `ok`.
-    let step: SearchStep<'_> = SearchStep::BudgetExhausted(ical_recur::BudgetExhausted::new(
-        Instant::from_unix_seconds(0),
-        1,
-    ));
+    let step: SearchStep<'_> =
+        SearchStep::BudgetExhausted(icalkit_conformance::internal::recur::BudgetExhausted::new(
+            Instant::from_unix_seconds(0),
+            1,
+        ));
     assert!(step.is_terminal());
     assert!(step.occurrence().is_none());
 }

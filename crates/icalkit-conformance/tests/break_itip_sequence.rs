@@ -27,10 +27,10 @@
 /// read as though a missing fixture were an expected answer.
 #[cfg(test)]
 mod cases {
-    use ical_core::{
+    use icalkit_conformance::internal::core::{
         Component, Diagnostic, Document, IgnoreDiagnostics, Instant, Limits, Meter, ProposedChange,
     };
-    use ical_itip::{
+    use icalkit_conformance::internal::itip::{
         AuthorizationDenied, ItipMessage, MessageError, PartStat, PartyId, PropertyOccurrence,
         ScheduledComponent, ScheduledView, SequenceRead, Transition, TransitionReason,
         apply_transition, evaluate_message,

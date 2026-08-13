@@ -16,8 +16,8 @@
 //! where RFC 4791 section 7.8.1 puts one. `.gitattributes` marks fixtures `-text`, so the
 //! `CRLF` inside `CALDAV:calendar-data` is the octets a server actually sent.
 
-use ical_core::{Diagnostic, IgnoreDiagnostics, Instant, Limits, Meter};
-use ical_dav::{
+use icalkit_conformance::internal::core::{Diagnostic, IgnoreDiagnostics, Instant, Limits, Meter};
+use icalkit_conformance::internal::dav::{
     CalendarDataRequest, CalendarPayload, CalendarQuery, Collation, CompFilter, CompSelection,
     DavError, DavProperty, DavResponse, DecodeContext, ETag, ElementName, ExtensionName, Href,
     MultiStatus, MultiStatusReader, ParamFilter, PropFilter, PropName, PropStat, PropValue,
@@ -747,7 +747,7 @@ fn a_response_level_precondition_survives_both_directions() {
     let mut meter = Meter::new(limits);
     let href = Href::new(b"/calendars/ann/work/1.ics", limits, &mut meter).expect("an href");
     let mut refused = DavResponse::with_status(href, Status::FORBIDDEN);
-    let mut named = ical_dav::ErrorBody::new(limits);
+    let mut named = icalkit_conformance::internal::dav::ErrorBody::new(limits);
     named
         .push(
             PropName::Known(ElementName::AllowedOrganizerSchedulingObjectChange),
@@ -776,8 +776,12 @@ fn a_multistatus_that_is_only_a_sync_token_survives_both_directions() {
     let mut meter = Meter::new(limits);
     let mut built = MultiStatus::new(limits);
     built.sync_token = Some(
-        ical_dav::SyncToken::new(b"http://sabre.io/ns/sync/9", limits, &mut meter)
-            .expect("a token"),
+        icalkit_conformance::internal::dav::SyncToken::new(
+            b"http://sabre.io/ns/sync/9",
+            limits,
+            &mut meter,
+        )
+        .expect("a token"),
     );
     assert_eq!(multistatus_round_trip(&built), Ok(built));
 }

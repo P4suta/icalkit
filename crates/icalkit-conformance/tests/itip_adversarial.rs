@@ -17,7 +17,7 @@
 //! # The state carrier
 //!
 //! The fixtures implement [`ScheduledComponent`] directly rather than going through
-//! `ical_core::Component`. That is the seam `docs/design/ical-itip-api.md` names for a server
+//! `icalkit_conformance::internal::core::Component`. That is the seam `docs/design/ical-itip-api.md` names for a server
 //! whose state is a database row, and it is the only carrier that can reach two of these
 //! attacks at all: a fold side is something a *zone* resolved, so a component built from octets
 //! alone can only ever report [`FoldSide::Unresolved`], and a hundred thousand `ATTENDEE` lines
@@ -34,15 +34,17 @@
 mod tests {
     use core::fmt::Debug;
 
-    use ical_core::{ComponentKind, IgnoreDiagnostics, Instant, UtcOffset};
-    use ical_itip::{
+    use icalkit_conformance::internal::core::{
+        ComponentKind, IgnoreDiagnostics, Instant, UtcOffset,
+    };
+    use icalkit_conformance::internal::itip::{
         ActorRole, Attendee, AuthorizationDenied, Commitment, FoldSide, InstanceClock, InstanceRef,
         ItipMessage, Limits, MessageError, Meter, Party, PartyId, PriorState, PropertyOccurrence,
         ProposedChange, Revision, ScheduledComponent, SequenceRead, TransitionReason,
         describe_message, evaluate_message,
     };
-    use ical_recur::OverrideRange;
-    use ical_tz::{LocalResolution, Reading};
+    use icalkit_conformance::internal::recur::OverrideRange;
+    use icalkit_conformance::internal::tz::{LocalResolution, Reading};
 
     /// The `UID` every fixture shares unless the attack is about the identifier itself.
     const MEETING: &str = "4f1b-9a@example.com";
