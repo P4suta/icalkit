@@ -4,7 +4,7 @@
 
 //! An attack on `ical-recur` from the specification's own answers.
 //!
-//! `crates/ical-conform/tests/rfc5545_recurrence_examples.rs` already holds every worked example
+//! `crates/icalkit-conformance/tests/rfc5545_recurrence_examples.rs` already holds every worked example
 //! RFC 5545 section 3.8.5.3 prints, asked about the window the RFC drew around its own output.
 //! This file asks the specification the same questions from three angles that file does not
 //! cover, each of which the RFC answers on its own:

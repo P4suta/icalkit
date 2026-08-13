@@ -122,7 +122,7 @@ msrv:
     cargo msrv verify --path crates/ical-itip
     cargo msrv verify --path crates/ical-dav
     cargo msrv verify --path crates/ical-query
-    cargo msrv verify --path crates/ical-conform
+    cargo msrv verify --path crates/icalkit-conformance
     cargo msrv verify --path gates/grammar-layering
     cargo msrv verify --path gates/xml-layering
     cargo msrv verify --path xtask

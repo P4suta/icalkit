@@ -5,9 +5,8 @@
 # Release configuration. Nothing here publishes automatically: the workspace is at 0.0.0
 # and the first published version should be a decision, not a side effect of merging.
 #
-# The crates move as one version. `ical-conform` is meant to be run against implementations
-# that are not this one (docs/adr/0006), so it will eventually want a cadence that is not
-# tied to ours; while it is pre-1.0 the shared group costs less than a second release story.
+# The production crates move as one version. The conformance runner is an unpublished workspace
+# tool and is intentionally absent from this release graph (docs/adr/0013).
 
 [workspace]
 dependencies_update = false
@@ -39,7 +38,6 @@ changelog_include = [
   "ical-itip",
   "ical-dav",
   "ical-query",
-  "ical-conform",
 ]
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
@@ -68,8 +66,4 @@ version_group = "icalkit"
 
 [[package]]
 name = "ical-query"
-version_group = "icalkit"
-
-[[package]]
-name = "ical-conform"
 version_group = "icalkit"

@@ -103,10 +103,11 @@ fn all_eight_outbound_methods_are_built_with_caller_supplied_time() {
 
 #[test]
 fn review_authorization_borrows_inputs_and_apply_consumes_it() {
-    const HELD: &[u8] =
-        include_bytes!("../../ical-conform/tests/fixtures/break_itip_methods/held_series.ics");
+    const HELD: &[u8] = include_bytes!(
+        "../../icalkit-conformance/tests/fixtures/break_itip_methods/held_series.ics"
+    );
     const REQUEST: &[u8] = include_bytes!(
-        "../../ical-conform/tests/fixtures/break_itip_methods/request_reschedules.ics"
+        "../../icalkit-conformance/tests/fixtures/break_itip_methods/request_reschedules.ics"
     );
     let current = Calendar::parse(&repaired(HELD).unwrap()).unwrap();
     let message = Message::read(&repaired(REQUEST).unwrap()).unwrap();
@@ -130,10 +131,11 @@ fn review_authorization_borrows_inputs_and_apply_consumes_it() {
 
 #[test]
 fn a_stranger_cannot_authorize_an_organizer_request() {
-    const HELD: &[u8] =
-        include_bytes!("../../ical-conform/tests/fixtures/break_itip_methods/held_series.ics");
+    const HELD: &[u8] = include_bytes!(
+        "../../icalkit-conformance/tests/fixtures/break_itip_methods/held_series.ics"
+    );
     const REQUEST: &[u8] = include_bytes!(
-        "../../ical-conform/tests/fixtures/break_itip_methods/request_reschedules.ics"
+        "../../icalkit-conformance/tests/fixtures/break_itip_methods/request_reschedules.ics"
     );
     let current = Calendar::parse(&repaired(HELD).unwrap()).unwrap();
     let message = Message::read(&repaired(REQUEST).unwrap()).unwrap();

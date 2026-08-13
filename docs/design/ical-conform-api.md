@@ -1,6 +1,7 @@
-# ical-conform: the public API
+# ical-conform: the former public API
 
-- Status: draft
+- Status: superseded by [ADR 0013](../adr/0013-unified-public-crate-and-explicit-interop.md);
+  the conformance artifact is now a private versioned JSONL CLI/corpus
 - Date: 2026-08-10
 - Skeleton: assembled with the other five into one workspace and compiled together; see
   "What the first compile changed" below

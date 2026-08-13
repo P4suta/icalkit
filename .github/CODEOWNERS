@@ -24,7 +24,7 @@
 
 # A published corpus of real exports carries a privacy obligation that a normal test
 # directory does not.
-/crates/ical-conform/ @P4suta
+/crates/icalkit-conformance/ @P4suta
 
 # The gate that keeps std, a clock, a socket, and a bundled tzdb out of the core.
 /xtask/ @P4suta

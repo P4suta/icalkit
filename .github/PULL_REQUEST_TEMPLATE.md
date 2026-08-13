@@ -32,7 +32,7 @@ data. See docs/adr/0001. Delete this section if the change cannot reach the mode
 
 ## Conformance
 
-- [ ] Every rule this touches has a case in `ical-conform` addressed to its RFC section
+- [ ] Every rule this touches has a case in `icalkit-conformance` addressed to its RFC section
 - [ ] Where implementations disagree, the case records each observed behavior and says
       which one this project chose
 - [ ] Any real export added is reduced to the smallest form that still shows the behavior,

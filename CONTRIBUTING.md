@@ -79,7 +79,7 @@ fix the cause rather than narrowing the gate.
   ([ADR 0002](docs/adr/0002-bounded-lazy-recurrence.md)). No function collects a rule into a
   `Vec`, and no search path steps around the budget because a particular rule is awkward.
 - **Every rule gets a conformance case.** A rule implemented without a case in
-  `ical-conform` addressed to the RFC section it comes from is incomplete
+  `icalkit-conformance` addressed to the RFC section it comes from is incomplete
   ([ADR 0006](docs/adr/0006-conformance-corpus-as-artifact.md)). Where implementations
   disagree, the case records what each one does, not only what this project chose.
 

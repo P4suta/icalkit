@@ -342,7 +342,7 @@ impl<'a, S: ZoneSource + ?Sized> ZonedSeries<'a, S> {
     /// `ical_recur::Occurrence::start`, which is the key for every occurrence no override moved
     /// and the moved value for the rest. This crate cannot take an `Occurrence` and say so
     /// itself — it is `ical-recur`'s sibling and does not depend on it — so the discipline is
-    /// stated here and held by `crates/ical-conform/tests/break_zones.rs`, which resolves
+    /// stated here and held by `crates/icalkit-conformance/tests/break_zones.rs`, which resolves
     /// effective starts.
     ///
     /// The three states a wall clock can be in are collapsed under [`ResolutionPolicy`] and

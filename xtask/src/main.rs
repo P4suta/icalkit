@@ -24,7 +24,7 @@
 //!
 //! The rule is also only as wide as the list it is applied to, so a crate under a member root
 //! that declares `#![no_std]` without appearing in [`CORE_CRATES`] fails: the exemption
-//! `ical-conform` holds is "not `no_std`", not "not listed". The membership walk covers every
+//! `icalkit-conformance` holds is "private tool", not "not listed". The membership walk covers every
 //! root the workspace declares members under, `gates/` included, while the purity partition
 //! stays over `crates/`: a directory that is not a crate must not be able to become one by
 //! being somewhere this task does not look. The list is written twice, here and as the
@@ -156,7 +156,7 @@ use std::process::ExitCode;
 ///
 /// Mirrors `core_crates` in the `Justfile`, and [`recipe_violations`] reads the two against
 /// each other, so a new core crate that reaches only one of them fails here rather than
-/// quietly losing a gate. `ical-conform` is deliberately absent: the conformance runner is
+/// quietly losing a gate. `icalkit-conformance` is deliberately absent: the conformance runner is
 /// allowed `std` and depends on every crate here, which is what makes it a consumer of the
 /// core rather than part of it.
 const CORE_CRATES: &[&str] = &[
@@ -176,7 +176,7 @@ const CORE_CRATES: &[&str] = &[
 /// the architecture records the new boundary explicitly.
 const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[("icalkit", "jiff")];
 
-/// The published members that are deliberately not part of the sans-I/O core.
+/// Published members deliberately outside the sans-I/O core.
 ///
 /// The list above was going to be a third hand-maintained copy of the crate set — after the
 /// root manifest's `members` and `release-plz.toml` — and the landing that added the fifth rule
@@ -188,7 +188,14 @@ const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[("icalkit", "jiff")];
 /// exemption stays written down beside it, and the two together are held to what the workspace
 /// publishes: a new published crate now fails this gate until somebody states which of the two
 /// it is.
-const NON_CORE: &[&str] = &["ical-conform"];
+const NON_CORE: &[&str] = &[];
+
+/// Private tools isolated from the production API and release graph.
+///
+/// A crate under `crates/` that sets `publish = false` must be named here. This keeps test and
+/// corpus dependencies from becoming an accidental production boundary while still making the
+/// exception visible to the architecture gate.
+const PRIVATE_TOOLS: &[&str] = &["icalkit-conformance"];
 
 /// The directories the root manifest declares members under.
 ///
@@ -597,13 +604,16 @@ fn is_wildcard(pattern: &str) -> bool {
 fn release_config_violations(workspace: &Path) -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let mut published = Vec::new();
+    let mut private_tools = Vec::new();
     let mut violations = Vec::new();
     for member in members(&root) {
         let manifest = fs::read_to_string(workspace.join(&member).join("Cargo.toml"))?;
-        if declares(&manifest, "publish = false") {
-            continue;
-        }
         match package_name(&manifest) {
+            Some(name) if declares(&manifest, "publish = false") => {
+                if Path::new(&member).starts_with("crates") {
+                    private_tools.push(name);
+                }
+            },
             Some(name) => published.push(name),
             None => violations.push(format!(
                 "{member}/Cargo.toml: declares no package name, so the release configuration \
@@ -612,6 +622,7 @@ fn release_config_violations(workspace: &Path) -> io::Result<Vec<String>> {
         }
     }
     violations.extend(core_list_violations(&published));
+    violations.extend(private_tool_violations(&private_tools));
     violations.extend(release_violations(
         &published,
         &fs::read_to_string(workspace.join(RELEASE_CONFIG))?,
@@ -647,6 +658,38 @@ fn core_list_violations(published: &[String]) -> Vec<String> {
             ));
         }
     }
+    violations.sort();
+    violations
+}
+
+/// What [`PRIVATE_TOOLS`] and unpublished workspace members under `crates/` disagree about.
+fn private_tool_violations(private: &[String]) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    for name in PRIVATE_TOOLS {
+        if CORE_CRATES.contains(name) || NON_CORE.contains(name) {
+            violations.push(format!(
+                "{ROOT_MANIFEST}: `{name}` is both a private tool and a published crate; those \
+                 release contracts are mutually exclusive"
+            ));
+        }
+        if !private.iter().any(|member| member == *name) {
+            violations.push(format!(
+                "{ROOT_MANIFEST}: private tool `{name}` is missing or publishable; an isolation \
+                 rule that runs over no private workspace member proves nothing"
+            ));
+        }
+    }
+
+    for name in private {
+        if !PRIVATE_TOOLS.contains(&name.as_str()) {
+            violations.push(format!(
+                "{ROOT_MANIFEST}: private crate `{name}` is unclassified; add an explicit \
+                 PRIVATE_TOOLS entry or move it outside crates/"
+            ));
+        }
+    }
+
     violations.sort();
     violations
 }
@@ -1213,8 +1256,8 @@ fn manifest_violations(crate_name: &str, manifest: &str) -> Vec<String> {
 /// [`CORE_CRATES`].
 ///
 /// The rule is only as wide as the list it is applied to, so the list must not be able to go
-/// stale behind a crate somebody added (ADR 0004). A crate that wants the exemption
-/// `ical-conform` has takes it by not being `no_std`, which is what that exemption means.
+/// stale behind a crate somebody added (ADR 0004). `icalkit-conformance` is instead admitted by
+/// [`PRIVATE_TOOLS`]; it uses `std` and is not part of the production or release graph.
 /// Called for every root in [`MEMBER_ROOTS`], so that `gates/` is not a place to put one where
 /// nothing looks.
 fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
@@ -1861,8 +1904,8 @@ mod tests {
         collect_codes_violations, collect_purity_violations, core_list_violations,
         declared_dependencies, declares, dependency_subtable_name, enum_variants,
         file_path_violations, golden_rows, is_dependency_table, layer_violations,
-        layering_violations, manifest_violations, match_arm_violations, recipe_violations,
-        release_violations,
+        layering_violations, manifest_violations, match_arm_violations, private_tool_violations,
+        recipe_violations, release_violations,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2495,7 +2538,6 @@ mod grammar;
             "ical-itip".to_owned(),
             "ical-dav".to_owned(),
             "ical-query".to_owned(),
-            "ical-conform".to_owned(),
         ];
         assert_eq!(
             core_list_violations(&published),
@@ -2523,6 +2565,29 @@ mod grammar;
                 .iter()
                 .any(|line| line.contains("does not publish")),
             "a rule stated over a crate the workspace does not build runs over nothing"
+        );
+    }
+
+    #[test]
+    fn private_workspace_tools_are_explicit_and_never_published() {
+        let private = ["icalkit-conformance".to_owned()];
+        assert_eq!(
+            private_tool_violations(&private),
+            Vec::<String>::new(),
+            "the committed private tool set"
+        );
+
+        assert!(
+            private_tool_violations(&[])
+                .iter()
+                .any(|line| line.contains("`icalkit-conformance`") && line.contains("missing")),
+            "a named isolation tool must remain a workspace member"
+        );
+        assert!(
+            private_tool_violations(&["unclassified-helper".to_owned()])
+                .iter()
+                .any(|line| line.contains("`unclassified-helper`") && line.contains("unclassified")),
+            "a private crate under crates/ must be admitted deliberately"
         );
     }
 

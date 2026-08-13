@@ -12,7 +12,7 @@ body:
         Use this when the answer is wrong or debatable, rather than the bug report.
 
         Disagreements are the substance of this project. A well-formed one becomes a case in
-        `ical-conform` whether or not this library turns out to be the one at fault —
+        `icalkit-conformance` whether or not this library turns out to be the one at fault —
         including cases where Google, Microsoft 365, or Apple is doing something the RFC
         forbids and we intend to keep accepting it. See
         [ADR 0006](../../docs/adr/0006-conformance-corpus-as-artifact.md).

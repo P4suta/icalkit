@@ -49,7 +49,7 @@ own wall clock projected onto UTC, not the UTC timeline.** Every instant crossin
 either direction is on it, and each cadence key is resolved against the zone one at a time,
 which is the only place a daylight saving transition can be seen. `ical_tz::seam` states the
 contract, `ical-recur`'s crate documentation states the caller's two obligations under it, and
-`crates/ical-conform/tests/break_zones.rs` is where that seam is held to a real zone — it holds
+`crates/icalkit-conformance/tests/break_zones.rs` is where that seam is held to a real zone — it holds
 a daily 09:00 series to its wall clock across both of Europe/Berlin's 2026 transitions and
 asserts that the reading which never re-resolves is 3,600 seconds out. It was the only file in
 the workspace naming both crates until M2's own adversarial pass landed `break_tz_seam.rs`
@@ -122,6 +122,11 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 
 ## Crate boundaries
 
+> **Transition note:** [ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)
+> supersedes the public package graph below. `icalkit` is now the sole production API;
+> the split crates remain implementation scaffolding until their sources move behind private
+> modules. `icalkit-conformance` is an unpublished JSONL CLI/corpus, not a Rust library API.
+
 | Crate | Depends on | std | alloc | Reads a clock | State |
 | --- | --- | --- | --- | --- | --- |
 | `ical-core` | — | no | yes | no | landed (M0) |
@@ -129,7 +134,7 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 | `ical-tz` | `ical-core` | no | yes | no | landed (M2) |
 | `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no | landed (M3) |
 | `ical-dav` | `ical-core` | no | yes | no | landed (M4) |
-| `ical-conform` | all of them | yes | yes | no | grows with each milestone (M5) |
+| `icalkit-conformance` | `icalkit` at runtime; split crates in tests | yes | yes | no | private CLI/corpus (M5) |
 
 One row is owed and does not exist yet: `ical-query` (`ical-core`, `ical-recur`, `ical-tz`,
 `ical-dav`; no std, alloc, no clock). Six crates are publishable, not seven — nothing has been
@@ -143,9 +148,8 @@ published and no public API is frozen. What each landed crate does **not** do is
 `# Status` section and in `ROADMAP.md`, which are the two places that stay honest about it.
 `ical-dav` depends on `ical-core` and on nothing else — `just purity` rejects every declared
 dependency of a core crate including dev-dependencies, so the hand-rolled XML tokenizer ADR
-0004 chose is a gate rather than an intention. `ical-conform`'s five are declared as
-dev-dependencies, which is the distinction that makes "runnable against any implementation"
-mean anything: a competing implementation depending on this crate compiles none of them.
+0004 chose is a gate rather than an intention. The private conformance CLI uses only `icalkit`
+at runtime; legacy split-crate dependencies are test-only until those tests migrate to the facade.
 
 "Reads a clock" is a column because a calendar library that quietly asks the OS for the
 current time is untestable: the answer to "is this event in the past" must come from an

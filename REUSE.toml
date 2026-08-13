@@ -27,3 +27,11 @@ path = ["**/tests/fixtures/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+# JSONL reserves every non-empty line for a protocol record, so an inline SPDX comment would
+# itself become a malformed corpus row.
+[[annotations]]
+path = ["crates/icalkit-conformance/corpus/*.jsonl"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 icalkit contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"

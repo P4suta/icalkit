@@ -10,7 +10,7 @@
 #   - ical-tz       no_std, sans-I/O. VTIMEZONE against a caller-supplied zone source.
 #   - ical-itip     no_std, sans-I/O. RFC 5546 scheduling as described transitions.
 #   - ical-dav      no_std, sans-I/O. RFC 4791 requests and responses, from both sides.
-#   - ical-conform  the published conformance and interoperability corpus (docs/adr/0006).
+#   - icalkit-conformance  the private conformance JSONL CLI and corpus (docs/adr/0013).
 #   - xtask         repository policy checks shared by Just and CI.
 #
 # Two members under gates/ and xtask/ are not crates and are not published. `gates/` holds

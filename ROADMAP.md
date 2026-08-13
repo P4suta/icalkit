@@ -54,13 +54,13 @@ outspend its budget inside one `next`, a `RANGE=THISANDFUTURE` override that cha
 non-time property, and an instant present in both an `EXDATE` and an override table.
 
 **Met.** All forty-two worked examples of RFC 5545 section 3.8.5.3 are a table test in
-`ical-conform`, with the expected column transcribed from the RFC. The item type ADR 0002
+`icalkit-conformance`, with the expected column transcribed from the RFC. The item type ADR 0002
 committed to did not survive contact with `Iterator`, and fourteen sentences of that ADR are
 now amended rather than reinterpreted; the amendments are the record of what shipped.
 
 Six of those amendments are what four adversarial lenses — the RFC's own answers, the budget,
 `RDATE`/`EXDATE`/override composition, and the Gregorian calendar — found in the built engine,
-and each has a case in `crates/ical-conform/tests/break_recur_*.rs` that failed before the fix.
+and each has a case in `crates/icalkit-conformance/tests/break_recur_*.rs` that failed before the fix.
 They were: a meter that reported exhaustion for its octet budget alone, so a search stopped by
 either recurrence ceiling left the durable report reading clean; a terminal report that counted
 what expansion returned rather than what it charged, so the two rules that spend a budget
@@ -103,7 +103,7 @@ than puzzles.
 The milestone's real subject was the seam with M1, which M1 could only half-specify. It is
 settled: the timeline `ical-recur` walks for a zoned series is that series' own wall clock
 projected onto UTC, `ical_tz::seam` states the contract, `ical-recur`'s own documentation states
-it from the other side, and `crates/ical-conform/tests/break_zones.rs` — the only file naming
+it from the other side, and `crates/icalkit-conformance/tests/break_zones.rs` — the only file naming
 both crates — holds a daily 09:00 Berlin series to 09:00 across both 2026 transitions and
 asserts that the reading which never re-resolves is 3,600 seconds out from the transition
 onwards. All six questions M1 left open are closed with a test each, and four of them left a
@@ -111,7 +111,7 @@ golden-listed code behind that no emitter had before: `recurrence-until-not-utc`
 `exdate-value-type-mismatch`, `override-matches-no-instance` and `time-zone-coverage-exhausted`.
 
 Four adversarial lenses — the transitions, the sources, the seam, and the bounds — were then run
-against the built crate, and what they found is in `crates/ical-conform/tests/break_tz_*.rs`,
+against the built crate, and what they found is in `crates/icalkit-conformance/tests/break_tz_*.rs`,
 one case per finding, each failing before the fix. Six were wrong answers: a rule stopped being
 consulted once four dated transitions stood between it and the query, so `Europe/Berlin`
 answered CET on the first of July; a rule that fires rarely was asked about three years and not
@@ -383,10 +383,11 @@ resolved.
 
 ## M5 — Interoperability evidence
 
-`ical-conform` grown into a published differential corpus: what Google, Microsoft 365, and
-Apple each emit and accept, where they disagree with the RFC and with each other, and what
-this project chose. Runnable against any implementation, including ones that are not this
-one.
+`icalkit-conformance` grown into a private differential corpus and versioned JSONL CLI: what
+Google Calendar, Microsoft 365, and Apple Calendar each emit and accept, where they disagree
+with the RFC and with each other, and what this project chose. Captures must be reduced and
+anonymized with provenance; synthetic client-shaped fixtures cannot justify compatibility
+repairs. The CLI is runnable without creating a second Rust library API.
 
 What now binds it. A case is addressed to a specification section and evaluated through the
 subject trait, and it states the `Limits` policy it ran under, because an outcome that depends

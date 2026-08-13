@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 [package]
-name = "ical-conform"
+name = "icalkit-conformance"
+publish = false
 description = "A conformance and interoperability corpus for iCalendar and CalDAV, runnable against any implementation"
 keywords = ["conformance", "interop", "icalendar", "caldav", "testing"]
 categories = [
@@ -11,7 +12,7 @@ categories = [
   "date-and-time",
   "parser-implementations",
 ]
-readme = "../../README.md"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +20,11 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+
+[dependencies]
+icalkit = { path = "../icalkit", version = "0.0.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 # The implementation this workspace supplies for the corpus to run against. A path plus a
