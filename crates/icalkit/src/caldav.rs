@@ -18,10 +18,10 @@ use ical_core::{
     Severity, UtcOffset,
 };
 use ical_dav::{
-    CalendarDataRequest, DecodeContext, ElementName, ExtensionName, MultiStatus, MultiStatusReader,
-    Namespace, PropFind, PropName, PropRequest, PropValue, RequestBody, ResponseBody,
-    SyncCollection, SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull,
-    XmlReader, XmlWriter,
+    CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
+    ElementName, ExtensionName, Href, MultiStatus, MultiStatusReader, Namespace, PropFind,
+    PropName, PropRequest, PropStat, PropValue, RequestBody, ResponseBody, Status, SyncCollection,
+    SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
 };
 use ical_query::{Budget, Zones};
 use ical_tz::{
@@ -30,7 +30,7 @@ use ical_tz::{
 
 use crate::scheduling::Message;
 use crate::time::{LocalKind, ZoneDatabase};
-use crate::{Calendar, Error, ResourcePolicy, Session};
+use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// A CalDAV calendar-query with its XML vocabulary kept private.
 #[derive(Clone, Debug)]
@@ -1233,19 +1233,149 @@ impl<T> Debug for Operation<T> {
     }
 }
 
-/// A server workflow factory.
-#[derive(Clone, Debug, Default)]
-pub struct Server {
-    marker: (),
+/// One validated calendar object supplied by a server's storage adapter.
+#[derive(Clone, Debug)]
+pub struct StoredResource {
+    href: String,
+    etag: Option<ETag>,
+    calendar: Calendar,
 }
 
-type ServerResponder = Box<dyn FnOnce(ServerAnswer) -> Result<WireResponse, crate::Error>>;
+impl StoredResource {
+    /// Construct a stored object, validating its URI and optional entity tag.
+    pub fn new(
+        href: impl Into<String>,
+        etag: Option<&str>,
+        calendar: Calendar,
+    ) -> Result<Self, Error> {
+        let href = href.into();
+        validate_uri(&href)?;
+        let etag = etag
+            .map(|value| {
+                ETag::parse(value.as_bytes())
+                    .map_err(|_| Error::single("icalkit.caldav.etag-invalid"))
+            })
+            .transpose()?;
+        Ok(Self {
+            href,
+            etag,
+            calendar,
+        })
+    }
+
+    /// Resource URI.
+    #[must_use]
+    pub fn href(&self) -> &str {
+        &self.href
+    }
+
+    /// Validated stored calendar.
+    #[must_use]
+    pub const fn calendar(&self) -> &Calendar {
+        &self.calendar
+    }
+}
+
+fn query_response(
+    query: &Query,
+    resources: Vec<StoredResource>,
+    policy: ResourcePolicy,
+) -> Result<WireResponse, Error> {
+    if query
+        .query
+        .props
+        .calendar_data
+        .as_ref()
+        .is_some_and(CalendarDataRequest::is_reducing)
+    {
+        return Err(Error::single("icalkit.caldav.projection-required"));
+    }
+    let engine = Engine::builder().resource_policy(policy).build();
+    let mut session = engine.session();
+    let mut meter = Meter::new(policy.limits);
+    let mut multistatus = MultiStatus::new(policy.limits);
+    for resource in resources {
+        match query.matches(&mut session, &resource.calendar)? {
+            Match::Unmatched => continue,
+            Match::Undecided => {
+                return Err(Error::single("icalkit.caldav.query-undecided"));
+            },
+            Match::Matched => {},
+        }
+        let href = Href::new(resource.href.as_bytes(), policy.limits, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+        let mut response = DavResponse::with_propstats(href, policy.limits);
+        let mut properties = PropStat::new(Status::OK, policy.limits);
+        for name in query.query.props.names() {
+            if matches!(name, PropName::Known(ElementName::Getetag)) {
+                if let Some(etag) = resource.etag.as_ref() {
+                    properties
+                        .push(
+                            DavProperty {
+                                name: name.clone(),
+                                value: PropValue::Entity(etag.clone()),
+                            },
+                            &mut meter,
+                        )
+                        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+                }
+            }
+        }
+        if query.query.props.calendar_data.is_some() {
+            let payload = CalendarPayload::from_octets(
+                &resource.calendar.to_bytes(),
+                policy.limits,
+                &mut meter,
+            )
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+            properties
+                .push(
+                    DavProperty {
+                        name: PropName::Known(ElementName::CalendarData),
+                        value: PropValue::CalendarData(payload),
+                    },
+                    &mut meter,
+                )
+                .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+        }
+        response
+            .push_propstat(properties, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+        multistatus
+            .push(response, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    let body = encode_xml(&multistatus, policy, &mut meter)?;
+    Ok(WireResponse::new(
+        207,
+        vec![Header::new(
+            "Content-Type",
+            b"application/xml; charset=utf-8".to_vec(),
+        )],
+        body,
+    ))
+}
+
+/// A server workflow factory.
+#[derive(Clone, Debug)]
+pub struct Server {
+    policy: ResourcePolicy,
+}
+
+type ServerResponder = Box<dyn FnOnce(ServerAnswer) -> Result<ServerStep, crate::Error>>;
+
+enum ServerStep {
+    Need(ServerNeed, ServerResponder),
+    Done(WireResponse),
+}
 
 impl Server {
     /// Create a sans-I/O server workflow factory.
     #[must_use]
     pub const fn new() -> Self {
-        Self { marker: () }
+        Self {
+            policy: ResourcePolicy::secure(),
+        }
     }
 
     /// Start a server operation whose application dependency is supplied explicitly.
@@ -1255,8 +1385,52 @@ impl Server {
         need: ServerNeed,
         responder: impl FnOnce(ServerAnswer) -> Result<WireResponse, crate::Error> + 'static,
     ) -> ServerOperation {
-        let () = self.marker;
-        ServerOperation::new(need, responder)
+        ServerOperation::with_policy(need, responder, self.policy)
+    }
+
+    /// Decode a supported request and expose its ACL and storage dependencies as needs.
+    pub fn handle(&self, request: WireRequest) -> Result<ServerOperation, Error> {
+        if request.method != "REPORT" {
+            return Err(Error::single("icalkit.caldav.server-method-unsupported"));
+        }
+        let mut meter = Meter::new(self.policy.limits);
+        let query = Query::parse_with_policy(&request.body, self.policy, &mut meter)?;
+        let method = request.method;
+        let uri = request.uri;
+        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let policy = self.policy;
+        Ok(ServerOperation::from_responder(
+            need,
+            Box::new(move |answer| {
+                let ServerAnswerKind::Authorized(authorized) = answer.kind else {
+                    return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                };
+                if !authorized {
+                    return Ok(ServerStep::Done(WireResponse::new(
+                        403,
+                        Vec::new(),
+                        Vec::new(),
+                    )));
+                }
+                let need = ServerNeed::request("caldav.query.resources", &method, &uri);
+                Ok(ServerStep::Need(
+                    need,
+                    Box::new(move |answer| {
+                        let ServerAnswerKind::Resources(resources) = answer.kind else {
+                            return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                        };
+                        query_response(&query, resources, policy).map(ServerStep::Done)
+                    }),
+                ))
+            }),
+            policy,
+        ))
+    }
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1264,13 +1438,27 @@ impl Server {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerNeed {
     code: &'static str,
+    method: Option<String>,
+    uri: Option<String>,
 }
 
 impl ServerNeed {
     /// Construct an application need identified by a stable code.
     #[must_use]
     pub const fn new(code: &'static str) -> Self {
-        Self { code }
+        Self {
+            code,
+            method: None,
+            uri: None,
+        }
+    }
+
+    fn request(code: &'static str, method: &str, uri: &str) -> Self {
+        Self {
+            code,
+            method: Some(method.to_string()),
+            uri: Some(uri.to_string()),
+        }
     }
 
     /// The stable need code.
@@ -1278,25 +1466,65 @@ impl ServerNeed {
     pub const fn code(&self) -> &'static str {
         self.code
     }
+
+    /// HTTP/WebDAV method associated with this need, when it came from a request.
+    #[must_use]
+    pub fn method(&self) -> Option<&str> {
+        self.method.as_deref()
+    }
+
+    /// Request URI associated with this need.
+    #[must_use]
+    pub fn uri(&self) -> Option<&str> {
+        self.uri.as_deref()
+    }
 }
 
 /// An application answer supplied to a server workflow.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ServerAnswer {
-    body: Vec<u8>,
+    kind: ServerAnswerKind,
+}
+
+#[derive(Clone, Debug)]
+enum ServerAnswerKind {
+    Bytes(Vec<u8>),
+    Authorized(bool),
+    Resources(Vec<StoredResource>),
 }
 
 impl ServerAnswer {
     /// Construct an application answer body.
     #[must_use]
     pub fn new(body: Vec<u8>) -> Self {
-        Self { body }
+        Self {
+            kind: ServerAnswerKind::Bytes(body),
+        }
+    }
+
+    /// Supply an application ACL decision.
+    #[must_use]
+    pub const fn authorized(allowed: bool) -> Self {
+        Self {
+            kind: ServerAnswerKind::Authorized(allowed),
+        }
+    }
+
+    /// Supply validated resources loaded by the application storage adapter.
+    #[must_use]
+    pub fn resources(resources: Vec<StoredResource>) -> Self {
+        Self {
+            kind: ServerAnswerKind::Resources(resources),
+        }
     }
 
     /// Application answer octets.
     #[must_use]
     pub fn body(&self) -> &[u8] {
-        &self.body
+        match &self.kind {
+            ServerAnswerKind::Bytes(body) => body,
+            ServerAnswerKind::Authorized(_) | ServerAnswerKind::Resources(_) => &[],
+        }
     }
 }
 
@@ -1305,6 +1533,7 @@ pub struct ServerOperation {
     need: Option<ServerNeed>,
     response: Option<WireResponse>,
     responder: Option<ServerResponder>,
+    max_answer_bytes: u64,
 }
 
 impl ServerOperation {
@@ -1314,10 +1543,31 @@ impl ServerOperation {
         need: ServerNeed,
         responder: impl FnOnce(ServerAnswer) -> Result<WireResponse, crate::Error> + 'static,
     ) -> Self {
+        Self::with_policy(need, responder, ResourcePolicy::secure())
+    }
+
+    fn with_policy(
+        need: ServerNeed,
+        responder: impl FnOnce(ServerAnswer) -> Result<WireResponse, crate::Error> + 'static,
+        policy: ResourcePolicy,
+    ) -> Self {
+        Self::from_responder(
+            need,
+            Box::new(move |answer| responder(answer).map(ServerStep::Done)),
+            policy,
+        )
+    }
+
+    fn from_responder(
+        need: ServerNeed,
+        responder: ServerResponder,
+        policy: ResourcePolicy,
+    ) -> Self {
         Self {
             need: Some(need),
             response: None,
-            responder: Some(Box::new(responder)),
+            responder: Some(responder),
+            max_answer_bytes: policy.max_input_bytes(),
         }
     }
 
@@ -1329,12 +1579,25 @@ impl ServerOperation {
 
     /// Supply the application-owned answer.
     pub fn supply(&mut self, answer: ServerAnswer) -> Result<(), crate::Error> {
+        self.need
+            .take()
+            .ok_or_else(|| crate::Error::single("icalkit.caldav.unexpected-answer"))?;
         let responder = self
             .responder
             .take()
             .ok_or_else(|| crate::Error::single("icalkit.caldav.unexpected-answer"))?;
-        self.need = None;
-        self.response = Some(responder(answer)?);
+        if let ServerAnswerKind::Bytes(body) = &answer.kind
+            && u64::try_from(body.len()).unwrap_or(u64::MAX) > self.max_answer_bytes
+        {
+            return Err(crate::Error::single("icalkit.caldav.answer-too-large"));
+        }
+        match responder(answer)? {
+            ServerStep::Need(need, responder) => {
+                self.need = Some(need);
+                self.responder = Some(responder);
+            },
+            ServerStep::Done(response) => self.response = Some(response),
+        }
         Ok(())
     }
 
@@ -1352,6 +1615,7 @@ impl Debug for ServerOperation {
             .debug_struct("ServerOperation")
             .field("has_need", &self.need.is_some())
             .field("has_response", &self.response.is_some())
+            .field("max_answer_bytes", &self.max_answer_bytes)
             .finish_non_exhaustive()
     }
 }
