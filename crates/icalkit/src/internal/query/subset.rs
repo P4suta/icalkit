@@ -452,7 +452,7 @@ fn expand_calendar_component(
 }
 
 /// Compose every range anchor in force and then the exact override, if one exists.
-fn effective_template(
+pub(crate) fn effective_template(
     master: &Component,
     related: &[&Component],
     instance: crate::internal::query::Instance,
@@ -976,7 +976,7 @@ where
 /// A `RECURRENCE-ID` is what makes a component one instance of a series rather than the master
 /// of it, RFC 5545 section 3.8.4.4. Everything without one is returned unconditionally, which is
 /// what section 9.6.6's "in addition to the 'master component'" requires.
-fn is_override(component: &Component) -> bool {
+pub(crate) fn is_override(component: &Component) -> bool {
     component
         .properties_named(&PropertyId::RECURRENCE_ID)
         .next()
@@ -984,7 +984,7 @@ fn is_override(component: &Component) -> bool {
 }
 
 /// Whether `candidate` is an override belonging to `master`.
-fn is_override_of(candidate: &Component, master: &Component) -> bool {
+pub(crate) fn is_override_of(candidate: &Component, master: &Component) -> bool {
     if candidate.kind() != master.kind() || is_override(master) {
         return false;
     }

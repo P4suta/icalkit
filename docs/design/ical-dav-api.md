@@ -657,6 +657,9 @@ belongs to a server holding both copies, which this crate is not.
 **`RANGE=THISANDFUTURE`** splitting is not this layer's job. The single public `icalkit`
 scheduling workflow now creates and revises an authorized detached anchor, and the CalDAV query
 workflow composes its time shift and property changes through later occurrences.
+When a recurring `comp-filter` contains a `time-range` and one or more `prop-filter` clauses,
+those clauses are evaluated against that same composed effective occurrence; values from the
+master cannot satisfy the property half of a later occurrence's match.
 `calendar-multiget` and `calendar-query` remain how a caller obtains the master and detached
 components together.
 

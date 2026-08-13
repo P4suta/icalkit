@@ -224,6 +224,10 @@ the other order. What version this becomes is a decision nobody has made.
   and exposes `Message::review_in` so the check shares an `Engine` session's aggregate budget
   and zone database. Sender authorization, ambiguous-anchor refusal, DST gaps, transactional
   application, and CalDAV propagation to later occurrences are covered through public workflows.
+- CalDAV `calendar-query` now evaluates a recurring component's `time-range` and
+  `prop-filter` clauses against the same effective occurrence. A `THISANDFUTURE` anchor's
+  property overlay is composed before filtering later instances, so a matching future time
+  cannot be combined with a stale property from the master component.
 
 ### Fixed
 

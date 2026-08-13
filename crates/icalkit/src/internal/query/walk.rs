@@ -63,11 +63,13 @@
 //!
 //! # What the walk holds and what it delegates
 //!
-//! Three questions belong to other units and reach them through one private seam, so the walk
+//! Four questions belong to other units and reach them through one private seam, so the walk
 //! can be read — and tested — without any of them: whether a filter's window can be refused for
 //! a resource without expanding it (`prefilter`), whether any recurrence instance of a component
 //! overlaps a window (`expand` over `overlap`), and whether a `prop-filter` matches a component
-//! (`prop`). Everything else on this page is the shape of the tree.
+//! (`prop`). The fourth is the join of the latter two for a recurring component: its time range
+//! and property filters must be true of the same effective instance after range anchors and an
+//! exact override are composed. Everything else on this page is the shape of the tree.
 //!
 //! # Two refusals are about the query and not about the resource
 //!
@@ -82,7 +84,7 @@ use core::mem;
 
 use alloc::vec::Vec;
 
-use ical_core::{Component, Document, IgnoreDiagnostics, Item, LimitExceeded};
+use ical_core::{Component, Document, IgnoreDiagnostics, Item, LimitExceeded, PropertyId};
 use ical_dav::{CompFilter, PropFilter, TextMatch, TimeRange};
 
 use crate::internal::query::prefilter::Exclusion;
@@ -160,7 +162,7 @@ fn evaluate<L: Leaves>(
     walk(leaves, calendar, filter, zones, budget)
 }
 
-/// The three questions this unit asks and does not answer.
+/// The four questions this unit asks and does not answer.
 ///
 /// A trait rather than three direct calls, so the tree walk above has exactly one seam with the
 /// rest of the crate and this file's tests can drive it without depending on units that are not
@@ -204,11 +206,25 @@ trait Leaves {
         zones: Zones<'_>,
         budget: &mut Budget<'_>,
     ) -> Result<Match, QueryError>;
+
+    /// Whether one effective recurrence instance satisfies a time range and every property
+    /// filter together. `None` leaves non-recurring components on the ordinary leaf path.
+    fn recurring_properties(
+        &self,
+        _component: &Component,
+        _siblings: &[Item],
+        _range: TimeRange,
+        _filters: &[PropFilter],
+        _zones: Zones<'_>,
+        _budget: &mut Budget<'_>,
+    ) -> Result<Option<Match>, QueryError> {
+        Ok(None)
+    }
 }
 
 /// The leaves as the sibling units of this crate answer them.
 ///
-/// The only place in this file that names another unit, kept to three delegating bodies on
+/// The only place in this file that names another unit, kept to small delegating bodies on
 /// purpose: the tree walk above is the part of this crate that a mistake in returns a wrong
 /// *set* of resources, and it is worth being able to read it without following a call into
 /// `prefilter`, `expand` or `prop`.
@@ -260,6 +276,60 @@ impl Leaves for Units {
         budget: &mut Budget<'_>,
     ) -> Result<Match, QueryError> {
         crate::internal::query::prop::matches_prop_filter(component, filter, zones, budget)
+    }
+
+    fn recurring_properties(
+        &self,
+        component: &Component,
+        siblings: &[Item],
+        range: TimeRange,
+        filters: &[PropFilter],
+        zones: Zones<'_>,
+        budget: &mut Budget<'_>,
+    ) -> Result<Option<Match>, QueryError> {
+        use crate::internal::query::{expand, subset};
+
+        if subset::is_override(component) {
+            return Ok(Some(Match::Unmatched));
+        }
+        let related: Vec<&Component> = siblings
+            .iter()
+            .filter_map(Item::as_component)
+            .filter(|candidate| subset::is_override_of(candidate, component))
+            .collect();
+        let recurring = component
+            .properties_named(&PropertyId::RRULE)
+            .next()
+            .is_some()
+            || component
+                .properties_named(&PropertyId::RDATE)
+                .next()
+                .is_some()
+            || !related.is_empty();
+        if !recurring {
+            return Ok(None);
+        }
+
+        let expanded = expand::expand_component(component, siblings, range, zones, budget)?;
+        let mut any = Match::Unmatched;
+        for instance in expanded.instances() {
+            let effective = subset::effective_template(component, &related, *instance, zones)?;
+            let mut all = Match::Matched;
+            for filter in filters {
+                all = all.and(self.property(&effective, filter, zones, budget)?);
+                if all == Match::Unmatched {
+                    break;
+                }
+            }
+            any = any.or(all);
+            if any.is_matched() {
+                break;
+            }
+        }
+        if let Some(reason) = expanded.incomplete() {
+            any = any.or(Match::Undecided(reason));
+        }
+        Ok(Some(any))
     }
 }
 
@@ -478,6 +548,18 @@ fn own_tests<L: Leaves>(
 ) -> Result<Match, QueryError> {
     let mut held = Match::Matched;
     if let Some(range) = frame.filter.time_range {
+        if !frame.excluded && !frame.filter.props().is_empty() {
+            if let Some(joined) = leaves.recurring_properties(
+                candidate,
+                frame.scope,
+                range,
+                frame.filter.props(),
+                zones,
+                budget,
+            )? {
+                return Ok(joined);
+            }
+        }
         held = held.and(if frame.excluded {
             Match::Unmatched
         } else {

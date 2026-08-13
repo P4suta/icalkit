@@ -43,6 +43,62 @@ fn time_range_query(start: &str, end: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+fn time_range_summary_query(start: &str, end: &str, summary: &str) -> Vec<u8> {
+    format!(
+        r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data/></D:prop>
+<C:filter>
+  <C:comp-filter name="VCALENDAR">
+    <C:comp-filter name="VEVENT">
+      <C:time-range start="{start}" end="{end}"/>
+      <C:prop-filter name="SUMMARY"><C:text-match>{summary}</C:text-match></C:prop-filter>
+    </C:comp-filter>
+  </C:comp-filter>
+</C:filter>
+</C:calendar-query>"#
+    )
+    .into_bytes()
+}
+
+fn assert_revised_range_is_queryable(calendar: &Calendar) -> Result<(), icalkit::Error> {
+    let moved_future = Query::parse(&time_range_query("20260324T170000Z", "20260324T170001Z"))?;
+    let stale_future = Query::parse(&time_range_query("20260324T140000Z", "20260324T140001Z"))?;
+    let moved_summary = Query::parse(&time_range_summary_query(
+        "20260324T170000Z",
+        "20260324T170001Z",
+        "Latest sync",
+    ))?;
+    let stale_summary = Query::parse(&time_range_summary_query(
+        "20260324T170000Z",
+        "20260324T170001Z",
+        "Original sync",
+    ))?;
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    assert_eq!(
+        moved_future.matches(&mut session, calendar)?,
+        Match::Matched,
+        "the detached range anchor moves later generated occurrences"
+    );
+    assert_eq!(
+        stale_future.matches(&mut session, calendar)?,
+        Match::Unmatched,
+        "the pre-split start no longer matches future occurrences"
+    );
+    assert_eq!(
+        moved_summary.matches(&mut session, calendar)?,
+        Match::Matched,
+        "range property changes and time shifts belong to the same future occurrence"
+    );
+    assert_eq!(
+        stale_summary.matches(&mut session, calendar)?,
+        Match::Unmatched,
+        "a matching time and a property from a different recurrence instance are not joined"
+    );
+    Ok(())
+}
+
 mod range_series {
     pub(crate) const HELD: &[u8] = concat!(
         "BEGIN:VCALENDAR\r\n",
@@ -52,7 +108,7 @@ mod range_series {
         "UID:range@example.test\r\n",
         "DTSTAMP:20260301T120000Z\r\n",
         "DTSTART:20260310T140000Z\r\n",
-        "SUMMARY:Weekly sync\r\n",
+        "SUMMARY:Original sync\r\n",
         "ORGANIZER:mailto:chair@example.test\r\n",
         "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@example.test\r\n",
         "RRULE:FREQ=WEEKLY;COUNT=4\r\n",
@@ -71,7 +127,7 @@ mod range_series {
         "RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z\r\n",
         "DTSTAMP:20260302T120000Z\r\n",
         "DTSTART:20260317T160000Z\r\n",
-        "SUMMARY:Weekly sync later\r\n",
+        "SUMMARY:Moved sync\r\n",
         "ORGANIZER:mailto:chair@example.test\r\n",
         "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@example.test\r\n",
         "SEQUENCE:3\r\n",
@@ -89,7 +145,7 @@ mod range_series {
         "RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z\r\n",
         "DTSTAMP:20260303T120000Z\r\n",
         "DTSTART:20260317T170000Z\r\n",
-        "SUMMARY:Weekly sync latest\r\n",
+        "SUMMARY:Latest sync\r\n",
         "ORGANIZER:mailto:chair@example.test\r\n",
         "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@example.test\r\n",
         "SEQUENCE:4\r\n",
@@ -269,26 +325,7 @@ fn a_this_and_future_request_splits_the_series_into_a_detached_anchor() {
             .any(|window| window == b"DTSTART:20260317T160000Z")
     );
 
-    let moved_future =
-        Query::parse(&time_range_query("20260324T170000Z", "20260324T170001Z")).unwrap();
-    let stale_future =
-        Query::parse(&time_range_query("20260324T140000Z", "20260324T140001Z")).unwrap();
-    let engine = Engine::default();
-    let mut session = engine.session();
-    assert_eq!(
-        moved_future
-            .matches(&mut session, &revised_calendar)
-            .unwrap(),
-        Match::Matched,
-        "the detached range anchor moves later generated occurrences"
-    );
-    assert_eq!(
-        stale_future
-            .matches(&mut session, &revised_calendar)
-            .unwrap(),
-        Match::Unmatched,
-        "the pre-split start no longer matches future occurrences"
-    );
+    assert_revised_range_is_queryable(&revised_calendar).unwrap();
 }
 
 #[test]
