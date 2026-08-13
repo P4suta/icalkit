@@ -1,0 +1,345 @@
+pub mod icalkit
+pub mod icalkit::caldav
+#[non_exhaustive] pub enum icalkit::caldav::Match
+pub icalkit::caldav::Match::Matched
+pub icalkit::caldav::Match::Undecided
+pub icalkit::caldav::Match::Unmatched
+pub struct icalkit::caldav::Client
+impl icalkit::caldav::Client
+pub fn icalkit::caldav::Client::conditional_write(&self, &icalkit::caldav::Revision, &icalkit::Calendar) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::Revision>, icalkit::Error>
+pub fn icalkit::caldav::Client::discover(&self, &str) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::Discovery>, icalkit::Error>
+pub fn icalkit::caldav::Client::mkcalendar(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<icalkit::caldav::Operation<()>, icalkit::Error>
+pub const fn icalkit::caldav::Client::new() -> Self
+pub fn icalkit::caldav::Client::operation<T>(&self, icalkit::caldav::WireRequest, impl core::ops::function::FnOnce(icalkit::caldav::WireResponse) -> core::result::Result<T, icalkit::Error> + 'static) -> icalkit::caldav::Operation<T>
+pub fn icalkit::caldav::Client::schedule(&self, &str, &str, &[&str], &icalkit::scheduling::Message) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::ScheduleResponse>, icalkit::Error>
+pub fn icalkit::caldav::Client::sync(&self, &str, core::option::Option<&icalkit::caldav::SyncToken>) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::SyncResult>, icalkit::Error>
+impl core::default::Default for icalkit::caldav::Client
+pub fn icalkit::caldav::Client::default() -> Self
+pub struct icalkit::caldav::Discovery
+impl icalkit::caldav::Discovery
+pub fn icalkit::caldav::Discovery::calendar_home_uri(&self) -> &str
+pub fn icalkit::caldav::Discovery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::Discovery::principal_uri(&self) -> &str
+pub fn icalkit::caldav::Discovery::scheduling_outbox_uri(&self) -> core::option::Option<&str>
+pub struct icalkit::caldav::Header
+impl icalkit::caldav::Header
+pub fn icalkit::caldav::Header::name(&self) -> &str
+pub fn icalkit::caldav::Header::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
+pub fn icalkit::caldav::Header::value(&self) -> &[u8]
+pub struct icalkit::caldav::Operation<T>
+impl<T> icalkit::caldav::Operation<T>
+pub fn icalkit::caldav::Operation<T>::accept(&mut self, icalkit::caldav::WireResponse) -> core::result::Result<(), icalkit::Error>
+pub fn icalkit::caldav::Operation<T>::finish(self) -> core::result::Result<T, icalkit::Error>
+pub fn icalkit::caldav::Operation<T>::new(icalkit::caldav::WireRequest, impl core::ops::function::FnOnce(icalkit::caldav::WireResponse) -> core::result::Result<T, icalkit::Error> + 'static) -> Self
+pub fn icalkit::caldav::Operation<T>::next_request(&self) -> core::option::Option<&icalkit::caldav::WireRequest>
+impl<T> core::fmt::Debug for icalkit::caldav::Operation<T>
+pub fn icalkit::caldav::Operation<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::caldav::ProjectedCalendar
+impl icalkit::caldav::ProjectedCalendar
+pub fn icalkit::caldav::ProjectedCalendar::as_bytes(&self) -> &[u8]
+pub struct icalkit::caldav::Query
+impl icalkit::caldav::Query
+pub fn icalkit::caldav::Query::matches(&self, &mut icalkit::Session<'_>, &icalkit::Calendar) -> core::result::Result<icalkit::caldav::Match, icalkit::Error>
+pub fn icalkit::caldav::Query::parse(&[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::Query::project(&self, &mut icalkit::Session<'_>, &icalkit::Calendar) -> core::result::Result<icalkit::caldav::ProjectedCalendar, icalkit::Error>
+pub struct icalkit::caldav::Revision
+impl icalkit::caldav::Revision
+pub fn icalkit::caldav::Revision::absent(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::Revision::etag(&self) -> core::option::Option<&str>
+pub const fn icalkit::caldav::Revision::is_absent(&self) -> bool
+pub fn icalkit::caldav::Revision::stored(impl core::convert::Into<alloc::string::String>, &str) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::Revision::uri(&self) -> &str
+pub struct icalkit::caldav::ScheduleDelivery
+impl icalkit::caldav::ScheduleDelivery
+pub fn icalkit::caldav::ScheduleDelivery::is_success(&self) -> bool
+pub fn icalkit::caldav::ScheduleDelivery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::ScheduleDelivery::recipient(&self) -> &str
+pub fn icalkit::caldav::ScheduleDelivery::request_status(&self) -> &str
+pub struct icalkit::caldav::ScheduleResponse
+impl icalkit::caldav::ScheduleResponse
+pub fn icalkit::caldav::ScheduleResponse::deliveries(&self) -> &[icalkit::caldav::ScheduleDelivery]
+pub fn icalkit::caldav::ScheduleResponse::new(alloc::vec::Vec<icalkit::caldav::ScheduleDelivery>) -> core::result::Result<Self, icalkit::Error>
+pub struct icalkit::caldav::Server
+impl icalkit::caldav::Server
+pub fn icalkit::caldav::Server::handle(&self, icalkit::caldav::WireRequest) -> core::result::Result<icalkit::caldav::ServerOperation, icalkit::Error>
+pub const fn icalkit::caldav::Server::new() -> Self
+pub fn icalkit::caldav::Server::operation(&self, icalkit::caldav::ServerNeed, impl core::ops::function::FnOnce(icalkit::caldav::ServerAnswer) -> core::result::Result<icalkit::caldav::WireResponse, icalkit::Error> + 'static) -> icalkit::caldav::ServerOperation
+impl core::default::Default for icalkit::caldav::Server
+pub fn icalkit::caldav::Server::default() -> Self
+pub struct icalkit::caldav::ServerAnswer
+impl icalkit::caldav::ServerAnswer
+pub const fn icalkit::caldav::ServerAnswer::authorized(bool) -> Self
+pub fn icalkit::caldav::ServerAnswer::body(&self) -> &[u8]
+pub const fn icalkit::caldav::ServerAnswer::created(bool) -> Self
+pub fn icalkit::caldav::ServerAnswer::discovery(icalkit::caldav::Discovery) -> Self
+pub fn icalkit::caldav::ServerAnswer::new(alloc::vec::Vec<u8>) -> Self
+pub fn icalkit::caldav::ServerAnswer::resources(alloc::vec::Vec<icalkit::caldav::StoredResource>) -> Self
+pub fn icalkit::caldav::ServerAnswer::schedule_response(icalkit::caldav::ScheduleResponse) -> Self
+pub fn icalkit::caldav::ServerAnswer::sync_result(icalkit::caldav::SyncResult) -> Self
+pub fn icalkit::caldav::ServerAnswer::written(core::option::Option<icalkit::caldav::Revision>) -> Self
+pub struct icalkit::caldav::ServerNeed
+impl icalkit::caldav::ServerNeed
+pub fn icalkit::caldav::ServerNeed::body(&self) -> &[u8]
+pub fn icalkit::caldav::ServerNeed::calendar(&self) -> core::option::Option<&icalkit::Calendar>
+pub const fn icalkit::caldav::ServerNeed::code(&self) -> &'static str
+pub fn icalkit::caldav::ServerNeed::message(&self) -> core::option::Option<&icalkit::scheduling::Message>
+pub fn icalkit::caldav::ServerNeed::method(&self) -> core::option::Option<&str>
+pub const fn icalkit::caldav::ServerNeed::new(&'static str) -> Self
+pub fn icalkit::caldav::ServerNeed::originator(&self) -> core::option::Option<&str>
+pub fn icalkit::caldav::ServerNeed::recipients(&self) -> &[alloc::string::String]
+pub const fn icalkit::caldav::ServerNeed::revision(&self) -> core::option::Option<&icalkit::caldav::Revision>
+pub const fn icalkit::caldav::ServerNeed::sync_limit(&self) -> core::option::Option<u32>
+pub const fn icalkit::caldav::ServerNeed::sync_token(&self) -> core::option::Option<&icalkit::caldav::SyncToken>
+pub fn icalkit::caldav::ServerNeed::uri(&self) -> core::option::Option<&str>
+pub struct icalkit::caldav::ServerOperation
+impl icalkit::caldav::ServerOperation
+pub fn icalkit::caldav::ServerOperation::finish(self) -> core::result::Result<icalkit::caldav::WireResponse, icalkit::Error>
+pub fn icalkit::caldav::ServerOperation::new(icalkit::caldav::ServerNeed, impl core::ops::function::FnOnce(icalkit::caldav::ServerAnswer) -> core::result::Result<icalkit::caldav::WireResponse, icalkit::Error> + 'static) -> Self
+pub const fn icalkit::caldav::ServerOperation::next_need(&self) -> core::option::Option<&icalkit::caldav::ServerNeed>
+pub fn icalkit::caldav::ServerOperation::supply(&mut self, icalkit::caldav::ServerAnswer) -> core::result::Result<(), icalkit::Error>
+impl core::fmt::Debug for icalkit::caldav::ServerOperation
+pub fn icalkit::caldav::ServerOperation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::caldav::StoredResource
+impl icalkit::caldav::StoredResource
+pub const fn icalkit::caldav::StoredResource::calendar(&self) -> &icalkit::Calendar
+pub fn icalkit::caldav::StoredResource::href(&self) -> &str
+pub fn icalkit::caldav::StoredResource::new(impl core::convert::Into<alloc::string::String>, core::option::Option<&str>, icalkit::Calendar) -> core::result::Result<Self, icalkit::Error>
+pub struct icalkit::caldav::SyncChange
+impl icalkit::caldav::SyncChange
+pub const fn icalkit::caldav::SyncChange::calendar(&self) -> core::option::Option<&icalkit::Calendar>
+pub fn icalkit::caldav::SyncChange::etag(&self) -> core::option::Option<&str>
+pub fn icalkit::caldav::SyncChange::href(&self) -> &str
+pub const fn icalkit::caldav::SyncChange::is_removed(&self) -> bool
+pub fn icalkit::caldav::SyncChange::removed(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::SyncChange::updated(impl core::convert::Into<alloc::string::String>, core::option::Option<&str>, icalkit::Calendar) -> core::result::Result<Self, icalkit::Error>
+pub struct icalkit::caldav::SyncResult
+impl icalkit::caldav::SyncResult
+pub fn icalkit::caldav::SyncResult::changes(&self) -> &[icalkit::caldav::SyncChange]
+pub fn icalkit::caldav::SyncResult::new(icalkit::caldav::SyncToken, alloc::vec::Vec<icalkit::caldav::SyncChange>) -> core::result::Result<Self, icalkit::Error>
+pub const fn icalkit::caldav::SyncResult::token(&self) -> core::option::Option<&icalkit::caldav::SyncToken>
+pub struct icalkit::caldav::SyncToken
+impl icalkit::caldav::SyncToken
+pub fn icalkit::caldav::SyncToken::as_bytes(&self) -> &[u8]
+pub fn icalkit::caldav::SyncToken::new(impl core::convert::AsRef<[u8]>) -> core::result::Result<Self, icalkit::Error>
+pub struct icalkit::caldav::WireRequest
+impl icalkit::caldav::WireRequest
+pub fn icalkit::caldav::WireRequest::body(&self) -> &[u8]
+pub fn icalkit::caldav::WireRequest::headers(&self) -> &[icalkit::caldav::Header]
+pub fn icalkit::caldav::WireRequest::method(&self) -> &str
+pub fn icalkit::caldav::WireRequest::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<icalkit::caldav::Header>, alloc::vec::Vec<u8>) -> Self
+pub fn icalkit::caldav::WireRequest::uri(&self) -> &str
+pub struct icalkit::caldav::WireResponse
+impl icalkit::caldav::WireResponse
+pub fn icalkit::caldav::WireResponse::body(&self) -> &[u8]
+pub fn icalkit::caldav::WireResponse::headers(&self) -> &[icalkit::caldav::Header]
+pub fn icalkit::caldav::WireResponse::new(u16, alloc::vec::Vec<icalkit::caldav::Header>, alloc::vec::Vec<u8>) -> Self
+pub const fn icalkit::caldav::WireResponse::status(&self) -> u16
+pub mod icalkit::interop
+pub struct icalkit::interop::Change
+impl icalkit::interop::Change
+pub const fn icalkit::interop::Change::code(self) -> icalkit::interop::ChangeCode
+pub const fn icalkit::interop::Change::offset(self) -> u64
+pub struct icalkit::interop::ChangeCode(_)
+impl icalkit::interop::ChangeCode
+pub const fn icalkit::interop::ChangeCode::as_str(self) -> &'static str
+impl core::fmt::Display for icalkit::interop::ChangeCode
+pub fn icalkit::interop::ChangeCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::interop::CommonClientsV1
+impl icalkit::interop::NormalizationProfile for icalkit::interop::CommonClientsV1
+pub struct icalkit::interop::Import
+impl icalkit::interop::Import
+pub fn icalkit::interop::Import::as_bytes(&self) -> &[u8]
+pub fn icalkit::interop::Import::normalize<P: icalkit::interop::NormalizationProfile>(&self, P) -> core::result::Result<icalkit::interop::Normalization, icalkit::Error>
+pub fn icalkit::interop::Import::read(&[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::interop::Import::validate(&self) -> core::result::Result<icalkit::Calendar, icalkit::Error>
+pub struct icalkit::interop::Normalization
+impl icalkit::interop::Normalization
+pub fn icalkit::interop::Normalization::changes(&self) -> &[icalkit::interop::Change]
+pub const fn icalkit::interop::Normalization::output(&self) -> &icalkit::interop::Import
+pub struct icalkit::interop::RfcRepairV1
+impl icalkit::interop::NormalizationProfile for icalkit::interop::RfcRepairV1
+pub trait icalkit::interop::NormalizationProfile: sealed::Sealed + core::marker::Copy
+impl icalkit::interop::NormalizationProfile for icalkit::interop::CommonClientsV1
+impl icalkit::interop::NormalizationProfile for icalkit::interop::RfcRepairV1
+pub mod icalkit::model
+pub struct icalkit::model::ComponentRef<'a>
+impl<'a> icalkit::model::ComponentRef<'a>
+pub fn icalkit::model::ComponentRef<'a>::name(self) -> icalkit::model::Name<'a>
+pub fn icalkit::model::ComponentRef<'a>::properties(self) -> impl core::iter::traits::iterator::Iterator<Item = icalkit::model::PropertyRef<'a>>
+pub struct icalkit::model::EventRef<'a>
+impl<'a> icalkit::model::EventRef<'a>
+pub const fn icalkit::model::EventRef<'a>::as_component(self) -> icalkit::model::ComponentRef<'a>
+pub fn icalkit::model::EventRef<'a>::components(self) -> impl core::iter::traits::iterator::Iterator<Item = icalkit::model::ComponentRef<'a>>
+pub fn icalkit::model::EventRef<'a>::dtstart(self) -> core::option::Option<icalkit::time::IcalDateTime>
+pub fn icalkit::model::EventRef<'a>::property(self, &str) -> core::option::Option<icalkit::model::PropertyRef<'a>>
+pub fn icalkit::model::EventRef<'a>::uid(self) -> &'a str
+pub struct icalkit::model::Name<'a>(_)
+impl<'a> icalkit::model::Name<'a>
+pub const fn icalkit::model::Name<'a>::as_str(self) -> &'a str
+pub fn icalkit::model::Name<'a>::new(&'a str) -> core::option::Option<Self>
+pub struct icalkit::model::PropertyRef<'a>
+impl<'a> icalkit::model::PropertyRef<'a>
+pub fn icalkit::model::PropertyRef<'a>::name(self) -> icalkit::model::Name<'a>
+pub fn icalkit::model::PropertyRef<'a>::value(self) -> &'a [u8]
+pub mod icalkit::recurrence
+pub struct icalkit::recurrence::Cursor
+pub struct icalkit::recurrence::Occurrence
+impl icalkit::recurrence::Occurrence
+pub const fn icalkit::recurrence::Occurrence::key(self) -> jiff::timestamp::Timestamp
+pub const fn icalkit::recurrence::Occurrence::start(self) -> jiff::timestamp::Timestamp
+pub struct icalkit::recurrence::Occurrences<'a>
+impl icalkit::recurrence::Occurrences<'_>
+pub fn icalkit::recurrence::Occurrences<'_>::cursor(&self) -> icalkit::recurrence::Cursor
+pub fn icalkit::recurrence::Occurrences<'_>::try_next(&mut self) -> core::result::Result<core::option::Option<icalkit::recurrence::Occurrence>, icalkit::Error>
+impl core::fmt::Debug for icalkit::recurrence::Occurrences<'_>
+pub fn icalkit::recurrence::Occurrences<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::recurrence::Rule
+impl icalkit::recurrence::Rule
+pub fn icalkit::recurrence::Rule::issues(&self) -> &[icalkit::Issue]
+pub fn icalkit::recurrence::Rule::occurrences<'a>(&'a self, &'a mut icalkit::Session<'_>, jiff::timestamp::Timestamp, icalkit::recurrence::Window) -> core::result::Result<icalkit::recurrence::Occurrences<'a>, icalkit::Error>
+pub fn icalkit::recurrence::Rule::parse(&str) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::recurrence::Rule::resume<'a>(&'a self, &'a mut icalkit::Session<'_>, jiff::timestamp::Timestamp, icalkit::recurrence::Window, icalkit::recurrence::Cursor) -> core::result::Result<icalkit::recurrence::Occurrences<'a>, icalkit::Error>
+pub struct icalkit::recurrence::Window
+impl icalkit::recurrence::Window
+pub fn icalkit::recurrence::Window::contains(self, jiff::timestamp::Timestamp) -> bool
+pub const fn icalkit::recurrence::Window::end(self) -> jiff::timestamp::Timestamp
+pub fn icalkit::recurrence::Window::new(jiff::timestamp::Timestamp, jiff::timestamp::Timestamp) -> core::option::Option<Self>
+pub const fn icalkit::recurrence::Window::start(self) -> jiff::timestamp::Timestamp
+pub mod icalkit::scheduling
+pub struct icalkit::scheduling::Actor
+impl icalkit::scheduling::Actor
+pub fn icalkit::scheduling::Actor::as_str(&self) -> &str
+pub fn icalkit::scheduling::Actor::new(impl core::convert::Into<alloc::string::String>) -> core::option::Option<Self>
+pub struct icalkit::scheduling::AuthorizedChange<'a>
+impl icalkit::scheduling::AuthorizedChange<'_>
+pub fn icalkit::scheduling::AuthorizedChange<'_>::apply(self) -> core::result::Result<icalkit::Calendar, icalkit::Error>
+pub const fn icalkit::scheduling::AuthorizedChange<'_>::message(&self) -> &icalkit::scheduling::Message
+pub struct icalkit::scheduling::Message
+impl icalkit::scheduling::Message
+pub fn icalkit::scheduling::Message::add(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub const fn icalkit::scheduling::Message::as_calendar(&self) -> &icalkit::Calendar
+pub fn icalkit::scheduling::Message::cancel(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::counter(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::decline_counter(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::method(&self) -> &'static str
+pub fn icalkit::scheduling::Message::publish(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::read(&[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::refresh(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::reply(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::request(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::review<'a>(&'a self, &'a icalkit::Calendar, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'a>, icalkit::scheduling::Rejection>
+pub fn icalkit::scheduling::Message::to_bytes(&self) -> alloc::vec::Vec<u8>
+pub struct icalkit::scheduling::Rejection
+impl icalkit::scheduling::Rejection
+pub const fn icalkit::scheduling::Rejection::code(&self) -> icalkit::IssueCode
+impl core::error::Error for icalkit::scheduling::Rejection
+impl core::fmt::Display for icalkit::scheduling::Rejection
+pub fn icalkit::scheduling::Rejection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::scheduling::Review<'a>
+impl<'a> icalkit::scheduling::Review<'a>
+pub fn icalkit::scheduling::Review<'a>::authorize(self) -> icalkit::scheduling::AuthorizedChange<'a>
+pub fn icalkit::scheduling::Review<'a>::change_count(&self) -> usize
+pub const fn icalkit::scheduling::Review<'a>::message(&self) -> &icalkit::scheduling::Message
+pub mod icalkit::time
+pub use icalkit::time::Date
+pub use icalkit::time::DateTime
+pub use icalkit::time::SignedDuration
+pub use icalkit::time::Time
+pub use icalkit::time::Timestamp
+pub use icalkit::time::Weekday
+#[non_exhaustive] pub enum icalkit::time::LocalKind
+pub icalkit::time::LocalKind::Exact
+pub icalkit::time::LocalKind::Fold
+pub icalkit::time::LocalKind::Gap
+pub struct icalkit::time::IcalDateTime
+impl icalkit::time::IcalDateTime
+pub const fn icalkit::time::IcalDateTime::as_date(&self) -> core::option::Option<jiff::civil::date::Date>
+pub const fn icalkit::time::IcalDateTime::as_floating(&self) -> core::option::Option<jiff::civil::datetime::DateTime>
+pub const fn icalkit::time::IcalDateTime::as_utc(&self) -> core::option::Option<jiff::timestamp::Timestamp>
+pub fn icalkit::time::IcalDateTime::as_zoned(&self) -> core::option::Option<(jiff::civil::datetime::DateTime, &str)>
+pub const fn icalkit::time::IcalDateTime::date(jiff::civil::date::Date) -> Self
+pub const fn icalkit::time::IcalDateTime::floating(jiff::civil::datetime::DateTime) -> Self
+pub const fn icalkit::time::IcalDateTime::has_leap_second(&self) -> bool
+pub const fn icalkit::time::IcalDateTime::utc(jiff::timestamp::Timestamp) -> Self
+pub fn icalkit::time::IcalDateTime::with_leap_second(self) -> core::option::Option<Self>
+pub fn icalkit::time::IcalDateTime::zoned(jiff::civil::datetime::DateTime, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct icalkit::time::OffsetResolution
+impl icalkit::time::OffsetResolution
+pub const fn icalkit::time::OffsetResolution::has_complete_coverage(&self) -> bool
+pub fn icalkit::time::OffsetResolution::new(i32, impl core::convert::Into<alloc::string::String>, bool) -> core::option::Option<Self>
+pub fn icalkit::time::OffsetResolution::provenance(&self) -> &str
+pub const fn icalkit::time::OffsetResolution::seconds(&self) -> i32
+pub struct icalkit::time::ZoneResolution
+impl icalkit::time::ZoneResolution
+pub const fn icalkit::time::ZoneResolution::earlier(&self) -> core::option::Option<jiff::timestamp::Timestamp>
+pub fn icalkit::time::ZoneResolution::exact(jiff::timestamp::Timestamp, impl core::convert::Into<alloc::string::String>, bool) -> Self
+pub fn icalkit::time::ZoneResolution::fold(jiff::timestamp::Timestamp, jiff::timestamp::Timestamp, impl core::convert::Into<alloc::string::String>, bool) -> core::option::Option<Self>
+pub fn icalkit::time::ZoneResolution::gap(impl core::convert::Into<alloc::string::String>, bool) -> Self
+pub const fn icalkit::time::ZoneResolution::has_complete_coverage(&self) -> bool
+pub const fn icalkit::time::ZoneResolution::kind(&self) -> icalkit::time::LocalKind
+pub const fn icalkit::time::ZoneResolution::later(&self) -> core::option::Option<jiff::timestamp::Timestamp>
+pub fn icalkit::time::ZoneResolution::provenance(&self) -> &str
+pub trait icalkit::time::ZoneDatabase: core::marker::Send + core::marker::Sync
+pub fn icalkit::time::ZoneDatabase::offset_at(&self, &str, jiff::timestamp::Timestamp) -> core::option::Option<icalkit::time::OffsetResolution>
+pub fn icalkit::time::ZoneDatabase::resolve_local(&self, &str, jiff::civil::datetime::DateTime) -> core::option::Option<icalkit::time::ZoneResolution>
+pub struct icalkit::Calendar
+impl icalkit::Calendar
+pub fn icalkit::Calendar::edit(&mut self) -> icalkit::Editor<'_>
+pub fn icalkit::Calendar::events(&self) -> impl core::iter::traits::iterator::Iterator<Item = icalkit::model::EventRef<'_>>
+pub fn icalkit::Calendar::issues(&self) -> &[icalkit::Issue]
+pub fn icalkit::Calendar::parse(&[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::Calendar::to_bytes(&self) -> alloc::vec::Vec<u8>
+pub struct icalkit::Editor<'a>
+impl icalkit::Editor<'_>
+pub fn icalkit::Editor<'_>::commit(self) -> core::result::Result<(), icalkit::Error>
+pub fn icalkit::Editor<'_>::set_summary(&mut self, &str, &str) -> core::result::Result<(), icalkit::Error>
+pub fn icalkit::Editor<'_>::set_vendor_property(&mut self, &str, &str, &[u8]) -> core::result::Result<(), icalkit::Error>
+pub struct icalkit::Engine
+impl icalkit::Engine
+pub fn icalkit::Engine::builder() -> icalkit::EngineBuilder
+pub fn icalkit::Engine::session(&self) -> icalkit::Session<'_>
+pub fn icalkit::Engine::zone_database(&self) -> core::option::Option<&dyn icalkit::time::ZoneDatabase>
+impl core::default::Default for icalkit::Engine
+pub fn icalkit::Engine::default() -> Self
+impl core::fmt::Debug for icalkit::Engine
+pub fn icalkit::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::EngineBuilder
+impl icalkit::EngineBuilder
+pub fn icalkit::EngineBuilder::build(self) -> icalkit::Engine
+pub const fn icalkit::EngineBuilder::resource_policy(self, icalkit::ResourcePolicy) -> Self
+pub fn icalkit::EngineBuilder::zone_database(self, impl icalkit::time::ZoneDatabase + 'static) -> Self
+impl core::fmt::Debug for icalkit::EngineBuilder
+pub fn icalkit::EngineBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::Error
+impl icalkit::Error
+pub const fn icalkit::Error::code(&self) -> icalkit::IssueCode
+pub fn icalkit::Error::issues(&self) -> &[icalkit::Issue]
+impl core::error::Error for icalkit::Error
+impl core::fmt::Display for icalkit::Error
+pub fn icalkit::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::Issue
+impl icalkit::Issue
+pub const fn icalkit::Issue::code(&self) -> icalkit::IssueCode
+pub const fn icalkit::Issue::is_error(&self) -> bool
+pub const fn icalkit::Issue::is_note(&self) -> bool
+pub const fn icalkit::Issue::is_warning(&self) -> bool
+pub struct icalkit::IssueCode(_)
+impl icalkit::IssueCode
+pub const fn icalkit::IssueCode::as_str(self) -> &'static str
+impl core::fmt::Display for icalkit::IssueCode
+pub fn icalkit::IssueCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct icalkit::ResourcePolicy
+impl icalkit::ResourcePolicy
+pub const fn icalkit::ResourcePolicy::max_input_bytes(self) -> u64
+pub const fn icalkit::ResourcePolicy::occurrences_per_search(self) -> u32
+pub const fn icalkit::ResourcePolicy::secure() -> Self
+pub const fn icalkit::ResourcePolicy::with_max_input_bytes(self, u64) -> Self
+pub const fn icalkit::ResourcePolicy::with_occurrences_per_search(self, u32) -> Self
+impl core::default::Default for icalkit::ResourcePolicy
+pub fn icalkit::ResourcePolicy::default() -> Self
+pub struct icalkit::Session<'a>
+impl icalkit::Session<'_>
+pub fn icalkit::Session<'_>::import(&mut self, &[u8]) -> core::result::Result<icalkit::interop::Import, icalkit::Error>
+pub fn icalkit::Session<'_>::parse(&mut self, &[u8]) -> core::result::Result<icalkit::Calendar, icalkit::Error>
+pub fn icalkit::Session<'_>::query(&mut self, &[u8]) -> core::result::Result<icalkit::caldav::Query, icalkit::Error>
+pub fn icalkit::Session<'_>::validate(&mut self, &icalkit::interop::Import) -> core::result::Result<icalkit::Calendar, icalkit::Error>

@@ -35,3 +35,10 @@ path = ["crates/icalkit-conformance/corpus/*.jsonl"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+# cargo-public-api output has no comment syntax and is reviewed as generated contract data.
+[[annotations]]
+path = ["api/*.txt"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 icalkit contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"

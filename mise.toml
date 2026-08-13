@@ -25,6 +25,7 @@ cargo-binstall = "1.21.1"
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-hack" = "0.6.45"
 "cargo:cargo-nextest" = "0.9.140"
+"cargo:cargo-public-api" = "0.52.0"
 "cargo:cargo-shear" = "1.13.3"
 
 [settings.cargo]

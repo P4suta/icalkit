@@ -150,11 +150,18 @@
 //! they were waiting on M1 and M2 rather than left over from a design that moved, and both
 //! were duly rediscovered as suspected dead API. So a severity that no row carries is a
 //! violation here, and the milestone written against a code names who owes the emitter.
+//!
+//! # `public-api`
+//!
+//! The facade is the workspace's sole future semver contract, so its rustdoc JSON surface is
+//! committed twice: once with default features and once with no features. `cargo-public-api`
+//! generates both lists and this task compares them exactly. An addition, removal, move, or
+//! duplicate canonical path therefore needs an intentional snapshot edit in the same review.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 /// The crates that make up the sans-I/O core.
 ///
@@ -286,6 +293,12 @@ const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
 /// The declarations the golden list is checked against, relative to the workspace root.
 const DIAGNOSTIC_SOURCE: &str = "crates/ical-core/src/grammar/report.rs";
 
+/// The facade's committed public API with default features.
+const PUBLIC_API_DEFAULT: &str = "api/icalkit.default.txt";
+
+/// The facade's committed public API with every default feature disabled.
+const PUBLIC_API_NO_DEFAULT: &str = "api/icalkit.no-default.txt";
+
 /// The golden list's columns, in the order its cells are read.
 const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
 
@@ -300,6 +313,7 @@ fn main() -> ExitCode {
         Some("purity") => report("purity", collect_purity_violations()),
         Some("architecture") => report("architecture", collect_architecture_violations()),
         Some("codes") => report("codes", collect_codes_violations()),
+        Some("public-api") => report("public-api", collect_public_api_violations()),
         Some(task) => {
             eprintln!("xtask: unknown task `{task}`");
             print_usage();
@@ -314,7 +328,85 @@ fn main() -> ExitCode {
 
 /// Print the available tasks.
 fn print_usage() {
-    eprintln!("usage: cargo run -p xtask -- <purity|architecture|codes>");
+    eprintln!("usage: cargo run -p xtask -- <purity|architecture|codes|public-api>");
+}
+
+/// Generate and compare both feature profiles of the sole public crate.
+fn collect_public_api_violations() -> io::Result<Vec<String>> {
+    let workspace = workspace_root()?;
+    let profiles = [
+        ("default", PUBLIC_API_DEFAULT, false),
+        ("no-default", PUBLIC_API_NO_DEFAULT, true),
+    ];
+    let mut violations = Vec::new();
+    for (profile, snapshot, no_default_features) in profiles {
+        let expected = normalize_api(&fs::read_to_string(workspace.join(snapshot))?);
+        let generated = generate_public_api(&workspace, no_default_features)?;
+        violations.extend(snapshot_violations(profile, &expected, &generated));
+    }
+    Ok(violations)
+}
+
+/// Ask cargo-public-api for one deterministic facade surface.
+fn generate_public_api(workspace: &Path, no_default_features: bool) -> io::Result<String> {
+    let mut command = Command::new("cargo");
+    command.args(["public-api", "-p", "icalkit", "-sss", "--color", "never"]);
+    if no_default_features {
+        command.arg("--no-default-features");
+    }
+    let output = command
+        .current_dir(workspace)
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "cargo-public-api failed for {} features: {}",
+            if no_default_features {
+                "no default"
+            } else {
+                "default"
+            },
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let text = String::from_utf8(output.stdout).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cargo-public-api emitted non-UTF-8 output: {error}"),
+        )
+    })?;
+    Ok(normalize_api(&text))
+}
+
+/// Normalize host line endings and keep exactly one final line ending.
+fn normalize_api(text: &str) -> String {
+    let unix = text.replace("\r\n", "\n");
+    format!("{}\n", unix.trim_end_matches(['\r', '\n']))
+}
+
+/// Compare one generated surface with its committed review boundary.
+fn snapshot_violations(profile: &str, expected: &str, generated: &str) -> Vec<String> {
+    if expected == generated {
+        return Vec::new();
+    }
+    let mut expected_lines = expected.lines();
+    let mut generated_lines = generated.lines();
+    let mut line = 1_usize;
+    loop {
+        let expected_line = expected_lines.next();
+        let generated_line = generated_lines.next();
+        if expected_line != generated_line {
+            return vec![format!(
+                "api/icalkit.{profile}.txt: public API differs at line {line}: expected `{expected}`, generated `{generated}`",
+                expected = expected_line.unwrap_or("<end of snapshot>"),
+                generated = generated_line.unwrap_or("<end of generated API>"),
+            )];
+        }
+        if expected_line.is_none() {
+            return Vec::new();
+        }
+        line = line.saturating_add(1);
+    }
 }
 
 /// Check the single-crate release boundary and the facade's fixed feature vocabulary.
@@ -1981,7 +2073,8 @@ mod tests {
         core_list_violations, declared_dependencies, declares, dependency_subtable_name,
         enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
         layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
-        recipe_violations, release_violations, retired_crate_violations, table_keys,
+        recipe_violations, release_violations, retired_crate_violations, snapshot_violations,
+        table_keys,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2785,6 +2878,25 @@ name = \"icalkit\"
         assert_eq!(
             collect_architecture_violations().unwrap(),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_public_api_snapshot_is_exact_and_names_the_first_changed_line() {
+        assert_eq!(
+            snapshot_violations("default", "pub struct A;\n", "pub struct A;\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            snapshot_violations(
+                "no-default",
+                "pub struct A;\npub struct B;\n",
+                "pub struct A;\npub struct C;\n",
+            ),
+            vec![
+                "api/icalkit.no-default.txt: public API differs at line 2: expected `pub struct B;`, generated `pub struct C;`"
+                    .to_owned()
+            ]
         );
     }
 

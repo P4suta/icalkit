@@ -2769,7 +2769,7 @@ impl Debug for ServerOperation {
     }
 }
 
-/// A projected query result that cannot be passed to persistence APIs as a [`Calendar`](crate::Calendar).
+/// A projected query result that cannot be passed to persistence APIs as a [`Calendar`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectedCalendar {
     bytes: Box<[u8]>,

@@ -21,6 +21,9 @@ registry contract. `internal::query` is the first former package moved behind it
 ancestor; `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, and `ical-dav` remain
 unpublished workspace scaffolding while their sources follow it
 ([ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)).
+The facade's canonical rustdoc surface is committed separately for default and no-default
+features under `api/`; `just public-api` rejects every unreviewed addition, removal, move, or
+duplicate path.
 
 The DAV implementation uses `xmlparser` as a private no-std lexical authority. Its wrapper
 owns namespace scope, duplicate-attribute and tag validation, budgets, explicit DTD/PI refusal,
