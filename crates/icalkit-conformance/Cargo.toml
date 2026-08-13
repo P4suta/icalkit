@@ -21,6 +21,12 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+# This target is an unpublished shared-source isolation helper for white-box tests, not a Rust
+# API. Keep doctests enabled, but do not ask workspace rustdoc to publish internal links under
+# this second crate root.
+[lib]
+doc = false
+
 # The private source is path-included from `crates/icalkit`, outside this package directory, so
 # cargo-shear cannot see its direct jiff/xmlparser imports. The iTIP chapter is likewise included
 # by tests/itip_chapter.rs until that corpus moves behind the subject protocol.
