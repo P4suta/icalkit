@@ -684,6 +684,74 @@ fn mkcalendar_body(
     Ok(body)
 }
 
+struct MkCalendarRequest {
+    body: Vec<u8>,
+}
+
+impl MkCalendarRequest {
+    fn parse(body: Vec<u8>, policy: ResourcePolicy) -> Result<Self, Error> {
+        if body.is_empty() {
+            return Ok(Self { body });
+        }
+
+        let mut meter = Meter::new(policy.limits);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut context = DecodeContext::new(policy.limits, &mut meter, &mut diagnostics)
+            .with_unknown(UnknownPolicy::Reject);
+        let mut events = XmlReader::new(&body);
+        let mut root = false;
+        let mut set = false;
+        let mut prop = false;
+
+        while let Some(event) = events
+            .next_event(&mut context)
+            .map_err(|_| Error::single("icalkit.caldav.mkcalendar-invalid"))?
+        {
+            match event {
+                XmlEvent::Start { name, depth, .. } => {
+                    let valid = match depth {
+                        1 => {
+                            !root
+                                && name.namespace.is(Namespace::CalDav)
+                                && name.local_name == b"mkcalendar"
+                        },
+                        2 => {
+                            root && !set
+                                && name.namespace.is(Namespace::Dav)
+                                && name.local_name == b"set"
+                        },
+                        3 => {
+                            set && !prop
+                                && name.namespace.is(Namespace::Dav)
+                                && name.local_name == b"prop"
+                        },
+                        _ => depth >= 4 && prop,
+                    };
+                    if !valid {
+                        return Err(Error::single("icalkit.caldav.mkcalendar-invalid"));
+                    }
+                    root |= depth == 1;
+                    set |= depth == 2;
+                    prop |= depth == 3;
+                },
+                XmlEvent::Text(text) => {
+                    if events.depth() <= 3
+                        && !text.run.as_bytes().iter().all(u8::is_ascii_whitespace)
+                    {
+                        return Err(Error::single("icalkit.caldav.mkcalendar-invalid"));
+                    }
+                },
+                XmlEvent::End { .. } => {},
+            }
+        }
+
+        if !root || !set || !prop {
+            return Err(Error::single("icalkit.caldav.mkcalendar-invalid"));
+        }
+        Ok(Self { body })
+    }
+}
+
 fn validate_header_text(value: &str) -> Result<(), Error> {
     if value.is_empty() || value.as_bytes().iter().any(u8::is_ascii_control) {
         return Err(Error::single("icalkit.caldav.header-value-invalid"));
@@ -1415,9 +1483,14 @@ impl Server {
 
     /// Decode a supported request and expose its ACL and storage dependencies as needs.
     pub fn handle(&self, request: WireRequest) -> Result<ServerOperation, Error> {
-        if request.method != "REPORT" {
-            return Err(Error::single("icalkit.caldav.server-method-unsupported"));
+        match request.method.as_str() {
+            "REPORT" => self.handle_query(request),
+            "MKCALENDAR" => self.handle_mkcalendar(request),
+            _ => Err(Error::single("icalkit.caldav.server-method-unsupported")),
         }
+    }
+
+    fn handle_query(&self, request: WireRequest) -> Result<ServerOperation, Error> {
         let mut meter = Meter::new(self.policy.limits);
         let query = Query::parse_with_policy(&request.body, self.policy, &mut meter)?;
         let method = request.method;
@@ -1451,6 +1524,50 @@ impl Server {
             policy,
         ))
     }
+
+    fn handle_mkcalendar(&self, request: WireRequest) -> Result<ServerOperation, Error> {
+        let request_body = MkCalendarRequest::parse(request.body, self.policy)?.body;
+        let method = request.method;
+        let uri = request.uri;
+        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let policy = self.policy;
+        Ok(ServerOperation::from_responder(
+            need,
+            Box::new(move |answer| {
+                let ServerAnswerKind::Authorized(authorized) = answer.kind else {
+                    return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                };
+                if !authorized {
+                    return Ok(ServerStep::Done(WireResponse::new(
+                        403,
+                        Vec::new(),
+                        Vec::new(),
+                    )));
+                }
+                let need = ServerNeed::request_with_body(
+                    "caldav.mkcalendar.create",
+                    &method,
+                    &uri,
+                    request_body,
+                );
+                Ok(ServerStep::Need(
+                    need,
+                    Box::new(move |answer| {
+                        let ServerAnswerKind::Created(created) = answer.kind else {
+                            return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                        };
+                        let status = if created { 201 } else { 409 };
+                        Ok(ServerStep::Done(WireResponse::new(
+                            status,
+                            Vec::new(),
+                            Vec::new(),
+                        )))
+                    }),
+                ))
+            }),
+            policy,
+        ))
+    }
 }
 
 impl Default for Server {
@@ -1465,6 +1582,7 @@ pub struct ServerNeed {
     code: &'static str,
     method: Option<String>,
     uri: Option<String>,
+    body: Vec<u8>,
 }
 
 impl ServerNeed {
@@ -1475,6 +1593,7 @@ impl ServerNeed {
             code,
             method: None,
             uri: None,
+            body: Vec::new(),
         }
     }
 
@@ -1483,6 +1602,16 @@ impl ServerNeed {
             code,
             method: Some(method.to_string()),
             uri: Some(uri.to_string()),
+            body: Vec::new(),
+        }
+    }
+
+    fn request_with_body(code: &'static str, method: &str, uri: &str, body: Vec<u8>) -> Self {
+        Self {
+            code,
+            method: Some(method.to_string()),
+            uri: Some(uri.to_string()),
+            body,
         }
     }
 
@@ -1503,6 +1632,12 @@ impl ServerNeed {
     pub fn uri(&self) -> Option<&str> {
         self.uri.as_deref()
     }
+
+    /// Validated request body associated with this need, when the adapter must persist it.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
 }
 
 /// An application answer supplied to a server workflow.
@@ -1515,6 +1650,7 @@ pub struct ServerAnswer {
 enum ServerAnswerKind {
     Bytes(Vec<u8>),
     Authorized(bool),
+    Created(bool),
     Resources(Vec<StoredResource>),
 }
 
@@ -1535,6 +1671,14 @@ impl ServerAnswer {
         }
     }
 
+    /// Report whether a requested collection was created without a storage conflict.
+    #[must_use]
+    pub const fn created(created: bool) -> Self {
+        Self {
+            kind: ServerAnswerKind::Created(created),
+        }
+    }
+
     /// Supply validated resources loaded by the application storage adapter.
     #[must_use]
     pub fn resources(resources: Vec<StoredResource>) -> Self {
@@ -1548,7 +1692,9 @@ impl ServerAnswer {
     pub fn body(&self) -> &[u8] {
         match &self.kind {
             ServerAnswerKind::Bytes(body) => body,
-            ServerAnswerKind::Authorized(_) | ServerAnswerKind::Resources(_) => &[],
+            ServerAnswerKind::Authorized(_)
+            | ServerAnswerKind::Created(_)
+            | ServerAnswerKind::Resources(_) => &[],
         }
     }
 }

@@ -61,6 +61,15 @@ fn partial_report() -> WireRequest {
     )
 }
 
+fn mkcalendar(body: &[u8]) -> WireRequest {
+    WireRequest::new(
+        "MKCALENDAR",
+        "/calendars/alice/new/",
+        Vec::new(),
+        body.to_vec(),
+    )
+}
+
 #[test]
 fn server_query_asks_for_acl_then_storage_and_returns_only_matches() {
     let server = Server::new();
@@ -148,4 +157,62 @@ fn server_returns_a_reduced_calendar_data_projection() {
             .any(|part| part == b"SUMMARY:Planning")
     );
     assert!(!response.body().windows(7).any(|part| part == b"DTSTAMP"));
+}
+
+#[test]
+fn server_mkcalendar_asks_for_acl_then_validated_creation() {
+    let body = br#"<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:set><D:prop><D:displayname>Work &amp; travel</D:displayname>
+<C:calendar-description>Shared</C:calendar-description></D:prop></D:set>
+</C:mkcalendar>"#;
+    let mut operation = Server::new().handle(mkcalendar(body)).unwrap();
+
+    let acl = operation.next_need().unwrap();
+    assert_eq!(acl.code(), "caldav.authorize");
+    assert_eq!(acl.method(), Some("MKCALENDAR"));
+    assert_eq!(acl.uri(), Some("/calendars/alice/new/"));
+    assert_eq!(acl.body(), &[]);
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+
+    let create = operation.next_need().unwrap();
+    assert_eq!(create.code(), "caldav.mkcalendar.create");
+    assert_eq!(create.method(), Some("MKCALENDAR"));
+    assert_eq!(create.uri(), Some("/calendars/alice/new/"));
+    assert_eq!(create.body(), body);
+    operation.supply(ServerAnswer::created(true)).unwrap();
+
+    let response = operation.finish().unwrap();
+    assert_eq!(response.status(), 201);
+    assert!(response.body().is_empty());
+}
+
+#[test]
+fn server_mkcalendar_maps_a_storage_conflict_without_hiding_it() {
+    let body = br#"<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop/></D:set></C:mkcalendar>"#;
+    let mut operation = Server::new().handle(mkcalendar(body)).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+    operation.supply(ServerAnswer::created(false)).unwrap();
+
+    assert_eq!(operation.finish().unwrap().status(), 409);
+}
+
+#[test]
+fn server_mkcalendar_accepts_an_absent_optional_request_body() {
+    let mut operation = Server::new().handle(mkcalendar(b"")).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+
+    assert_eq!(operation.next_need().unwrap().body(), &[]);
+    operation.supply(ServerAnswer::created(true)).unwrap();
+    assert_eq!(operation.finish().unwrap().status(), 201);
+}
+
+#[test]
+fn server_rejects_malformed_mkcalendar_before_asking_for_acl() {
+    let malformed = br#"<!DOCTYPE x><C:mkcalendar xmlns:C="urn:ietf:params:xml:ns:caldav"/>"#;
+    let error = Server::new().handle(mkcalendar(malformed)).unwrap_err();
+
+    assert_eq!(
+        error.issues()[0].code().as_str(),
+        "icalkit.caldav.mkcalendar-invalid"
+    );
 }
