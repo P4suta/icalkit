@@ -112,6 +112,20 @@ jobs:
       # means something reached outside its input, which is what this matrix is here to find.
       - run: just test-ci
 
+  allocation:
+    name: peak allocation and per-item retention
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2.85.3
+        with:
+          tool: just@1.50.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: just allocation
+
   feature-matrix:
     name: feature matrix (cargo-hack, all targets)
     runs-on: ubuntu-latest
@@ -301,6 +315,7 @@ jobs:
       - toml
       - clippy
       - test
+      - allocation
       - feature-matrix
       - no_std
       - wasm

@@ -49,6 +49,11 @@ test-ci:
     cargo nextest run --profile ci --workspace --all-features
     cargo test --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
 
+# Measure peak and retained allocations in a dedicated process so unrelated test-runner
+# allocations cannot move the cardinality ceilings (docs/adr/0007 and docs/adr/0010).
+allocation:
+    cargo run --quiet -p icalkit-conformance --bin allocation_gate
+
 # Build public documentation with warnings denied.
 doc:
     cargo doc --workspace --all-features --no-deps
@@ -135,5 +140,5 @@ check: fmt-check toml-check typos lint purity architecture public-api codes shea
     @echo "fast local checks passed"
 
 # Every practical CI gate available on a developer machine.
-ci: fmt-check toml-check typos lint feature-matrix test-ci doc no-std wasm purity architecture public-api codes deny shear reuse actionlint zizmor msrv
+ci: fmt-check toml-check typos lint feature-matrix test-ci allocation doc no-std wasm purity architecture public-api codes deny shear reuse actionlint zizmor msrv
     @echo "local CI passed"

@@ -299,3 +299,47 @@ fn what_a_fold_continuation_costs_is_bounded_by_the_stated_budget() {
         limits.max_input_bytes()
     );
 }
+
+/// ADR 0007 clause 4b's hostile cardinality fixture: two hundred thousand properties whose
+/// values retain one octet each.
+///
+/// The case is generated rather than checked in as a megabyte of repeated text. It exercises
+/// the generous server policy deliberately: the secure default rejects this many items, while
+/// the generous policy promises enough room and therefore has to finish without silently
+/// dropping a line. The meter count and the retained tree count are asserted independently so
+/// a parser cannot satisfy the case by charging entries it did not keep, or keeping entries it
+/// did not charge.
+#[test]
+fn two_hundred_thousand_one_octet_properties_are_charged_and_retained() {
+    const PROPERTIES: usize = 200_000;
+
+    let mut original = Vec::with_capacity(PROPERTIES.saturating_mul(5).saturating_add(128));
+    original.extend_from_slice(
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit hostile cardinality//EN\r\n",
+    );
+    for _ in 0..PROPERTIES {
+        original.extend_from_slice(b"X:1\r\n");
+    }
+    original.extend_from_slice(b"END:VCALENDAR\r\n");
+
+    let limits = Limits::GENEROUS;
+    let mut meter = Meter::new(limits);
+    let mut reader = ContentLineReader::new(&original, limits.grammar());
+    let mut diagnostics = Vec::<Diagnostic>::new();
+    let document = Document::from_tokens(&mut reader, &mut meter, &mut diagnostics)
+        .expect("the generous policy admits the fixed cardinality fixture");
+
+    let retained = document
+        .items()
+        .iter()
+        .find_map(|item| match item {
+            Item::Component(calendar) => Some(calendar.properties().count()),
+            Item::Property(_) => None,
+        })
+        .expect("the generated document contains its VCALENDAR");
+    let expected_items = u32::try_from(PROPERTIES.saturating_add(3)).unwrap_or(u32::MAX);
+
+    assert_eq!(retained, PROPERTIES.saturating_add(2));
+    assert_eq!(meter.items(), expected_items);
+    assert!(!meter.is_exhausted());
+}
