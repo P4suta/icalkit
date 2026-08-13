@@ -403,6 +403,40 @@ pub fn evaluate_message<'a>(
         return Err(AuthorizationDenied::PriorStateForbidden(prior));
     }
     let payload = matching_payload(message, current, prior)?;
+    evaluate_selected(message, current, actor, prior, payload)
+}
+
+/// Judge one payload of a multi-component message against an absent state.
+///
+/// The ordinary entry point selects the first payload when nothing is held. A facade applying
+/// an initial recurring object must authorize every master and detached component before it
+/// inserts any of them, so this entry point makes that selection explicit while retaining the
+/// same conformance, sender, range, field, and revision gates.
+pub fn evaluate_initial_payload<'a>(
+    message: &'a ItipMessage<'a>,
+    current: &'a dyn ScheduledComponent,
+    payload_index: usize,
+    actor: PartyId<'_>,
+) -> Result<Authorization<'a>, AuthorizationDenied> {
+    let constraints = message.rule();
+    let prior = prior_state(current);
+    if prior != PriorState::Absent || !constraints.permits_prior(prior) {
+        return Err(AuthorizationDenied::PriorStateForbidden(prior));
+    }
+    let payload = message
+        .payload(payload_index)
+        .ok_or(AuthorizationDenied::UidMismatch)?;
+    evaluate_selected(message, current, actor, prior, payload)
+}
+
+fn evaluate_selected<'a>(
+    message: &'a ItipMessage<'a>,
+    current: &'a dyn ScheduledComponent,
+    actor: PartyId<'_>,
+    prior: PriorState,
+    payload: &'a dyn ScheduledComponent,
+) -> Result<Authorization<'a>, AuthorizationDenied> {
+    let constraints = message.rule();
     let role = sender_role(message, sender_state(current, payload, prior), actor)?;
     check_conformance(constraints, payload)?;
     check_nesting(constraints, payload)?;

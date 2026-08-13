@@ -60,6 +60,40 @@ fn time_range_summary_query(start: &str, end: &str, summary: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+fn two_component_series(
+    method: Option<&str>,
+    sequence: u32,
+    master_summary: &str,
+    detached_summary: &str,
+) -> Vec<u8> {
+    let method = method.map_or(String::new(), |method| format!("METHOD:{method}\r\n"));
+    format!(
+        "{WRAP_HEAD}{method}\
+BEGIN:VEVENT\r\n\
+UID:batch@example.test\r\n\
+DTSTAMP:20260302T080000Z\r\n\
+DTSTART:20260310T140000Z\r\n\
+RRULE:FREQ=WEEKLY;COUNT=2\r\n\
+SUMMARY:{master_summary}\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+ATTENDEE:mailto:alice@example.test\r\n\
+SEQUENCE:{sequence}\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:batch@example.test\r\n\
+RECURRENCE-ID:20260317T140000Z\r\n\
+DTSTAMP:20260302T080000Z\r\n\
+DTSTART:20260317T150000Z\r\n\
+SUMMARY:{detached_summary}\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+ATTENDEE:mailto:alice@example.test\r\n\
+SEQUENCE:{sequence}\r\n\
+END:VEVENT\r\n\
+{WRAP_TAIL}"
+    )
+    .into_bytes()
+}
+
 fn assert_revised_range_is_queryable(calendar: &Calendar) -> Result<(), icalkit::Error> {
     let moved_future = Query::parse(&time_range_query("20260324T170000Z", "20260324T170001Z"))?;
     let stale_future = Query::parse(&time_range_query("20260324T140000Z", "20260324T140001Z"))?;
@@ -291,6 +325,192 @@ fn imip_charset_gate_sees_the_decoded_octets_and_uses_the_session_budget() {
         exhausted.code().as_str(),
         "icalkit.scheduling.imip-content-type-invalid"
     );
+}
+
+#[test]
+fn an_initial_request_can_create_the_event_the_recipient_does_not_hold() {
+    let current = Calendar::parse(
+        b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+END:VCALENDAR\r\n",
+    )
+    .unwrap();
+    let invitation = payload(
+        "UID:new@example.test\r\nDTSTAMP:20260302T080000Z\r\n\
+         DTSTART:20260310T140000Z\r\nSUMMARY:First invitation\r\n\
+         ORGANIZER:mailto:chair@example.test\r\n\
+         ATTENDEE:mailto:alice@example.test\r\nSEQUENCE:1\r\n",
+    );
+    let message = Message::request(&invitation, supplied_time()).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let review = message.review(&current, &actor).unwrap();
+    assert!(review.change_count() > 0);
+    let created = review.authorize().apply().unwrap();
+    let event = created.events().next().unwrap();
+    assert_eq!(event.uid(), "new@example.test");
+    assert_eq!(
+        event.property("SUMMARY").unwrap().value(),
+        b"First invitation"
+    );
+}
+
+#[test]
+fn an_initial_request_creates_every_authorized_component_atomically() {
+    let current = Calendar::parse(
+        b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+END:VCALENDAR\r\n",
+    )
+    .unwrap();
+    let request = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:REQUEST\r\n\
+BEGIN:VEVENT\r\n\
+UID:new-series@example.test\r\n\
+DTSTAMP:20260302T080000Z\r\n\
+DTSTART:20260310T140000Z\r\n\
+RRULE:FREQ=WEEKLY;COUNT=2\r\n\
+SUMMARY:Series\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+ATTENDEE:mailto:alice@example.test\r\n\
+SEQUENCE:1\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:new-series@example.test\r\n\
+RECURRENCE-ID:20260317T140000Z\r\n\
+DTSTAMP:20260302T080000Z\r\n\
+DTSTART:20260317T150000Z\r\n\
+SUMMARY:Moved instance\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+ATTENDEE:mailto:alice@example.test\r\n\
+SEQUENCE:1\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::read(request).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let created = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let bytes = created.to_bytes();
+    assert_eq!(
+        bytes
+            .windows(b"BEGIN:VEVENT".len())
+            .filter(|part| *part == b"BEGIN:VEVENT")
+            .count(),
+        2
+    );
+    assert!(
+        bytes
+            .windows(22)
+            .any(|part| part == b"SUMMARY:Moved instance")
+    );
+}
+
+#[test]
+fn initial_publish_creation_is_not_limited_to_vevent() {
+    let current = Calendar::parse(
+        b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+END:VCALENDAR\r\n",
+    )
+    .unwrap();
+    let journal = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+BEGIN:VJOURNAL\r\n\
+UID:journal@example.test\r\n\
+DTSTAMP:20260302T080000Z\r\n\
+DTSTART:20260310T140000Z\r\n\
+DESCRIPTION:Published journal\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+END:VJOURNAL\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::publish(journal, supplied_time()).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let created = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+    assert!(
+        created
+            .windows(b"BEGIN:VJOURNAL".len())
+            .any(|part| part == b"BEGIN:VJOURNAL")
+    );
+}
+
+#[test]
+fn a_multi_component_creation_is_refused_whole_when_one_payload_names_another_actor() {
+    let current = Calendar::parse(
+        b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+END:VCALENDAR\r\n",
+    )
+    .unwrap();
+    let mut request =
+        two_component_series(Some("REQUEST"), 1, "Authorized master", "Forged detached");
+    let second_organizer = request
+        .windows(b"ORGANIZER:mailto:chair@example.test".len())
+        .enumerate()
+        .filter(|(_, part)| *part == b"ORGANIZER:mailto:chair@example.test")
+        .nth(1)
+        .map(|(at, _)| at)
+        .unwrap();
+    request.splice(
+        second_organizer..second_organizer + b"ORGANIZER:mailto:chair@example.test".len(),
+        b"ORGANIZER:mailto:other@example.test".iter().copied(),
+    );
+    let message = Message::read(&request).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let rejection = message.review(&current, &actor).unwrap_err();
+    assert_eq!(
+        rejection.code().as_str(),
+        "icalkit.scheduling.authorization-denied"
+    );
+    assert!(current.events().next().is_none());
+}
+
+#[test]
+fn one_review_applies_every_matching_component_in_a_scheduling_object() {
+    let current =
+        Calendar::parse(&two_component_series(None, 1, "Old master", "Old detached")).unwrap();
+    let message = Message::read(&two_component_series(
+        Some("REQUEST"),
+        2,
+        "New master",
+        "New detached",
+    ))
+    .unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let updated = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let bytes = updated.to_bytes();
+    for expected in [b"SUMMARY:New master".as_slice(), b"SUMMARY:New detached"] {
+        assert!(
+            bytes.windows(expected.len()).any(|part| part == expected),
+            "{expected:?}"
+        );
+    }
+    assert!(!bytes.windows(11).any(|part| part == b"SUMMARY:Old"));
 }
 
 #[test]

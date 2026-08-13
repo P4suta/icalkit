@@ -27,7 +27,7 @@ mod transition;
 pub use crate::internal::core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
 pub use authorize::{
     Authorization, AuthorizationDenied, Commitment, actor_role, apply_transition, attendee_index,
-    evaluate_message,
+    evaluate_initial_payload, evaluate_message,
 };
 pub use component::ScheduledView;
 pub use diff::{attendee_occurrence_of, describe_message, describe_payload};

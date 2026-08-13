@@ -14,7 +14,8 @@ use crate::internal::core::{
 };
 use crate::internal::itip::{
     ComponentTarget, ItipMessage, MediaTypeParams, Method, PartyId, ScheduleTarget,
-    ScheduledComponent, ScheduledView, Transition, evaluate_message, inspect_message,
+    ScheduledComponent, ScheduledView, Transition, evaluate_initial_payload, evaluate_message,
+    inspect_message,
 };
 
 use crate::calendar::parse_calendar;
@@ -184,7 +185,40 @@ impl Message {
         )
         .map_err(|_| Rejection::new("icalkit.scheduling.message-invalid"))?;
         let uid = message.uid().as_bytes();
-        let (item, current_component) = event_component_for_message(current, uid, &message)
+        let current_components = scheduled_components(current, uid, &message);
+        if current_components.is_empty() {
+            return self.review_creation(current, actor, &message);
+        }
+
+        let mut changes = Vec::new();
+        for (item, current_component) in current_components.iter().copied() {
+            let current_view = ScheduledView::of(current_component);
+            if message.payload_for(&current_view).is_none() {
+                continue;
+            }
+            let authorization =
+                evaluate_message(&message, &current_view, PartyId::new(actor.as_str()))
+                    .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+            changes.push(ReviewedChange {
+                target: ChangeTarget::Existing { item },
+                transition: authorization.into_transition(),
+            });
+        }
+        if changes.len() == message.payload_count() {
+            return Ok(Review {
+                message: self,
+                current,
+                changes,
+            });
+        }
+        if !changes.is_empty() || message.payload_count() != 1 {
+            return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+        }
+
+        let (item, current_component) = current_components
+            .iter()
+            .copied()
+            .find(|(_, component)| ScheduledView::of(component).recurrence_id().is_none())
             .ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?;
         let current_view = ScheduledView::of(current_component);
         let authorization = evaluate_message(&message, &current_view, PartyId::new(actor.as_str()))
@@ -219,8 +253,41 @@ impl Message {
         Ok(Review {
             message: self,
             current,
-            target,
-            transition,
+            changes: alloc::vec![ReviewedChange { target, transition }],
+        })
+    }
+
+    fn review_creation<'a>(
+        &'a self,
+        current: &'a Calendar,
+        actor: &Actor,
+        message: &ItipMessage<'_>,
+    ) -> Result<Review<'a>, Rejection> {
+        let payloads = message_payloads(&self.calendar, message);
+        if payloads.len() != message.payload_count() {
+            return Err(Rejection::new("icalkit.scheduling.message-invalid"));
+        }
+        let mut changes = Vec::with_capacity(payloads.len());
+        for (payload_index, (source, payload)) in payloads.into_iter().enumerate() {
+            let empty = Component::create(payload.name().as_bytes(), Vec::new())
+                .map_err(|_| Rejection::new("icalkit.scheduling.message-invalid"))?;
+            let empty_view = ScheduledView::of(&empty);
+            let authorization = evaluate_initial_payload(
+                message,
+                &empty_view,
+                payload_index,
+                PartyId::new(actor.as_str()),
+            )
+            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+            changes.push(ReviewedChange {
+                target: ChangeTarget::Create { source },
+                transition: authorization.into_transition(),
+            });
+        }
+        Ok(Review {
+            message: self,
+            current,
+            changes,
         })
     }
 
@@ -322,15 +389,16 @@ impl Actor {
 pub struct Review<'a> {
     message: &'a Message,
     current: &'a Calendar,
-    target: ChangeTarget,
-    transition: Transition,
+    changes: Vec<ReviewedChange>,
 }
 
 impl<'a> Review<'a> {
     /// How many property occurrences would change.
     #[must_use]
     pub fn change_count(&self) -> usize {
-        self.transition.len()
+        self.changes.iter().fold(0, |count, change| {
+            count.saturating_add(change.transition.len())
+        })
     }
 
     /// The message this review describes.
@@ -345,8 +413,7 @@ impl<'a> Review<'a> {
         AuthorizedChange {
             message: self.message,
             current: self.current,
-            target: self.target,
-            transition: self.transition,
+            changes: self.changes,
         }
     }
 }
@@ -356,8 +423,7 @@ impl<'a> Review<'a> {
 pub struct AuthorizedChange<'a> {
     message: &'a Message,
     current: &'a Calendar,
-    target: ChangeTarget,
-    transition: Transition,
+    changes: Vec<ReviewedChange>,
 }
 
 impl AuthorizedChange<'_> {
@@ -377,27 +443,37 @@ impl AuthorizedChange<'_> {
                 .components_mut()
                 .next()
                 .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
-            match self.target {
-                ChangeTarget::Existing { item } => {
-                    let event = calendar
-                        .items_mut()
-                        .get_mut(item)
-                        .and_then(Item::as_component_mut)
-                        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
-                    apply_to(event, &self.transition, policy)?;
-                },
-                ChangeTarget::SplitAfter { master } => {
-                    let mut detached = calendar
-                        .items()
-                        .get(master)
-                        .and_then(Item::as_component)
-                        .cloned()
-                        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
-                    apply_to(&mut detached, &self.transition, policy)?;
-                    calendar
-                        .items_mut()
-                        .insert(master.saturating_add(1), Item::Component(detached));
-                },
+            for change in self.changes {
+                match change.target {
+                    ChangeTarget::Create { source } => {
+                        let payload = root_component(&self.message.calendar)
+                            .and_then(|calendar| calendar.items().get(source))
+                            .and_then(Item::as_component)
+                            .cloned()
+                            .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                        calendar.items_mut().push(Item::Component(payload));
+                    },
+                    ChangeTarget::Existing { item } => {
+                        let component = calendar
+                            .items_mut()
+                            .get_mut(item)
+                            .and_then(Item::as_component_mut)
+                            .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                        apply_to(component, &change.transition, policy)?;
+                    },
+                    ChangeTarget::SplitAfter { master } => {
+                        let mut detached = calendar
+                            .items()
+                            .get(master)
+                            .and_then(Item::as_component)
+                            .cloned()
+                            .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                        apply_to(&mut detached, &change.transition, policy)?;
+                        calendar
+                            .items_mut()
+                            .insert(master.saturating_add(1), Item::Component(detached));
+                    },
+                }
             }
         }
         let bytes = updated.document.to_bytes();
@@ -411,10 +487,18 @@ impl AuthorizedChange<'_> {
 /// anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChangeTarget {
+    /// Insert the authorized payload into a calendar that did not hold its identity.
+    Create { source: usize },
     /// Mutate the component that was reviewed.
     Existing { item: usize },
     /// Clone the reviewed master, apply the property diff, and insert the detached anchor.
     SplitAfter { master: usize },
+}
+
+#[derive(Debug)]
+struct ReviewedChange {
+    target: ChangeTarget,
+    transition: Transition,
 }
 
 /// Apply every occurrence-addressed change to one private component clone.
@@ -464,34 +548,37 @@ fn root_component(calendar: &Calendar) -> Option<&Component> {
     calendar.document.components().next()
 }
 
-fn event_component_for_message<'a>(
+fn scheduled_components<'a>(
     calendar: &'a Calendar,
     uid: &[u8],
     message: &ItipMessage<'_>,
-) -> Option<(usize, &'a Component)> {
-    let events = root_component(calendar)?
-        .items()
-        .iter()
+) -> Vec<(usize, &'a Component)> {
+    root_component(calendar)
+        .into_iter()
+        .flat_map(|calendar| calendar.items().iter())
         .enumerate()
         .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
         .filter(|(_, component)| {
-            component.is_named(b"VEVENT")
+            component.kind() == Some(message.kind())
                 && component
                     .properties()
                     .find(|property| property.is_named(b"UID"))
                     .is_some_and(|property| property.value_text().as_bytes() == uid)
-        });
-    let mut master = None;
-    for (item, component) in events {
-        let view = ScheduledView::of(component);
-        if message.payload_for(&view).is_some() {
-            return Some((item, component));
-        }
-        if view.recurrence_id().is_none() {
-            master = Some((item, component));
-        }
-    }
-    master
+        })
+        .collect()
+}
+
+fn message_payloads<'a>(
+    calendar: &'a Calendar,
+    message: &ItipMessage<'_>,
+) -> Vec<(usize, &'a Component)> {
+    root_component(calendar)
+        .into_iter()
+        .flat_map(|calendar| calendar.items().iter())
+        .enumerate()
+        .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
+        .filter(|(_, component)| component.kind() == Some(message.kind()))
+        .collect()
 }
 
 fn range_anchor_component<'a>(calendar: &'a Calendar, uid: &[u8]) -> Option<&'a Component> {

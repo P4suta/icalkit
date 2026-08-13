@@ -115,7 +115,9 @@ while let Some(occurrence) = occurrences.try_next()? {
 Inbound messages pass through a borrowed read-review-authorize-apply flow. Authorization is
 bound to the exact message and held state that were reviewed, and applying it consumes the
 capability. Outbound builders cover every iTIP method and require the caller to supply
-`DTSTAMP` rather than reading a clock.
+`DTSTAMP` rather than reading a clock. A first `PUBLISH` or `REQUEST` can create state; all
+payload components are authorized before any master or detached instance is inserted, and a
+multi-component update is likewise applied as one capability.
 
 ```rust
 use icalkit::scheduling::Message;
