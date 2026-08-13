@@ -410,7 +410,10 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let mut violations = release_config_violations(&workspace)?;
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
+    let readme = fs::read_to_string(workspace.join("README.md"))?;
+    let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
     violations.extend(retired_crate_violations(&root, &facade));
+    violations.extend(documentation_violations(&readme, &architecture));
     let mut features = table_keys(&facade, "features");
     features.sort();
     let mut expected = vec![
@@ -432,6 +435,49 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// Hold the public guide to the same typestate and workflow order as the API.
+fn documentation_violations(readme: &str, architecture: &str) -> Vec<String> {
+    const GOLDEN_PATH: &[&str] = &[
+        "## Strict parsing",
+        "## Explicit normalization",
+        "## Transactional editing",
+        "## DST-aware recurrence",
+        "## iTIP scheduling",
+        "## CalDAV sync and server workflows",
+    ];
+    const RETIRED_PROSE: &[&str] = &[
+        "one temporary path dependency",
+        "unpublished scaffolding",
+        "temporary compatibility harness",
+        "remaining `ical-core` package",
+    ];
+
+    let mut violations = Vec::new();
+    let mut previous = None;
+    for heading in GOLDEN_PATH {
+        let Some(at) = readme.find(heading) else {
+            violations.push(format!(
+                "README.md: missing golden-path heading `{heading}` (ADR 0014)"
+            ));
+            continue;
+        };
+        if previous.is_some_and(|before| at <= before) {
+            violations.push(format!(
+                "README.md: `{heading}` is out of golden-path order (ADR 0014)"
+            ));
+        }
+        previous = Some(at);
+    }
+    for stale in RETIRED_PROSE {
+        if architecture.contains(stale) || readme.contains(stale) {
+            violations.push(format!(
+                "README.md/ARCHITECTURE.md: retired migration prose `{stale}` remains (ADR 0014)"
+            ));
+        }
+    }
+    violations
 }
 
 /// References that would recreate a retired implementation package boundary.
@@ -2066,10 +2112,10 @@ mod tests {
         LAYERING_GATES, LayerEntry, LayeringGate, as_str_arms, codes_violations,
         collect_architecture_violations, collect_codes_violations, collect_purity_violations,
         core_list_violations, declared_dependencies, declares, dependency_subtable_name,
-        enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
-        layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
-        recipe_violations, release_violations, retired_crate_violations, snapshot_violations,
-        table_keys,
+        documentation_violations, enum_variants, file_path_violations, golden_rows,
+        is_dependency_table, layer_violations, layering_violations, manifest_violations,
+        match_arm_violations, private_crate_violations, recipe_violations, release_violations,
+        retired_crate_violations, snapshot_violations, table_keys,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2876,6 +2922,29 @@ name = \"icalkit\"
         assert_eq!(
             collect_architecture_violations().unwrap(),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn public_guidance_follows_the_typestate_and_workflow_order() {
+        let readme = "## Strict parsing\n## Explicit normalization\n## Transactional editing\n\
+                      ## DST-aware recurrence\n## iTIP scheduling\n\
+                      ## CalDAV sync and server workflows\n";
+        assert!(documentation_violations(readme, "private implementation modules").is_empty());
+
+        let stale = documentation_violations(
+            "## Explicit normalization\n## Strict parsing\n",
+            "one temporary path dependency",
+        );
+        assert!(
+            stale
+                .iter()
+                .any(|violation| violation.contains("out of golden-path order"))
+        );
+        assert!(
+            stale
+                .iter()
+                .any(|violation| violation.contains("retired migration prose"))
         );
     }
 

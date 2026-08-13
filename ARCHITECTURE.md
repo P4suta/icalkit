@@ -1,225 +1,143 @@
 # Architecture
 
-This document states the invariants. The reasoning behind each one lives in
-[`docs/adr/`](docs/adr/); this file is the summary a reader needs before touching code.
+This document is the current structural contract. The reasoning and historical package graph
+remain in [the ADRs](docs/adr/); ADR 0014 records completion of the single-crate migration.
 
-## Shape
+## Production boundary
+
+`icalkit` is the sole production crate and the only prospective registry contract:
 
 ```text
-       your application (owns HTTP, storage, ACL, clock inputs)
-                              ▲
+application (HTTP, storage, credentials, ACL, current-time input)
+                              |
+                              v
                          icalkit API
-      model · time · recurrence · scheduling · caldav · interop
-                              │
-                 private implementation layers
-      DAV · recurrence · timezone · iTIP · query (migrated source) · one temporary path dependency
+       model · time · recurrence · scheduling · caldav · interop
+                              |
+                              v
+                    private implementation DAG
+kernel -> wire (iCalendar/XML) -> model -> recurrence/timezone
+       -> scheduling/query -> CalDAV workflows -> interop/adapters
 ```
 
-Nothing here opens a connection, reads a clock, or bundles time zone data unless the
-`system-tz` adapter is enabled. `icalkit` is the one production API and the only future
-registry contract. `internal::dav`, `internal::query`, `internal::recur`,
-`internal::tz`, and `internal::itip` are former package implementations moved behind their
-private ancestor; `ical-core` remains unpublished workspace scaffolding while its source
-follows them. The temporary `ical-dav`, `ical-recur`, `ical-tz`, and `ical-itip` packages
-compile moved sources through isolation bridges for legacy conformance tests, and an
-architecture gate prevents the facade from depending back on any of them
-([ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)).
-The facade's canonical rustdoc surface is committed separately for default and no-default
-features under `api/`; `just public-api` rejects every unreviewed addition, removal, move, or
-duplicate path.
+The old `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, `ical-query`, and `ical-dav`
+package names are retired. `xtask architecture` rejects their return as workspace members or
+dependencies of `icalkit`. Private modules have no independent semver contract and are
+unreachable through production rustdoc.
 
-The DAV implementation uses `xmlparser` as a private no-std lexical authority. Its wrapper
-owns namespace scope, duplicate-attribute and tag validation, budgets, explicit DTD/PI refusal,
-and byte-preserving `calendar-data`; no XML token type reaches the public API.
+The workspace contains:
 
-The content line grammar is still a layer and not a package: during migration it remains a
-private module tree inside `ical-core`, every item of it re-exported at that temporary crate's
-root
-([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md), amendments 12 and 17).
+| Unit | Purpose | Published |
+| --- | --- | --- |
+| `crates/icalkit` | sole production API and implementation | deferred |
+| `crates/icalkit-conformance` | JSONL subject, corpus, and shared-source adversarial tests | never |
+| `gates/grammar-layering` | isolated compile gate for the iCalendar grammar | never |
+| `gates/xml-layering` | isolated compile gate for the XML wrapper | never |
+| `xtask` | architecture, API, purity, and diagnostic gates | never |
 
-Nothing in the tree names that layer's path, and two gates keep it a layer.
-`gates/grammar-layering` is an unpublished workspace member that compiles the same sources a
-second time in a crate root holding no model, so a reference to `CivilDate` from inside the
-grammar is `error[E0432]` with a file and a line rather than a review comment. What that
-member cannot catch is `crate::X` for an `X` the crate root re-exports from the grammar
-itself — it resolves there too — so `just purity` carries a second, textual rule: no path
-under `crates/icalkit/src/internal/core/grammar/` may resolve above that directory, neither
-`extern crate` nor `#[path]` may appear inside it, every `.rs` file there is declared by its
-`mod.rs`, and the tree stays flat. That rule is hygiene about not routing a lateral import
-through the parent crate's private surface. It is not what the layering member proves, and no
-compiler enforces it. The
-member itself is held to the workspace by a third rule of the same task, because a pull request
-deleting it used to pass every gate here (ADR 0004, amendment 18).
+Every package remains at `0.0.0`. Publishing requires a separate explicit decision.
 
-`ical-query` originally joined above `ical-core`, `ical-recur`, `ical-tz` and `ical-dav`
-as the filter evaluator, with `ical-dav` taking no dependency in return
-([ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md)).
-Its source now lives at `icalkit/src/internal/query`; the dependency direction and all 107
-unit tests were preserved while the package and semver boundary were removed.
+## Input and mutation states
 
-`ical-recur` and `ical-tz` are siblings: neither depends on the other. Recurrence needs a
-zone answer, and the caller obtains it from `ical-tz` and passes in the instant, which is why
-recurrence expansion and zone resolution can be compiled apart. M2 settled the one thing that
-arrangement leaves unsaid: **the timeline `ical-recur` walks for a zoned series is that series'
-own wall clock projected onto UTC, not the UTC timeline.** Every instant crossing the seam in
-either direction is on it, and each cadence key is resolved against the zone one at a time,
-which is the only place a daylight saving transition can be seen. `ical_tz::seam` states the
-contract, `ical-recur`'s crate documentation states the caller's two obligations under it, and
-`crates/icalkit-conformance/tests/break_zones.rs` is where that seam is held to a real zone — it holds
-a daily 09:00 series to its wall clock across both of Europe/Berlin's 2026 transitions and
-asserts that the reading which never re-resolves is 3,600 seconds out. It was the only file in
-the workspace naming both crates until M2's own adversarial pass landed `break_tz_seam.rs`
-beside it, and at M3 `ical-itip` took a dependency on each, which made the seam something a
-shipped crate crosses rather than only something a test watches.
+```text
+bytes -> Import -> Normalization -> Import -> Calendar -> bounded workflows
+          |            |                     |
+          |            +-- complete Change report
+          +-- admitted octets unchanged       +-- strict validated CST
+```
 
-## Invariants
+- `Calendar::parse` is strict shorthand under secure defaults. A structural or standards error
+  prevents promotion; unknown valid extensions do not.
+- `Import::read` preserves every admitted octet. Repair is explicit, sealed, versioned, reported,
+  immutable with respect to the original, and idempotent.
+- `Calendar` is an opaque validated CST. Typed getters do not repeatedly expose malformed known
+  values, while generic component/property views preserve unknown data.
+- `Calendar::edit` is transactional. Drop means rollback; `commit` validates a complete private
+  copy before replacement. Only edited lines are canonicalized.
+- `ProjectedCalendar` is a distinct type, so a reduced CalDAV response cannot overwrite a full
+  stored resource.
 
-Numbers 1 through 6 date from the bootstrap; 7 through 11 come from the design bake-off that
-followed it. `just purity`, `just no-std`, `just wasm` and `just codes` enforce the structural
-ones today — a change that violates one fails CI. The rest are testable rather than structural,
-and their
-gates arrive with the code they constrain; `ROADMAP.md` says which milestone owes which gate.
+Ordinary callers see `ResourcePolicy` and `Session` rather than the internal `Limits`, `Meter`,
+tokenizer, XML events, candidate sets, or diagnostic sinks. One session ledger spans all work
+performed through it.
 
-1. **Nothing is lost on a round trip**
-   ([ADR 0001](docs/adr/0001-lossless-round-trip.md)). Unknown properties, parameters, and
-   components are preserved in position. Typed access is a view over preserved content,
-   never the storage. `parse → serialize` is byte-identical across the whole corpus.
+## Purity and platform contact
 
-2. **Recurrence is lazy and doubly bounded**
-   ([ADR 0002](docs/adr/0002-bounded-lazy-recurrence.md)). The caller supplies a window;
-   the search itself has a candidate budget whose exhaustion is a reported outcome. There
-   is no function that expands a rule into a `Vec`.
+Production code uses `#![no_std]` with `alloc` and `#![forbid(unsafe_code)]`. The kernel has no
+clock, network, storage, runtime, credential, or ACL dependency. All current-time values,
+including iTIP `DTSTAMP`, come from the caller.
 
-3. **Time zone data comes from the caller**
-   ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md)). No bundled tzdb, no system
-   clock. Where the embedded `VTIMEZONE` and IANA disagree, that is reported, and every
-   result names its source.
+The only Cargo features are:
 
-4. **The protocol layer is sans-I/O and `no_std`**
-   ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)). `ical-dav` produces requests and
-   interprets responses; the same code serves clients and servers.
+| Feature | Default | Effect |
+| --- | --- | --- |
+| `std` | yes | enables Jiff's standard-library support |
+| `system-tz` | yes | installs the Jiff-backed system time-zone adapter and implies `std` |
 
-5. **Scheduling is separate from the model**
-   ([ADR 0005](docs/adr/0005-scheduling-apart-from-the-model.md)). `ical-itip` returns a
-   described transition, not a mutation, and authorization is part of the semantics.
+All calendar, recurrence, scheduling, query, client, and server capabilities are unconditional.
+`just no-std` builds `icalkit` for `thumbv7em-none-eabi` with neither feature; `just wasm` checks
+the same surface for `wasm32-unknown-unknown`.
 
-6. **The conformance corpus is a deliverable**
-   ([ADR 0006](docs/adr/0006-conformance-corpus-as-artifact.md)). Real client exports,
-   reduced and anonymized, runnable against any implementation.
+## Time boundary
 
-7. **The core is `no_std` *and* `alloc`, and every allocated byte is charged**
-   ([ADR 0007](docs/adr/0007-allocation-policy.md)). There is no allocation-free build of
-   these crates and no feature flag pretending otherwise. A parsed document owns its memory
-   and carries no lifetime parameter, unfolding runs into a fresh buffer, and nothing is
-   sliced out of pre-unfold bytes.
+Jiff 0.2 supplies the public `Date`, `DateTime`, `Time`, `Weekday`, `Timestamp`, and
+`SignedDuration` values. `IcalDateTime` is the thin domain wrapper needed for iCalendar DATE,
+floating, UTC, zoned, `TZID`, and leap-second witness semantics that Jiff does not represent in
+one value.
 
-8. **The token layer is the parser; the document tree is one consumer**
-   ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). `Document::parse` goes
-   through the same public token path a streaming caller uses, so the two cannot fork into
-   separately maintained grammars. Every token payload is `&[u8]`; UTF-8 is demanded only in
-   the typed view.
+`time::ZoneDatabase` is the only application-implementable production trait. It exposes only
+`resolve_local` and `offset_at`; answers include gap/fold ambiguity, provenance, and coverage.
+`Engine` owns it behind a trait object so application types do not become generic over the
+calendar stack.
 
-9. **Two failure channels, and a diagnostic code frozen in meaning**
-   ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)). An error is "no item can be
-   built"; everything else is a diagnostic pushed to a sink that may refuse, with the
-   refusals counted outside it. `DiagnosticCode` is one workspace-wide vocabulary defined at
-   the bottom of the stack.
+With `system-tz`, Jiff reads the platform database on Unix/Android and uses its platform bundle
+where required on Windows. That adapter is the only default OS contact. Embedded `VTIMEZONE`
+interpretation stays private and disagreements are represented rather than silently preferred.
 
-10. **One limits policy, one running meter**
-    ([ADR 0010](docs/adr/0010-shared-resource-limits.md)). `Limits` is the caller's immutable
-    policy and `Meter` its mutable ledger, passed as `&mut` so that five thousand individually
-    bounded calls are bounded in aggregate. `Meter` is neither `Copy` nor `Default`.
+## Wire boundaries
 
-11. **Civil arithmetic is checked, and invalid instances are filtered**
-    ([ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md)). Every operation
-    is `checked_*`, `div_euclid` or `rem_euclid`; no `Duration` carries years or months; a
-    recurrence instance whose date or whose local time does not exist is dropped per RFC 5545
-    section 3.3.10, never coerced to a nearby one.
+The content-line parser and XML parser are private layers rather than public token APIs.
+`xmlparser` is the private XML lexical authority. The wrapper remains responsible for namespace
+scope, duplicate attributes, start/end matching, depth, aggregate budgets, rejecting DTDs and
+processing instructions, and retaining `calendar-data` octets.
 
-## Crate boundaries
+CalDAV exposes owned/borrowed `WireRequest`, `WireResponse`, and `Header` values containing only
+method, URI, headers, and body. Client operations follow
+`next_request -> accept -> finish`. Server operations follow
+`next_need -> supply -> finish`. No `http`, `reqwest`, async runtime, storage, or ACL type crosses
+the API.
 
-> **Transition note:** [ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)
-> supersedes the public package graph below. `icalkit` is now the sole production API;
-> the split crates remain implementation scaffolding until their sources move behind private
-> modules. `icalkit-conformance` is an unpublished JSONL CLI/corpus, not a Rust library API.
+Query evaluation returns the three-valued `Match`. Recurrence always has a time window and a
+fallible pull operation, so budget exhaustion cannot be confused with completion. Scheduling
+authorization borrows the reviewed inputs and is consumed by apply.
 
-| Unit | Depends on | std | alloc | Reads a clock | State |
-| --- | --- | --- | --- | --- | --- |
-| `icalkit` | Jiff, xmlparser and temporary local core | optional | yes | no | sole public crate |
-| `internal::dav` | core internals and private xmlparser lexer | no | yes | no | private source |
-| `internal::query` | core, recurrence, time-zone and DAV internals | no | yes | no | private source |
-| `internal::recur` | core internals | no | yes | no | private source |
-| `internal::tz` | core internals | no | yes | no | private source |
-| `internal::itip` | core, recurrence and time-zone internals | no | yes | no | private source |
-| `ical-core` | — | no | yes | no | unpublished scaffolding (M0) |
-| `ical-recur` | the shared `internal::recur` source | no | yes | no | temporary compatibility harness |
-| `ical-tz` | the shared `internal::tz` source | no | yes | no | temporary compatibility harness |
-| `ical-itip` | the shared `internal::itip` source | no | yes | no | temporary compatibility harness |
-| `ical-dav` | the shared `internal::dav` source | no | yes | no | temporary compatibility harness |
-| `icalkit-conformance` | `icalkit` at runtime; split crates in tests | yes | yes | no | private CLI/corpus (M5) |
+## Conformance isolation
 
-`icalkit` remains at version `0.0.0`, and publishing is deliberately deferred. The
-`architecture` gate holds the release graph to that one facade, prevents a retired
-`ical-query` package from returning, prevents the facade from depending on the migrated
-`ical-dav`, `ical-recur`, `ical-tz` and `ical-itip` harnesses, and freezes Cargo features
-to `std` and `system-tz`.
-`gates/grammar-layering` is a workspace member and is deliberately not a row here: it declares
-no dependencies, publishes nothing, and compiles `ical-core`'s own sources, so a row claiming
-otherwise would describe a crate that does not exist.
+`icalkit-conformance` is not another production API. Its stable interoperability boundary is
+the versioned `icalkit-conformance/1` JSONL protocol. Runtime operations use `icalkit`.
 
-"State" is the milestone whose gates the crate met, not a stability claim: nothing is
-published and no public API is frozen. What each landed crate does **not** do is in its own
-`# Status` section and in `ROADMAP.md`, which are the two places that stay honest about it.
-`internal::dav` depends only on core internals and the private `xmlparser` lexer;
-`gates/xml-layering` compiles its vocabulary-independent XML directory with no CalDAV types in
-scope, so the boundary remains a gate rather than an intention. The private conformance CLI uses only `icalkit`
-at runtime; legacy split-crate dependencies are test-only until those tests migrate to the facade.
+Low-level adversarial tests still need access below the facade. The helper library compiles the
+private module tree as shared source in a separate unpublished root. This deliberately gives the
+corpus an isolation seam without making `icalkit::internal` public or recreating package
+contracts. The public API snapshot proves that no helper path escapes production.
 
-"Reads a clock" is a column because a calendar library that quietly asks the OS for the
-current time is untestable: the answer to "is this event in the past" must come from an
-instant the caller passed in.
+Client-shaped synthetic fixtures are labeled synthetic. Only reduced and anonymized captures
+with producer version and observation date may justify a `CommonClientsV1` repair. Until that
+evidence exists, the profile does not guess at CP1252 or vendor `TZID` mappings.
 
-"alloc" is a column because `no_std` alone did not capture the wiring that actually broke.
-A panel proposal's `Vec<Response>: Slots<Response>` failed to compile at the
-`ical-core`/`ical-dav` seam under an allocation-free reading of these crates, and no
-dependency diff can see that. No crate carries a compiled minimal-usage example at its declared
-setting: `just no-std` and `just wasm` build the five core crates for a bare-metal and a browser
-target, which proves the targets and says nothing about the seam. So the column is a claim the
-workspace holds to by hand, and that class of break stays invisible until somebody wires two
-crates together and tries to compile the result.
+## Mechanical enforcement
 
-## What lives where
+- `just architecture` freezes the single production package, rejects retired package names,
+  freezes the two-feature vocabulary, and holds the public guide's workflow order.
+- `just public-api` compares committed default and no-default snapshots and rejects additions,
+  removals, moves, or duplicate canonical paths.
+- `just purity` and the two layering members enforce the private DAG and keep grammar/XML
+  vocabulary-independent.
+- `just codes` freezes diagnostic identifiers and meanings.
+- `just lint` denies warnings with every feature and with no default features.
+- `just test` runs process-isolated tests and compile-checked rustdoc.
+- `just no-std` and `just wasm` prove the non-OS build boundary.
+- `just shear`, `just deny`, and `just reuse` hold dependencies, supply-chain policy, and
+  licensing.
 
-- **Syntax lives in `ical-core`'s grammar layer.** Unfolding, content-line lexing, escaping,
-  parameter structure — and the diagnostic vocabulary, which did not stay above the layer
-  because a violation of the grammar is detected by the grammar. `src/grammar/` names nothing
-  above itself; nothing outside it names its path.
-- **Preservation lives in `ical-core`.** Every layer above it operates on the preserved
-  model and must not require reserializing through a lossy typed form.
-- **The shared vocabulary lives at or below `ical-core`.** `Limits`, `Meter`, the civil-time
-  primitives and `Instant` are named by crates that do not depend on each other, so they sit
-  at the common root rather than in whichever crate uses them most. `ical-tz` owns
-  resolution, not the types it resolves into.
-- **Ambiguity is represented, not resolved.** Non-existent and repeated local times at DST
-  transitions, disagreeing time zone sources, and specification violations are all values
-  a caller can inspect, not errors that discard the input.
-- **A limit's number says how it was arrived at.** `max_input_bytes` is the stated allocation
-  envelope of a named policy, and every other field is derived from it by a written function,
-  measured against this reader, argued from shape, or explicitly marked as merely asserted
-  ([ADR 0010](docs/adr/0010-shared-resource-limits.md) amendment 1).
-- **No crate here translates a vendor time zone identifier.** Not behind a feature, not in a
-  separate crate. Lookup is by exact bytes, an unrecognized identifier answers nothing and is
-  reported, and the mapping is a decorator the caller wires
-  ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md) amendment 16).
-- **Diagnostics travel with the item they concern,** so a caller can accept a
-  specification-violating calendar and still know what was wrong with it.
-
-## Where the details are
-
-Every crate has a design document in [`docs/design/`](docs/design/) carrying its committed
-public surface, the reasoning behind each signature, and a closing section recording what the
-first whole-workspace compile changed. Those sections are the only place the seams between
-crates are described from both sides at once. The grammar layer has no document of its own,
-because DP-17 carved it out of `ical-core` after the bake-off and D-0003 put it back, so the
-layer is argued inside `docs/design/ical-core-api.md` — which is where it belongs now that the
-two are one crate.
+The complete rationale is [ADR 0014](docs/adr/0014-private-kernel-and-conformance-isolation.md).

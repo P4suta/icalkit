@@ -1,9 +1,13 @@
 # icalkit-conformance
 
 `icalkit-conformance` is an unpublished test corpus and process-isolated subject for icalkit.
-It deliberately has no Rust library target. The stable boundary is newline-delimited JSON on
-stdin/stdout, so another implementation can drive or reproduce a case without depending on the
-workspace's internal crates.
+Its stable boundary is newline-delimited JSON on stdin/stdout, so another implementation can
+drive or reproduce a case without depending on workspace internals.
+
+The package also has an unpublished helper library target for its own white-box adversarial
+tests. That target compiles icalkit's private module tree as shared source in an isolated crate
+root; it is not a consumer API or a semver contract. Runtime subject operations use only the
+public `icalkit` facade.
 
 Protocol version `icalkit-conformance/1` accepts one object per line:
 

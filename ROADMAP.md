@@ -1,5 +1,9 @@
 # Roadmap
 
+> Package names in M0-M4 are historical milestone labels. The implementation now lives in the
+> single `icalkit` production crate; ADR-0014 is authoritative for the current package graph,
+> Jiff boundary, private XML lexer, and conformance isolation.
+
 Everything here is text in, text out. No network, no clock, no hardware: every milestone
 is verifiable by `cargo test` on `ubuntu-latest`.
 

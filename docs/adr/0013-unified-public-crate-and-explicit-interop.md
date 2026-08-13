@@ -1,6 +1,6 @@
 # ADR-0013: one public crate with an explicit interoperability boundary
 
-- Status: accepted
+- Status: accepted; transitional package state superseded by ADR-0014
 - Date: 2026-08-14
 - Supersedes: the public crate graph in ADR-0003, ADR-0004, ADR-0005, and ADR-0012
 
@@ -81,6 +81,9 @@ The conformance runner becomes a private CLI/corpus communicating through a vers
 subject protocol. It is not a second Rust library API.
 
 ## Implementation status
+
+This section records the migration state when this ADR was accepted. ADR-0014 is authoritative
+for the completed package graph and conformance isolation.
 
 The query evaluator now lives only under `icalkit::internal::query` and its former package is
 retired. The DAV, recurrence, time-zone, and iTIP kernels likewise live under
