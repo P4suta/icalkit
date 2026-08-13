@@ -6,7 +6,7 @@
 //!
 //! # What this unit owns
 //!
-//! Given one `ical_core::Component` and one `ical_dav::PropFilter`, answer a [`crate::Match`];
+//! Given one `ical_core::Component` and one `ical_dav::PropFilter`, answer a [`crate::internal::query::Match`];
 //! and the same for a `ParamFilter` against one property. The two are one unit because they
 //! share the whole of their structure — a name, an `is-not-defined`, an optional `text-match`,
 //! and a list of children — and splitting them would be two copies of one walk.
@@ -19,12 +19,12 @@
 //! - `CALDAV:is-not-defined` matches when the component carries **no** occurrence of the name,
 //!   and is exclusive with every other test in the same filter. `ical-dav` reports that
 //!   contradiction through `PropFilter::is_contradictory`; this unit refuses one with
-//!   [`crate::QueryError::Contradictory`] rather than deciding it.
+//!   [`crate::internal::query::QueryError::Contradictory`] rather than deciding it.
 //! - A `time-range` on a property tests the *value* of that property, which is a different
 //!   question from the component overlap `overlap` answers. See below: it is defined for seven
 //!   named properties and for nothing else.
 //! - A `text-match` runs through `collate` against the property's value as `ical-core` preserved
-//!   it, with `negate-condition` applied through [`crate::Match::negate`].
+//!   it, with `negate-condition` applied through [`crate::internal::query::Match::negate`].
 //! - A parameter filter is the same shape one level down, against the parameters of the
 //!   occurrence being tested — not against the parameters of any occurrence of the name.
 //!   Section 9.7.2's third and fourth bullets both end "and all specified `CALDAV:param-filter`
@@ -44,7 +44,7 @@
 //! and closes the list in the next paragraph but one: "The semantic of `CALDAV:time-range` is
 //! not defined for any other calendar components and properties." So the gate is the property
 //! *name*, and a `prop-filter` naming `FREEBUSY`, `TRIGGER`, `RECURRENCE-ID` or `SUMMARY` with a
-//! `time-range` inside it is [`crate::Undecided::OverlapUndefined`] — including `FREEBUSY`,
+//! `time-range` inside it is [`crate::internal::query::Undecided::OverlapUndefined`] — including `FREEBUSY`,
 //! whose periods section 9.9 does compare against a range but only as part of the *`VFREEBUSY`
 //! component* rule, which is `overlap`'s row and not this unit's. A `PERIOD`-valued property
 //! therefore never reaches the comparison here, because no property that can carry one is on the
@@ -70,8 +70,8 @@
 //! `text-match` runs against preserved octets — a filter that decoded every property of every
 //! component to test one of them is the cost this crate is measured on. The tests inside one
 //! filter are therefore evaluated cheapest first, which is sound because section 9.7.2 conjoins
-//! them and [`crate::Match::and`] is decided by an unmatched operand whichever side it arrives
-//! on. A value that must be decoded and does not is [`crate::Undecided::ValueUnreadable`] and
+//! them and [`crate::internal::query::Match::and`] is decided by an unmatched operand whichever side it arrives
+//! on. A value that must be decoded and does not is [`crate::internal::query::Undecided::ValueUnreadable`] and
 //! never "does not match".
 
 use core::str::from_utf8;
@@ -81,8 +81,8 @@ use ical_core::{
 };
 use ical_dav::{ParamFilter, PropFilter, TextMatch, TimeRange};
 
-use crate::collate;
-use crate::vocabulary::{Budget, Match, QueryError, Undecided, Zones};
+use crate::internal::query::collate;
+use crate::internal::query::vocabulary::{Budget, Match, QueryError, Undecided, Zones};
 
 /// What property and parameter filters is reviewed against, one row per passage.
 ///
@@ -380,7 +380,7 @@ mod tests {
     use ical_tz::FixedOffsetSource;
 
     use super::{PROPERTY_FILTER_SECTIONS, matches_param_filter, matches_prop_filter};
-    use crate::vocabulary::{Budget, Match, QueryError, Undecided, Zones};
+    use crate::internal::query::vocabulary::{Budget, Match, QueryError, Undecided, Zones};
 
     type ParameterMatchCase<'a> = (&'a [u8], &'a [u8], &'a [u8], &'a [u8], Match);
     type ZonedValueCase<'a> = (Option<&'a [u8]>, &'a [u8], bool, Match);

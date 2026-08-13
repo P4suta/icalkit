@@ -23,11 +23,11 @@ use ical_dav::{
     PropName, PropRequest, PropStat, PropValue, RequestBody, ResponseBody, Status, SyncCollection,
     SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
 };
-use ical_query::{Budget, Reduction, Selection, Zones};
 use ical_tz::{
     AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
 };
 
+use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
 use crate::scheduling::Message;
 use crate::time::{LocalKind, ZoneDatabase};
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
@@ -80,7 +80,7 @@ impl Query {
             zones = zones.with_query_zone(query_zone);
         }
         let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-        ical_query::matches(filter, &calendar.document, zones, &mut budget)
+        query::matches(filter, &calendar.document, zones, &mut budget)
             .map(Match::from_kernel)
             .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))
     }
@@ -113,16 +113,16 @@ fn project_calendar_data(
         let zone_adapter = ZoneAdapter(session.engine.zone_database());
         let zones = Zones::new(&zone_adapter);
         source = if request.expand.is_some() {
-            ical_query::expand_calendar(&source, window, zones, &mut budget)
+            query::expand_calendar(&source, window, zones, &mut budget)
         } else {
-            ical_query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
+            query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
         }
         .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
     }
-    let mut selected = ical_query::select(&source, request.comp.as_ref(), &mut budget)
+    let mut selected = query::select(&source, request.comp.as_ref(), &mut budget)
         .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
     if let Some(window) = request.limit_freebusy_set {
-        selected = ical_query::limit_freebusy_set(&selected, window, &mut budget)
+        selected = query::limit_freebusy_set(&selected, window, &mut budget)
             .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
     }
     Ok(ProjectedCalendar {
@@ -211,11 +211,11 @@ pub enum Match {
 }
 
 impl Match {
-    const fn from_kernel(answer: ical_query::Match) -> Self {
+    const fn from_kernel(answer: query::Match) -> Self {
         match answer {
-            ical_query::Match::Matched => Self::Matched,
-            ical_query::Match::Unmatched => Self::Unmatched,
-            ical_query::Match::Undecided(_) => Self::Undecided,
+            query::Match::Matched => Self::Matched,
+            query::Match::Unmatched => Self::Unmatched,
+            query::Match::Undecided(_) => Self::Undecided,
         }
     }
 }

@@ -6,20 +6,25 @@ This document states the invariants. The reasoning behind each one lives in
 ## Shape
 
 ```text
-        your application (has an HTTP client and a tzdb already)
+       your application (owns HTTP, storage, ACL, clock inputs)
                               ▲
-   ical-dav ── ical-itip ── ical-recur ── ical-tz          ← semantics
-                              ▲
-                          ical-core                        ← model, typed views, serialize
+                         icalkit API
+      model · time · recurrence · scheduling · caldav · interop
                               │
-                        (src/grammar/)                     ← content lines, diagnostics
+                 private implementation layers
+      query (migrated source) · five temporary path dependencies
 ```
 
-Nothing here opens a connection, reads a clock, or bundles time zone data. Everything
-above `ical-core` is a separate crate so that a caller who only reads `.ics` files never
-compiles scheduling or CalDAV. The content line grammar is a layer and not a crate: it is a
-private module tree inside `ical-core`, every item of it re-exported at that crate's root, so
-`ical_core::Token` is the one spelling there is
+Nothing here opens a connection, reads a clock, or bundles time zone data unless the
+`system-tz` adapter is enabled. `icalkit` is the one production API and the only future
+registry contract. `internal::query` is the first former package moved behind its private
+ancestor; `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, and `ical-dav` remain
+unpublished workspace scaffolding while their sources follow it
+([ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md)).
+
+The content line grammar is still a layer and not a package: during migration it remains a
+private module tree inside `ical-core`, every item of it re-exported at that temporary crate's
+root
 ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md), amendments 12 and 17).
 
 Nothing in the tree names that layer's path, and two gates keep it a layer.
@@ -35,11 +40,11 @@ public surface. It is not what the layering member proves, and no compiler enfor
 member itself is held to the workspace by a third rule of the same task, because a pull request
 deleting it used to pass every gate here (ADR 0004, amendment 18).
 
-**One change to this shape is decided and has not landed.** `ical-query` joins the graph
-*above* `ical-core`, `ical-recur`, `ical-tz` and `ical-dav` as the filter evaluator, with
-`ical-dav` taking no dependency in return
-([ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md)). The
-diagram and the table below describe the tree as it stands today, before it lands.
+`ical-query` originally joined above `ical-core`, `ical-recur`, `ical-tz` and `ical-dav`
+as the filter evaluator, with `ical-dav` taking no dependency in return
+([ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md)).
+Its source now lives at `icalkit/src/internal/query`; the dependency direction and all 107
+unit tests were preserved while the package and semver boundary were removed.
 
 `ical-recur` and `ical-tz` are siblings: neither depends on the other. Recurrence needs a
 zone answer, and the caller obtains it from `ical-tz` and passes in the instant, which is why
@@ -127,18 +132,20 @@ gates arrive with the code they constrain; `ROADMAP.md` says which milestone owe
 > the split crates remain implementation scaffolding until their sources move behind private
 > modules. `icalkit-conformance` is an unpublished JSONL CLI/corpus, not a Rust library API.
 
-| Crate | Depends on | std | alloc | Reads a clock | State |
+| Unit | Depends on | std | alloc | Reads a clock | State |
 | --- | --- | --- | --- | --- | --- |
-| `ical-core` | — | no | yes | no | landed (M0) |
-| `ical-recur` | `ical-core` | no | yes | no | landed (M1) |
-| `ical-tz` | `ical-core` | no | yes | no | landed (M2) |
-| `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no | landed (M3) |
-| `ical-dav` | `ical-core` | no | yes | no | landed (M4) |
+| `icalkit` | Jiff plus temporary local packages below | optional | yes | no | sole public crate |
+| `internal::query` | core, recurrence, time-zone and DAV internals | no | yes | no | private source |
+| `ical-core` | — | no | yes | no | unpublished scaffolding (M0) |
+| `ical-recur` | `ical-core` | no | yes | no | unpublished scaffolding (M1) |
+| `ical-tz` | `ical-core` | no | yes | no | unpublished scaffolding (M2) |
+| `ical-itip` | `ical-core`, `ical-recur`, `ical-tz` | no | yes | no | unpublished scaffolding (M3) |
+| `ical-dav` | `ical-core` | no | yes | no | unpublished scaffolding (M4) |
 | `icalkit-conformance` | `icalkit` at runtime; split crates in tests | yes | yes | no | private CLI/corpus (M5) |
 
-One row is owed and does not exist yet: `ical-query` (`ical-core`, `ical-recur`, `ical-tz`,
-`ical-dav`; no std, alloc, no clock). Six crates are publishable, not seven — nothing has been
-published yet, and that is the count the release configuration is held to.
+`icalkit` remains at version `0.0.0`, and publishing is deliberately deferred. The
+`architecture` gate holds the release graph to that one facade, prevents a retired
+`ical-query` package from returning, and freezes Cargo features to `std` and `system-tz`.
 `gates/grammar-layering` is a workspace member and is deliberately not a row here: it declares
 no dependencies, publishes nothing, and compiles `ical-core`'s own sources, so a row claiming
 otherwise would describe a crate that does not exist.
@@ -147,8 +154,8 @@ otherwise would describe a crate that does not exist.
 published and no public API is frozen. What each landed crate does **not** do is in its own
 `# Status` section and in `ROADMAP.md`, which are the two places that stay honest about it.
 `ical-dav` depends on `ical-core` and on nothing else — `just purity` rejects every declared
-dependency of a core crate including dev-dependencies, so the hand-rolled XML tokenizer ADR
-0004 chose is a gate rather than an intention. The private conformance CLI uses only `icalkit`
+dependency of a core crate including dev-dependencies, so the current XML layer remains a gate
+rather than an intention. The private conformance CLI uses only `icalkit`
 at runtime; legacy split-crate dependencies are test-only until those tests migrate to the facade.
 
 "Reads a clock" is a column because a calendar library that quietly asks the OS for the

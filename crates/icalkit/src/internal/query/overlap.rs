@@ -60,9 +60,9 @@
 //! 9.9 gives a `DATE` value is a calendar day, so adding 86400 seconds to a resolved instant would
 //! invent a UTC day across every zone transition. A `None` in `Occupancy` therefore means the
 //! property is **absent**, never that it could not be resolved; a value that could not be resolved
-//! is a [`crate::Undecided`] the caller already holds and returns without reaching here.
+//! is a [`crate::internal::query::Undecided`] the caller already holds and returns without reaching here.
 //!
-//! And a component type with no row is [`crate::Undecided::OverlapUndefined`]: section 9.9's
+//! And a component type with no row is [`crate::internal::query::Undecided::OverlapUndefined`]: section 9.9's
 //! tables are closed, and inventing a rule for a type — or for a state — they omit would make this
 //! crate disagree with a conformant server about which resources a query returns. A `VTODO`
 //! carrying `DURATION` but no `DTSTART` has no row, and neither does a `VEVENT` carrying no
@@ -83,7 +83,7 @@
 use ical_core::{ComponentKind, Instant};
 use ical_dav::TimeRange;
 
-use crate::vocabulary::{BusyPeriod, Match, Undecided};
+use crate::internal::query::vocabulary::{BusyPeriod, Match, Undecided};
 
 /// What the component-type overlap table is reviewed against, one row per passage.
 ///
@@ -112,7 +112,7 @@ pub const OVERLAP_SECTIONS: &[&str] = &[
 /// answers down; this unit has no `ZoneSource` and cannot acquire one.
 ///
 /// A field is `None` when the component **does not carry** the property. It is never `None`
-/// because a value failed to resolve: that failure is a [`crate::Undecided`] the caller already
+/// because a value failed to resolve: that failure is a [`crate::internal::query::Undecided`] the caller already
 /// returned. Conflating the two is how a query silently stops returning a resource that is in the
 /// window, which is the outcome this crate exists to refuse.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -163,7 +163,7 @@ pub(crate) struct Occupancy<'a> {
     /// The instants a `VALARM` triggers at, every repetition included.
     ///
     /// `None` when they could not be computed, which is what a relative `TRIGGER` comes to
-    /// whenever the parent component is not to hand. That is [`crate::Undecided::ValueUnreadable`]
+    /// whenever the parent component is not to hand. That is [`crate::internal::query::Undecided::ValueUnreadable`]
     /// and not "no trigger overlaps": an alarm whose triggers were never computed has not been
     /// shown to fall outside the window. `Some(&[])` is the different claim that it triggers never.
     pub(crate) triggers: Option<&'a [Instant]>,
@@ -514,9 +514,9 @@ fn condition_holds(condition: Condition, context: Context<'_>) -> Option<bool> {
 /// The whole of the rule is `ROWS`. The first row printed for this component type whose state
 /// columns admit the component, and whose condition names only values the component carries, is
 /// the row that answers. There is no fallback: a component reaching no row is
-/// [`crate::Undecided::OverlapUndefined`] and never a resource reported as not matching.
+/// [`crate::internal::query::Undecided::OverlapUndefined`] and never a resource reported as not matching.
 ///
-/// It takes no [`crate::Budget`]. Every entry point of this crate does, because the filter came
+/// It takes no [`crate::internal::query::Budget`]. Every entry point of this crate does, because the filter came
 /// off the wire and the resource came out of somebody else's store — but this is not one. It
 /// allocates nothing, searches nothing, and does work bounded by a twenty-row `static` and by two
 /// slices the caller built and charged for. The expansion and the resolution that cost happen
@@ -885,7 +885,7 @@ mod tests {
     use ical_dav::TimeRange;
 
     use super::{Occupancy, ROWS, overlaps};
-    use crate::vocabulary::{BusyPeriod, BusyType, Match, Undecided};
+    use crate::internal::query::vocabulary::{BusyPeriod, BusyType, Match, Undecided};
 
     /// One expectation, worked out by hand from the cell RFC 4791 section 9.9 prints for the row
     /// the case is in.

@@ -12,6 +12,7 @@ extern crate alloc;
 mod calendar;
 mod engine;
 mod failure;
+mod internal;
 /// Explicit compatibility import and normalization.
 pub mod interop;
 /// Validated read-only calendar views.

@@ -170,7 +170,6 @@ const CORE_CRATES: &[&str] = &[
     "ical-tz",
     "ical-itip",
     "ical-dav",
-    "ical-query",
 ];
 
 /// The sole crate allowed to carry a future registry release contract.
@@ -183,8 +182,10 @@ const PRIVATE_IMPLEMENTATION: &[&str] = &[
     "ical-tz",
     "ical-itip",
     "ical-dav",
-    "ical-query",
 ];
+
+/// Package boundaries whose sources have moved behind the facade and may not be recreated.
+const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 
 /// Narrow third-party boundaries required by the unified public facade.
 ///
@@ -319,7 +320,9 @@ fn print_usage() {
 fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
     let mut violations = release_config_violations(&workspace)?;
+    let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
+    violations.extend(retired_crate_violations(&root, &facade));
     let mut features = table_keys(&facade, "features");
     features.sort();
     let mut expected = vec![
@@ -341,6 +344,32 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// References that would recreate a retired implementation package boundary.
+fn retired_crate_violations(root: &str, facade: &str) -> Vec<String> {
+    let workspace_members = members(root);
+    let dependencies = declared_dependencies(facade);
+    let mut violations = Vec::new();
+    for retired in RETIRED_IMPLEMENTATION {
+        let old_member = format!("crates/{retired}");
+        if workspace_members.iter().any(|member| member == &old_member) {
+            violations.push(format!(
+                "{ROOT_MANIFEST}: retired implementation package `{retired}` remains a \
+                 workspace member (ADR 0013)"
+            ));
+        }
+        if dependencies
+            .iter()
+            .any(|dependency| dependency.package == *retired)
+        {
+            violations.push(format!(
+                "crates/icalkit/Cargo.toml: facade still depends on retired implementation \
+                 package `{retired}` (ADR 0013)"
+            ));
+        }
+    }
+    violations
 }
 
 /// Assignment keys in one top-level TOML table.
@@ -1951,7 +1980,7 @@ mod tests {
         core_list_violations, declared_dependencies, declares, dependency_subtable_name,
         enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
         layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
-        recipe_violations, release_violations, table_keys,
+        recipe_violations, release_violations, retired_crate_violations, table_keys,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2609,7 +2638,6 @@ mod grammar;
             "ical-tz".to_owned(),
             "ical-itip".to_owned(),
             "ical-dav".to_owned(),
-            "ical-query".to_owned(),
         ];
         assert_eq!(
             private_crate_violations(&private),
@@ -2650,6 +2678,34 @@ jiff = "0.2"
         assert_eq!(
             table_keys(manifest, "features"),
             ["default", "std", "system-tz"]
+        );
+    }
+
+    #[test]
+    fn a_retired_package_cannot_return_as_a_member_or_facade_dependency() {
+        let root = r#"
+[workspace]
+members = ["crates/icalkit", "crates/ical-query"]
+"#;
+        let facade = r#"
+[dependencies]
+ical-query = { path = "../ical-query" }
+"#;
+        let violations = retired_crate_violations(root, facade);
+        assert_eq!(violations.len(), 2);
+        assert!(
+            violations
+                .iter()
+                .any(|line| line.contains("workspace member"))
+        );
+        assert!(violations.iter().any(|line| line.contains("still depends")));
+
+        assert_eq!(
+            retired_crate_violations(
+                "[workspace]\nmembers = [\"crates/icalkit\"]",
+                "[dependencies]\njiff = \"0.2\"",
+            ),
+            Vec::<String>::new()
         );
     }
 

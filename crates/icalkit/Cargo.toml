@@ -36,7 +36,6 @@ ical-itip = { path = "../ical-itip", version = "0.0.0", features = [
   "freebusy",
   "imip",
 ] }
-ical-query = { path = "../ical-query", version = "0.0.0" }
 ical-recur = { path = "../ical-recur", version = "0.0.0" }
 ical-tz = { path = "../ical-tz", version = "0.0.0", default-features = false, features = [
   "vtimezone",

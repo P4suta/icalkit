@@ -62,10 +62,10 @@ let calendar = normalized.output().validate()?;
 # Ok::<(), icalkit::Error>(())
 ```
 
-The former `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, `ical-query`, and
-`ical-dav` packages remain only as migration scaffolding while their implementations move
-behind private modules. New consumer tests use only `icalkit`. The conformance corpus remains
-a private executable artifact rather than a second library API. See
+The former `ical-query` package has moved behind an `icalkit` private module. The remaining
+`ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, and `ical-dav` packages are migration
+scaffolding while their implementations follow it. New consumer tests use only `icalkit`.
+The conformance corpus remains a private executable artifact rather than a second library API. See
 [ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md) and
 [ARCHITECTURE.md](ARCHITECTURE.md).
 

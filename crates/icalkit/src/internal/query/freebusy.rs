@@ -7,22 +7,22 @@
 //! # What this unit owns
 //!
 //! Turning a `CALDAV:free-busy-query` and a collection of resources into a
-//! [`crate::FreeBusyReport`]: the busy periods, merged, inside the window the query stated.
+//! [`crate::internal::query::FreeBusyReport`]: the busy periods, merged, inside the window the query stated.
 //!
 //! - Only the components that contribute do. Section 7.10 counts `VEVENT` occurrences whose
 //!   `TRANSP` is `OPAQUE` (the default) and whose `STATUS` is not `CANCELLED`, and the
 //!   `FREEBUSY` periods of `VFREEBUSY` components. A `VEVENT` with `TRANSP:TRANSPARENT` states
 //!   that its time is free and must not appear; counting it reports somebody busy when they said
 //!   they were not.
-//! - `STATUS:TENTATIVE` contributes as [`crate::BusyType::Tentative`] rather than as `BUSY`, and
+//! - `STATUS:TENTATIVE` contributes as [`crate::internal::query::BusyType::Tentative`] rather than as `BUSY`, and
 //!   the two must not be merged into one period.
 //! - Expansion goes through `expand` and the window through the same composition, so a report
 //!   and a `time-range` filter over the same window agree about which occurrences exist.
 //! - Periods are clipped to the window and merged where they overlap and share a
-//!   [`crate::BusyType`]. Merging across types would state busy time the calendar does not.
-//! - Every period is charged through [`crate::FreeBusyReport::push`], which is where
+//!   [`crate::internal::query::BusyType`]. Merging across types would state busy time the calendar does not.
+//! - Every period is charged through [`crate::internal::query::FreeBusyReport::push`], which is where
 //!   `Limits::max_freebusy_periods` binds. A report stopped at that bound calls
-//!   [`crate::FreeBusyReport::note_truncated`]: a caller reading the missing periods as free
+//!   [`crate::internal::query::FreeBusyReport::note_truncated`]: a caller reading the missing periods as free
 //!   would double-book somebody, and a plain list of periods cannot say what is not in it.
 //!
 //! # Section 7.10's mapping, transcribed
@@ -39,7 +39,7 @@
 //! | `TRANSPARENT`      | any of the four       | `FREE`                 |
 //!
 //! A row answering `FREE` states the absence of busy time, so it contributes no period at all:
-//! [`crate::BusyType::Free`]'s own definition says a report generated from events does not write
+//! [`crate::internal::query::BusyType::Free`]'s own definition says a report generated from events does not write
 //! one. The `x-name` row is answered `BUSY`, which is the branch section 7.10 offers and this
 //! crate has no extension vocabulary to take the other one with.
 //!
@@ -54,7 +54,7 @@
 //!
 //! # No occurrence is placed here, and no length is derived here
 //!
-//! [`Placement`] carries `expand`'s own [`crate::expand::Instance`] values, each already on the
+//! [`Placement`] carries `expand`'s own [`crate::internal::query::expand::Instance`] values, each already on the
 //! UTC timeline with a start and an end. That is deliberate and it is the point of the unit
 //! boundary: RFC 4791 section 9.9's table of what period a component occupies belongs to
 //! `overlap`, placing that period through a zone belongs to `expand`, and a report that derived
@@ -85,8 +85,10 @@ use ical_core::{
 };
 use ical_dav::FreeBusyQuery;
 
-use crate::expand::Instance;
-use crate::vocabulary::{Budget, BusyPeriod, BusyType, FreeBusyReport, QueryError, Undecided};
+use crate::internal::query::expand::Instance;
+use crate::internal::query::vocabulary::{
+    Budget, BusyPeriod, BusyType, FreeBusyReport, QueryError, Undecided,
+};
 
 /// What free-busy report generation is reviewed against, one row per passage.
 ///
@@ -180,7 +182,7 @@ pub struct Unplaced {
 
 /// A free-busy report and what it could not account for.
 ///
-/// The two travel together for the reason [`crate::Selection`]'s two halves do: separating them
+/// The two travel together for the reason [`crate::internal::query::Selection`]'s two halves do: separating them
 /// is how the second gets dropped, and a bare [`FreeBusyReport`] is indistinguishable from one
 /// generated over a collection every member of which was placeable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,7 +228,7 @@ impl BusyAnswer {
 
     /// The report, given up along with the record of what is missing from it.
     ///
-    /// Named rather than a `From` impl, for [`crate::Selection::into_calendar`]'s reason:
+    /// Named rather than a `From` impl, for [`crate::internal::query::Selection::into_calendar`]'s reason:
     /// discarding the witness is something a reader of the call site sees happening.
     #[must_use]
     pub fn into_report(self) -> FreeBusyReport {
@@ -613,8 +615,8 @@ mod tests {
     use ical_dav::{FreeBusyQuery, TimeRange};
 
     use super::{BusyAnswer, Placement, free_busy};
-    use crate::expand::Instance;
-    use crate::vocabulary::{Budget, BusyType, Undecided};
+    use crate::internal::query::expand::Instance;
+    use crate::internal::query::vocabulary::{Budget, BusyType, Undecided};
 
     /// 2026-01-01T00:00:00Z, where every window below opens.
     const WINDOW_START: i64 = 1_767_225_600;

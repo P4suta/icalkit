@@ -103,8 +103,10 @@ use ical_core::{
 };
 use ical_dav::{CompSelection, TimeRange};
 
-use crate::expand::{component_start, expand_component, override_impacts, override_recurrence_id};
-use crate::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
+use crate::internal::query::expand::{
+    component_start, expand_component, override_impacts, override_recurrence_id,
+};
+use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
 /// The identity [`zone_id`] looks up.
 ///
@@ -453,7 +455,7 @@ fn expand_calendar_component(
 fn effective_template(
     master: &Component,
     related: &[&Component],
-    instance: crate::Instance,
+    instance: crate::internal::query::Instance,
     zones: Zones<'_>,
 ) -> Result<Component, QueryError> {
     let mut anchors: Vec<(Instant, &Component)> = related
@@ -507,7 +509,7 @@ fn overlay_properties(target: &mut Component, overlay: &Component) {
     }
 }
 
-/// Properties rebuilt from an [`Instance`](crate::Instance), never copied as an override diff.
+/// Properties rebuilt from an [`Instance`](crate::internal::query::Instance), never copied as an override diff.
 fn is_expansion_control(property: &Property) -> bool {
     [
         &PropertyId::RRULE,
@@ -537,7 +539,7 @@ fn is_range_anchor(component: &Component) -> bool {
 /// Build one UTC instance while retaining the selected template's non-recurrence properties.
 fn materialize_instance(
     template: &Component,
-    instance: crate::Instance,
+    instance: crate::internal::query::Instance,
     initial: Instant,
 ) -> Result<Component, QueryError> {
     let mut built = template.clone();
@@ -1243,7 +1245,7 @@ mod tests {
     use super::{
         SUBSELECTION_SECTIONS, limit_freebusy_set, limit_recurrence_set, select, without_values,
     };
-    use crate::{Budget, Match, QueryError, Reduction, Selection, Undecided};
+    use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided};
 
     /// RFC 4791 Appendix B, `abcd2.ics`, carrying the second overridden component that section
     /// 7.8.1's own response for that resource shows and section 7.8.2's narration counts.

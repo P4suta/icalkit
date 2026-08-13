@@ -7,8 +7,8 @@
 //! # What this unit owns
 //!
 //! The recursive shape of a `CALDAV:filter`, and the one public entry point every caller
-//! reaches this crate through: a `CompFilter`, a parsed calendar, a [`crate::Zones`] and a
-//! [`crate::Budget`] in, a [`crate::Match`] out.
+//! reaches this crate through: a `CompFilter`, a parsed calendar, a [`crate::internal::query::Zones`] and a
+//! [`crate::internal::query::Budget`] in, a [`crate::internal::query::Match`] out.
 //!
 //! - The root `comp-filter` names `VCALENDAR` and the tests below it apply to the calendar
 //!   object. A root naming anything else matches nothing, which is section 9.7.1's own reading.
@@ -20,8 +20,8 @@
 //!   disjunction over candidates meet, and where implementations get it wrong.
 //! - `CALDAV:is-not-defined` matches when no subcomponent of that name exists, and is exclusive
 //!   with every other test. A filter `ical-dav` reports as contradictory is
-//!   [`crate::QueryError::Contradictory`] here rather than an answer.
-//! - Composition is [`crate::Match::and`] and [`crate::Match::or`] and never `bool`, so an
+//!   [`crate::internal::query::QueryError::Contradictory`] here rather than an answer.
+//! - Composition is [`crate::internal::query::Match::and`] and [`crate::internal::query::Match::or`] and never `bool`, so an
 //!   undecidable subtree stays undecidable through the whole walk instead of being flattened
 //!   into "no match" at the first `&&`.
 //!
@@ -85,8 +85,8 @@ use alloc::vec::Vec;
 use ical_core::{Component, Document, IgnoreDiagnostics, Item, LimitExceeded};
 use ical_dav::{CompFilter, PropFilter, TextMatch, TimeRange};
 
-use crate::prefilter::Exclusion;
-use crate::{Budget, Match, QueryError, Zones};
+use crate::internal::query::prefilter::Exclusion;
+use crate::internal::query::{Budget, Match, QueryError, Zones};
 
 /// What the component filter tree walk is reviewed against, one row per passage.
 ///
@@ -224,7 +224,7 @@ impl Leaves for Units {
         budget: &mut Budget<'_>,
     ) -> bool {
         matches!(
-            crate::prefilter::excludes(calendar, filter, zones, budget),
+            crate::internal::query::prefilter::excludes(calendar, filter, zones, budget),
             Exclusion::Excluded
         )
     }
@@ -242,7 +242,7 @@ impl Leaves for Units {
         // component occupy a period overlapping that range' and gets an answer; everything about
         // how that answer is obtained is here". Diagnostics are dropped rather than routed,
         // because this crate's front door takes no sink — see the note on [`matches`].
-        crate::expand::component_overlaps(
+        crate::internal::query::expand::component_overlaps(
             component,
             siblings,
             range,
@@ -259,7 +259,7 @@ impl Leaves for Units {
         zones: Zones<'_>,
         budget: &mut Budget<'_>,
     ) -> Result<Match, QueryError> {
-        crate::prop::matches_prop_filter(component, filter, zones, budget)
+        crate::internal::query::prop::matches_prop_filter(component, filter, zones, budget)
     }
 }
 
@@ -545,7 +545,7 @@ fn refuse_impossible_property(filter: &PropFilter) -> Result<(), QueryError> {
 /// resources and says nothing about having done so.
 fn refuse_unsupported_collation(text_match: Option<&TextMatch>) -> Result<(), QueryError> {
     match text_match {
-        Some(test) => crate::collate::collator_of(&test.collation).map(|_| ()),
+        Some(test) => crate::internal::query::collate::collator_of(&test.collation).map(|_| ()),
         None => Ok(()),
     }
 }
@@ -564,7 +564,7 @@ mod tests {
     use ical_tz::FixedOffsetSource;
 
     use super::{Leaves, evaluate};
-    use crate::{Budget, Match, QueryError, Undecided, Zones};
+    use crate::internal::query::{Budget, Match, QueryError, Undecided, Zones};
 
     /// A calendar object holding one `VEVENT` and nothing else.
     const WITH_EVENT: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\

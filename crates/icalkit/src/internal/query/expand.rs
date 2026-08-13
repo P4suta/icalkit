@@ -18,7 +18,7 @@
 //!   exist because an override may move an instance into a window it would never have been
 //!   generated in, and a window composed without them silently drops moved occurrences.
 //! - Run the search under the caller's `Meter`. A search that stops at its budget is
-//!   [`crate::Undecided::SearchExhausted`] through [`crate::Undecided::of_search`] — never an
+//!   [`crate::internal::query::Undecided::SearchExhausted`] through [`crate::internal::query::Undecided::of_search`] — never an
 //!   empty result, and never a resource reported as not matching.
 //! - Stop at the first occurrence that overlaps. A filter asks whether *any* instance is in the
 //!   window, so expanding the rest of a decade after the answer is known is work an attacker
@@ -35,7 +35,7 @@
 //! clock projected onto UTC, not on the UTC timeline. Every instant going in — `DTSTART`,
 //! `UNTIL`, each `RDATE`, `EXDATE` and `RECURRENCE-ID` — goes through `ical_tz::nominal`, every
 //! cadence key coming back through `ical_tz::wall_clock`, and each key is resolved against the
-//! zone one at a time. Do that through [`crate::Zones`], which is the only door in this crate
+//! zone one at a time. Do that through [`crate::internal::query::Zones`], which is the only door in this crate
 //! that reaches a `ZoneSource`.
 //!
 //! [`Series`] therefore takes its instants **already nominal**, which is where the caller's own
@@ -61,7 +61,7 @@
 //! Section 9.6.5 asks for the instances instead of the rule: the returned components carry a
 //! `RECURRENCE-ID`, carry no `RRULE`, `RDATE` or `EXDATE`, and have their `DTSTART` and `DTEND`
 //! rewritten to UTC. That is a calendar the server did not store, so whatever this unit produces
-//! for `subset` carries `crate::Reduction::expanded`.
+//! for `subset` carries `crate::internal::query::Reduction::expanded`.
 //!
 //! [`Instance`] is that shape as a value: three real UTC instants and nothing else, so the unit
 //! that builds the calendar has nothing left to decide about the clock and no way to leave an
@@ -73,7 +73,7 @@
 //!   table is `overlap`'s work. What arrives here is [`InstanceSpan`], the length of the period
 //!   it selected.
 //! - Whether a component type has an overlap rule at all. That is
-//!   [`crate::Undecided::OverlapUndefined`], and it is decided before a window is composed.
+//!   [`crate::internal::query::Undecided::OverlapUndefined`], and it is decided before a window is composed.
 //! - What a reduced calendar looks like as octets. This unit answers instants; `subset` writes
 //!   components.
 
@@ -92,8 +92,8 @@ use ical_recur::{
 };
 use ical_tz::{nominal, wall_clock};
 
-use crate::overlap::Occupancy;
-use crate::vocabulary::{
+use crate::internal::query::overlap::Occupancy;
+use crate::internal::query::vocabulary::{
     Budget, BusyPeriod, BusyType, Match, QueryError, Reduction, Undecided, Zones,
 };
 
@@ -505,7 +505,9 @@ where
             Ok(held) => held,
             Err(reason) => return Ok(Match::Undecided(reason)),
         };
-        return Ok(crate::overlap::overlaps(kind, &held, range));
+        return Ok(crate::internal::query::overlap::overlaps(
+            kind, &held, range,
+        ));
     }
     if !matches!(
         kind,
@@ -530,7 +532,7 @@ pub(crate) fn override_impacts(
 ) -> Result<Match, QueryError> {
     let current = match candidate.kind() {
         Some(kind) => match occupancy_of(candidate, zones, &[]) {
-            Ok(held) => crate::overlap::overlaps(kind, &held, range),
+            Ok(held) => crate::internal::query::overlap::overlaps(kind, &held, range),
             Err(reason) => Match::Undecided(reason),
         },
         None => Match::Undecided(Undecided::OverlapUndefined),
@@ -1614,7 +1616,7 @@ where
 
 /// Report that a filter could not be decided, and why.
 ///
-/// One code for all six reasons, which is what `crate::Undecided::CODE` fixes, and the reason
+/// One code for all six reasons, which is what `crate::internal::query::Undecided::CODE` fixes, and the reason
 /// itself as the diagnostic's subject. A subject is what tells two reports of one code apart, and
 /// six undecidable filters arriving as six equal values would tell a caller that something could
 /// not be answered without saying what.
@@ -1702,7 +1704,7 @@ mod tests {
         EXPANSION_SECTIONS, Instance, InstanceSpan, SearchBounds, Series, SeriesClock,
         calendar_end, calendar_start, expand, overlaps, overlaps_range,
     };
-    use crate::vocabulary::{Budget, Match, Undecided, Zones};
+    use crate::internal::query::vocabulary::{Budget, Match, Undecided, Zones};
 
     /// The zone RFC 4791 section 7.8.2's calendar data is written in.
     const EASTERN: &str = "US/Eastern";

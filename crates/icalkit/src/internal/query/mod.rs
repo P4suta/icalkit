@@ -55,10 +55,6 @@
 //! The vocabulary is landed and frozen; the units below it are in flight. See `ROADMAP.md`
 //! (M5).
 
-#![no_std]
-
-extern crate alloc;
-
 // `vocabulary` is the frozen module: every type two units both name lives there and nothing
 // else does. The eight below it are one unit each, declared here so that no unit has to add a
 // module line to a file another unit is also editing, and grouped by the primitive they share
@@ -74,24 +70,26 @@ mod subset;
 mod vocabulary;
 mod walk;
 
-pub use crate::vocabulary::{
+pub use crate::internal::query::vocabulary::{
     Budget, BusyPeriod, BusyType, Collator, FreeBusyReport, Match, QueryError, Reduction,
     Selection, Undecided, Zones,
 };
 
 // Unit re-exports. One line per unit, appended by that unit and by nothing else, in the order
 // the module block above already has.
-pub use crate::collate::COLLATION_SECTIONS;
-pub use crate::expand::{
+pub use crate::internal::query::collate::COLLATION_SECTIONS;
+pub use crate::internal::query::expand::{
     EXPANSION_SECTIONS, Expansion, Instance, InstanceSpan, SearchBounds, Series, SeriesClock,
     ZONE_SLACK_SECONDS, expand, overlaps,
 };
-pub use crate::freebusy::{BusyAnswer, FREE_BUSY_SECTIONS, Placement, Unplaced, free_busy};
-pub use crate::overlap::OVERLAP_SECTIONS;
-pub use crate::prefilter::PREFILTER_SECTIONS;
-pub use crate::prop::PROPERTY_FILTER_SECTIONS;
-pub use crate::subset::{
+pub use crate::internal::query::freebusy::{
+    BusyAnswer, FREE_BUSY_SECTIONS, Placement, Unplaced, free_busy,
+};
+pub use crate::internal::query::overlap::OVERLAP_SECTIONS;
+pub use crate::internal::query::prefilter::PREFILTER_SECTIONS;
+pub use crate::internal::query::prop::PROPERTY_FILTER_SECTIONS;
+pub use crate::internal::query::subset::{
     SUBSELECTION_SECTIONS, expand_calendar, limit_freebusy_set, limit_recurrence_set,
     limit_recurrence_set_in_window, select, without_values,
 };
-pub use crate::walk::{COMPONENT_FILTER_SECTIONS, matches};
+pub use crate::internal::query::walk::{COMPONENT_FILTER_SECTIONS, matches};

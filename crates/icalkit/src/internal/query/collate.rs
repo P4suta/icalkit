@@ -11,8 +11,8 @@
 //! this crate implements, which is why it is a unit of its own rather than three copies inside
 //! the two that use it.
 //!
-//! - Turn a `ical_dav::Collation` into a [`crate::Collator`] with [`crate::Collator::of`], and
-//!   refuse the ones this crate does not implement as [`crate::QueryError::UnsupportedCollation`].
+//! - Turn a `ical_dav::Collation` into a [`crate::internal::query::Collator`] with [`crate::internal::query::Collator::of`], and
+//!   refuse the ones this crate does not implement as [`crate::internal::query::QueryError::UnsupportedCollation`].
 //!   RFC 4791 section 7.5.1 gives a server the `CALDAV:supported-collation` precondition for
 //!   exactly this, so a collation with no row here is refused and never silently downgraded.
 //! - The reserved identifier `default` (RFC 4790 section 3.1) is one of the names that *does*
@@ -28,7 +28,7 @@
 //! - The substring search is over octets and must not assume the haystack is UTF-8. A value
 //!   `ical-core` preserved because it did not decode is still a value a `text-match` is run
 //!   against, and refusing to search it would silently exclude the resource.
-//! - `negate-condition` is applied by the caller through [`crate::Match::negate`], not here.
+//! - `negate-condition` is applied by the caller through [`crate::internal::query::Match::negate`], not here.
 //!   This unit answers "contains", and a unit that also negated would apply it twice the day a
 //!   caller composed two of them.
 //!
@@ -36,13 +36,13 @@
 //!
 //! `prop` and `walk` both call this with a value they did not decode and a needle that came off
 //! the wire. The signature therefore takes octets on both sides and answers a plain `bool` —
-//! never a [`crate::Match`] — because there is nothing undecidable about a substring search and
+//! never a [`crate::internal::query::Match`] — because there is nothing undecidable about a substring search and
 //! a three-valued answer here would invite one.
 //!
 //! That is not a license to answer `false` when the question was not asked, though: it moves
 //! the shape this crate is built around one door along. A collation this crate cannot make the
-//! comparison under is [`crate::QueryError::UnsupportedCollation`] and never "does not
-//! contain", for the same reason an unresolvable zone is [`crate::Match::Undecided`] and never
+//! comparison under is [`crate::internal::query::QueryError::UnsupportedCollation`] and never "does not
+//! contain", for the same reason an unresolvable zone is [`crate::internal::query::Match::Undecided`] and never
 //! "does not match" — a `false` would exclude resources the client asked for and say nothing
 //! about having done it.
 //!
@@ -64,7 +64,7 @@
 
 use ical_dav::{Collation, TextMatch};
 
-use crate::vocabulary::{Collator, QueryError};
+use crate::internal::query::vocabulary::{Collator, QueryError};
 
 /// What collation and substring matching is reviewed against, one row per passage.
 ///
@@ -144,7 +144,7 @@ pub(crate) fn contains(haystack: &[u8], needle: &[u8], collator: Collator) -> bo
 ///
 /// The door `prop` and `walk` call, and it answers the containment rather than the condition:
 /// a `text-match` carrying `negate-condition="yes"` is satisfied by a value this answers
-/// `false` for. Applying that negation is the caller's, through [`crate::Match::negate`],
+/// `false` for. Applying that negation is the caller's, through [`crate::internal::query::Match::negate`],
 /// because a negation applied here *and* there is applied twice, and the two sites are far
 /// enough apart that nothing at either one would say so.
 pub(crate) fn contains_text(value: &[u8], matcher: &TextMatch) -> Result<bool, QueryError> {
@@ -158,7 +158,7 @@ mod tests {
     use ical_dav::{Collation, TextMatch};
 
     use super::{collator_of, contains, contains_text};
-    use crate::vocabulary::{Collator, QueryError};
+    use crate::internal::query::vocabulary::{Collator, QueryError};
 
     /// Every collation this unit answers under, so a table states its rule once.
     const IMPLEMENTED: [Collator; 2] = [Collator::AsciiCasemap, Collator::Octet];

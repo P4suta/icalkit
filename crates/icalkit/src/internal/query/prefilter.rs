@@ -28,7 +28,7 @@
 //!   alone, and this unit must say "cannot exclude" for it rather than reasoning about where the
 //!   override went.
 //! - A bound that needs a zone and has none is "cannot exclude", not undecidable. The prefilter
-//!   never produces a [`crate::Match`]: it produces "excluded" or "cannot exclude", and every
+//!   never produces a [`crate::internal::query::Match`]: it produces "excluded" or "cannot exclude", and every
 //!   uncertainty resolves to the second, so the three-valued answer is always the walk's.
 //!
 //! # The invariant a reviewer checks this unit against
@@ -65,10 +65,10 @@
 //! through [`Zones`] exactly as the walk's would, and a value it cannot place — no
 //! `CALDAV:timezone` on the query, a `TZID` no source knows, a wall clock inside a gap — leaves
 //! the whole resource unexcludable. That is not politeness: the walk answers
-//! [`crate::Undecided::ZoneUnstated`] for such a value, and `Undecided` is not `Unmatched`, so
+//! [`crate::internal::query::Undecided::ZoneUnstated`] for such a value, and `Undecided` is not `Unmatched`, so
 //! excluding it would break the invariant in the one direction that loses a resource silently.
 //! Where a wall clock names two instants the earlier one is taken, which is a lower bound under
-//! either [`crate::Zones::policy`] and therefore makes the "starts after the range" test hold
+//! either [`crate::internal::query::Zones::policy`] and therefore makes the "starts after the range" test hold
 //! whatever the caller's policy is.
 //!
 //! *The far end is computed on one timeline and widened by two days.* The near end is an
@@ -105,7 +105,7 @@ use ical_dav::{CompFilter, TimeRange};
 use ical_recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
 use ical_tz::nominal;
 
-use crate::{Budget, Zones};
+use crate::internal::query::{Budget, Zones};
 
 /// What the expansion-free prefilter is reviewed against, one row per passage.
 ///
@@ -197,7 +197,7 @@ pub(crate) enum Exclusion {
 ///
 /// A filter carrying no `time-range`, or one `ical-dav` reports as contradictory, is
 /// [`Exclusion::CannotExclude`]: there is nothing to exclude on, and a contradictory filter is
-/// [`crate::QueryError::Contradictory`] in the walk rather than an answer here.
+/// [`crate::internal::query::QueryError::Contradictory`] in the walk rather than an answer here.
 ///
 /// `budget` is read and charged. An already exhausted ledger excludes nothing, because a bound
 /// read under one is a bound that may have been cut short, and the octets of each `RRULE` this
@@ -393,7 +393,7 @@ fn outside(occupied: Occupancy, range: TimeRange) -> bool {
 ///
 /// A UTC value places itself. Everything else is a wall clock, and a wall clock is placed by
 /// [`Zones`] or not at all (`docs/adr/0003`). Where the zone names two instants the earlier is
-/// taken, which is a lower bound under either [`crate::Zones::policy`] — so the one test this
+/// taken, which is a lower bound under either [`crate::internal::query::Zones::policy`] — so the one test this
 /// answer decides, whether the series starts after the range ends, does not depend on the
 /// caller's reading of a fold.
 fn placed(value: DateTimeValue<'_>, zones: Zones<'_>) -> Option<Instant> {
@@ -613,7 +613,7 @@ mod tests {
     use ical_tz::FixedOffsetSource;
 
     use super::{Exclusion, excludes};
-    use crate::{Budget, Zones};
+    use crate::internal::query::{Budget, Zones};
 
     /// The one identifier any source in these tests answers to.
     const PARIS: &str = "Europe/Paris";

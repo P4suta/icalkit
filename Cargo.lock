@@ -64,16 +64,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ical-query"
-version = "0.0.0"
-dependencies = [
- "ical-core",
- "ical-dav",
- "ical-recur",
- "ical-tz",
-]
-
-[[package]]
 name = "ical-recur"
 version = "0.0.0"
 dependencies = [
@@ -101,7 +91,6 @@ dependencies = [
  "ical-core",
  "ical-dav",
  "ical-itip",
- "ical-query",
  "ical-recur",
  "ical-tz",
  "jiff",
