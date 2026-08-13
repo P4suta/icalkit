@@ -772,23 +772,23 @@ impl<'a, S: DiagnosticSink + ?Sized> Iterator for RecurrenceSearch<'a, S> {
 /// Nothing follows a terminal step, and asking again is defined rather than merely harmless.
 impl<S: DiagnosticSink + ?Sized> FusedIterator for RecurrenceSearch<'_, S> {}
 
-impl RecurrenceInput<'_> {
+impl<'a> RecurrenceInput<'a> {
     /// Search this series over `window`, charging `meter` and reporting to `sink`.
     ///
     /// The meter is borrowed rather than owned for the whole life of the search, which is what
     /// makes a fan-out over five thousand series bounded in aggregate and not only per series
     /// (`docs/adr/0010`). It is also the second of the three reports of the terminal state: a
     /// caller that discarded every [`SearchStep`] can still find `Meter::is_exhausted`.
-    pub fn search<'s, S>(
-        &'s self,
+    pub fn search<S>(
+        self,
         window: Window,
-        meter: &'s mut Meter,
-        sink: &'s mut S,
-    ) -> RecurrenceSearch<'s, S>
+        meter: &'a mut Meter,
+        sink: &'a mut S,
+    ) -> RecurrenceSearch<'a, S>
     where
         S: DiagnosticSink + ?Sized,
     {
-        RecurrenceSearch::start(*self, None, window, meter, sink)
+        RecurrenceSearch::start(self, None, window, meter, sink)
     }
 
     /// Carry on a search from `cursor`, over `window`.
@@ -797,17 +797,17 @@ impl RecurrenceInput<'_> {
     /// next month is asking about a different window and a cursor that carried one would make
     /// that the exception. What the cursor carries instead is the count, so a `COUNT`-bounded
     /// rule resumed here yields the recurrence set the file describes.
-    pub fn resume<'s, S>(
-        &'s self,
+    pub fn resume<S>(
+        self,
         cursor: SearchCursor,
         window: Window,
-        meter: &'s mut Meter,
-        sink: &'s mut S,
-    ) -> RecurrenceSearch<'s, S>
+        meter: &'a mut Meter,
+        sink: &'a mut S,
+    ) -> RecurrenceSearch<'a, S>
     where
         S: DiagnosticSink + ?Sized,
     {
-        RecurrenceSearch::start(*self, Some(cursor), window, meter, sink)
+        RecurrenceSearch::start(self, Some(cursor), window, meter, sink)
     }
 }
 

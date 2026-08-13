@@ -6,7 +6,9 @@
 
 use core::str;
 
-use ical_core::{Component, Item, Property};
+use ical_core::{Component, DateTimeValue, DecodeValue as _, Item, Property};
+
+use crate::time::IcalDateTime;
 
 /// A validated iCalendar name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -106,6 +108,17 @@ impl<'a> EventRef<'a> {
             .properties()
             .find(|property| property.is_named(wanted.as_bytes()))
             .map(PropertyRef::new)
+    }
+
+    /// The optional DTSTART, whose value was validated during calendar promotion.
+    #[must_use]
+    pub fn dtstart(self) -> Option<IcalDateTime> {
+        let property = self
+            .component
+            .properties()
+            .find(|property| property.is_named(b"DTSTART"))?;
+        let value = DateTimeValue::decode_property(property).ok()?;
+        crate::time::from_core_date_time(value)
     }
 
     /// View this event through the generic component API.

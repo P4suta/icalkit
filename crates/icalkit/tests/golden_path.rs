@@ -142,3 +142,39 @@ fn editor_refuses_content_line_injection_without_touching_the_calendar() {
     drop(edit);
     assert_eq!(calendar.to_bytes(), before);
 }
+
+#[test]
+fn known_date_times_are_validated_once_and_leap_evidence_is_typed() {
+    const LEAP: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:leap@example.test\r\n\
+DTSTAMP:20260813T120000Z\r\n\
+DTSTART:20260630T235960Z\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let calendar = Calendar::parse(LEAP).unwrap();
+    let start = calendar.events().next().unwrap().dtstart().unwrap();
+    assert!(start.has_leap_second());
+
+    let invalid = LEAP
+        .windows(b"20260630T235960Z".len())
+        .position(|window| window == b"20260630T235960Z")
+        .map(|at| {
+            let mut bytes = LEAP.to_vec();
+            bytes.splice(
+                at..at + b"20260630T235960Z".len(),
+                b"20261330T235959Z".iter().copied(),
+            );
+            bytes
+        })
+        .unwrap();
+    let error = Calendar::parse(&invalid).unwrap_err();
+    assert!(
+        error
+            .issues()
+            .iter()
+            .any(|issue| issue.code().as_str() == "icalkit.validation.invalid-date-time")
+    );
+}

@@ -5,7 +5,9 @@
 use alloc::boxed::Box;
 use core::fmt::{self, Debug, Formatter};
 
-use ical_core::Meter;
+use alloc::vec::Vec;
+
+use ical_core::{Diagnostic, Meter};
 
 use crate::calendar::parse_calendar;
 use crate::interop::Import;
@@ -31,6 +33,7 @@ impl Engine {
         Session {
             engine: self,
             meter: Meter::new(self.policy.limits),
+            recurrence_diagnostics: Vec::new(),
         }
     }
 
@@ -112,8 +115,9 @@ impl Debug for EngineBuilder {
 /// One aggregate resource-budget scope.
 #[derive(Debug)]
 pub struct Session<'a> {
-    engine: &'a Engine,
-    meter: Meter,
+    pub(crate) engine: &'a Engine,
+    pub(crate) meter: Meter,
+    pub(crate) recurrence_diagnostics: Vec<Diagnostic>,
 }
 
 impl Session<'_> {

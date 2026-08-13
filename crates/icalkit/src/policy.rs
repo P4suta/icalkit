@@ -32,6 +32,20 @@ impl ResourcePolicy {
     pub const fn max_input_bytes(self) -> u64 {
         self.limits.max_input_bytes()
     }
+
+    /// The same policy with a different occurrence ceiling for an aggregate session.
+    #[must_use]
+    pub const fn with_occurrences_per_search(self, occurrences: u32) -> Self {
+        Self {
+            limits: self.limits.with_occurrences_per_search(occurrences),
+        }
+    }
+
+    /// The configured occurrence ceiling for an aggregate session.
+    #[must_use]
+    pub const fn occurrences_per_search(self) -> u32 {
+        self.limits.occurrences_per_search()
+    }
 }
 
 impl Default for ResourcePolicy {

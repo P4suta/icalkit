@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 use core::str;
 
 use ical_core::{
-    Component, ContentLineReader, Diagnostic, Document, Item, Meter, Property, PropertyId,
-    TextValue,
+    Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, Document, Item,
+    Meter, Property, PropertyId, TextValue,
 };
 
 use crate::ResourcePolicy;
@@ -17,9 +17,9 @@ use crate::model::EventRef;
 /// A strictly validated, losslessly stored calendar object.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Calendar {
-    document: Document,
+    pub(crate) document: Document,
     issues: Vec<Issue>,
-    policy: ResourcePolicy,
+    pub(crate) policy: ResourcePolicy,
 }
 
 impl Calendar {
@@ -116,6 +116,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_text_is_utf8(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
+    if first.is_some_and(|calendar| !known_date_times_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-date-time"));
+    }
 }
 
 fn known_text_is_utf8(component: &Component) -> bool {
@@ -148,6 +151,34 @@ fn is_text_property(property: &Property) -> bool {
         b"UID",
     ];
     TEXT_NAMES.iter().any(|name| property.is_named(name))
+}
+
+fn known_date_times_are_valid(component: &Component) -> bool {
+    const DATE_TIME_NAMES: &[&[u8]] = &[
+        b"COMPLETED",
+        b"CREATED",
+        b"DTEND",
+        b"DTSTAMP",
+        b"DTSTART",
+        b"DUE",
+        b"LAST-MODIFIED",
+        b"RECURRENCE-ID",
+    ];
+    for property in component.properties() {
+        if DATE_TIME_NAMES.iter().any(|name| property.is_named(name)) {
+            let Ok(value) = DateTimeValue::decode_property(property) else {
+                return false;
+            };
+            if crate::time::from_core_date_time(value).is_none() {
+                return false;
+            }
+        }
+    }
+    component
+        .items()
+        .iter()
+        .filter_map(Item::as_component)
+        .all(known_date_times_are_valid)
 }
 
 /// A transactional calendar editor. Dropping it rolls every edit back.
@@ -214,7 +245,10 @@ impl Editor<'_> {
     }
 }
 
-fn find_event_mut<'a>(document: &'a mut Document, wanted: &str) -> Option<&'a mut Component> {
+pub(crate) fn find_event_mut<'a>(
+    document: &'a mut Document,
+    wanted: &str,
+) -> Option<&'a mut Component> {
     for calendar in document.components_mut() {
         for item in calendar.items_mut() {
             let Some(component) = item.as_component_mut() else {
