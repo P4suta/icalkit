@@ -5,8 +5,9 @@
 # Release configuration. Nothing here publishes automatically: the workspace is at 0.0.0
 # and the first published version should be a decision, not a side effect of merging.
 #
-# The production crates move as one version. The conformance runner is an unpublished workspace
-# tool and is intentionally absent from this release graph (docs/adr/0013).
+# `icalkit` is the sole future registry contract. The six temporary implementation crates and
+# the conformance runner are unpublished workspace members and intentionally absent from this
+# release graph (docs/adr/0013).
 
 [workspace]
 dependencies_update = false
@@ -18,52 +19,14 @@ git_tag_enable = false
 git_release_enable = false
 changelog_update = false
 
-# `ical-core` carries the changelog because every other crate is a layer over its model, so
-# its history is the stack's history. One changelog per published crate, six of them, would
-# describe one release six times.
-#
-# The crate set is written here and in the root manifest's `members`, and `xtask purity` reads
-# the two against each other: this file described a seven-crate workspace for a full landing
-# after `ical-grammar` was folded into `ical-core`, because the release path is the one path no
-# gate runs (docs/adr/0004, D-0003).
+# The root changelog belongs to the facade. `xtask architecture` holds this list against the
+# workspace's publish flags; actual publication remains deferred until the private implementation
+# sources have moved into `icalkit`.
 [[package]]
-name = "ical-core"
-version_group = "icalkit"
+name = "icalkit"
 changelog_update = true
 changelog_path = "./CHANGELOG.md"
-changelog_include = [
-  "icalkit",
-  "ical-recur",
-  "ical-tz",
-  "ical-itip",
-  "ical-dav",
-  "ical-query",
-]
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
 git_release_enable = true
 git_release_draft = true
-
-[[package]]
-name = "icalkit"
-version_group = "icalkit"
-
-[[package]]
-name = "ical-recur"
-version_group = "icalkit"
-
-[[package]]
-name = "ical-tz"
-version_group = "icalkit"
-
-[[package]]
-name = "ical-itip"
-version_group = "icalkit"
-
-[[package]]
-name = "ical-dav"
-version_group = "icalkit"
-
-[[package]]
-name = "ical-query"
-version_group = "icalkit"

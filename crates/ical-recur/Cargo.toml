@@ -4,6 +4,7 @@
 
 [package]
 name = "ical-recur"
+publish = false
 description = "RFC 5545 recurrence: RRULE, RDATE, and EXDATE expansion as a bounded lazy iterator"
 keywords = ["rrule", "recurrence", "icalendar", "calendar", "no-std"]
 categories = ["date-and-time", "algorithms", "no-std"]

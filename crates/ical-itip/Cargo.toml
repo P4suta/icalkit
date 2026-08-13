@@ -4,6 +4,7 @@
 
 [package]
 name = "ical-itip"
+publish = false
 description = "RFC 5546 iTIP scheduling semantics as described transitions, with authorization included"
 keywords = ["itip", "imip", "rfc5546", "scheduling", "icalendar"]
 categories = ["date-and-time", "email", "no-std"]

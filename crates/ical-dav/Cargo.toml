@@ -4,6 +4,7 @@
 
 [package]
 name = "ical-dav"
+publish = false
 description = "RFC 4791 CalDAV requests and responses, sans-I/O, usable from the client and the server side"
 keywords = ["caldav", "webdav", "rfc4791", "calendar", "sans-io"]
 categories = ["network-programming", "web-programming", "no-std"]

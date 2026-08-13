@@ -4,6 +4,7 @@
 
 [package]
 name = "ical-core"
+publish = false
 description = "RFC 5545 iCalendar model, parser, and serializer: lossless round trip, sans-I/O, no_std"
 keywords = ["icalendar", "ics", "rfc5545", "calendar", "no-std"]
 categories = ["parser-implementations", "date-and-time", "no-std"]

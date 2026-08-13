@@ -4,6 +4,7 @@
 
 [package]
 name = "ical-query"
+publish = false
 description = "RFC 4791 CalDAV filter evaluation: does this calendar resource match this calendar-query"
 keywords = ["caldav", "rfc4791", "calendar", "query", "no-std"]
 categories = ["date-and-time", "network-programming", "no-std"]

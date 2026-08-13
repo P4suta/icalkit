@@ -47,6 +47,12 @@ pre-commit:
       run: mise exec -- just purity
       fail_text: "The core gained a std, clock, network, or tzdb dependency (docs/adr/0004)."
 
+    architecture:
+      tags: lint
+      glob: "{**/Cargo.toml,release-plz.toml,xtask/src/**/*.rs}"
+      run: mise exec -- just architecture
+      fail_text: "The single-crate release boundary or facade feature vocabulary drifted (docs/adr/0013)."
+
     reuse:
       tags: license
       glob: "{**/*.rs,**/*.toml,**/*.md,**/*.yml,Justfile,REUSE.toml,LICENSES/*}"

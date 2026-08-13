@@ -4,6 +4,7 @@
 
 [package]
 name = "ical-tz"
+publish = false
 description = "RFC 5545 VTIMEZONE against a caller-supplied time zone source: no bundled tzdb, no clock"
 keywords = ["vtimezone", "timezone", "icalendar", "calendar", "no-std"]
 categories = ["date-and-time", "internationalization", "no-std"]
