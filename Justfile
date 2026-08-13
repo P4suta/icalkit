@@ -9,7 +9,7 @@ export RUSTDOCFLAGS := "-D warnings"
 
 # The sans-I/O core: no std, no clock, no network, no bundled time zone database
 # (docs/adr/0003, docs/adr/0004).
-core_crates := "-p ical-core -p ical-recur -p ical-tz -p ical-itip -p ical-dav -p ical-query"
+core_crates := "-p icalkit -p ical-core -p ical-recur -p ical-tz -p ical-itip -p ical-dav -p ical-query"
 
 # List the available development commands.
 default:
@@ -115,6 +115,7 @@ zizmor:
 
 # Verify every workspace crate at the shared declared MSRV.
 msrv:
+    cargo msrv verify --path crates/icalkit
     cargo msrv verify --path crates/ical-core
     cargo msrv verify --path crates/ical-recur
     cargo msrv verify --path crates/ical-tz

@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "icalkit"
+description = "A strict, lossless iCalendar, iTIP and CalDAV toolkit"
+keywords = ["icalendar", "caldav", "itip", "rrule", "calendar"]
+categories = ["date-and-time", "network-programming", "no-std"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["std", "system-tz"]
+std = ["jiff/std"]
+system-tz = [
+  "std",
+  "jiff/tz-system",
+  "jiff/tzdb-bundle-platform",
+  "jiff/tzdb-concatenated",
+  "jiff/tzdb-zoneinfo",
+]
+
+[dependencies]
+ical-core = { path = "../ical-core", version = "0.0.0" }
+ical-dav = { path = "../ical-dav", version = "0.0.0", features = [
+  "sync-collection",
+] }
+ical-itip = { path = "../ical-itip", version = "0.0.0", features = [
+  "freebusy",
+  "imip",
+] }
+ical-query = { path = "../ical-query", version = "0.0.0" }
+ical-recur = { path = "../ical-recur", version = "0.0.0" }
+ical-tz = { path = "../ical-tz", version = "0.0.0", default-features = false, features = [
+  "vtimezone",
+] }
+jiff = { version = "0.2.35", default-features = false, features = [
+  "alloc",
+  "tz-fat",
+] }
+
+[lints]
+workspace = true

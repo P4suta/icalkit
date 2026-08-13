@@ -5,6 +5,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/icalkit",
   "crates/ical-core",
   "crates/ical-recur",
   "crates/ical-tz",

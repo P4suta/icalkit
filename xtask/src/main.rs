@@ -160,6 +160,7 @@ use std::process::ExitCode;
 /// allowed `std` and depends on every crate here, which is what makes it a consumer of the
 /// core rather than part of it.
 const CORE_CRATES: &[&str] = &[
+    "icalkit",
     "ical-core",
     "ical-recur",
     "ical-tz",
@@ -167,6 +168,13 @@ const CORE_CRATES: &[&str] = &[
     "ical-dav",
     "ical-query",
 ];
+
+/// Narrow third-party boundaries required by the unified public facade.
+///
+/// This is intentionally keyed by both owner and package. Adding an external dependency to
+/// another core crate, or adding another package to `icalkit`, remains a gate failure until
+/// the architecture records the new boundary explicitly.
+const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[("icalkit", "jiff")];
 
 /// The published members that are deliberately not part of the sans-I/O core.
 ///
@@ -1183,12 +1191,15 @@ fn manifest_violations(crate_name: &str, manifest: &str) -> Vec<String> {
                  exists only to make the linked name differ from the written one (ADR 0004)"
             ));
         }
-        if !CORE_CRATES.contains(&package.as_str()) {
+        let is_core = CORE_CRATES.contains(&package.as_str());
+        let is_recorded_boundary =
+            ALLOWED_EXTERNAL_DEPENDENCIES.contains(&(crate_name, package.as_str()));
+        if !is_core && !is_recorded_boundary {
             violations.push(format!(
                 "{crate_name}: declares `{package}`; a core crate may depend only on other \
-                 core crates (ADR 0004)"
+                 core crates or an explicitly recorded facade boundary (ADR 0013)"
             ));
-        } else if !dependency.local {
+        } else if is_core && !dependency.local {
             violations.push(format!(
                 "{crate_name}: `{package}` does not resolve from inside this workspace; use \
                  `workspace = true` or a path under crates/ (ADR 0004)"
@@ -1292,10 +1303,30 @@ impl Declared {
 fn declared_dependencies(manifest: &str) -> Vec<Declared> {
     let mut declared = Vec::new();
     let mut subtable: Option<(String, Vec<String>)> = None;
+    let mut inline_table: Option<(String, String)> = None;
     let mut inside_dependency_table = false;
 
     for line in manifest.lines() {
         let line = line.trim();
+        let continuing_inline_table = inline_table.is_some();
+        let mut completed_inline_table = false;
+        if let Some((_, spec)) = inline_table.as_mut() {
+            if !line.is_empty() && !line.starts_with('#') {
+                spec.push(' ');
+                spec.push_str(line);
+            }
+            if inline_table_is_complete(spec) {
+                completed_inline_table = true;
+            }
+        }
+        if completed_inline_table {
+            if let Some((key, spec)) = inline_table.take() {
+                declared.push(Declared::read(&key, &spec));
+            }
+        }
+        if continuing_inline_table {
+            continue;
+        }
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -1322,15 +1353,56 @@ fn declared_dependencies(manifest: &str) -> Vec<Declared> {
             if let Some((key, spec)) = line.split_once('=') {
                 let key = key.trim().trim_matches('"');
                 if !key.is_empty() {
-                    declared.push(Declared::read(key, spec));
+                    if spec.trim_start().starts_with('{') && !inline_table_is_complete(spec) {
+                        inline_table = Some((key.to_owned(), spec.trim().to_owned()));
+                    } else {
+                        declared.push(Declared::read(key, spec));
+                    }
                 }
             }
         }
     }
 
+    if let Some((key, spec)) = inline_table {
+        declared.push(Declared::read(&key, &spec));
+    }
     flush_subtable(&mut subtable, &mut declared);
     declared.sort();
     declared
+}
+
+/// Whether a possibly wrapped inline TOML table has reached its closing brace.
+fn inline_table_is_complete(spec: &str) -> bool {
+    let mut braces = 0usize;
+    let mut quoted = false;
+    let mut literal = false;
+    let mut escaped = false;
+    for character in spec.chars() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if literal {
+            if character == '\'' {
+                literal = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => quoted = true,
+            '\'' => literal = true,
+            '{' => braces = braces.saturating_add(1),
+            '}' => braces = braces.saturating_sub(1),
+            _ => {},
+        }
+    }
+    braces == 0
 }
 
 /// Turn a gathered `[dependencies.name]` sub-table into one entry.
@@ -1911,6 +1983,40 @@ workspace = true
     }
 
     #[test]
+    fn a_formatted_multiline_path_dependency_is_still_local() {
+        let manifest = r#"
+[dependencies]
+ical-dav = { path = "../ical-dav", version = "0.0.0", features = [
+  "sync-collection",
+] }
+"#;
+        assert_eq!(
+            manifest_violations("icalkit", manifest),
+            Vec::<String>::new(),
+            "taplo may wrap feature-bearing inline tables without changing their provenance"
+        );
+    }
+
+    #[test]
+    fn only_the_facade_may_expose_the_jiff_boundary() {
+        let manifest = r#"
+[dependencies]
+jiff = { version = "0.2.35", default-features = false, features = ["alloc"] }
+"#;
+        assert_eq!(
+            manifest_violations("icalkit", manifest),
+            Vec::<String>::new(),
+            "the unified facade owns the public civil-time boundary"
+        );
+        assert!(
+            manifest_violations("ical-recur", manifest)
+                .iter()
+                .any(|line| line.contains("jiff")),
+            "split implementation crates must not acquire a second public time boundary"
+        );
+    }
+
+    #[test]
     fn a_core_crate_taken_from_a_registry_is_a_violation() {
         let manifest = "[dependencies]
 ical-core = \"0.1\"
@@ -2382,6 +2488,7 @@ mod grammar;
     #[test]
     fn a_published_member_is_in_the_core_or_written_down_as_outside_it() {
         let published = [
+            "icalkit".to_owned(),
             "ical-core".to_owned(),
             "ical-recur".to_owned(),
             "ical-tz".to_owned(),
@@ -2402,7 +2509,7 @@ mod grammar;
             core_list_violations(&added)
                 .iter()
                 .any(|line| line.contains("`ical-carddav`")),
-            "a seventh publishable crate acquires the dependency rule or an exemption, and \
+            "another publishable crate acquires the dependency rule or an exemption, and \
              saying neither is how a crate comes to be bound by nothing"
         );
 
