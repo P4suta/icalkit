@@ -7,17 +7,17 @@
 //! # What this unit owns
 //!
 //! One ordered merge of four sources — rule candidates, `RDATE` additions, `EXDATE`
-//! exclusions, and the override table — producing [`crate::search::Occurrence`] values with
+//! exclusions, and the override table — producing [`crate::internal::recur::search::Occurrence`] values with
 //! their provenance tagged and their diffs composed. It is a linear merge over sorted inputs
 //! and it materializes nothing.
 //!
 //! Linear is a claim about this file and not only about its inputs. All four sources are walked
 //! by cursors that only move forward, the override table included:
-//! [`crate::input::OverrideSet::anchors_before`] restarts at the beginning of that table for
+//! [`crate::internal::recur::input::OverrideSet::anchors_before`] restarts at the beginning of that table for
 //! every key it is asked about, which is the right shape for a caller recomposing one occurrence
 //! on demand and the wrong shape for a merge that will ask about every key in order. So the
 //! merge keeps its own position in the override slice and folds each anchor as it passes it.
-//! [`crate::search::Occurrence::applied_anchors`] still recomposes from the start, so a caller
+//! [`crate::internal::recur::search::Occurrence::applied_anchors`] still recomposes from the start, so a caller
 //! sees the same set the merge folded, arrived at the other way.
 //!
 //! # How a caller drives it
@@ -68,7 +68,7 @@
 //! 4. **`RANGE=THISANDFUTURE` is a property diff, not a time delta.** An anchor that changes
 //!    only `LOCATION` changes `LOCATION` on every later instance, each of which keeps its own
 //!    time. Implementing this as a scalar shift is the bug five of seven bake-off proposals
-//!    shared, and [`crate::input::Override::shift_seconds`] derives the shift from the move
+//!    shared, and [`crate::internal::recur::input::Override::shift_seconds`] derives the shift from the move
 //!    precisely so that nothing can store one instead.
 //! 5. **An `RDATE` coinciding with a rule instance yields one occurrence, not two.** The
 //!    recurrence set is a set. The survivor is not tagged `AddedByRdate`, because that tag means
@@ -89,7 +89,7 @@
 //! # The shift, composed rather than accumulated
 //!
 //! An anchor that moved its own instance states a shift, derived by
-//! [`crate::input::Override::shift_seconds`] from its `RECURRENCE-ID` to where it moved. That
+//! [`crate::internal::recur::input::Override::shift_seconds`] from its `RECURRENCE-ID` to where it moved. That
 //! shift reaches later cadence keys the same way the anchor's `LOCATION` does: it is one stated
 //! field of one diff. So shifts compose by the rule the rest of the diff composes by — a later
 //! anchor's stated shift overwrites an earlier one's, and an anchor that moved nothing states no
@@ -129,7 +129,7 @@
 //! - It must not merge a second `RRULE`. The extra is dropped with
 //!   [`ical_core::DiagnosticCode::ExtraRecurrenceRuleIgnored`], because `COUNT` is ambiguous
 //!   across a union and the cursor carries one counter. [`keep_first_rule`] is where that
-//!   happens, and it is here rather than beside [`crate::input::RecurrenceInput`] because that
+//!   happens, and it is here rather than beside [`crate::internal::recur::input::RecurrenceInput`] because that
 //!   type holds one rule by construction — by the time an input exists the second rule is
 //!   already gone, and a drop nobody reported is the silence this crate is against.
 //! - It must not charge a candidate or an occurrence. Unit 7 owns those two charge sites. The
@@ -150,9 +150,9 @@ use ical_core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, report_diagnostic,
 };
 
-use crate::input::{Override, RecurrenceInput};
-use crate::rule::RecurrenceRule;
-use crate::search::{Occurrence, OverrideProvenance};
+use crate::internal::recur::input::{Override, RecurrenceInput};
+use crate::internal::recur::rule::RecurrenceRule;
+use crate::internal::recur::search::{Occurrence, OverrideProvenance};
 
 /// One candidate instant and where it came from, before anything decided whether it survives.
 #[derive(Clone, Copy, Debug)]
@@ -187,7 +187,7 @@ pub struct Merge<'a> {
 impl<'a> Merge<'a> {
     /// A merge over everything `input` says about which occurrences exist.
     ///
-    /// Infallible and unmetered: [`crate::input::RecurrenceInput::new`] already refused an
+    /// Infallible and unmetered: [`crate::internal::recur::input::RecurrenceInput::new`] already refused an
     /// unsorted list and charged each one to its own dimension, and checking either again here
     /// would be a second opinion that can eventually disagree with the first.
     #[must_use]
@@ -435,11 +435,11 @@ mod tests {
     };
 
     use super::{Merge, keep_first_rule};
-    use crate::input::{
+    use crate::internal::recur::input::{
         Override, OverrideRange, OverrideSet, PropertyChange, PropertyDiff, RecurrenceInput,
     };
-    use crate::rule::{Freq, RecurrenceRule, RecurrenceRuleBuilder, ValueKind};
-    use crate::search::{Occurrence, OverrideProvenance};
+    use crate::internal::recur::rule::{Freq, RecurrenceRule, RecurrenceRuleBuilder, ValueKind};
+    use crate::internal::recur::search::{Occurrence, OverrideProvenance};
 
     /// The instant a UTC civil date and time name.
     ///

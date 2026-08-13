@@ -6,11 +6,11 @@
 
 use alloc::vec::Vec;
 
-use ical_core::{Diagnostic, Instant, Meter};
-use ical_recur::{
+use crate::internal::recur::{
     OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, SearchCursor, SearchStep,
     ValueKind,
 };
+use ical_core::{Diagnostic, Instant, Meter};
 
 use crate::failure::Issue;
 use crate::time::Timestamp;
@@ -29,8 +29,9 @@ impl Rule {
         let policy = ResourcePolicy::secure();
         let mut meter = Meter::new(policy.limits);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let inner = ical_recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics)
-            .map_err(|_| Error::single("icalkit.recurrence.invalid-rule"))?;
+        let inner =
+            crate::internal::recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics)
+                .map_err(|_| Error::single("icalkit.recurrence.invalid-rule"))?;
         let issues: Vec<Issue> = diagnostics
             .into_iter()
             .map(Issue::from_diagnostic)
@@ -113,14 +114,14 @@ impl Rule {
 pub struct Window {
     start: Timestamp,
     end: Timestamp,
-    inner: ical_recur::Window,
+    inner: crate::internal::recur::Window,
 }
 
 impl Window {
     /// Construct a whole-second window, or return `None` for an empty or fractional one.
     #[must_use]
     pub fn new(start: Timestamp, end: Timestamp) -> Option<Self> {
-        let inner = ical_recur::Window::new(instant(start)?, instant(end)?)?;
+        let inner = crate::internal::recur::Window::new(instant(start)?, instant(end)?)?;
         Some(Self { start, end, inner })
     }
 
@@ -187,7 +188,6 @@ impl Occurrences<'_> {
             Some(SearchStep::BudgetExhausted(_)) => {
                 Err(Error::single("icalkit.recurrence.budget-exhausted"))
             },
-            Some(_) => Err(Error::single("icalkit.recurrence.unsupported-step")),
             None => Ok(None),
         }
     }

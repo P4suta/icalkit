@@ -27,7 +27,7 @@ use core::num::{NonZeroI8, NonZeroU32};
 
 use ical_core::{Instant, Weekday};
 
-use crate::table::PartsPresent;
+use crate::internal::recur::table::PartsPresent;
 
 /// How often the base cadence repeats, from RFC 5545 section 3.3.10's `freq` production.
 ///
@@ -211,7 +211,7 @@ pub enum ValueKind {
 ///
 /// `-1MO` is the last Monday, `2MO` is the second. Which scope it counts within is not a
 /// property of this value — RFC 5545 section 3.3.10's Note 1 and Note 2 decide that from the
-/// frequency and from which other parts are present, and `crate::table` resolves it.
+/// frequency and from which other parts are present, and `crate::internal::recur::table` resolves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WeekdayNum {
     /// The ordinal, within ±53 and never zero.

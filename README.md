@@ -62,11 +62,11 @@ let calendar = normalized.output().validate()?;
 # Ok::<(), icalkit::Error>(())
 ```
 
-The former `ical-query` evaluator and the iTIP kernel have moved behind `icalkit` private
-modules. The remaining `ical-core`, `ical-recur`, `ical-tz`, and `ical-dav` packages are
-migration scaffolding while their implementations follow them. A temporary `ical-itip`
-compatibility harness compiles the moved source for legacy conformance tests, but `icalkit`
-cannot depend on it. New consumer tests use only `icalkit`.
+The former `ical-query` evaluator, recurrence engine, and iTIP kernel have moved behind
+`icalkit` private modules. The remaining `ical-core`, `ical-tz`, and `ical-dav` packages are
+migration scaffolding while their implementations follow them. Temporary `ical-recur` and
+`ical-itip` compatibility harnesses compile the moved sources for legacy conformance tests,
+but `icalkit` cannot depend on them. New consumer tests use only `icalkit`.
 The conformance corpus remains a private executable artifact rather than a second library API. See
 [ADR 0013](docs/adr/0013-unified-public-crate-and-explicit-interop.md) and
 [ARCHITECTURE.md](ARCHITECTURE.md).

@@ -35,7 +35,7 @@
 //! Generation runs over the caller's window widened by the largest absolute shift the override
 //! set implies — unit 7's `generation_window` — and emission asks two questions rather than
 //! one. An occurrence is emitted when the window the caller asked about contains its cadence
-//! key **or** contains its effective start. The first half is what `crate::search` fixes: a
+//! key **or** contains its effective start. The first half is what `crate::internal::recur::search` fixes: a
 //! window admits by cadence key, so a `RANGE=THISANDFUTURE` shift can carry a start out of the
 //! window that generated it, and [`DiagnosticCode::OverrideLeftWindow`] says so rather than the
 //! search hiding it. The second half is why the widening exists at all: an override that moved
@@ -66,7 +66,7 @@
 //! `DATE-TIME` when `DTSTART` is a zoned `DATE-TIME`, and real files violate that constantly.
 //! The comparison still has to happen in a named clock, and the name is the caller's: both
 //! instants arrive already resolved, so the comparison is on the UTC timeline and
-//! [`crate::rule::UntilClock`] records which reading produced each. A disagreement about `DATE`
+//! [`crate::internal::recur::rule::UntilClock`] records which reading produced each. A disagreement about `DATE`
 //! versus `DATE-TIME` is reported once, when the search is built, as
 //! [`DiagnosticCode::RecurrenceUntilValueTypeMismatch`] — the earliest point at which both
 //! halves of the comparison are in one hand.
@@ -89,14 +89,16 @@ use ical_core::{
     report_diagnostic,
 };
 
-use crate::accounting::{Charges, generation_window};
-use crate::byparts::expand_period;
-use crate::input::RecurrenceInput;
-use crate::merge::Merge;
-use crate::period::{Period, PeriodWalk};
-use crate::rule::{RecurrenceRule, RuleLimit};
-use crate::search::{BudgetExhausted, Occurrence, SearchOutcome, SearchStep, Window};
-use crate::setpos::{SelectedCandidates, select};
+use crate::internal::recur::accounting::{Charges, generation_window};
+use crate::internal::recur::byparts::expand_period;
+use crate::internal::recur::input::RecurrenceInput;
+use crate::internal::recur::merge::Merge;
+use crate::internal::recur::period::{Period, PeriodWalk};
+use crate::internal::recur::rule::{RecurrenceRule, RuleLimit};
+use crate::internal::recur::search::{
+    BudgetExhausted, Occurrence, SearchOutcome, SearchStep, Window,
+};
+use crate::internal::recur::setpos::{SelectedCandidates, select};
 
 /// How far into an expansion a search had got, as a value the caller can hold and hand back.
 ///
@@ -822,9 +824,13 @@ mod tests {
     };
 
     use super::{RecurrenceSearch, SearchCursor};
-    use crate::input::{Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput};
-    use crate::rule::{ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleLimit, ValueKind};
-    use crate::search::{BudgetExhausted, SearchOutcome, SearchStep, Window};
+    use crate::internal::recur::input::{
+        Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
+    };
+    use crate::internal::recur::rule::{
+        ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleLimit, ValueKind,
+    };
+    use crate::internal::recur::search::{BudgetExhausted, SearchOutcome, SearchStep, Window};
 
     /// One instant, written the way RFC 5545 section 3.8.5.3 writes its worked examples.
     ///

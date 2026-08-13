@@ -102,17 +102,39 @@
 
 extern crate alloc;
 
+#[path = "../../icalkit/src/internal/recur/accounting.rs"]
 mod accounting;
+#[path = "../../icalkit/src/internal/recur/byparts.rs"]
 mod byparts;
+#[path = "../../icalkit/src/internal/recur/engine.rs"]
 mod engine;
+#[path = "../../icalkit/src/internal/recur/grammar.rs"]
 mod grammar;
+#[path = "../../icalkit/src/internal/recur/input.rs"]
 mod input;
+#[path = "../../icalkit/src/internal/recur/merge.rs"]
 mod merge;
+#[path = "../../icalkit/src/internal/recur/period.rs"]
 mod period;
+#[path = "../../icalkit/src/internal/recur/rule.rs"]
 mod rule;
+#[path = "../../icalkit/src/internal/recur/search.rs"]
 mod search;
+#[path = "../../icalkit/src/internal/recur/setpos.rs"]
 mod setpos;
+#[path = "../../icalkit/src/internal/recur/table.rs"]
 mod table;
+
+// Stable crate-shaped root for source shared with `icalkit::internal::recur`.
+pub(crate) mod internal {
+    #[allow(unused_imports)]
+    pub(crate) mod recur {
+        pub(crate) use crate::{
+            DEFAULT_CANDIDATE_BUDGET, accounting, byparts, engine, grammar, input, merge, period,
+            rule, search, select, setpos, table,
+        };
+    }
+}
 
 pub use crate::accounting::{Charges, admit, generation_window, max_absolute_shift};
 pub use crate::byparts::{CandidateSet, expand_period};

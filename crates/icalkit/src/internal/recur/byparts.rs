@@ -7,7 +7,7 @@
 //! # What this unit owns
 //!
 //! Turning one period into that period's candidate set, by walking [`RulePart::ALL`] in the
-//! RFC's own row order and asking [`crate::table::effect`] what each part does. A part that
+//! RFC's own row order and asking [`crate::internal::recur::table::effect`] what each part does. A part that
 //! expands multiplies the working set; a part that limits filters it; a part that is not
 //! applicable is skipped. `BYSETPOS` is *not* applied here — it is unit 4's, and applying it in
 //! this pass is the single most common way this gets built wrong.
@@ -15,7 +15,7 @@
 //! # How the table drives it
 //!
 //! The engine is a selection over the days the period holds and the clock readings it admits,
-//! and [`crate::table::effect`] decides four things about it, none of which is written down
+//! and [`crate::internal::recur::table::effect`] decides four things about it, none of which is written down
 //! twice:
 //!
 //! 1. **[`PartEffect::NotApplicable`] drops the part entirely.** `BYMONTHDAY` under
@@ -45,7 +45,7 @@
 //!
 //! # What this unit must not do
 //!
-//! - It must not hard-code any cell of the table. Every branch reads [`crate::table::effect`].
+//! - It must not hard-code any cell of the table. Every branch reads [`crate::internal::recur::table::effect`].
 //! - It must not be one `match`. This crate's Clippy profile bounds a function at 100 lines
 //!   and a cognitive complexity of 15; a `BYxxx` application written as one match fails both,
 //!   which is the gate asking for the table-driven shape rather than obstructing it.
@@ -79,15 +79,15 @@ use ical_core::{
     Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
 
-use crate::period::Period;
-use crate::rule::{Freq, RecurrenceRule, RulePart, WeekdayNum};
-use crate::table::{PartEffect, PartsPresent, WeekdayScope, effect};
+use crate::internal::recur::period::Period;
+use crate::internal::recur::rule::{Freq, RecurrenceRule, RulePart, WeekdayNum};
+use crate::internal::recur::table::{PartEffect, PartsPresent, WeekdayScope, effect};
 
 /// The rule parts that name a coordinate of the date, in the table's row order.
 ///
 /// A classification by what the part addresses, not by what it does: every one of these is
 /// `Expand` under some frequency and `Limit` under another, and which it is here is
-/// [`crate::table::effect`]'s answer and never this list's.
+/// [`crate::internal::recur::table::effect`]'s answer and never this list's.
 const DATE_PARTS: [RulePart; 5] = [
     RulePart::Month,
     RulePart::WeekNo,
@@ -143,7 +143,7 @@ impl CandidateSet {
     /// A set holding exactly `stamps`, for a test that needs one it did not expand.
     ///
     /// `#[cfg(test)]` rather than a constructor on the public surface. The ascending-and-
-    /// deduplicated invariant is what [`crate::select`] reads positions against, and the only
+    /// deduplicated invariant is what [`crate::internal::recur::select`] reads positions against, and the only
     /// thing entitled to establish it outside a test is [`expand_period`], which builds it by
     /// sorting. Offering a door that takes any slice would let a caller state a set that is not
     /// one and get a `BYSETPOS=-1` answer that names the wrong instant.
@@ -968,9 +968,11 @@ mod tests {
     };
 
     use super::{CandidateSet, expand_period, position_named, week_of, week_offset};
-    use crate::period::PeriodWalk;
-    use crate::rule::{ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RulePart, WeekdayNum};
-    use crate::table::{PartEffect, PartsPresent, WeekdayScope, effect};
+    use crate::internal::recur::period::PeriodWalk;
+    use crate::internal::recur::rule::{
+        ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RulePart, WeekdayNum,
+    };
+    use crate::internal::recur::table::{PartEffect, PartsPresent, WeekdayScope, effect};
 
     /// A local date and time, for a fixture that names one.
     fn stamp(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> CivilDateTime {

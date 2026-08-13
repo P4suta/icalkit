@@ -75,7 +75,7 @@ use core::num::NonZeroU32;
 
 use ical_core::{CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, Weekday};
 
-use crate::rule::{Freq, RecurrenceRule};
+use crate::internal::recur::rule::{Freq, RecurrenceRule};
 
 /// Seconds in a minute, which is what one `FREQ=MINUTELY` period spans.
 const SECONDS_PER_MINUTE: i64 = 60;
@@ -337,7 +337,9 @@ mod tests {
     use ical_core::{CivilDate, CivilDateTime, CivilTime, UtcOffset, Weekday};
 
     use super::{Period, PeriodWalk};
-    use crate::rule::{ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, WeekdayNum};
+    use crate::internal::recur::rule::{
+        ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, WeekdayNum,
+    };
 
     /// A local date and time, spelled as the tables below spell one.
     fn at(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> CivilDateTime {

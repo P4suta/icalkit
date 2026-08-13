@@ -320,8 +320,8 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use crate::internal::recur::OverrideRange;
     use ical_core::{ComponentKind, Diagnostic, DiagnosticCode, Instant, Limits, Meter};
-    use ical_recur::OverrideRange;
 
     use super::inspect_message;
     use crate::internal::itip::authorize::{AuthorizationDenied, evaluate_message};

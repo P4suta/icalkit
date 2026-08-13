@@ -65,8 +65,8 @@ use core::cmp::Ordering;
 
 use ical_core::CivilDateTime;
 
-use crate::byparts::CandidateSet;
-use crate::rule::ByList;
+use crate::internal::recur::byparts::CandidateSet;
+use crate::internal::recur::rule::ByList;
 
 /// What one period's `BYSETPOS` selected, and how much of the period it had to see first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,8 +183,8 @@ mod tests {
     use ical_core::{CivilDate, CivilDateTime, CivilTime};
 
     use super::{select, select_within};
-    use crate::byparts::CandidateSet;
-    use crate::rule::ByList;
+    use crate::internal::recur::byparts::CandidateSet;
+    use crate::internal::recur::rule::ByList;
 
     /// A year, month and day, at the 9:00 AM the RFC 5545 section 3.8.5.3 examples all use.
     fn at(year: u16, month: u8, day: u8) -> CivilDateTime {

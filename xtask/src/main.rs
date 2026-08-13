@@ -198,7 +198,7 @@ const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 ///
 /// Their temporary packages may remain as shared-source conformance harnesses while callers are
 /// migrated, but the facade must never depend back on a boundary it already absorbed.
-const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-itip"];
+const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-itip", "ical-recur"];
 
 /// Narrow third-party boundaries required by the unified public facade.
 ///
@@ -2853,14 +2853,12 @@ ical-query = { path = "../ical-query" }
         let facade = r#"
 [dependencies]
 ical-itip = { path = "../ical-itip" }
+ical-recur = { path = "../ical-recur" }
 "#;
-        assert_eq!(
-            migrated_facade_dependency_violations(facade),
-            [String::from(
-                "crates/icalkit/Cargo.toml: facade depends on migrated implementation package \
-                 `ical-itip` (ADR 0013)"
-            )]
-        );
+        let violations = migrated_facade_dependency_violations(facade);
+        assert_eq!(violations.len(), 2);
+        assert!(violations.iter().any(|line| line.contains("`ical-itip`")));
+        assert!(violations.iter().any(|line| line.contains("`ical-recur`")));
         assert_eq!(
             migrated_facade_dependency_violations("[dependencies]\njiff = \"0.2\""),
             Vec::<String>::new()

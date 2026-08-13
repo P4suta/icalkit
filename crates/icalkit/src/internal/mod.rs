@@ -10,6 +10,9 @@
 #[allow(dead_code, unused_imports, unreachable_pub)]
 pub(crate) mod query;
 
+#[allow(dead_code, unused_imports, unreachable_pub)]
+pub(crate) mod recur;
+
 // The former crate remains temporarily as a shared-source conformance harness. Its source of
 // truth is this module; the facade may not depend back on that compatibility package.
 #[allow(dead_code, unused_imports, unreachable_pub)]

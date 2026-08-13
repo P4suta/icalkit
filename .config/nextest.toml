@@ -11,6 +11,11 @@ nextest-version = "0.9.140"
 # pass-after-retry is still a failing result rather than hidden flakiness.
 retries = 0
 flaky-result = "fail"
+# The conformance sweeps are CPU-bound, and migration compatibility harnesses temporarily
+# compile the same kernel tests in a second root. Unbounded host parallelism makes four
+# individually bounded fixture sweeps starve each other until the timeout; four workers finish
+# the complete suite faster and keep that timeout about stuck work rather than scheduler load.
+test-threads = 4
 
 # Parsing and recurrence are pure computation over in-memory text: nothing here
 # legitimately runs for a minute, and an expansion that does is the candidate

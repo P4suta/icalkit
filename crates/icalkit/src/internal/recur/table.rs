@@ -23,7 +23,7 @@
 //! [`effect`], and it is the only place in this module where a cell is computed rather than
 //! read.
 
-use crate::rule::{Freq, RulePart};
+use crate::internal::recur::rule::{Freq, RulePart};
 
 /// A cell of RFC 5545 section 3.3.10's table, exactly as the RFC writes one.
 ///
@@ -233,7 +233,7 @@ const fn note_two(present: PartsPresent) -> PartEffect {
 #[cfg(test)]
 mod tests {
     use super::{Cell, PartEffect, PartsPresent, WeekdayScope, cell, effect};
-    use crate::rule::{Freq, RulePart};
+    use crate::internal::recur::rule::{Freq, RulePart};
 
     /// The row the milestone brief singles out, held against the RFC in both directions.
     #[test]

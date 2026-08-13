@@ -39,6 +39,7 @@ workspace = true
 
 # The temporary compatibility harness compiles source that physically lives under
 # `crates/icalkit` through `#[path]`. cargo-shear scans only this package directory and therefore
-# cannot see these two production imports in `component.rs`, `identity.rs`, and `instance.rs`.
+# cannot see the production time-zone imports in `identity.rs` and `instance.rs`. Recurrence is
+# visible through this harness's compatibility alias and needs no exception.
 [package.metadata.cargo-shear]
-ignored = ["ical-recur", "ical-tz"]
+ignored = ["ical-tz"]

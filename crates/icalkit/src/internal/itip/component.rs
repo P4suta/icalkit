@@ -97,11 +97,11 @@ use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use core::mem;
 
+use crate::internal::recur::OverrideRange;
 use ical_core::{
     CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue, Instant,
     Property, PropertyId, RawText, decode_caret,
 };
-use ical_recur::OverrideRange;
 use ical_tz::nominal;
 
 use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};

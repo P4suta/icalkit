@@ -23,7 +23,7 @@ SPDX-License-Identifier = "MIT OR Apache-2.0"
 # here at all, or left to say its own name under `closest`, is a question for whoever records
 # fixture provenance.
 [[annotations]]
-path = ["**/tests/fixtures/**"]
+path = ["**/tests/fixtures/**", "crates/icalkit/src/internal/**/fixtures/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 icalkit contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

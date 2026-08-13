@@ -97,12 +97,12 @@ use core::num::NonZeroU32;
 
 use alloc::vec::Vec;
 
+use crate::internal::recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
 use ical_core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, Document,
     Duration, Instant, PropertyId, UtcOffset,
 };
 use ical_dav::{CompFilter, TimeRange};
-use ical_recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
 use ical_tz::nominal;
 
 use crate::internal::query::{Budget, Zones};

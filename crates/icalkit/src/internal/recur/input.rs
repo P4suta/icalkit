@@ -30,7 +30,7 @@ use core::fmt::{self, Debug, Formatter};
 
 use ical_core::{Instant, LimitExceeded, Meter, Property, PropertyId};
 
-use crate::rule::{RecurrenceRule, RuleLimit, ValueKind};
+use crate::internal::recur::rule::{RecurrenceRule, RuleLimit, ValueKind};
 
 /// One property an override states something about.
 ///
@@ -577,7 +577,7 @@ mod tests {
     use super::{
         InputError, InputList, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
     };
-    use crate::rule::ValueKind;
+    use crate::internal::recur::rule::ValueKind;
 
     fn at(seconds: i64) -> Instant {
         Instant::from_unix_seconds(seconds)

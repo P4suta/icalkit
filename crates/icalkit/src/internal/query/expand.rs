@@ -14,7 +14,7 @@
 //! - Compose the search window from the filter's `time-range` and the component's own bounds.
 //!   Both of the range's bounds are independently optional; a search window is not, so an open
 //!   bound has to be closed against something the calendar can express, and the choice has to be
-//!   the same one `overlap` assumes. `ical_recur::generation_window` and `max_absolute_shift`
+//!   the same one `overlap` assumes. `crate::internal::recur::generation_window` and `max_absolute_shift`
 //!   exist because an override may move an instance into a window it would never have been
 //!   generated in, and a window composed without them silently drops moved occurrences.
 //! - Run the search under the caller's `Meter`. A search that stops at its budget is
@@ -79,17 +79,17 @@
 
 use alloc::vec::Vec;
 
+use crate::internal::recur::{
+    InputError, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
+    RecurrenceRule, RuleLimit, UntilClock, ValueKind, Window, generation_window,
+    max_absolute_shift,
+};
 use ical_core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
     PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
 };
 use ical_dav::TimeRange;
-use ical_recur::{
-    InputError, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
-    RecurrenceRule, RuleLimit, UntilClock, ValueKind, Window, generation_window,
-    max_absolute_shift,
-};
 use ical_tz::{nominal, wall_clock};
 
 use crate::internal::query::overlap::Occupancy;
@@ -261,7 +261,7 @@ impl<'a> SeriesClock<'a> {
 
     /// Whether the caller's zone and policy admit an occurrence at cadence key `key`.
     ///
-    /// `docs/adr/0011`'s second gate, in the shape `ical_recur::RecurrenceInput::admitting`
+    /// `docs/adr/0011`'s second gate, in the shape `crate::internal::recur::RecurrenceInput::admitting`
     /// takes. This crate holds the zone and `ical-recur` holds `COUNT`, so an instance dropped
     /// after the count is an instance the count already spent: a `COUNT=5` series with one
     /// occurrence in an hour its zone never showed delivers four without it.
@@ -401,7 +401,7 @@ impl SearchBounds {
 
     /// The window over instance starts, as the first instant inside it and the first past it.
     ///
-    /// Instants rather than an `ical_recur::Window`, so that the type stays inside this file.
+    /// Instants rather than an `crate::internal::recur::Window`, so that the type stays inside this file.
     #[must_use]
     pub const fn window(self) -> (Instant, Instant) {
         (self.window.start(), self.window.end())
@@ -1767,15 +1767,15 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
+    use crate::internal::recur::{
+        Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceRule,
+        RecurrenceRuleBuilder, RuleLimit, ValueKind,
+    };
     use ical_core::{
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
         Instant, Limits, Meter, Severity, Subject, UtcOffset,
     };
     use ical_dav::TimeRange;
-    use ical_recur::{
-        Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceRule,
-        RecurrenceRuleBuilder, RuleLimit, ValueKind,
-    };
     use ical_tz::FixedOffsetSource;
 
     use super::{
@@ -2248,7 +2248,7 @@ mod tests {
     /// An override reaching further than the slack is why generation is widened at all.
     ///
     /// The moved instance's cadence key is five days past the window, so only the widening
-    /// `ical_recur::generation_window` applies reaches it, and an exclusion removes the ordinary
+    /// `crate::internal::recur::generation_window` applies reaches it, and an exclusion removes the ordinary
     /// instance of that day so that the answer can only have come from the moved one.
     #[test]
     fn an_override_moved_from_beyond_the_slack_is_still_generated() {

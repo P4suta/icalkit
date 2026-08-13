@@ -413,11 +413,11 @@ fn channel_for(code: DiagnosticCode) -> Severity {
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::internal::recur::OverrideRange;
     use ical_core::{
         CivilDate, CivilDateTime, CivilTime, DateTimeValue, Diagnostic, DiagnosticCode, Instant,
         Limits, Meter, Severity, UtcOffset, ValueType,
     };
-    use ical_recur::OverrideRange;
     use ical_tz::{
         AnswerBasis, GapPolicy, LocalResolution, OffsetAnswer, Reading, ResolutionPolicy,
         ResolvedExclusions, ZoneAnswer, ZoneProvenance, ZoneSource, ZonedSeries, nominal,

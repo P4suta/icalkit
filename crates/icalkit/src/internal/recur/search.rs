@@ -47,7 +47,7 @@ use core::fmt::{self, Display, Formatter};
 
 use ical_core::{Instant, PropertyId};
 
-use crate::input::{AppliedDiffs, Override, OverrideSet, PropertyChange};
+use crate::internal::recur::input::{AppliedDiffs, Override, OverrideSet, PropertyChange};
 
 /// The half-open range of cadence keys a search covers.
 ///
@@ -383,7 +383,7 @@ mod tests {
     use super::{
         BudgetExhausted, Occurrence, OverrideProvenance, SearchOutcome, SearchStep, Window,
     };
-    use crate::input::OverrideSet;
+    use crate::internal::recur::input::OverrideSet;
 
     fn at(seconds: i64) -> Instant {
         Instant::from_unix_seconds(seconds)

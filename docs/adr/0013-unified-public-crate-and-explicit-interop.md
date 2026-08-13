@@ -83,11 +83,12 @@ subject protocol. It is not a second Rust library API.
 ## Implementation status
 
 The query evaluator now lives only under `icalkit::internal::query` and its former package is
-retired. The iTIP kernel likewise lives under `icalkit::internal::itip`; the facade calls that
-module directly and cannot regain an `ical-itip` dependency under the architecture gate.
-The old unpublished package remains temporarily as a shared-source compatibility harness for
-conformance tests, so this migration stage has one implementation and two compilation roots
-rather than two source copies. Core, recurrence, time-zone, and DAV sources remain to move.
+retired. The recurrence and iTIP kernels likewise live under `icalkit::internal::recur` and
+`icalkit::internal::itip`; the facade calls those modules directly and cannot regain
+`ical-recur` or `ical-itip` dependencies under the architecture gate. The old unpublished
+packages remain temporarily as shared-source compatibility harnesses for conformance tests,
+so each migrated kernel has one implementation and two compilation roots rather than two
+source copies. Core, time-zone, and DAV sources remain to move.
 
 ## Consequences
 

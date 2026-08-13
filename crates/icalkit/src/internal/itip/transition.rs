@@ -90,7 +90,7 @@ impl Transition {
     /// Record `change` against `at`, answering with whatever it displaced.
     ///
     /// A displacement is a caller describing one occurrence twice, and the later description
-    /// wins — the same rule `ical_recur::PropertyDiff` states about restating a property
+    /// wins — the same rule `crate::internal::recur::PropertyDiff` states about restating a property
     /// inside one diff.
     pub fn record(
         &mut self,

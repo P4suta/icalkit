@@ -47,7 +47,7 @@
 //! expected.
 //!
 //! Two frozen doc comments describe the pre-amendment reading and disagree with this: the
-//! [`crate::search`] module's "a search bounded by a window can yield an occurrence whose
+//! [`crate::internal::recur::search`] module's "a search bounded by a window can yield an occurrence whose
 //! start is outside that window", and [`DiagnosticCode::OverrideLeftWindow`]'s "the caller
 //! widens the window and filters on the start when it wants the other reading". Under
 //! `docs/adr/0002` the *iterator* widens and filters and the caller does neither, so those two
@@ -98,7 +98,7 @@
 //! three times the largest admitted workload in one direction and twice the smallest refused
 //! one in the other, which is as much precision as a table with no corpus behind it earns.
 //!
-//! [`crate::DEFAULT_CANDIDATE_BUDGET`] carries that number, and the table above is asserted in
+//! [`crate::internal::recur::DEFAULT_CANDIDATE_BUDGET`] carries that number, and the table above is asserted in
 //! this module's tests so it is defended by something other than prose.
 //!
 //! # Signatures it provides
@@ -160,8 +160,8 @@ use ical_core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, report_diagnostic,
 };
 
-use crate::input::{Override, OverrideSet};
-use crate::search::{BudgetExhausted, Occurrence, Window};
+use crate::internal::recur::input::{Override, OverrideSet};
+use crate::internal::recur::search::{BudgetExhausted, Occurrence, Window};
 
 /// The largest absolute time shift `overrides` implies, in seconds.
 ///
@@ -427,8 +427,8 @@ mod tests {
     use ical_core::{Diagnostic, DiagnosticCode, Instant, Limits, Meter, Severity};
 
     use super::{Charges, admit, generation_window, max_absolute_shift};
-    use crate::input::{Override, OverrideRange, OverrideSet, PropertyDiff};
-    use crate::search::{Occurrence, OverrideProvenance, Window};
+    use crate::internal::recur::input::{Override, OverrideRange, OverrideSet, PropertyDiff};
+    use crate::internal::recur::search::{Occurrence, OverrideProvenance, Window};
 
     /// 2023-01-31T00:00:00Z, a month end in a month the next one is shorter than.
     const JAN_31_2023: i64 = 1_675_123_200;
@@ -775,7 +775,7 @@ mod tests {
     /// two names.
     #[test]
     fn the_calibrated_search_budget_covers_the_workloads_it_was_measured_against() {
-        const CALIBRATED: u64 = crate::DEFAULT_CANDIDATE_BUDGET;
+        const CALIBRATED: u64 = crate::internal::recur::DEFAULT_CANDIDATE_BUDGET;
 
         // What a caller is expanding, the candidates it generates, and whether a caller that
         // stated no policy of its own gets it.

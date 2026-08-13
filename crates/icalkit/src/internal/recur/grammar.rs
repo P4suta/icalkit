@@ -51,7 +51,7 @@ use ical_core::{
     DiagnosticSink, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
 
-use crate::rule::{
+use crate::internal::recur::rule::{
     ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart,
     UntilClock, ValueKind, WeekdayNum,
 };
@@ -895,12 +895,12 @@ mod tests {
     };
 
     use super::{RulePartText, parse_recur, parts};
-    use crate::rule::{
+    use crate::internal::recur::rule::{
         Freq, RecurrenceRule, RuleError, RuleLimit, RulePart, UntilClock, ValueKind,
     };
 
     /// Every `RECUR` value RFC 5545 prints, transcribed beside this crate's other fixtures.
-    const RFC_VALUES: &[u8] = include_bytes!("../tests/fixtures/rfc5545-recur-values.txt");
+    const RFC_VALUES: &[u8] = include_bytes!("fixtures/rfc5545-recur-values.txt");
 
     /// How many values that file holds, so a fixture that lost a line fails instead of passing.
     const RFC_VALUE_COUNT: usize = 44;

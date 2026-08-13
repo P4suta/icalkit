@@ -17,7 +17,7 @@
 //! M2 left a question this module answers. `ical_tz::seam` walks a series on its own wall
 //! clock projected onto UTC, so the two halves of the hour a zone repeats are **one cadence
 //! key**: a `REPLY` naming `20261101T063000Z` and one naming `20261101T053000Z` in
-//! `America/New_York` are two real instants and one key, and `ical_recur::OverrideSet` admits
+//! `America/New_York` are two real instants and one key, and `crate::internal::recur::OverrideSet` admits
 //! both while `collisions` counts what was shadowed (ADR-0011 amendment 3).
 //!
 //! Bounding the damage is not the same as knowing which meeting a message is about. So an
@@ -32,8 +32,8 @@
 //! takes the [`LocalResolution`] a caller already holds from `ical-tz`. A caller with no zone
 //! gets [`FoldSide::Unresolved`] and the conservative answer that follows from it.
 
+use crate::internal::recur::OverrideRange;
 use ical_core::{Instant, RawText};
-use ical_recur::OverrideRange;
 use ical_tz::LocalResolution;
 
 /// One component's `UID`, compared as RFC 5545 section 3.8.4.7 says to.
@@ -208,7 +208,7 @@ pub struct InstanceRef {
     side: FoldSide,
     /// How far forward the reference reaches, from RFC 5545 section 3.2.13's `RANGE`.
     ///
-    /// `ical_recur::OverrideRange` rather than a second spelling of the same two values, for
+    /// `crate::internal::recur::OverrideRange` rather than a second spelling of the same two values, for
     /// the reason DP-13 gives about reusing the change vocabulary.
     range: OverrideRange,
 }
@@ -465,8 +465,8 @@ impl MessageIdentity {
 
 #[cfg(test)]
 mod tests {
+    use crate::internal::recur::OverrideRange;
     use ical_core::{Instant, UtcOffset};
-    use ical_recur::OverrideRange;
     use ical_tz::{LocalResolution, Reading};
 
     use super::{

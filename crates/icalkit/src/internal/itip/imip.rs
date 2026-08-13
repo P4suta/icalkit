@@ -472,8 +472,8 @@ impl<'a> Reader<'a> {
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::internal::recur::OverrideRange;
     use ical_core::{ComponentKind, GrammarLimits, IgnoreDiagnostics, Instant, Limits, Meter};
-    use ical_recur::OverrideRange;
 
     use super::{MediaTypeError, MediaTypeParams, sender_is_named};
     use crate::internal::itip::authorize::{AuthorizationDenied, evaluate_message};

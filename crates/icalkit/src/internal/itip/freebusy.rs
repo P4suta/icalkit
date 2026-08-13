@@ -477,11 +477,11 @@ fn unquoted(value: &[u8]) -> &[u8] {
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::internal::recur::OverrideRange;
     use ical_core::{
         ComponentKind, DateTimeValue, DecodeValue, IgnoreDiagnostics, Instant, Limits, Meter,
         PropertyId, UtcOffset,
     };
-    use ical_recur::OverrideRange;
 
     use super::{
         BusyPeriod, FreeBusyError, FreeBusyKind, busy_periods, line_parameter, requested_window,

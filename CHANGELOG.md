@@ -695,3 +695,9 @@ the other order. What version this becomes is a decision nobody has made.
   there is one implementation rather than a synchronized copy; the architecture gate prevents
   the facade from depending back on the absorbed boundary. Free-busy and iMIP remain
   unconditional capabilities of `icalkit` under its two-feature contract.
+- **The bounded recurrence engine moved physically behind `icalkit::internal::recur`.** The
+  public recurrence workflow, CalDAV query evaluator, and migrated iTIP kernel now call that
+  private module, and the facade no longer depends on `ical-recur`. Its temporary package
+  compiles the same source and fixture for legacy conformance consumers; the architecture
+  gate prevents a back-edge, and the in-crate `SearchStep` match is exhaustive without the
+  wildcard that its former non-exhaustive crate boundary required.

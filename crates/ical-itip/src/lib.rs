@@ -128,6 +128,11 @@ pub(crate) mod internal {
             table, target, transition,
         };
     }
+
+    /// Compatibility alias used by the iTIP source now living beside the recurrence source.
+    pub(crate) mod recur {
+        pub(crate) use ical_recur::*;
+    }
 }
 
 pub use crate::authorize::{
