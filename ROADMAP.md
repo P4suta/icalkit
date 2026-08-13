@@ -283,8 +283,10 @@ that is how a client creates a second copy of an event it was merely not allowed
 authenticated principal is answered by the vocabulary — `DAV:current-user-principal` joined to
 `CALDAV:calendar-user-address-set` — rather than by a check this crate has no standing to make.
 An `ORGANIZER` change on write gets its refusal modeled and on the wire. The reply timestamp
-stays a store's column, `RANGE=THISANDFUTURE` stays unimplemented, and a store should build the
-`ical_core::Component` rather than a second source of truth for claims its own octets carry.
+stays a store's column. The superseding `icalkit` facade now closes organizer `REQUEST`
+`RANGE=THISANDFUTURE` splitting, recurrence-set membership and later-anchor updates; remaining
+method-specific range behavior is still work. A store should build the `ical_core::Component`
+rather than a second source of truth for claims its own octets carry.
 
 ### Is a calendar client or a self-hosted server now a reasonable thing to attempt?
 

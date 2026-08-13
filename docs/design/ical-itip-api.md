@@ -527,11 +527,20 @@ The octet-level diff is a decision this document makes that ADR-0005 left open, 
 `Replace` noisier than it should be: a message that only refolds a long `DESCRIPTION` reports a
 change. The failure direction is the safe one, but a caller diffing for display will see it.
 
-`RANGE=THISANDFUTURE` is *represented* here and not *implemented*: `InstanceRef` carries the
-range, `payload_for` matches one instance, and nothing splits a series or composes anchors the
-way ADR-0002 requires of `ical-recur`. VALUE=DATE-safe `DTSTART`, negative `BYSETPOS`, and a fold
-across a codepoint are likewise unexercised through these types. `ical-itip` is not
-RFC-5546-complete, and this API does not entitle anyone to say it is.
+`RANGE=THISANDFUTURE` remains represented at this kernel boundary: `InstanceRef` carries the
+range, and authorization now permits exactly one organizer-authored anchor to match a held
+master while retaining the normal sender, revision, conformance and field gates. The kernel does
+not own a calendar container, so it still does not perform the split itself. The superseding
+single-crate facade does: `icalkit::scheduling::Message::review` validates that the cadence key
+belongs to the master's recurrence set and `AuthorizedChange::apply` transactionally inserts a
+detached component; a later message for the same anchor updates it in place. `review_in` routes
+that membership check through the session's aggregate budget and zone database, including gap
+rejection. CalDAV recurrence evaluation then composes the anchor through later occurrences.
+
+That closes the organizer `REQUEST` path, not every method-specific range behavior.
+VALUE=DATE-safe `DTSTART`, negative `BYSETPOS`, and a fold across a codepoint are likewise
+unexercised through these types. `ical-itip` is not RFC-5546-complete, and this API does not
+entitle anyone to say it is.
 
 Finally: the field-permission table is a dozen lines of `field_rule` standing in for RFC 5546's
 per-method restriction tables, which run to pages. The conservative default keeps the gaps

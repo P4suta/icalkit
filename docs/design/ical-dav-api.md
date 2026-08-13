@@ -654,10 +654,11 @@ from an unverified header.
 RFC 6638 section 3.2.1 are rows of the table and travel in `ErrorBody`. The comparison itself
 belongs to a server holding both copies, which this crate is not.
 
-**`RANGE=THISANDFUTURE`** stays unimplemented and is not this crate's to implement. What M4
-supplies is the only thing this layer can: `calendar-multiget` and `calendar-query` are how a
-caller gets more than one component at a time, which is the precondition the splitting work has
-been waiting on.
+**`RANGE=THISANDFUTURE`** splitting is not this layer's job. The single public `icalkit`
+scheduling workflow now creates and revises an authorized detached anchor, and the CalDAV query
+workflow composes its time shift and property changes through later occurrences.
+`calendar-multiget` and `calendar-query` remain how a caller obtains the master and detached
+components together.
 
 **Whether a CalDAV store implements `ScheduledComponent` over its own rows** is answered:
 build the `ical_core::Component`. The store already holds the octets — `calendar-data` is what

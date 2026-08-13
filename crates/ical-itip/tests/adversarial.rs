@@ -849,6 +849,35 @@ mod tests {
         );
     }
 
+    /// Matching a range anchor against a master changes only identity lookup. It must not
+    /// substitute the message for the held organizer state, because that would let a stranger
+    /// write their own organizer line and then authorize it.
+    #[test]
+    fn a_this_and_future_split_still_uses_the_held_master_to_name_the_organizer() {
+        let current = held_at(2);
+        let split = Node::calendar("REQUEST", request_at(3).addressing(onwards(), ONWARDS_LINE));
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let message = message_of(&split, &mut meter);
+
+        let verdict = evaluate_message(&message, &current, party(MALLORY));
+        assert_eq!(verdict.err(), Some(AuthorizationDenied::OrganizerMismatch));
+    }
+
+    /// A master does not choose between two range anchors in one message. Even if both are
+    /// individually well formed, picking the first would make component order an authorization
+    /// input and could apply a different split than the sender intended.
+    #[test]
+    fn two_this_and_future_anchors_do_not_ambiguously_match_one_master() {
+        let current = held_at(2);
+        let split = Node::calendar("REQUEST", request_at(3).addressing(onwards(), ONWARDS_LINE))
+            .containing(request_at(3).addressing(onwards(), ONWARDS_LINE));
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let message = message_of(&split, &mut meter);
+
+        let verdict = evaluate_message(&message, &current, party(CHAIR));
+        assert_eq!(verdict.err(), Some(AuthorizationDenied::NoMatchingInstance));
+    }
+
     /// RFC 5546 section 1.3 divides the exchange into two roles, and section 3's prose names
     /// which role authors each method. An organizer does not reply and an attendee does not
     /// cancel; the second is how one participant cancels everybody's meeting.

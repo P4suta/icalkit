@@ -789,6 +789,84 @@ pub(crate) fn override_recurrence_id(
     clock.place(nominal, zones)
 }
 
+/// Whether a detached component's RECURRENCE-ID belongs to its master's recurrence set.
+///
+/// This is deliberately a cadence-key test, not an overlap test: an event spanning a whole day
+/// must not make an unrelated key inside that day a valid override. The same nominal recurrence
+/// assembly used by CalDAV expansion supplies the answer, while the zone seam only decides
+/// whether a zoned wall clock is one the series admits.
+pub(crate) fn recurrence_set_contains<S>(
+    master: &Component,
+    candidate: &Component,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    sink: &mut S,
+) -> Result<Match, QueryError>
+where
+    S: DiagnosticSink + ?Sized,
+{
+    if budget.is_exhausted() {
+        return Ok(Match::Undecided(Undecided::SearchExhausted));
+    }
+    let opening = required(master.dtstart()).map_err(|_| QueryError::Unrepresentable)?;
+    let clock = clock_of(opening).map_err(|_| QueryError::Unrepresentable)?;
+    let dtstart = nominal_value(opening, clock, zones).map_err(|_| QueryError::Unrepresentable)?;
+    let dtstart_kind = if matches!(opening, DateTimeValue::Date(_)) {
+        ValueKind::Date
+    } else {
+        ValueKind::DateTime
+    };
+    let mut rule = recurrence_rule(master).map_err(|_| QueryError::Unrepresentable)?;
+    if let Some(parsed) = rule.as_mut() {
+        if let Err(reason) = project_rule_limit(parsed, clock, zones) {
+            return Ok(Match::Undecided(reason));
+        }
+    }
+    let mut rdates = instant_list(master, &ids::RDATE, clock, zones)?;
+    let mut exdates = instant_list(master, &ids::EXDATE, clock, zones)?;
+    rdates.sort_unstable();
+    rdates.dedup();
+    exdates.sort_unstable();
+    exdates.dedup();
+    let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))
+        .map_err(|_| QueryError::Unrepresentable)?;
+    let anchor = nominal_value(addressed, clock, zones).map_err(|_| QueryError::Unrepresentable)?;
+    let series = Series {
+        dtstart,
+        dtstart_kind,
+        clock,
+        occupies: InstanceSpan::INSTANT,
+        rule: rule.as_ref(),
+        rdates: &rdates,
+        exdates: &exdates,
+        overrides: OverrideSet::empty(),
+    };
+    if lone_instance(series).is_some_and(|(key, _)| key == anchor) {
+        return Ok(Match::Matched);
+    }
+    let end = anchor
+        .checked_add_seconds(1)
+        .ok_or(QueryError::Unrepresentable)?;
+    let window = Window::new(anchor, end).ok_or(QueryError::Unrepresentable)?;
+    let input = match assemble(series, &mut *budget.meter) {
+        Ok(input) => input,
+        Err(Unassembled::Refused(error)) => return Err(error),
+        Err(Unassembled::Undecidable(reason)) => return Ok(Match::Undecided(reason)),
+    };
+    let admitted = move |key: Instant| clock.admits(key, zones);
+    let gated = input.admitting(&admitted);
+    let mut search = gated.search(window, &mut *budget.meter, sink);
+    for step in search.by_ref() {
+        let Some(occurrence) = step.occurrence() else {
+            return Ok(Match::Undecided(Undecided::SearchExhausted));
+        };
+        if occurrence.key() == anchor {
+            return Ok(Match::Matched);
+        }
+    }
+    Ok(Undecided::of_search(search.outcome()).map_or(Match::Unmatched, Match::Undecided))
+}
+
 /// The first instance's UTC recurrence identifier.
 pub(crate) fn component_start(
     component: &Component,

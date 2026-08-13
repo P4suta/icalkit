@@ -109,9 +109,13 @@ it is exactly the one named here and is not closed: a CP1252-mangled value can r
 it — every other route into this crate still reaches the diff with octets nobody has vouched
 for.** The CAL-ADDRESS / `SENT-BY` / `SCHEDULE-AGENT` delegation rules are gestured at above
 rather than specified. **Amendment 13 specifies them, and one third of that sentence turns out
-to be a category error: `SCHEDULE-AGENT` can never reach this gate.** Beyond both, `RANGE=THISANDFUTURE` splitting, VALUE=DATE-safe
-`DTSTART`, negative `BYSETPOS` and a fold across a codepoint remain unexercised through the reused
-type: `ical-itip` is not RFC-5546-complete, and nothing here entitles anyone to say it is.
+to be a category error: `SCHEDULE-AGENT` can never reach this gate.** The single public
+`icalkit` facade now exercises organizer `REQUEST` splitting for `RANGE=THISANDFUTURE`,
+including recurrence-set membership, transactional detached-component creation, later-anchor
+updates and zone-gap refusal. The low-level transition crate still owns no container, and other
+method-specific range behavior, VALUE=DATE-safe `DTSTART`, negative `BYSETPOS` and a fold across
+a codepoint remain unexercised through the reused type: `ical-itip` is not RFC-5546-complete,
+and nothing here entitles anyone to say it is.
 
 ## Amendments
 

@@ -13,7 +13,10 @@ use alloc::string::ToString;
 pub use jiff::civil::{Date, DateTime, Time, Weekday};
 pub use jiff::{SignedDuration, Timestamp};
 
-use ical_core::{CivilDateTime, DateTimeValue, UtcOffset};
+use ical_core::{CivilDateTime, DateTimeValue, Instant, UtcOffset};
+use ical_tz::{
+    AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
+};
 
 /// Whether a local wall clock is exact, in a gap, or in a fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +164,80 @@ pub trait ZoneDatabase: Send + Sync {
 
     /// Find the UTC offset in force at `instant` in `tzid`.
     fn offset_at(&self, tzid: &str, instant: Timestamp) -> Option<OffsetResolution>;
+}
+
+/// Private adapter from the sole public zone port to the recurrence kernel's source.
+pub(crate) struct ZoneAdapter<'a>(Option<&'a dyn ZoneDatabase>);
+
+impl<'a> ZoneAdapter<'a> {
+    #[must_use]
+    pub(crate) const fn new(database: Option<&'a dyn ZoneDatabase>) -> Self {
+        Self(database)
+    }
+
+    fn reading(&self, tzid: &str, timestamp: Timestamp) -> Option<Reading> {
+        let database = self.0?;
+        let offset = database.offset_at(tzid, timestamp)?;
+        Some(Reading::new(
+            Instant::from_unix_seconds(timestamp.as_second()),
+            UtcOffset::from_seconds(offset.seconds())?,
+            false,
+        ))
+    }
+}
+
+impl ZoneSource for ZoneAdapter<'_> {
+    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+        let database = self.0?;
+        let date = local.date();
+        let time = local.time();
+        let local = DateTime::new(
+            i16::try_from(date.year()).ok()?,
+            i8::try_from(date.month()).ok()?,
+            i8::try_from(date.day()).ok()?,
+            i8::try_from(time.hour()).ok()?,
+            i8::try_from(time.minute()).ok()?,
+            i8::try_from(time.second()).ok()?,
+            0,
+        )
+        .ok()?;
+        let answer = database.resolve_local(tzid, local)?;
+        let resolution = match answer.kind() {
+            LocalKind::Exact => LocalResolution::Unique {
+                reading: self.reading(tzid, answer.earlier()?)?,
+            },
+            LocalKind::Fold => LocalResolution::Ambiguous {
+                earlier: self.reading(tzid, answer.earlier()?)?,
+                later: self.reading(tzid, answer.later()?)?,
+            },
+            // The public port deliberately does not invent transition bounds and before/after
+            // offsets that the internal representation requires for a gap.
+            LocalKind::Gap => LocalResolution::Undetermined,
+        };
+        Some(ZoneAnswer::new(
+            resolution,
+            ZoneProvenance::CallerDatabase,
+            AnswerBasis::Computed,
+        ))
+    }
+
+    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+        let database = self.0?;
+        let timestamp = Timestamp::new(instant.unix_seconds(), 0).ok()?;
+        let answer = database.offset_at(tzid, timestamp)?;
+        Some(OffsetAnswer::new(
+            UtcOffset::from_seconds(answer.seconds())?,
+            false,
+            ZoneProvenance::CallerDatabase,
+            AnswerBasis::Computed,
+        ))
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.0
+            .and_then(|database| database.offset_at(tzid, Timestamp::UNIX_EPOCH))
+            .is_some()
+    }
 }
 
 #[cfg(feature = "system-tz")]

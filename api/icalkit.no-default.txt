@@ -228,6 +228,7 @@ pub fn icalkit::scheduling::Message::refresh(&[u8], jiff::timestamp::Timestamp) 
 pub fn icalkit::scheduling::Message::reply(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::request(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::review<'a>(&'a self, &'a icalkit::Calendar, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'a>, icalkit::scheduling::Rejection>
+pub fn icalkit::scheduling::Message::review_in<'a>(&'a self, &mut icalkit::Session<'_>, &'a icalkit::Calendar, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'a>, icalkit::scheduling::Rejection>
 pub fn icalkit::scheduling::Message::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub struct icalkit::scheduling::Rejection
 impl icalkit::scheduling::Rejection

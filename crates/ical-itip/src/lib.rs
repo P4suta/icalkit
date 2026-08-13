@@ -49,10 +49,14 @@
 //! [`ComponentTarget`] for writing — the zone-aware instance resolution, the reporting pass
 //! behind every `scheduling-*` diagnostic code, and the two feature modules.
 //!
-//! What is deliberately not here: `RANGE=THISANDFUTURE` is represented and not implemented,
-//! nothing splits a series, and a `COUNTER` that changes a time is refused because the field
-//! rule has no per-method dimension. This crate is not RFC-5546-complete and nothing here
-//! entitles anyone to say it is. See `ROADMAP.md` (M3) and `docs/design/ical-itip-api.md`.
+//! `RANGE=THISANDFUTURE` is represented here, and the authorization gate can now judge one
+//! organizer-authored anchor against a held master without weakening sender, revision or field
+//! checks. This kernel still does not own a calendar container and therefore does not split one;
+//! the single public `icalkit::scheduling` workflow materializes an authorized `REQUEST` as a
+//! detached component and validates that its cadence key belongs to the master. Method-specific
+//! range behavior beyond that workflow and a `COUNTER` that changes a time remain incomplete.
+//! This crate is not RFC-5546-complete and nothing here entitles anyone to say it is. See
+//! `ROADMAP.md` (M3) and `docs/design/ical-itip-api.md`.
 //!
 //! # Reading order
 //!

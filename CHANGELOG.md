@@ -218,6 +218,12 @@ the other order. What version this becomes is a decision nobody has made.
   named properties is a value RFC 4791 section 9.6.1's grammar cannot express, and the crate's
   precedent for one of those is a refusal rather than a body that says something else.
 - Two diagnostic codes, `dav-property-markup-dropped` and `dav-sync-token-withheld`.
+- The single `icalkit` scheduling facade now materializes an authorized organizer `REQUEST`
+  carrying `RECURRENCE-ID;RANGE=THISANDFUTURE` as a detached component, updates an existing
+  anchor instead of duplicating it, verifies the anchor against the master's recurrence set,
+  and exposes `Message::review_in` so the check shares an `Engine` session's aggregate budget
+  and zone database. Sender authorization, ambiguous-anchor refusal, DST gaps, transactional
+  application, and CalDAV propagation to later occurrences are covered through public workflows.
 
 ### Fixed
 

@@ -13,24 +13,17 @@ use core::fmt::{self, Debug, Formatter};
 
 use core::str;
 
-use ical_core::{
-    CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
-    Severity, UtcOffset,
-};
+use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
+use crate::scheduling::Message;
+use crate::time::ZoneAdapter;
+use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
+use ical_core::{Component, ContentLineReader, Diagnostic, Document, Item, Meter, Severity};
 use ical_dav::{
     CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
     ElementName, ExtensionName, Href, MultiStatus, MultiStatusReader, Namespace, PropFind,
     PropName, PropRequest, PropStat, PropValue, RequestBody, ResponseBody, Status, SyncCollection,
     SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
 };
-use ical_tz::{
-    AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
-};
-
-use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
-use crate::scheduling::Message;
-use crate::time::{LocalKind, ZoneDatabase};
-use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// A CalDAV calendar-query with its XML vocabulary kept private.
 #[derive(Clone, Debug)]
@@ -74,7 +67,7 @@ impl Query {
         let Some(filter) = self.query.filter.as_ref() else {
             return Ok(Match::Matched);
         };
-        let source = ZoneAdapter(session.engine.zone_database());
+        let source = ZoneAdapter::new(session.engine.zone_database());
         let mut zones = Zones::new(&source);
         if let Some(query_zone) = self.query_zone.as_deref() {
             zones = zones.with_query_zone(query_zone);
@@ -110,7 +103,7 @@ fn project_calendar_data(
     let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
     let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
     if let Some(window) = request.expand.or(request.limit_recurrence_set) {
-        let zone_adapter = ZoneAdapter(session.engine.zone_database());
+        let zone_adapter = ZoneAdapter::new(session.engine.zone_database());
         let zones = Zones::new(&zone_adapter);
         source = if request.expand.is_some() {
             query::expand_calendar(&source, window, zones, &mut budget)
@@ -524,74 +517,6 @@ impl ScheduleResponse {
     #[must_use]
     pub fn deliveries(&self) -> &[ScheduleDelivery] {
         &self.deliveries
-    }
-}
-
-struct ZoneAdapter<'a>(Option<&'a dyn ZoneDatabase>);
-
-impl ZoneAdapter<'_> {
-    fn reading(&self, tzid: &str, timestamp: jiff::Timestamp) -> Option<Reading> {
-        let database = self.0?;
-        let offset = database.offset_at(tzid, timestamp)?;
-        Some(Reading::new(
-            Instant::from_unix_seconds(timestamp.as_second()),
-            UtcOffset::from_seconds(offset.seconds())?,
-            false,
-        ))
-    }
-}
-
-impl ZoneSource for ZoneAdapter<'_> {
-    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
-        let database = self.0?;
-        let date = local.date();
-        let time = local.time();
-        let local = jiff::civil::DateTime::new(
-            i16::try_from(date.year()).ok()?,
-            i8::try_from(date.month()).ok()?,
-            i8::try_from(date.day()).ok()?,
-            i8::try_from(time.hour()).ok()?,
-            i8::try_from(time.minute()).ok()?,
-            i8::try_from(time.second()).ok()?,
-            0,
-        )
-        .ok()?;
-        let answer = database.resolve_local(tzid, local)?;
-        let resolution = match answer.kind() {
-            LocalKind::Exact => LocalResolution::Unique {
-                reading: self.reading(tzid, answer.earlier()?)?,
-            },
-            LocalKind::Fold => LocalResolution::Ambiguous {
-                earlier: self.reading(tzid, answer.earlier()?)?,
-                later: self.reading(tzid, answer.later()?)?,
-            },
-            // The public port deliberately does not invent the transition bounds and
-            // before/after offsets that the internal representation requires for a gap.
-            LocalKind::Gap => LocalResolution::Undetermined,
-        };
-        Some(ZoneAnswer::new(
-            resolution,
-            ZoneProvenance::CallerDatabase,
-            AnswerBasis::Computed,
-        ))
-    }
-
-    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
-        let database = self.0?;
-        let timestamp = jiff::Timestamp::new(instant.unix_seconds(), 0).ok()?;
-        let answer = database.offset_at(tzid, timestamp)?;
-        Some(OffsetAnswer::new(
-            UtcOffset::from_seconds(answer.seconds())?,
-            false,
-            ZoneProvenance::CallerDatabase,
-            AnswerBasis::Computed,
-        ))
-    }
-
-    fn recognizes(&self, tzid: &str) -> bool {
-        self.0
-            .and_then(|database| database.offset_at(tzid, jiff::Timestamp::UNIX_EPOCH))
-            .is_some()
     }
 }
 

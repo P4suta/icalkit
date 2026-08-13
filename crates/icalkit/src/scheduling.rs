@@ -4,7 +4,7 @@
 
 //! Owned iTIP messages and a borrowed read-review-authorize-apply workflow.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
 
@@ -13,14 +13,15 @@ use ical_core::{
     Property, PropertyId, TextValue, UtcOffset,
 };
 use ical_itip::{
-    ComponentTarget, ItipMessage, Method, PartyId, ScheduleTarget, ScheduledView, Transition,
-    evaluate_message, inspect_message,
+    ComponentTarget, ItipMessage, Method, PartyId, ScheduleTarget, ScheduledComponent,
+    ScheduledView, Transition, evaluate_message, inspect_message,
 };
 
-use crate::calendar::{find_event_mut, parse_calendar};
+use crate::calendar::parse_calendar;
 use crate::failure::{Issue, IssueCode};
-use crate::time::Timestamp;
-use crate::{Calendar, Error, ResourcePolicy};
+use crate::internal::query::{Budget, Match as KernelMatch, Zones, recurrence_set_contains};
+use crate::time::{Timestamp, ZoneAdapter};
+use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// An owned scheduling message that has passed strict calendar and iTIP validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,32 +101,68 @@ impl Message {
         current: &'a Calendar,
         actor: &Actor,
     ) -> Result<Review<'a>, Rejection> {
+        let engine = Engine::builder()
+            .resource_policy(self.calendar.policy)
+            .build();
+        let mut session = engine.session();
+        self.review_in(&mut session, current, actor)
+    }
+
+    /// Review under an engine session, sharing its aggregate budget and zone database.
+    pub fn review_in<'a>(
+        &'a self,
+        session: &mut Session<'_>,
+        current: &'a Calendar,
+        actor: &Actor,
+    ) -> Result<Review<'a>, Rejection> {
         let message_component = root_component(&self.calendar)
             .ok_or_else(|| Rejection::new("icalkit.scheduling.message-invalid"))?;
         let message_view = ScheduledView::of(message_component);
-        let mut meter = Meter::new(self.calendar.policy.limits);
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        session.recurrence_diagnostics.clear();
         let message = ItipMessage::read(
             &message_view,
-            self.calendar.policy.limits,
-            &mut meter,
-            &mut diagnostics,
+            session.engine.policy.limits,
+            &mut session.meter,
+            &mut session.recurrence_diagnostics,
         )
         .map_err(|_| Rejection::new("icalkit.scheduling.message-invalid"))?;
         let uid = message.uid().as_bytes();
-        let current_component = event_component(current, uid)
+        let (item, current_component) = event_component_for_message(current, uid, &message)
             .ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?;
         let current_view = ScheduledView::of(current_component);
         let authorization = evaluate_message(&message, &current_view, PartyId::new(actor.as_str()))
             .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+        let split = current_view.recurrence_id().is_none()
+            && authorization
+                .identity()
+                .instance()
+                .is_some_and(ical_itip::InstanceRef::is_this_and_future);
+        let target = if split {
+            let anchor = range_anchor_component(&self.calendar, uid)
+                .ok_or_else(|| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+            let source = ZoneAdapter::new(session.engine.zone_database());
+            let zones = Zones::new(&source);
+            let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
+            let membership = recurrence_set_contains(
+                current_component,
+                anchor,
+                zones,
+                &mut budget,
+                &mut session.recurrence_diagnostics,
+            )
+            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+            if membership != KernelMatch::Matched {
+                return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+            }
+            ChangeTarget::SplitAfter { master: item }
+        } else {
+            ChangeTarget::Existing { item }
+        };
         let transition = authorization.into_transition();
-        let uid = core::str::from_utf8(uid)
-            .map_err(|_| Rejection::new("icalkit.scheduling.message-invalid"))?
-            .to_string();
         Ok(Review {
             message: self,
             current,
-            uid,
+            target,
             transition,
         })
     }
@@ -220,7 +257,7 @@ impl Actor {
 pub struct Review<'a> {
     message: &'a Message,
     current: &'a Calendar,
-    uid: String,
+    target: ChangeTarget,
     transition: Transition,
 }
 
@@ -243,7 +280,7 @@ impl<'a> Review<'a> {
         AuthorizedChange {
             message: self.message,
             current: self.current,
-            uid: self.uid,
+            target: self.target,
             transition: self.transition,
         }
     }
@@ -254,7 +291,7 @@ impl<'a> Review<'a> {
 pub struct AuthorizedChange<'a> {
     message: &'a Message,
     current: &'a Calendar,
-    uid: String,
+    target: ChangeTarget,
     transition: Transition,
 }
 
@@ -270,13 +307,32 @@ impl AuthorizedChange<'_> {
         let mut updated = self.current.clone();
         let policy = updated.policy;
         {
-            let event = find_event_mut(&mut updated.document, &self.uid)
+            let calendar = updated
+                .document
+                .components_mut()
+                .next()
                 .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
-            let mut target = ComponentTarget::new(event, policy.limits);
-            for (at, change) in self.transition.changes() {
-                target
-                    .write_change(at, change)
-                    .map_err(|_| Error::single("icalkit.scheduling.apply-refused"))?;
+            match self.target {
+                ChangeTarget::Existing { item } => {
+                    let event = calendar
+                        .items_mut()
+                        .get_mut(item)
+                        .and_then(Item::as_component_mut)
+                        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                    apply_to(event, &self.transition, policy)?;
+                },
+                ChangeTarget::SplitAfter { master } => {
+                    let mut detached = calendar
+                        .items()
+                        .get(master)
+                        .and_then(Item::as_component)
+                        .cloned()
+                        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                    apply_to(&mut detached, &self.transition, policy)?;
+                    calendar
+                        .items_mut()
+                        .insert(master.saturating_add(1), Item::Component(detached));
+                },
             }
         }
         let bytes = updated.document.to_bytes();
@@ -284,6 +340,31 @@ impl AuthorizedChange<'_> {
         let validated = parse_calendar(&bytes, policy, &mut meter)?;
         Ok(validated)
     }
+}
+
+/// Which component an authorized transition writes, including a not-yet-materialized range
+/// anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChangeTarget {
+    /// Mutate the component that was reviewed.
+    Existing { item: usize },
+    /// Clone the reviewed master, apply the property diff, and insert the detached anchor.
+    SplitAfter { master: usize },
+}
+
+/// Apply every occurrence-addressed change to one private component clone.
+fn apply_to(
+    event: &mut Component,
+    transition: &Transition,
+    policy: ResourcePolicy,
+) -> Result<(), Error> {
+    let mut target = ComponentTarget::new(event, policy.limits);
+    for (at, change) in transition.changes() {
+        target
+            .write_change(at, change)
+            .map_err(|_| Error::single("icalkit.scheduling.apply-refused"))?;
+    }
+    Ok(())
 }
 
 /// A scheduling message that failed review.
@@ -318,17 +399,52 @@ fn root_component(calendar: &Calendar) -> Option<&Component> {
     calendar.document.components().next()
 }
 
-fn event_component<'a>(calendar: &'a Calendar, uid: &[u8]) -> Option<&'a Component> {
-    root_component(calendar)?
+fn event_component_for_message<'a>(
+    calendar: &'a Calendar,
+    uid: &[u8],
+    message: &ItipMessage<'_>,
+) -> Option<(usize, &'a Component)> {
+    let events = root_component(calendar)?
         .items()
         .iter()
-        .filter_map(Item::as_component)
-        .find(|component| {
+        .enumerate()
+        .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
+        .filter(|(_, component)| {
             component.is_named(b"VEVENT")
                 && component
                     .properties()
                     .find(|property| property.is_named(b"UID"))
                     .is_some_and(|property| property.value_text().as_bytes() == uid)
+        });
+    let mut master = None;
+    for (item, component) in events {
+        let view = ScheduledView::of(component);
+        if message.payload_for(&view).is_some() {
+            return Some((item, component));
+        }
+        if view.recurrence_id().is_none() {
+            master = Some((item, component));
+        }
+    }
+    master
+}
+
+fn range_anchor_component<'a>(calendar: &'a Calendar, uid: &[u8]) -> Option<&'a Component> {
+    root_component(calendar)?
+        .items()
+        .iter()
+        .filter_map(Item::as_component)
+        .filter(|component| {
+            component.is_named(b"VEVENT")
+                && component
+                    .properties()
+                    .find(|property| property.is_named(b"UID"))
+                    .is_some_and(|property| property.value_text().as_bytes() == uid)
+        })
+        .find(|component| {
+            ScheduledView::of(component)
+                .recurrence_id()
+                .is_some_and(ical_itip::InstanceRef::is_this_and_future)
         })
 }
 

@@ -448,6 +448,32 @@ fn matching_payload<'a>(
     if let Some(payload) = message.payload_for(current) {
         return Ok(payload);
     }
+    // A THISANDFUTURE payload is the anchor that creates a detached component when the caller
+    // currently holds only the series master. It therefore has no exact component identity to
+    // match until this authorization is applied. Match exactly one such anchor to the master;
+    // the caller still has to materialize the split, and every sender, revision and field gate
+    // below runs against the master before it may do so.
+    if current.recurrence_id().is_none() && message.method() == Method::Request {
+        let mut split = None;
+        for index in 0..message.payload_count() {
+            let Some(payload) = message.payload(index) else {
+                continue;
+            };
+            if !payload
+                .recurrence_id()
+                .is_some_and(crate::InstanceRef::is_this_and_future)
+            {
+                continue;
+            }
+            if split.is_some() {
+                return Err(AuthorizationDenied::NoMatchingInstance);
+            }
+            split = Some(payload);
+        }
+        if let Some(payload) = split {
+            return Ok(payload);
+        }
+    }
     let target = MessageIdentity::new(message.uid().clone(), current.recurrence_id());
     let ambiguous = (0..message.payload_count()).any(|index| {
         message
