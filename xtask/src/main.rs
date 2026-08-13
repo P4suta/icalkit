@@ -412,8 +412,17 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
     let readme = fs::read_to_string(workspace.join("README.md"))?;
     let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
+    let example_path = workspace.join("crates/icalkit/examples/golden_path.rs");
     violations.extend(retired_crate_violations(&root, &facade));
     violations.extend(documentation_violations(&readme, &architecture));
+    match fs::read_to_string(&example_path) {
+        Ok(example) => violations.extend(basic_example_violations(&example)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => violations.push(
+            "crates/icalkit/examples/golden_path.rs: missing external-consumer compile fixture"
+                .to_owned(),
+        ),
+        Err(error) => return Err(error),
+    }
     let mut features = table_keys(&facade, "features");
     features.sort();
     let mut expected = vec![
@@ -435,6 +444,30 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// Keep the first consumer example at the workflow layer rather than exposing implementation
+/// machinery a normal application never needs to name.
+fn basic_example_violations(example: &str) -> Vec<String> {
+    const INTERNAL_VOCABULARY: &[&str] = &[
+        "Token",
+        "Xml",
+        "XML",
+        "Limits",
+        "Meter",
+        "Sink",
+        "DiagnosticSink",
+        "RFC table",
+    ];
+    INTERNAL_VOCABULARY
+        .iter()
+        .filter(|word| example.contains(*word))
+        .map(|word| {
+            format!(
+                "crates/icalkit/examples/golden_path.rs: basic example exposes internal vocabulary `{word}` (ADR 0014)"
+            )
+        })
+        .collect()
 }
 
 /// Hold the public guide to the same typestate and workflow order as the API.
@@ -2111,13 +2144,13 @@ fn row_codes(rows: &[Row]) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LAYERING_GATES, LayerEntry, LayeringGate, as_str_arms, codes_violations,
-        collect_architecture_violations, collect_codes_violations, collect_purity_violations,
-        core_list_violations, declared_dependencies, declares, dependency_subtable_name,
-        documentation_violations, enum_variants, file_path_violations, golden_rows,
-        is_dependency_table, layer_violations, layering_violations, manifest_violations,
-        match_arm_violations, private_crate_violations, recipe_violations, release_violations,
-        retired_crate_violations, snapshot_violations, table_keys,
+        LAYERING_GATES, LayerEntry, LayeringGate, as_str_arms, basic_example_violations,
+        codes_violations, collect_architecture_violations, collect_codes_violations,
+        collect_purity_violations, core_list_violations, declared_dependencies, declares,
+        dependency_subtable_name, documentation_violations, enum_variants, file_path_violations,
+        golden_rows, is_dependency_table, layer_violations, layering_violations,
+        manifest_violations, match_arm_violations, private_crate_violations, recipe_violations,
+        release_violations, retired_crate_violations, snapshot_violations, table_keys,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2948,6 +2981,17 @@ name = \"icalkit\"
                 .iter()
                 .any(|violation| violation.contains("retired migration prose"))
         );
+    }
+
+    #[test]
+    fn the_basic_example_keeps_internal_vocabulary_out_of_the_golden_path() {
+        assert!(basic_example_violations("use icalkit::Calendar;").is_empty());
+        let violations = basic_example_violations(
+            "use icalkit::Calendar; fn hidden(_: Limits, _: &mut Meter) {}",
+        );
+        assert_eq!(violations.len(), 2);
+        assert!(violations.iter().any(|line| line.contains("`Limits`")));
+        assert!(violations.iter().any(|line| line.contains("`Meter`")));
     }
 
     #[test]

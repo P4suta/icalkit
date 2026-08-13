@@ -40,6 +40,9 @@ assert_eq!(calendar.events().next().unwrap().uid(), "planning@example.test");
 # Ok::<(), icalkit::Error>(())
 ```
 
+The complete minimal consumer is runnable with `cargo run -p icalkit --example golden_path`. It
+compiles as an external crate using only the public facade, with and without the default features.
+
 Use `Engine::session()` when several operations must share one aggregate resource budget or a
 caller-supplied time-zone database.
 
