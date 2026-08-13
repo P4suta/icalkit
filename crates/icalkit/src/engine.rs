@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 use ical_core::{Diagnostic, Meter};
 
+use crate::caldav::Query;
 use crate::calendar::parse_calendar;
 use crate::interop::Import;
 use crate::time::ZoneDatabase;
@@ -134,5 +135,10 @@ impl Session<'_> {
     /// Promote an import only when strict validation succeeds.
     pub fn validate(&mut self, import: &Import) -> Result<Calendar, Error> {
         self.parse(import.as_bytes())
+    }
+
+    /// Strictly read one CalDAV calendar-query under this session's aggregate budget.
+    pub fn query(&mut self, bytes: &[u8]) -> Result<Query, Error> {
+        Query::parse_with_policy(bytes, self.engine.policy, &mut self.meter)
     }
 }

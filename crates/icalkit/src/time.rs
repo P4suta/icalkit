@@ -38,6 +38,50 @@ pub struct ZoneResolution {
 }
 
 impl ZoneResolution {
+    /// Construct an unambiguous local-time answer.
+    #[must_use]
+    pub fn exact(instant: Timestamp, provenance: impl Into<String>, complete: bool) -> Self {
+        Self {
+            kind: LocalKind::Exact,
+            earlier: Some(instant),
+            later: None,
+            provenance: provenance.into(),
+            complete,
+        }
+    }
+
+    /// Construct a local time that falls in a gap.
+    #[must_use]
+    pub fn gap(provenance: impl Into<String>, complete: bool) -> Self {
+        Self {
+            kind: LocalKind::Gap,
+            earlier: None,
+            later: None,
+            provenance: provenance.into(),
+            complete,
+        }
+    }
+
+    /// Construct a fold answer, or refuse instants that are not in chronological order.
+    #[must_use]
+    pub fn fold(
+        earlier: Timestamp,
+        later: Timestamp,
+        provenance: impl Into<String>,
+        complete: bool,
+    ) -> Option<Self> {
+        if earlier >= later {
+            return None;
+        }
+        Some(Self {
+            kind: LocalKind::Fold,
+            earlier: Some(earlier),
+            later: Some(later),
+            provenance: provenance.into(),
+            complete,
+        })
+    }
+
     /// The ambiguity class of the local time.
     #[must_use]
     pub const fn kind(&self) -> LocalKind {
@@ -78,6 +122,19 @@ pub struct OffsetResolution {
 }
 
 impl OffsetResolution {
+    /// Construct an offset answer, refusing offsets outside iCalendar's range.
+    #[must_use]
+    pub fn new(seconds: i32, provenance: impl Into<String>, complete: bool) -> Option<Self> {
+        if seconds <= -86_400 || seconds >= 86_400 {
+            return None;
+        }
+        Some(Self {
+            seconds,
+            provenance: provenance.into(),
+            complete,
+        })
+    }
+
     /// Seconds east of UTC.
     #[must_use]
     pub const fn seconds(&self) -> i32 {

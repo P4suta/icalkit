@@ -9,6 +9,213 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 
+use core::str;
+
+use ical_core::{
+    CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
+    Severity, UtcOffset,
+};
+use ical_dav::{DecodeContext, RequestBody, UnknownPolicy, XmlReader};
+use ical_query::{Budget, Zones};
+use ical_tz::{
+    AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
+};
+
+use crate::time::{LocalKind, ZoneDatabase};
+use crate::{Calendar, Error, ResourcePolicy, Session};
+
+/// A CalDAV calendar-query with its XML vocabulary kept private.
+#[derive(Clone, Debug)]
+pub struct Query {
+    query: ical_dav::CalendarQuery,
+    query_zone: Option<String>,
+}
+
+impl Query {
+    /// Strictly read one RFC 4791 calendar-query body using secure defaults.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let policy = ResourcePolicy::secure();
+        let mut meter = Meter::new(policy.limits);
+        Self::parse_with_policy(bytes, policy, &mut meter)
+    }
+
+    pub(crate) fn parse_with_policy(
+        bytes: &[u8],
+        policy: ResourcePolicy,
+        meter: &mut Meter,
+    ) -> Result<Self, Error> {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics)
+            .with_unknown(UnknownPolicy::Reject);
+        let mut events = XmlReader::new(bytes);
+        let RequestBody::CalendarQuery(query) = RequestBody::read(&mut events, &mut context)
+            .map_err(|_| Error::single("icalkit.caldav.query-invalid"))?
+        else {
+            return Err(Error::single("icalkit.caldav.query-invalid"));
+        };
+        let query_zone = read_query_zone(&query, policy, context.meter)?;
+        Ok(Self { query, query_zone })
+    }
+
+    /// Evaluate this filter without collapsing an unknown answer to a non-match.
+    pub fn matches(&self, session: &mut Session<'_>, calendar: &Calendar) -> Result<Match, Error> {
+        let Some(filter) = self.query.filter.as_ref() else {
+            return Ok(Match::Matched);
+        };
+        let source = ZoneAdapter(session.engine.zone_database());
+        let mut zones = Zones::new(&source);
+        if let Some(query_zone) = self.query_zone.as_deref() {
+            zones = zones.with_query_zone(query_zone);
+        }
+        let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
+        ical_query::matches(filter, &calendar.document, zones, &mut budget)
+            .map(Match::from_kernel)
+            .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))
+    }
+}
+
+fn read_query_zone(
+    query: &ical_dav::CalendarQuery,
+    policy: ResourcePolicy,
+    meter: &mut Meter,
+) -> Result<Option<String>, Error> {
+    let Some(payload) = query.timezone.as_ref() else {
+        return Ok(None);
+    };
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut reader = ContentLineReader::new(payload.as_bytes(), policy.limits.grammar());
+    let document = Document::from_tokens(&mut reader, meter, &mut diagnostics)
+        .map_err(|_| Error::single("icalkit.caldav.query-timezone-invalid"))?;
+    if diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.severity(),
+            Severity::Violation | Severity::LimitReached
+        )
+    }) {
+        return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
+    }
+    let mut found: Option<String> = None;
+    for component in document.components() {
+        collect_query_tzid(component, &mut found)?;
+    }
+    found
+        .ok_or_else(|| Error::single("icalkit.caldav.query-timezone-invalid"))
+        .map(Some)
+}
+
+fn collect_query_tzid(component: &Component, found: &mut Option<String>) -> Result<(), Error> {
+    if component.is_named(b"VTIMEZONE") {
+        for property in component
+            .properties()
+            .filter(|property| property.is_named(b"TZID"))
+        {
+            if found.is_some() {
+                return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
+            }
+            let tzid = str::from_utf8(property.value_text().as_bytes())
+                .map_err(|_| Error::single("icalkit.caldav.query-timezone-invalid"))?;
+            if tzid.is_empty() {
+                return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
+            }
+            *found = Some(tzid.into());
+        }
+    }
+    for child in component.items().iter().filter_map(Item::as_component) {
+        collect_query_tzid(child, found)?;
+    }
+    Ok(())
+}
+
+/// The three-valued result of evaluating a CalDAV filter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Match {
+    /// The calendar satisfies the filter.
+    Matched,
+    /// The calendar does not satisfy the filter.
+    Unmatched,
+    /// The filter could not be decided without inventing missing information.
+    Undecided,
+}
+
+impl Match {
+    const fn from_kernel(answer: ical_query::Match) -> Self {
+        match answer {
+            ical_query::Match::Matched => Self::Matched,
+            ical_query::Match::Unmatched => Self::Unmatched,
+            ical_query::Match::Undecided(_) => Self::Undecided,
+        }
+    }
+}
+
+struct ZoneAdapter<'a>(Option<&'a dyn ZoneDatabase>);
+
+impl ZoneAdapter<'_> {
+    fn reading(&self, tzid: &str, timestamp: jiff::Timestamp) -> Option<Reading> {
+        let database = self.0?;
+        let offset = database.offset_at(tzid, timestamp)?;
+        Some(Reading::new(
+            Instant::from_unix_seconds(timestamp.as_second()),
+            UtcOffset::from_seconds(offset.seconds())?,
+            false,
+        ))
+    }
+}
+
+impl ZoneSource for ZoneAdapter<'_> {
+    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+        let database = self.0?;
+        let date = local.date();
+        let time = local.time();
+        let local = jiff::civil::DateTime::new(
+            i16::try_from(date.year()).ok()?,
+            i8::try_from(date.month()).ok()?,
+            i8::try_from(date.day()).ok()?,
+            i8::try_from(time.hour()).ok()?,
+            i8::try_from(time.minute()).ok()?,
+            i8::try_from(time.second()).ok()?,
+            0,
+        )
+        .ok()?;
+        let answer = database.resolve_local(tzid, local)?;
+        let resolution = match answer.kind() {
+            LocalKind::Exact => LocalResolution::Unique {
+                reading: self.reading(tzid, answer.earlier()?)?,
+            },
+            LocalKind::Fold => LocalResolution::Ambiguous {
+                earlier: self.reading(tzid, answer.earlier()?)?,
+                later: self.reading(tzid, answer.later()?)?,
+            },
+            // The public port deliberately does not invent the transition bounds and
+            // before/after offsets that the internal representation requires for a gap.
+            LocalKind::Gap => LocalResolution::Undetermined,
+        };
+        Some(ZoneAnswer::new(
+            resolution,
+            ZoneProvenance::CallerDatabase,
+            AnswerBasis::Computed,
+        ))
+    }
+
+    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+        let database = self.0?;
+        let timestamp = jiff::Timestamp::new(instant.unix_seconds(), 0).ok()?;
+        let answer = database.offset_at(tzid, timestamp)?;
+        Some(OffsetAnswer::new(
+            UtcOffset::from_seconds(answer.seconds())?,
+            false,
+            ZoneProvenance::CallerDatabase,
+            AnswerBasis::Computed,
+        ))
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.0
+            .and_then(|database| database.offset_at(tzid, jiff::Timestamp::UNIX_EPOCH))
+            .is_some()
+    }
+}
+
 /// One HTTP header without coupling the API to an HTTP implementation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
