@@ -517,6 +517,155 @@ where
     recurring_component_overlaps(component, related, kind, range, zones, budget, sink)
 }
 
+/// Whether one overridden component impacts `range` through either its current or original span.
+///
+/// RFC 4791 section 9.6.6 names both. `RANGE=THISANDFUTURE` propagation is composed by the
+/// calendar-level limiting helper after these two direct tests.
+pub(crate) fn override_impacts(
+    master: &Component,
+    candidate: &Component,
+    range: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Match, QueryError> {
+    let current = match candidate.kind() {
+        Some(kind) => match occupancy_of(candidate, zones, &[]) {
+            Ok(held) => crate::overlap::overlaps(kind, &held, range),
+            Err(reason) => Match::Undecided(reason),
+        },
+        None => Match::Undecided(Undecided::OverlapUndefined),
+    };
+    if current.is_matched() {
+        return Ok(current);
+    }
+
+    let original = (|| {
+        let kind = master.kind().ok_or(Undecided::OverlapUndefined)?;
+        let opening = required(master.dtstart())?;
+        let clock = clock_of(opening)?;
+        let occupies = instance_span(master, kind, opening, clock, zones)?;
+        let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
+        let key = nominal_value(addressed, clock, zones)?;
+        let start = clock.place(key, zones)?;
+        let end = if occupies.is_instantaneous() {
+            start
+        } else {
+            let nominal_end = key
+                .checked_add_seconds(occupies.seconds())
+                .ok_or(Undecided::ValueUnreadable)?;
+            clock.place(nominal_end, zones)?
+        };
+        Ok::<_, Undecided>((Instance::new(start, start, end), occupies))
+    })();
+    let original = match original {
+        Ok((instance, occupies)) => Match::of(overlaps_range(instance, range, occupies)),
+        Err(reason) => Match::Undecided(reason),
+    };
+    let direct = current.or(original);
+    if direct.is_matched() || !is_this_and_future(candidate) {
+        return Ok(direct);
+    }
+    Ok(direct.or(this_and_future_impacts(
+        master, candidate, range, zones, budget,
+    )?))
+}
+
+/// Whether a `RANGE=THISANDFUTURE` override governs a generated occurrence in `range`.
+fn this_and_future_impacts(
+    master: &Component,
+    candidate: &Component,
+    range: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Match, QueryError> {
+    macro_rules! decided {
+        ($answer:expr) => {
+            match $answer {
+                Ok(value) => value,
+                Err(reason) => return Ok(Match::Undecided(reason)),
+            }
+        };
+    }
+
+    let kind = master.kind().ok_or(QueryError::Unrepresentable)?;
+    let opening = decided!(required(master.dtstart()));
+    let clock = decided!(clock_of(opening));
+    let dtstart = decided!(nominal_value(opening, clock, zones));
+    let dtstart_kind = if matches!(opening, DateTimeValue::Date(_)) {
+        ValueKind::Date
+    } else {
+        ValueKind::DateTime
+    };
+    let occupies = decided!(instance_span(master, kind, opening, clock, zones));
+    let mut rule = decided!(recurrence_rule(master));
+    if let Some(parsed) = rule.as_mut() {
+        decided!(project_rule_limit(parsed, clock, zones));
+    }
+    let mut rdates = instant_list(master, &ids::RDATE, clock, zones)?;
+    let mut exdates = instant_list(master, &ids::EXDATE, clock, zones)?;
+    rdates.sort_unstable();
+    rdates.dedup();
+    exdates.sort_unstable();
+    exdates.dedup();
+
+    let addressed = decided!(required(
+        candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
+    ));
+    let anchor = decided!(nominal_value(addressed, clock, zones));
+    let moved_to = match decided!(optional(candidate.dtstart())) {
+        Some(value) => Some(decided!(nominal_value(value, clock, zones))),
+        None => None,
+    };
+    let entries = [Override::new(
+        anchor,
+        OverrideRange::ThisAndFuture,
+        moved_to,
+        PropertyDiff::empty(),
+    )];
+    let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
+    let mut diagnostics = ical_core::IgnoreDiagnostics;
+    let expanded = expand(
+        Series {
+            dtstart,
+            dtstart_kind,
+            clock,
+            occupies,
+            rule: rule.as_ref(),
+            rdates: &rdates,
+            exdates: &exdates,
+            overrides,
+        },
+        range,
+        zones,
+        budget,
+        &mut diagnostics,
+    )?;
+    let anchor = decided!(clock.place(anchor, zones));
+    if expanded
+        .instances()
+        .iter()
+        .any(|instance| instance.recurrence_id() >= anchor)
+    {
+        Ok(Match::Matched)
+    } else if let Some(reason) = expanded.incomplete() {
+        Ok(Match::Undecided(reason))
+    } else {
+        Ok(Match::Unmatched)
+    }
+}
+
+/// Whether a recurrence identifier propagates its override through the rest of the series.
+fn is_this_and_future(component: &Component) -> bool {
+    component
+        .properties_named(&ids::RECURRENCE_ID)
+        .next()
+        .is_some_and(|property| {
+            property
+                .parameters_named(b"RANGE")
+                .any(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"THISANDFUTURE"))
+        })
+}
+
 /// Assemble and search one component known to carry a recurrence set.
 fn recurring_component_overlaps<S>(
     component: &Component,

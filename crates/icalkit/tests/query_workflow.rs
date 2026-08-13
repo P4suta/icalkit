@@ -89,6 +89,203 @@ fn unsafe_xml_is_refused_at_the_facade_boundary() {
     assert_eq!(error.code().as_str(), "icalkit.caldav.query-invalid");
 }
 
+#[test]
+fn partial_calendar_data_is_returned_as_a_non_persistable_projection() {
+    const PARTIAL: &[u8] =
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data><C:comp name="VCALENDAR">
+  <C:prop name="VERSION"/>
+  <C:comp name="VEVENT"><C:prop name="UID"/><C:prop name="SUMMARY"/></C:comp>
+</C:comp></C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#;
+
+    let query = Query::parse(PARTIAL).unwrap();
+    let calendar = Calendar::parse(CALENDAR).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"SUMMARY:Planning".len())
+            .any(|part| part == b"SUMMARY:Planning")
+    );
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"UID:one@example.test".len())
+            .any(|part| part == b"UID:one@example.test")
+    );
+    assert!(
+        !projected
+            .as_bytes()
+            .windows(7)
+            .any(|part| part == b"DTSTAMP")
+    );
+    assert!(
+        !projected
+            .as_bytes()
+            .windows(7)
+            .any(|part| part == b"DTSTART")
+    );
+}
+
+#[test]
+fn freebusy_projection_keeps_only_periods_inside_the_requested_window() {
+    const BUSY: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit query tests//EN\r\n\
+BEGIN:VFREEBUSY\r\n\
+UID:busy@example.test\r\n\
+DTSTAMP:19970901T120000Z\r\n\
+FREEBUSY:19970308T160000Z/PT3H,19970308T200000Z/PT1H,19970308T230000Z/1997\r\n\
+ \x200309T000000Z\r\n\
+END:VFREEBUSY\r\n\
+END:VCALENDAR\r\n";
+    const QUERY: &[u8] =
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+  <C:limit-freebusy-set start="19970308T200000Z" end="19970308T230000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#;
+
+    let query = Query::parse(QUERY).unwrap();
+    let calendar = Calendar::parse(BUSY).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"FREEBUSY:19970308T200000Z/PT1H".len())
+            .any(|part| part == b"FREEBUSY:19970308T200000Z/PT1H")
+    );
+    assert!(
+        !projected
+            .as_bytes()
+            .windows(15)
+            .any(|part| part == b"19970308T160000Z")
+    );
+    assert!(
+        !projected
+            .as_bytes()
+            .windows(15)
+            .any(|part| part == b"19970308T230000Z")
+    );
+}
+
+#[test]
+fn recurrence_projection_keeps_the_master_and_only_overrides_impacting_the_window() {
+    const RECURRING: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit query tests//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:series@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060102T120000Z\r\n\
+DURATION:PT1H\r\n\
+RRULE:FREQ=DAILY;COUNT=5\r\n\
+SUMMARY:Master\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:series@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060104T140000Z\r\n\
+DURATION:PT1H\r\n\
+RECURRENCE-ID:20060104T120000Z\r\n\
+SUMMARY:Inside override\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:series@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060106T140000Z\r\n\
+DURATION:PT1H\r\n\
+RECURRENCE-ID:20060106T120000Z\r\n\
+SUMMARY:Outside override\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    const QUERY: &[u8] =
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+  <C:limit-recurrence-set start="20060103T000000Z" end="20060105T000000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#;
+
+    let query = Query::parse(QUERY).unwrap();
+    let calendar = Calendar::parse(RECURRING).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"SUMMARY:Master".len())
+            .any(|part| part == b"SUMMARY:Master")
+    );
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"SUMMARY:Inside override".len())
+            .any(|part| part == b"SUMMARY:Inside override")
+    );
+    assert!(
+        !projected
+            .as_bytes()
+            .windows(b"SUMMARY:Outside override".len())
+            .any(|part| part == b"SUMMARY:Outside override")
+    );
+}
+
+#[test]
+fn this_and_future_override_is_kept_when_a_later_instance_impacts_the_window() {
+    const RECURRING: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit query tests//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:future@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060102T120000Z\r\n\
+DURATION:PT1H\r\n\
+RRULE:FREQ=DAILY;COUNT=5\r\n\
+LOCATION:Headquarters\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:future@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060103T120000Z\r\n\
+DURATION:PT1H\r\n\
+RECURRENCE-ID;RANGE=THISANDFUTURE:20060103T120000Z\r\n\
+LOCATION:Remote\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    const QUERY: &[u8] =
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+  <C:limit-recurrence-set start="20060105T000000Z" end="20060106T000000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#;
+
+    let query = Query::parse(QUERY).unwrap();
+    let calendar = Calendar::parse(RECURRING).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"LOCATION:Remote".len())
+            .any(|part| part == b"LOCATION:Remote")
+    );
+}
+
 struct FixedNewYork;
 
 impl ZoneDatabase for FixedNewYork {

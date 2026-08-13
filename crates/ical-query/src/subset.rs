@@ -103,7 +103,8 @@ use ical_core::{
 };
 use ical_dav::{CompSelection, TimeRange};
 
-use crate::{Budget, Match, QueryError, Reduction, Selection};
+use crate::expand::override_impacts;
+use crate::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
 /// The identity [`zone_id`] looks up.
 ///
@@ -111,6 +112,9 @@ use crate::{Budget, Match, QueryError, Reduction, Selection};
 /// reference to the associated constant would be a temporary whose lifetime is too short for
 /// the value borrowed from the matching property.
 static TZID: PropertyId = PropertyId::TZID;
+
+/// The identity [`component_uid`] looks up.
+static UID: PropertyId = PropertyId::UID;
 
 /// What calendar-data sub-selection is reviewed against, one row per passage.
 ///
@@ -310,6 +314,48 @@ where
     }
     let reduction = widened(source.reduction(), false, trimmed);
     Ok(Selection::new(Document::new(items), reduction))
+}
+
+/// Keep only overrides whose current or original occurrence impacts `window`.
+///
+/// This is the timeline-aware composition used by the facade. Decisions are made against the
+/// complete stored calendar before the structural pass copies it, so a later component/property
+/// selection cannot erase the UID, recurrence ID, or start needed to decide safely.
+pub fn limit_recurrence_set_in_window(
+    source: &Selection,
+    window: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Selection, QueryError> {
+    let mut decisions = Vec::new();
+    for calendar in source.calendar().components() {
+        let components: Vec<&Component> = calendar.components().collect();
+        for candidate in components
+            .iter()
+            .copied()
+            .filter(|component| is_override(component))
+        {
+            let answer = match components
+                .iter()
+                .copied()
+                .find(|master| is_override_of(candidate, master))
+            {
+                Some(master) => override_impacts(master, candidate, window, zones, budget)?,
+                None => Match::Undecided(Undecided::OverlapUndefined),
+            };
+            decisions.push(answer);
+        }
+    }
+    let mut decisions = decisions.into_iter();
+    limit_recurrence_set(
+        source,
+        |_candidate| {
+            decisions
+                .next()
+                .unwrap_or(Match::Undecided(Undecided::OverlapUndefined))
+        },
+        budget,
+    )
 }
 
 /// Keep the `FREEBUSY` periods that intersect `window`, RFC 4791 section 9.6.7.
@@ -713,6 +759,22 @@ fn is_override(component: &Component) -> bool {
         .properties_named(&PropertyId::RECURRENCE_ID)
         .next()
         .is_some()
+}
+
+/// Whether `candidate` is an override belonging to `master`.
+fn is_override_of(candidate: &Component, master: &Component) -> bool {
+    if candidate.kind() != master.kind() || is_override(master) {
+        return false;
+    }
+    component_uid(candidate).is_some() && component_uid(candidate) == component_uid(master)
+}
+
+/// The UID octets identifying a recurrence set.
+fn component_uid(component: &Component) -> Option<&[u8]> {
+    component
+        .properties_named(&UID)
+        .next()
+        .map(|property| property.value_text().as_bytes())
 }
 
 /// One component being rebuilt, while the component it came from is taken apart.

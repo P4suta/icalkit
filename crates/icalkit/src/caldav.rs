@@ -23,7 +23,7 @@ use ical_dav::{
     PropName, PropRequest, PropStat, PropValue, RequestBody, ResponseBody, Status, SyncCollection,
     SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
 };
-use ical_query::{Budget, Zones};
+use ical_query::{Budget, Reduction, Selection, Zones};
 use ical_tz::{
     AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
 };
@@ -79,6 +79,43 @@ impl Query {
         ical_query::matches(filter, &calendar.document, zones, &mut budget)
             .map(Match::from_kernel)
             .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))
+    }
+
+    /// Apply this query's `calendar-data` selection without turning partial data into a
+    /// persistable [`Calendar`].
+    pub fn project(
+        &self,
+        session: &mut Session<'_>,
+        calendar: &Calendar,
+    ) -> Result<ProjectedCalendar, Error> {
+        let request = self
+            .query
+            .props
+            .calendar_data
+            .as_ref()
+            .ok_or_else(|| Error::single("icalkit.caldav.calendar-data-not-requested"))?;
+        if request.expand.is_some() {
+            return Err(Error::single("icalkit.caldav.projection-unsupported"));
+        }
+
+        let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
+        let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
+        if let Some(window) = request.limit_recurrence_set {
+            let zone_adapter = ZoneAdapter(session.engine.zone_database());
+            let zones = Zones::new(&zone_adapter);
+            source =
+                ical_query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
+                    .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+        }
+        let mut selected = ical_query::select(&source, request.comp.as_ref(), &mut budget)
+            .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+        if let Some(window) = request.limit_freebusy_set {
+            selected = ical_query::limit_freebusy_set(&selected, window, &mut budget)
+                .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+        }
+        Ok(ProjectedCalendar {
+            bytes: selected.calendar().to_bytes().into_boxed_slice(),
+        })
     }
 }
 
@@ -1281,15 +1318,6 @@ fn query_response(
     resources: Vec<StoredResource>,
     policy: ResourcePolicy,
 ) -> Result<WireResponse, Error> {
-    if query
-        .query
-        .props
-        .calendar_data
-        .as_ref()
-        .is_some_and(CalendarDataRequest::is_reducing)
-    {
-        return Err(Error::single("icalkit.caldav.projection-required"));
-    }
     let engine = Engine::builder().resource_policy(policy).build();
     let mut session = engine.session();
     let mut meter = Meter::new(policy.limits);
@@ -1322,12 +1350,10 @@ fn query_response(
             }
         }
         if query.query.props.calendar_data.is_some() {
-            let payload = CalendarPayload::from_octets(
-                &resource.calendar.to_bytes(),
-                policy.limits,
-                &mut meter,
-            )
-            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+            let projected = query.project(&mut session, &resource.calendar)?;
+            let payload =
+                CalendarPayload::from_octets(projected.as_bytes(), policy.limits, &mut meter)
+                    .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
             properties
                 .push(
                     DavProperty {

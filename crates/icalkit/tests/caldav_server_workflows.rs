@@ -45,6 +45,22 @@ fn report() -> WireRequest {
     )
 }
 
+fn partial_report() -> WireRequest {
+    WireRequest::new(
+        "REPORT",
+        "/calendars/alice/work/",
+        Vec::new(),
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data><C:comp name="VCALENDAR">
+  <C:prop name="VERSION"/>
+  <C:comp name="VEVENT"><C:prop name="UID"/><C:prop name="SUMMARY"/></C:comp>
+</C:comp></C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#
+            .to_vec(),
+    )
+}
+
 #[test]
 fn server_query_asks_for_acl_then_storage_and_returns_only_matches() {
     let server = Server::new();
@@ -105,4 +121,31 @@ fn an_acl_refusal_finishes_without_requesting_storage() {
     operation.supply(ServerAnswer::authorized(false)).unwrap();
     assert!(operation.next_need().is_none());
     assert_eq!(operation.finish().unwrap().status(), 403);
+}
+
+#[test]
+fn server_returns_a_reduced_calendar_data_projection() {
+    let server = Server::new();
+    let mut operation = server.handle(partial_report()).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+    operation
+        .supply(ServerAnswer::resources(vec![
+            StoredResource::new(
+                "/calendars/alice/work/one.ics",
+                None,
+                Calendar::parse(MATCHING).unwrap(),
+            )
+            .unwrap(),
+        ]))
+        .unwrap();
+
+    let response = operation.finish().unwrap();
+    assert_eq!(response.status(), 207);
+    assert!(
+        response
+            .body()
+            .windows(b"SUMMARY:Planning".len())
+            .any(|part| part == b"SUMMARY:Planning")
+    );
+    assert!(!response.body().windows(7).any(|part| part == b"DTSTAMP"));
 }
