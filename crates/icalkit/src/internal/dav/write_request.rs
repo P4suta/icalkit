@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The client direction: every request body of [`crate::request`], as octets.
+//! The client direction: every request body of [`crate::internal::dav::request`], as octets.
 //!
-//! Nothing here is a client type. These are [`crate::WriteXml`] implementations on the values
+//! Nothing here is a client type. These are [`crate::internal::dav::WriteXml`] implementations on the values
 //! `read_request.rs` reads back, which is DP-15's structural test made mechanical: a field
 //! meaningful in only one direction would have to appear on one side of this seam and not the
 //! other, and there is no such field. A client encodes a `calendar-query` and a server decodes
@@ -19,7 +19,7 @@
 //! rather than an approximation.
 //!
 //! The prefixes are this crate's own fixed `D:`, `C:` and `CS:`, declared on the root element
-//! and taken from [`crate::Namespace::write_prefix`] rather than written as literals. That
+//! and taken from [`crate::internal::dav::Namespace::write_prefix`] rather than written as literals. That
 //! they are an output choice and never an input assumption is `element.rs`'s subject: a peer
 //! writing `d:`, or a default declaration, or a different prefix per element, is read
 //! correctly by this crate's own reader. `CS:` is declared only where a `CalendarServer`
@@ -55,17 +55,17 @@ use ical_core::{
     ValueBuf,
 };
 
-use crate::codec::WriteXml;
-use crate::element::{ElementName, Namespace};
-use crate::failure::{DavError, SyntaxError, ValueError};
-use crate::request::{
+use crate::internal::dav::codec::WriteXml;
+use crate::internal::dav::element::{ElementName, Namespace};
+use crate::internal::dav::failure::{DavError, SyntaxError, ValueError};
+use crate::internal::dav::request::{
     CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
     FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, QueryShape, TextMatch,
     TimeRange,
 };
-use crate::sink::ByteSink;
-use crate::text::{write_escaped_attribute, write_escaped_text};
-use crate::value::ExtensionName;
+use crate::internal::dav::sink::ByteSink;
+use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
+use crate::internal::dav::value::ExtensionName;
 
 /// The declaration every request body opens with.
 ///
@@ -291,11 +291,10 @@ impl Encoder<'_, '_> {
     ///
     /// A fixed buffer rather than an allocation: ten digits hold every `u32`, and an encoder
     /// that allocated to write a number would allocate on the path a caller chose a
-    /// [`crate::SliceSink`] to avoid.
+    /// [`crate::internal::dav::SliceSink`] to avoid.
     ///
     /// Compiled with the feature that needs it. `DAV:nresults` is the only count any request
     /// body of this crate carries, and an uncalled helper is a warning under `-D warnings`.
-    #[cfg(feature = "sync-collection")]
     fn count_element(&mut self, name: ElementName, count: u32) -> Result<(), DavError> {
         let mut buffer = [b'0'; 10];
         let mut at = buffer.len();
@@ -667,8 +666,7 @@ impl WriteXml for FreeBusyQuery {
     }
 }
 
-#[cfg(feature = "sync-collection")]
-impl WriteXml for crate::request::SyncCollection {
+impl WriteXml for crate::internal::dav::request::SyncCollection {
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
@@ -797,16 +795,16 @@ mod tests {
     use ical_core::{Instant, LimitExceeded, Limits, Meter};
 
     use super::write_utc_date_time;
-    use crate::codec::WriteXml;
-    use crate::element::ElementName;
-    use crate::failure::{DavError, SinkFull, SyntaxError, ValueError};
-    use crate::request::{
+    use crate::internal::dav::codec::WriteXml;
+    use crate::internal::dav::element::ElementName;
+    use crate::internal::dav::failure::{DavError, SinkFull, SyntaxError, ValueError};
+    use crate::internal::dav::request::{
         CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
         FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, TextMatch,
         TimeRange,
     };
-    use crate::sink::SliceSink;
-    use crate::value::{ExtensionName, Href};
+    use crate::internal::dav::sink::SliceSink;
+    use crate::internal::dav::value::{ExtensionName, Href};
 
     /// `20060104T000000Z`, the start of RFC 4791 section 7.8.1's own `time-range`.
     const JANUARY_4: i64 = 1_136_332_800;
@@ -1193,12 +1191,14 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
         );
     }
 
-    #[cfg(feature = "sync-collection")]
     #[test]
     fn a_sync_collection_is_the_body_rfc_6578_section_3_defines() {
-        use crate::request::{SyncCollection, SyncLevel};
-        use crate::value::SyncToken;
+        use crate::internal::dav::request::{SyncCollection, SyncLevel};
+        use crate::internal::dav::value::SyncToken;
 
+        if !crate::internal::dav::SYNC_COLLECTION_ENABLED {
+            return;
+        }
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let issued = b"http://example.invalid/ns/sync/1234".as_slice();

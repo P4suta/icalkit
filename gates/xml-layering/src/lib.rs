@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The WebDAV XML layer, compiled with no CalDAV vocabulary in scope. A path from it into the
-//! protocol above it resolves in `ical-dav` and does not resolve here, which is what makes the
+//! protocol above it resolves inside `icalkit` and does not resolve here, which is what makes the
 //! layer a fact rather than a promise (ADR 0004, ADR 0012).
 
 // The layer names `alloc` and `alloc` is not in a std crate's extern prelude, so the declaration
@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 use ical_core::{LimitExceeded, Limits, Meter};
 
-#[path = "../../../crates/ical-dav/src/xml/mod.rs"]
+#[path = "../../../crates/icalkit/src/internal/dav/xml/mod.rs"]
 mod xml;
 
 /// Name every item the layer offers, so that this member compiles the whole layer.
@@ -27,15 +27,15 @@ mod xml;
 /// The layer's items are `pub(crate)` — that is the point of `docs/adr/0012`, which keeps the
 /// grammar unexported so the deferred extraction stays a file move — so there is nothing here to
 /// re-export the way `gates/grammar-layering` re-exports `ical-core`'s grammar, and every item
-/// the consumers in `ical-dav` use is dead code in *this* root. Silencing that with an attribute
+/// the consumers in `icalkit::internal::dav` use is dead code in *this* root. Silencing that with an attribute
 /// is refused by this workspace and would be the wrong fix anyway: a gate that compiles with
 /// half the layer deleted proves nothing about the half that is gone. Naming each item here
 /// makes deleting one a compile error in the gate rather than a lint nobody reads.
 ///
 /// It is also a smoke test of the only thing this member can assert: that the layer *builds* in
 /// a root that has never heard of CalDAV. Behavior is asserted by the layer's own tests, which
-/// run inside `ical-dav` — `[lib] test = false` on this member is what stops them running twice
-/// and being counted twice.
+/// run inside `icalkit` and its temporary `ical-dav` harness — `[lib] test = false` on this
+/// member is what stops them gaining a third compilation root.
 #[must_use]
 pub fn roll_call() -> usize {
     let mut named = 0_usize;

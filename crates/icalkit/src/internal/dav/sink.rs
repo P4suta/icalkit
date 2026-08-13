@@ -17,7 +17,7 @@
 
 use alloc::vec::Vec;
 
-use crate::failure::SinkFull;
+use crate::internal::dav::failure::SinkFull;
 
 /// A push-only destination for encoded octets.
 ///
@@ -108,7 +108,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{ByteSink, SliceSink};
-    use crate::failure::SinkFull;
+    use crate::internal::dav::failure::SinkFull;
 
     #[test]
     fn a_slice_sink_refuses_rather_than_writing_a_prefix() {

@@ -13,22 +13,22 @@ use core::fmt::{self, Debug, Formatter};
 
 use core::str;
 
-use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
-use crate::scheduling::Message;
-use crate::time::ZoneAdapter;
-use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
-use ical_core::{Component, ContentLineReader, Diagnostic, Document, Item, Meter, Severity};
-use ical_dav::{
+use crate::internal::dav::{
     CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
     ElementName, ExtensionName, Href, MultiStatus, MultiStatusReader, Namespace, PropFind,
     PropName, PropRequest, PropStat, PropValue, RequestBody, ResponseBody, Status, SyncCollection,
     SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
 };
+use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
+use crate::scheduling::Message;
+use crate::time::ZoneAdapter;
+use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
+use ical_core::{Component, ContentLineReader, Diagnostic, Document, Item, Meter, Severity};
 
 /// A CalDAV calendar-query with its XML vocabulary kept private.
 #[derive(Clone, Debug)]
 pub struct Query {
-    query: ical_dav::CalendarQuery,
+    query: crate::internal::dav::CalendarQuery,
     query_zone: Option<String>,
 }
 
@@ -54,7 +54,7 @@ impl Query {
     }
 
     fn from_decoded(
-        query: ical_dav::CalendarQuery,
+        query: crate::internal::dav::CalendarQuery,
         policy: ResourcePolicy,
         meter: &mut Meter,
     ) -> Result<Self, Error> {
@@ -127,20 +127,20 @@ fn decode_dav_request(
     bytes: &[u8],
     policy: ResourcePolicy,
     meter: &mut Meter,
-) -> Result<RequestBody, ical_dav::DavError> {
+) -> Result<RequestBody, crate::internal::dav::DavError> {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics)
         .with_unknown(UnknownPolicy::Reject);
     let mut events = XmlReader::new(bytes);
     let request = RequestBody::read(&mut events, &mut context)?;
     if events.next_event(&mut context)?.is_some() {
-        return Err(ical_dav::DavError::Foreign);
+        return Err(crate::internal::dav::DavError::Foreign);
     }
     Ok(request)
 }
 
 fn read_query_zone(
-    query: &ical_dav::CalendarQuery,
+    query: &crate::internal::dav::CalendarQuery,
     policy: ResourcePolicy,
     meter: &mut Meter,
 ) -> Result<Option<String>, Error> {
@@ -267,7 +267,7 @@ impl Revision {
     pub fn stored(uri: impl Into<String>, etag: &str) -> Result<Self, Error> {
         let uri = uri.into();
         validate_uri(&uri)?;
-        let parsed = ical_dav::ETag::parse(etag.as_bytes())
+        let parsed = crate::internal::dav::ETag::parse(etag.as_bytes())
             .map_err(|_| Error::single("icalkit.caldav.etag-invalid"))?;
         if parsed.is_weak() {
             return Err(Error::single("icalkit.caldav.weak-etag"));
@@ -682,7 +682,7 @@ fn reference_from_body(body: &MultiStatus, name: ElementName) -> Result<Option<S
     Ok(None)
 }
 
-fn entity_tag(response: &ical_dav::DavResponse) -> Result<Option<String>, Error> {
+fn entity_tag(response: &crate::internal::dav::DavResponse) -> Result<Option<String>, Error> {
     let wanted = PropName::Known(ElementName::Getetag);
     let Some(PropValue::Entity(etag)) = response.successful_value(&wanted) else {
         return Ok(None);
@@ -693,7 +693,7 @@ fn entity_tag(response: &ical_dav::DavResponse) -> Result<Option<String>, Error>
     Ok(Some(format!("{weak}\"{tag}\"")))
 }
 
-fn calendar_data(response: &ical_dav::DavResponse) -> Result<Option<Calendar>, Error> {
+fn calendar_data(response: &crate::internal::dav::DavResponse) -> Result<Option<Calendar>, Error> {
     let wanted = PropName::Known(ElementName::CalendarData);
     let Some(PropValue::CalendarData(payload)) = response.successful_value(&wanted) else {
         return Ok(None);
@@ -1087,7 +1087,7 @@ impl ScheduleParser {
         }
     }
 
-    fn start(&mut self, name: ical_dav::QName<'_>, depth: u16) -> Result<(), Error> {
+    fn start(&mut self, name: crate::internal::dav::QName<'_>, depth: u16) -> Result<(), Error> {
         if depth == 1 && is_name(name, Namespace::CalDav, b"schedule-response") {
             if self.stage != ScheduleStage::BeforeRoot {
                 return Err(Error::single("icalkit.caldav.schedule-invalid"));
@@ -1128,7 +1128,7 @@ impl ScheduleParser {
         Ok(())
     }
 
-    fn end(&mut self, name: ical_dav::QName<'_>, depth: u16) -> Result<(), Error> {
+    fn end(&mut self, name: crate::internal::dav::QName<'_>, depth: u16) -> Result<(), Error> {
         if depth == 4 && is_name(name, Namespace::Dav, b"href") {
             self.capture = None;
         } else if depth == 3 && is_name(name, Namespace::CalDav, b"recipient") {
@@ -1162,7 +1162,7 @@ impl ScheduleParser {
     }
 }
 
-fn is_name(name: ical_dav::QName<'_>, namespace: Namespace<'_>, local: &[u8]) -> bool {
+fn is_name(name: crate::internal::dav::QName<'_>, namespace: Namespace<'_>, local: &[u8]) -> bool {
     name.namespace.is(namespace) && name.local_name == local
 }
 
@@ -2115,7 +2115,7 @@ impl Server {
         request: WireRequest,
         sync: SyncCollection,
     ) -> Result<ServerOperation, Error> {
-        if sync.level != ical_dav::SyncLevel::One {
+        if sync.level != crate::internal::dav::SyncLevel::One {
             return Err(Error::single("icalkit.caldav.sync-level-unsupported"));
         }
         let token = sync

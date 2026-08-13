@@ -11,7 +11,7 @@
 //! this crate implements, which is why it is a unit of its own rather than three copies inside
 //! the two that use it.
 //!
-//! - Turn a `ical_dav::Collation` into a [`crate::internal::query::Collator`] with [`crate::internal::query::Collator::of`], and
+//! - Turn a `crate::internal::dav::Collation` into a [`crate::internal::query::Collator`] with [`crate::internal::query::Collator::of`], and
 //!   refuse the ones this crate does not implement as [`crate::internal::query::QueryError::UnsupportedCollation`].
 //!   RFC 4791 section 7.5.1 gives a server the `CALDAV:supported-collation` precondition for
 //!   exactly this, so a collation with no row here is refused and never silently downgraded.
@@ -62,7 +62,7 @@
 //! `ical-core` makes for reading the resource — so the product is bounded by the caller's own
 //! policy rather than by anything this file would have to enforce again.
 
-use ical_dav::{Collation, TextMatch};
+use crate::internal::dav::{Collation, TextMatch};
 
 use crate::internal::query::vocabulary::{Collator, QueryError};
 
@@ -154,8 +154,8 @@ pub(crate) fn contains_text(value: &[u8], matcher: &TextMatch) -> Result<bool, Q
 
 #[cfg(test)]
 mod tests {
+    use crate::internal::dav::{Collation, TextMatch};
     use ical_core::{Limits, Meter};
-    use ical_dav::{Collation, TextMatch};
 
     use super::{collator_of, contains, contains_text};
     use crate::internal::query::vocabulary::{Collator, QueryError};

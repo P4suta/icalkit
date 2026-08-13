@@ -29,13 +29,11 @@ system-tz = [
 
 [dependencies]
 ical-core = { path = "../ical-core", version = "0.0.0" }
-ical-dav = { path = "../ical-dav", version = "0.0.0", features = [
-  "sync-collection",
-] }
 jiff = { version = "0.2.35", default-features = false, features = [
   "alloc",
   "tz-fat",
 ] }
+xmlparser = { version = "0.13.6", default-features = false }
 
 [lints]
 workspace = true

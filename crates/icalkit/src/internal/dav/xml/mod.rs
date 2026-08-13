@@ -34,7 +34,7 @@
 //!
 //! `gates/xml-layering` compiles this directory in a root whose only dependency is `ical-core` —
 //! the shared `Limits`, `Meter` and `LimitExceeded`, which are the model's and not CalDAV's. A
-//! path from here into the CalDAV vocabulary above resolves in `ical-dav` and does not resolve
+//! path from here into the CalDAV vocabulary above resolves inside `icalkit` and does not resolve
 //! there, so `use crate::ElementName;` inside this layer is a compile error with a file and a
 //! line rather than a convention somebody remembers.
 //!
@@ -46,7 +46,7 @@
 //!
 //! # What deliberately remains above this layer
 //!
-//! The `xmlparser` token stream is consumed in `ical-dav` because the wrapper is stated over
+//! The `xmlparser` token stream is consumed in `icalkit::internal::dav` because the wrapper is stated over
 //! types that *are* CalDAV's — an `ElementName` row on every event, a `Namespace`
 //! classification on every name, and `DavError` in every public signature. The element writer
 //! stays there for the same reason. What lives here is vocabulary-independent wrapper logic:

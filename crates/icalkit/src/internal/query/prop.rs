@@ -6,7 +6,7 @@
 //!
 //! # What this unit owns
 //!
-//! Given one `ical_core::Component` and one `ical_dav::PropFilter`, answer a [`crate::internal::query::Match`];
+//! Given one `ical_core::Component` and one `crate::internal::dav::PropFilter`, answer a [`crate::internal::query::Match`];
 //! and the same for a `ParamFilter` against one property. The two are one unit because they
 //! share the whole of their structure — a name, an `is-not-defined`, an optional `text-match`,
 //! and a list of children — and splitting them would be two copies of one walk.
@@ -76,10 +76,10 @@
 
 use core::str::from_utf8;
 
+use crate::internal::dav::{ParamFilter, PropFilter, TextMatch, TimeRange};
 use ical_core::{
     CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue, Instant, Property, UtcOffset,
 };
-use ical_dav::{ParamFilter, PropFilter, TextMatch, TimeRange};
 
 use crate::internal::query::collate;
 use crate::internal::query::vocabulary::{Budget, Match, QueryError, Undecided, Zones};
@@ -375,9 +375,9 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use crate::internal::dav::{Collation, ParamFilter, PropFilter, TextMatch, TimeRange};
     use crate::internal::tz::FixedOffsetSource;
     use ical_core::{Component, Instant, Item, Limits, Meter, Parameter, Property, UtcOffset};
-    use ical_dav::{Collation, ParamFilter, PropFilter, TextMatch, TimeRange};
 
     use super::{PROPERTY_FILTER_SECTIONS, matches_param_filter, matches_prop_filter};
     use crate::internal::query::vocabulary::{Budget, Match, QueryError, Undecided, Zones};

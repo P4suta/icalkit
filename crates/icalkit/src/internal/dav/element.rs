@@ -20,7 +20,7 @@
 //!
 //! The table is unconditional. A row exists for every element of RFC 4918, RFC 4791, RFC 6578
 //! and RFC 6638 this crate names, whatever features are compiled, so a build that cannot
-//! honor a `REPORT` answers [`DavError::Unsupported`](crate::DavError::Unsupported) instead of
+//! honor a `REPORT` answers [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) instead of
 //! skipping the request as though the server had made it up.
 
 /// A resolved namespace URI, classified.
@@ -431,7 +431,7 @@ impl ElementName {
     /// The row of the table a resolved name lands on, if any.
     ///
     /// `None` is a foreign element, which RFC 4918 section 17 requires a reader to tolerate
-    /// and which [`crate::UnknownPolicy`] decides the fate of. It is never an error here,
+    /// and which [`crate::internal::dav::UnknownPolicy`] decides the fate of. It is never an error here,
     /// because whether a server's extension is skipped or refused is the caller's call and
     /// not this table's.
     #[must_use]
@@ -456,7 +456,7 @@ impl ElementName {
     /// nothing else. An iCalendar object's `CRLF` terminators are RFC 5545 section 3.1 syntax
     /// rather than the file's layout, and XML 1.0 section 2.11 would fold them away before any
     /// of this crate saw them. What this predicate scopes — a deliberate, stated departure
-    /// from that rule — is [`crate::TextMode`]'s subject, and the reasoning is in
+    /// from that rule — is [`crate::internal::dav::TextMode`]'s subject, and the reasoning is in
     /// `docs/adr/0004`.
     ///
     /// The set is three elements rather than one because RFC 4791 defines three places an
@@ -479,12 +479,12 @@ impl ElementName {
     /// Whether this build can honor the element.
     ///
     /// The table is unconditional and this is not: an RFC 6578 request in a build without
-    /// `sync-collection` is refused as [`crate::DavError::Unsupported`], which is a different
+    /// `sync-collection` is refused as [`crate::internal::dav::DavError::Unsupported`], which is a different
     /// answer from skipping it as foreign. A server that skipped a `sync-collection` REPORT
     /// would answer it with a full enumeration and let the client believe it had synchronized.
     #[must_use]
     pub const fn is_supported(self) -> bool {
-        if cfg!(feature = "sync-collection") {
+        if crate::internal::dav::SYNC_COLLECTION_ENABLED {
             true
         } else {
             !matches!(

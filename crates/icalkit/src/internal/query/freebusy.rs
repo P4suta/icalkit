@@ -79,11 +79,11 @@
 
 use alloc::vec::Vec;
 
+use crate::internal::dav::FreeBusyQuery;
 use ical_core::{
     Component, ComponentKind, DateTimeValue, DecodeValue, DiagnosticCode, Instant, LimitExceeded,
     Meter, Period, Property, UtcOffset,
 };
-use ical_dav::FreeBusyQuery;
 
 use crate::internal::query::expand::Instance;
 use crate::internal::query::vocabulary::{
@@ -611,8 +611,8 @@ fn record(
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::internal::dav::{FreeBusyQuery, TimeRange};
     use ical_core::{Component, Document, IgnoreDiagnostics, Instant, Limits, Meter};
-    use ical_dav::{FreeBusyQuery, TimeRange};
 
     use super::{BusyAnswer, Placement, free_busy};
     use crate::internal::query::expand::Instance;

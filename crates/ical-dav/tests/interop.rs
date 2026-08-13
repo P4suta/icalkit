@@ -37,11 +37,15 @@ use ical_dav::{
 };
 
 /// The `.ics` all three fixtures carry, byte for byte.
-const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");
+const PAYLOAD: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/calendar-data-payload.ics");
 
-const SABREDAV: &[u8] = include_bytes!("fixtures/sabredav-calendar-multiget.xml");
-const RADICALE: &[u8] = include_bytes!("fixtures/radicale-calendar-multiget.xml");
-const CALENDAR_SERVER: &[u8] = include_bytes!("fixtures/calendarserver-calendar-multiget.xml");
+const SABREDAV: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/sabredav-calendar-multiget.xml");
+const RADICALE: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/radicale-calendar-multiget.xml");
+const CALENDAR_SERVER: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/calendarserver-calendar-multiget.xml");
 
 /// 2006-01-04T00:00:00Z, the window RFC 4791 section 7.8.1's own example asks about.
 const WINDOW_START: i64 = 1_136_332_800;

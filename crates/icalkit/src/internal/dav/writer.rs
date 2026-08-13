@@ -4,7 +4,7 @@
 
 //! The element writer, which is strictly conformant XML where the reader beside it is not.
 //!
-//! [`crate::text`] states the one place this crate's *reader* departs from XML 1.0: inside
+//! [`crate::internal::dav::text`] states the one place this crate's *reader* departs from XML 1.0: inside
 //! `CALDAV:calendar-data` it hands back the octets as they arrived rather than applying section
 //! 2.11 line-break normalization. Writing needs no such departure and takes none. A carriage
 //! return leaves here as the character reference `&#13;`, which section 2.11 never reaches
@@ -62,11 +62,11 @@ use core::fmt::{self, Debug, Formatter};
 
 use ical_core::{LimitExceeded, Meter};
 
-use crate::element::{ElementName, Namespace};
-use crate::failure::{DavError, SinkFull, SyntaxError};
-use crate::sink::ByteSink;
-use crate::text::{write_escaped_attribute, write_escaped_text};
-use crate::value::{ExtensionName, copy};
+use crate::internal::dav::element::{ElementName, Namespace};
+use crate::internal::dav::failure::{DavError, SinkFull, SyntaxError};
+use crate::internal::dav::sink::ByteSink;
+use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
+use crate::internal::dav::value::{ExtensionName, copy};
 
 /// The declaration every document this crate writes begins with.
 ///
@@ -486,11 +486,11 @@ mod tests {
     use ical_core::{IgnoreDiagnostics, LimitExceeded, Limits, Meter};
 
     use super::XmlWriter;
-    use crate::element::{ElementName, Namespace};
-    use crate::failure::{DavError, SinkFull, SyntaxError};
-    use crate::sink::SliceSink;
-    use crate::text::{TextMode, decode_text};
-    use crate::value::ExtensionName;
+    use crate::internal::dav::element::{ElementName, Namespace};
+    use crate::internal::dav::failure::{DavError, SinkFull, SyntaxError};
+    use crate::internal::dav::sink::SliceSink;
+    use crate::internal::dav::text::{TextMode, decode_text};
+    use crate::internal::dav::value::ExtensionName;
 
     /// What every document this writer produces begins with.
     const PRELUDE: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
@@ -932,9 +932,11 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
 
     /// An element this build cannot honor is refused rather than written into a request that
     /// could not then be read back.
-    #[cfg(not(feature = "sync-collection"))]
     #[test]
     fn a_build_without_the_feature_will_not_write_the_report_it_cannot_read() {
+        if crate::internal::dav::SYNC_COLLECTION_ENABLED {
+            return;
+        }
         let refused = write_document(|writer| writer.open(ElementName::SyncCollection));
         assert_eq!(
             refused,

@@ -64,18 +64,18 @@ use ical_core::{
     report_diagnostic,
 };
 
-use crate::element::ElementName;
-use crate::failure::{DavError, SyntaxError};
-use crate::sink::ByteSink;
+use crate::internal::dav::element::ElementName;
+use crate::internal::dav::failure::{DavError, SyntaxError};
+use crate::internal::dav::sink::ByteSink;
 // The character rules, the reference resolver and the escaping table are XML 1.0's rather than
 // CalDAV's, so they live in the private layer `gates/xml-layering` compiles alone. What stays
 // here is everything stated over an `ElementName` or a `ByteSink`, which is what that layer may
 // not name (docs/adr/0012).
-use crate::xml::chars::{
+use crate::internal::dav::xml::chars::{
     check_chars as check_layer_chars, escape_for, normalize_attribute as normalize_layer, push,
     push_reference,
 };
-use crate::xml::scan::find;
+use crate::internal::dav::xml::scan::find;
 
 /// The caller's policy for how character data is delivered.
 ///
@@ -485,8 +485,8 @@ mod tests {
         DecodedText, LineEndings, TextMode, TextPolicy, decode_text, write_escaped_attribute,
         write_escaped_text,
     };
-    use crate::element::ElementName;
-    use crate::failure::{DavError, SyntaxError};
+    use crate::internal::dav::element::ElementName;
+    use crate::internal::dav::failure::{DavError, SyntaxError};
 
     /// The `calendar-data` payload of a `SabreDAV`-shaped multistatus, with the `CRLF`
     /// terminators RFC 5545 section 3.1 requires and a content line folded at octet 75.

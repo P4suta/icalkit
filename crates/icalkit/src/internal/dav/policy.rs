@@ -12,7 +12,7 @@ use core::fmt::{self, Debug, Formatter};
 
 use ical_core::{Diagnostic, DiagnosticCode, DiagnosticSink, Limits, Location, Meter, Severity};
 
-use crate::text::TextPolicy;
+use crate::internal::dav::text::TextPolicy;
 
 /// What to do about an element outside the closed vocabulary.
 ///
@@ -105,7 +105,7 @@ mod tests {
     use ical_core::{Diagnostic, DiagnosticCode, Limits, Meter, Severity, Span};
 
     use super::{DecodeContext, UnknownPolicy};
-    use crate::text::TextPolicy;
+    use crate::internal::dav::text::TextPolicy;
 
     #[test]
     fn the_defaults_are_the_ones_that_lose_nothing() {

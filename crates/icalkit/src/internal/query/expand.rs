@@ -79,6 +79,7 @@
 
 use alloc::vec::Vec;
 
+use crate::internal::dav::TimeRange;
 use crate::internal::recur::{
     InputError, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
     RecurrenceRule, RuleLimit, UntilClock, ValueKind, Window, generation_window,
@@ -90,7 +91,6 @@ use ical_core::{
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
     PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
 };
-use ical_dav::TimeRange;
 
 use crate::internal::query::overlap::Occupancy;
 use crate::internal::query::vocabulary::{
@@ -1524,7 +1524,7 @@ fn start_window(
 ///
 /// Two comparisons, each of which an absent bound satisfies: section 9.9 reads a missing `start`
 /// as minus infinity and a missing `end` as plus infinity, and a range with neither is one
-/// `ical_dav::TimeRange` refuses to hold.
+/// `crate::internal::dav::TimeRange` refuses to hold.
 fn overlaps_range(instance: Instance, range: TimeRange, span: InstanceSpan) -> bool {
     let reaches_start = match range.start() {
         None => true,
@@ -1767,6 +1767,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
+    use crate::internal::dav::TimeRange;
     use crate::internal::recur::{
         Freq, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceRule,
         RecurrenceRuleBuilder, RuleLimit, ValueKind,
@@ -1776,7 +1777,6 @@ mod tests {
         CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, IgnoreDiagnostics,
         Instant, Limits, Meter, Severity, Subject, UtcOffset,
     };
-    use ical_dav::TimeRange;
 
     use super::{
         EXPANSION_SECTIONS, Instance, InstanceSpan, SearchBounds, Series, SeriesClock,

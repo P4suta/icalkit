@@ -97,11 +97,11 @@
 use alloc::vec::{IntoIter, Vec};
 use core::{mem, slice};
 
+use crate::internal::dav::{CompSelection, TimeRange};
 use ical_core::{
     CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration, EncodeValue, Instant,
     Item, LimitExceeded, Limits, Meter, Period, Property, PropertyId, UtcOffset, ValueBuf,
 };
-use ical_dav::{CompSelection, TimeRange};
 
 use crate::internal::query::expand::{
     component_start, expand_component, override_impacts, override_recurrence_id,
@@ -1236,11 +1236,11 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use crate::internal::dav::{CompSelection, TimeRange};
     use ical_core::{
         DateTimeValue, DecodeValue, DiagnosticCode, Document, IgnoreDiagnostics, Instant,
         LimitExceeded, Limits, Meter, PropertyId, UtcOffset,
     };
-    use ical_dav::{CompSelection, TimeRange};
 
     use super::{
         SUBSELECTION_SECTIONS, limit_freebusy_set, limit_recurrence_set, select, without_values,

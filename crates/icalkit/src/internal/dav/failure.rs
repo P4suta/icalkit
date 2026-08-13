@@ -23,7 +23,7 @@ use core::fmt::{self, Display, Formatter};
 
 use ical_core::LimitExceeded;
 
-use crate::element::ElementName;
+use crate::internal::dav::element::ElementName;
 
 /// A refusal that ends a read or a write.
 ///
@@ -49,7 +49,7 @@ pub enum DavError {
     /// An element outside the closed vocabulary appeared where none may be tolerated.
     ///
     /// A foreign element is normally skipped with a diagnostic (RFC 4918 section 17), so this
-    /// is what [`crate::UnknownPolicy::Reject`] raises, plus the two places where skipping is
+    /// is what [`crate::internal::dav::UnknownPolicy::Reject`] raises, plus the two places where skipping is
     /// not an option at all: a document whose root is foreign, where skipping would leave no
     /// body, and a foreign element in a position whose content model this crate reads
     /// structurally.
@@ -170,28 +170,30 @@ impl Display for SyntaxError {
 
 impl Error for SyntaxError {}
 
-impl From<crate::xml::fault::XmlSyntax> for SyntaxError {
+impl From<crate::internal::dav::xml::fault::XmlSyntax> for SyntaxError {
     /// The one seam between the private XML layer's classification and this public one.
     ///
     /// Written out arm by arm rather than shared, because the two types are the same list for a
     /// reason that will not survive the extraction `docs/adr/0012` deferred: `webdav-core` would
     /// own the layer's copy and every consumer would map it, exactly as this crate does now.
     /// Nothing in `src/xml/` may name this type, so the mapping has to live on this side.
-    fn from(error: crate::xml::fault::XmlSyntax) -> Self {
+    fn from(error: crate::internal::dav::xml::fault::XmlSyntax) -> Self {
         match error {
-            crate::xml::fault::XmlSyntax::UndefinedEntity => Self::UndefinedEntity,
-            crate::xml::fault::XmlSyntax::Encoding => Self::Encoding,
-            crate::xml::fault::XmlSyntax::Malformed => Self::Malformed,
-            crate::xml::fault::XmlSyntax::ForbiddenCharacter => Self::ForbiddenCharacter,
+            crate::internal::dav::xml::fault::XmlSyntax::UndefinedEntity => Self::UndefinedEntity,
+            crate::internal::dav::xml::fault::XmlSyntax::Encoding => Self::Encoding,
+            crate::internal::dav::xml::fault::XmlSyntax::Malformed => Self::Malformed,
+            crate::internal::dav::xml::fault::XmlSyntax::ForbiddenCharacter => {
+                Self::ForbiddenCharacter
+            },
         }
     }
 }
 
-impl From<crate::xml::fault::XmlFault> for DavError {
-    fn from(fault: crate::xml::fault::XmlFault) -> Self {
+impl From<crate::internal::dav::xml::fault::XmlFault> for DavError {
+    fn from(fault: crate::internal::dav::xml::fault::XmlFault) -> Self {
         match fault {
-            crate::xml::fault::XmlFault::Limit(exceeded) => Self::Limit(exceeded),
-            crate::xml::fault::XmlFault::Syntax(error) => Self::Syntax(error.into()),
+            crate::internal::dav::xml::fault::XmlFault::Limit(exceeded) => Self::Limit(exceeded),
+            crate::internal::dav::xml::fault::XmlFault::Syntax(error) => Self::Syntax(error.into()),
         }
     }
 }
@@ -269,7 +271,7 @@ impl Error for ValueError {}
 
 /// The caller's output buffer has no room for what an encoder was about to write.
 ///
-/// A distinct type from [`DavError`] so that [`crate::ByteSink`] can be implemented without
+/// A distinct type from [`DavError`] so that [`crate::internal::dav::ByteSink`] can be implemented without
 /// naming the protocol's whole failure vocabulary — a sink knows about room and nothing else.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SinkFull;
@@ -289,7 +291,7 @@ mod tests {
     use ical_core::LimitExceeded;
 
     use super::{DavError, SinkFull, SyntaxError, ValueError};
-    use crate::element::ElementName;
+    use crate::internal::dav::element::ElementName;
 
     #[test]
     fn a_limit_refusal_names_the_dimension_it_crossed() {

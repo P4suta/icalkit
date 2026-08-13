@@ -5,7 +5,7 @@
 //! Reading a multistatus, one [`DavResponse`] at a time.
 //!
 //! Peak memory is one response. Nothing here builds a collection, and
-//! [`MultiStatus::read`](crate::MultiStatus::read) — which does — drives this same public
+//! [`MultiStatus::read`](crate::internal::dav::MultiStatus::read) — which does — drives this same public
 //! [`ResponseSource`], so the owned form and the streaming form cannot drift apart along a
 //! private fast path. A client with sixty-four kilobytes drains the source and keeps what it
 //! needs; a client with memory materializes the collection; both read the same octets through
@@ -16,7 +16,7 @@
 //! **A status it cannot read is never a success.** A [`PropStat`] is built holding
 //! [`UNREADABLE_STATUS`] and a parsed status replaces it, so a `DAV:status` that is missing or
 //! unreadable leaves the group under a code
-//! [`Status::is_success`](crate::Status::is_success) answers `false` to. The properties are
+//! [`Status::is_success`](crate::internal::dav::Status::is_success) answers `false` to. The properties are
 //! kept — they arrived, and `docs/adr/0001`'s rule is that what is not understood is preserved
 //! — but [`DavResponse::successful_value`] will not hand one back as though the server had
 //! returned it. Reading an unstated outcome as `200` is how a client shows an empty calendar
@@ -60,15 +60,19 @@ use alloc::vec::Vec;
 
 use ical_core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
 
-use crate::codec::{ResponseSource, XmlEvent, XmlPull};
-use crate::element::{ElementName, Namespace, QName};
-use crate::failure::DavError;
-use crate::policy::{DecodeContext, UnknownPolicy};
-use crate::reader::XML_URI;
-use crate::request::PropName;
-use crate::response::{CalendarPayload, DavProperty, DavResponse, ErrorBody, PropStat, PropValue};
-use crate::text::{DecodedText, LineEndings, TextRun, write_escaped_attribute, write_escaped_text};
-use crate::value::{ETag, ExtensionName, Href, ResourceType, Status, copy};
+use crate::internal::dav::codec::{ResponseSource, XmlEvent, XmlPull};
+use crate::internal::dav::element::{ElementName, Namespace, QName};
+use crate::internal::dav::failure::DavError;
+use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
+use crate::internal::dav::reader::XML_URI;
+use crate::internal::dav::request::PropName;
+use crate::internal::dav::response::{
+    CalendarPayload, DavProperty, DavResponse, ErrorBody, PropStat, PropValue,
+};
+use crate::internal::dav::text::{
+    DecodedText, LineEndings, TextRun, write_escaped_attribute, write_escaped_text,
+};
+use crate::internal::dav::value::{ETag, ExtensionName, Href, ResourceType, Status, copy};
 
 /// The status a group of properties carries when the server stated none this reader can read.
 ///
@@ -1236,30 +1240,29 @@ mod tests {
     use ical_core::{Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter};
 
     use super::{MultiStatusReader, UNREADABLE_STATUS};
-    use crate::codec::{ResponseSource, XmlEvent, XmlPull};
-    use crate::element::{ElementName, Namespace, QName};
-    use crate::failure::DavError;
-    use crate::policy::{DecodeContext, UnknownPolicy};
-    use crate::request::{CalendarQuery, CompFilter, PropName, TimeRange};
-    use crate::response::{
+    use crate::internal::dav::codec::{ResponseSource, XmlEvent, XmlPull};
+    use crate::internal::dav::element::{ElementName, Namespace, QName};
+    use crate::internal::dav::failure::DavError;
+    use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
+    use crate::internal::dav::request::{CalendarQuery, CompFilter, PropName, TimeRange};
+    use crate::internal::dav::response::{
         DavProperty, DavResponse, MultiStatus, PropStat, PropValue, ResponseBody,
     };
-    use crate::text::{LineEndings, TextMode};
-    use crate::value::{Href, Status};
+    use crate::internal::dav::text::{LineEndings, TextMode};
+    use crate::internal::dav::value::{Href, Status};
 
     /// The `.ics` the three recorded exchanges are carrying, byte for byte.
-    const PAYLOAD: &[u8] = include_bytes!("../tests/fixtures/calendar-data-payload.ics");
+    const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");
 
     /// `SabreDAV`: `d:`/`cal:` prefixes, a `&quot;`-escaped `ETag`, per-property status, and a
     /// second response that is a bare `404`.
-    const SABREDAV: &[u8] = include_bytes!("../tests/fixtures/sabredav-calendar-multiget.xml");
+    const SABREDAV: &[u8] = include_bytes!("fixtures/sabredav-calendar-multiget.xml");
 
     /// Radicale: `ns0:`/`ns1:`, the prefixes Python's `ElementTree` invents, and no layout.
-    const RADICALE: &[u8] = include_bytes!("../tests/fixtures/radicale-calendar-multiget.xml");
+    const RADICALE: &[u8] = include_bytes!("fixtures/radicale-calendar-multiget.xml");
 
     /// Calendar Server: a default `xmlns="DAV:"`, so its `DAV:` elements carry no prefix at all.
-    const CALENDAR_SERVER: &[u8] =
-        include_bytes!("../tests/fixtures/calendarserver-calendar-multiget.xml");
+    const CALENDAR_SERVER: &[u8] = include_bytes!("fixtures/calendarserver-calendar-multiget.xml");
 
     /// Every response a body yields, with whatever it reported on the way.
     fn drain(body: &[u8], limits: Limits) -> (Vec<DavResponse>, Vec<Diagnostic>) {
@@ -1394,7 +1397,7 @@ mod tests {
         let mut reported: Vec<Diagnostic> = Vec::new();
         let read = {
             let mut context = DecodeContext::new(limits, &mut meter, &mut reported)
-                .with_text(crate::text::TextPolicy::Normalized);
+                .with_text(crate::internal::dav::text::TextPolicy::Normalized);
             collect(SABREDAV, &mut context).unwrap()
         };
         let first = read.first().unwrap();
@@ -2123,8 +2126,13 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
             let inside = self.open.last().and_then(|frame| frame.known);
             let offset = u64::try_from(start).unwrap_or(u64::MAX);
             let mode = TextMode::of(inside, context.text);
-            let decoded =
-                crate::text::decode_text(span, mode, offset, context.meter, context.sink)?;
+            let decoded = crate::internal::dav::text::decode_text(
+                span,
+                mode,
+                offset,
+                context.meter,
+                context.sink,
+            )?;
             Ok(XmlEvent::Text(decoded))
         }
     }

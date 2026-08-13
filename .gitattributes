@@ -17,6 +17,7 @@
 # content line with `CRLF`, and docs/adr/0001 states the round trip over the octets a
 # producer wrote. Rewriting LF <-> CRLF inside one rewrites the thing under test.
 **/tests/fixtures/** -text
+crates/icalkit/src/internal/dav/fixtures/** -text
 
 # `tests/corpus/` is where a calendar this repository did not write goes. It is protected
 # here and deliberately absent from REUSE.toml: a file under it carries its own `.license`

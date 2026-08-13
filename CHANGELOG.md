@@ -707,3 +707,9 @@ the other order. What version this becomes is a decision nobody has made.
   includes VTIMEZONE support unconditionally under its two-feature contract, while the
   temporary compatibility package still compiles the same source with and without its
   legacy `vtimezone` feature for conformance coverage.
+- **The WebDAV and CalDAV wire kernel moved physically behind `icalkit::internal::dav`.**
+  Client/server workflows and the private query evaluator now call the in-crate module, and
+  the facade no longer depends on `ical-dav`. RFC 6578 support is unconditional in `icalkit`
+  while a root-local capability preserves the old harness's feature-on and feature-off
+  conformance cases. The XML layering gate follows the moved source, and the anonymized
+  SabreDAV, Radicale, and CalendarServer fixtures now live beside their sole implementation.

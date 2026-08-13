@@ -4,6 +4,9 @@
 
 //! Private implementation layers with no independent semver contract.
 
+#[allow(dead_code, unused_imports, unreachable_pub)]
+pub(crate) mod dav;
+
 // The migrated source still contains its former public surface, including units not yet reached
 // by a facade workflow. This private ancestor makes those items unreachable outside icalkit.
 // Keep the exemption on this one migration boundary until each unit is connected or removed.

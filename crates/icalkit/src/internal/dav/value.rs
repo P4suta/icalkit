@@ -31,8 +31,8 @@ use alloc::vec::Vec;
 
 use ical_core::{LimitExceeded, Limits, Meter};
 
-use crate::failure::{DavError, ValueError};
-use crate::sink::ByteSink;
+use crate::internal::dav::failure::{DavError, ValueError};
+use crate::internal::dav::sink::ByteSink;
 
 /// A resource path or URI, as octets.
 ///
@@ -120,7 +120,7 @@ impl Status {
     /// the space that begins the reason phrase. A reader that took the first three octets and
     /// looked no further read `HTTP/1.1 2000 OK` as a `200` the server never stated and
     /// `HTTP/1.1 4045` as a `404`, which promotes a malformed group inside a `DAV:propstat`
-    /// into a success — the outcome [`crate::UNREADABLE_STATUS`] exists to prevent.
+    /// into a success — the outcome [`crate::internal::dav::UNREADABLE_STATUS`] exists to prevent.
     pub fn parse_status_line(line: &[u8]) -> Result<Self, DavError> {
         let trimmed = trim_ascii(line);
         let after_version = trimmed
@@ -276,7 +276,7 @@ pub enum MatchHeader {
     /// `*` — the header is about the existence of a stored copy and not about its revision.
     Any,
     /// One or more entity tags, in the order the header listed them.
-    Tags(crate::bound::Bounded<ETag>),
+    Tags(crate::internal::dav::bound::Bounded<ETag>),
 }
 
 impl MatchHeader {
@@ -292,7 +292,7 @@ impl MatchHeader {
         if trimmed.is_empty() {
             return Err(DavError::Invalid(ValueError::EtagSyntax));
         }
-        let mut tags = crate::bound::Bounded::with_cap(
+        let mut tags = crate::internal::dav::bound::Bounded::with_cap(
             bounded_cap(limits.max_props_per_response()),
             LimitExceeded::Properties,
         );
@@ -506,7 +506,7 @@ pub struct ResourceType {
     /// `DAV:principal`.
     pub principal: bool,
     /// Every other child element of `resourcetype`, kept as names.
-    others: crate::bound::Bounded<ExtensionName>,
+    others: crate::internal::dav::bound::Bounded<ExtensionName>,
 }
 
 impl ResourceType {
@@ -517,7 +517,7 @@ impl ResourceType {
             collection: false,
             calendar: false,
             principal: false,
-            others: crate::bound::Bounded::with_cap(
+            others: crate::internal::dav::bound::Bounded::with_cap(
                 bounded_cap(limits.max_props_per_response()),
                 LimitExceeded::Properties,
             ),
@@ -623,7 +623,7 @@ mod tests {
     use ical_core::{Limits, Meter};
 
     use super::{Depth, ETag, Href, MatchHeader, Precondition, Status, SyncToken, is_etagc};
-    use crate::failure::{DavError, ValueError};
+    use crate::internal::dav::failure::{DavError, ValueError};
 
     #[test]
     fn a_status_code_is_three_digits_and_a_fourth_is_not_a_status_line() {

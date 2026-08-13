@@ -20,11 +20,15 @@ use ical_core::{IgnoreDiagnostics, Limits, Meter};
 use ical_dav::{DavError, DecodedText, LineEndings, TextMode, decode_text};
 
 /// The `.ics` all three servers are carrying, byte for byte.
-const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");
+const PAYLOAD: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/calendar-data-payload.ics");
 
-const SABREDAV: &[u8] = include_bytes!("fixtures/sabredav-calendar-multiget.xml");
-const RADICALE: &[u8] = include_bytes!("fixtures/radicale-calendar-multiget.xml");
-const CALENDAR_SERVER: &[u8] = include_bytes!("fixtures/calendarserver-calendar-multiget.xml");
+const SABREDAV: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/sabredav-calendar-multiget.xml");
+const RADICALE: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/radicale-calendar-multiget.xml");
+const CALENDAR_SERVER: &[u8] =
+    include_bytes!("../../icalkit/src/internal/dav/fixtures/calendarserver-calendar-multiget.xml");
 
 /// The octets between a `calendar-data` start tag and its end tag.
 ///

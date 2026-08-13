@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use ical_core::{LimitExceeded, Meter};
 
-use crate::failure::DavError;
+use crate::internal::dav::failure::DavError;
 
 /// A list with a cap it was built with and a charge on every push.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -119,7 +119,7 @@ mod tests {
     use ical_core::{LimitExceeded, Limits, Meter};
 
     use super::Bounded;
-    use crate::failure::DavError;
+    use crate::internal::dav::failure::DavError;
 
     #[test]
     fn the_item_past_the_cap_is_refused_and_names_its_dimension() {

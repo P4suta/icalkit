@@ -6,7 +6,7 @@
 //!
 //! Nothing here has a type of its own beyond [`RequestBody`], which names which of the five
 //! bodies a document carried. Every value this module produces is the one a client builds in
-//! [`crate::request`], through the same constructors, so a server decoding an untrusted
+//! [`crate::internal::dav::request`], through the same constructors, so a server decoding an untrusted
 //! `REPORT` meets exactly the refusals a client building the same request meets: a `time-range`
 //! with neither bound is [`ValueError::TimeRangeUnbounded`] from [`TimeRange::new`], a filter
 //! tree past `Limits::max_xml_depth` is [`LimitExceeded::Depth`], and a property list past
@@ -40,18 +40,18 @@ use ical_core::{
     DateTimeValue, DecodeValue, DiagnosticCode, Instant, LimitExceeded, Severity, UtcOffset,
 };
 
-use crate::codec::{ReadXml, XmlEvent, XmlPull};
-use crate::element::{ElementName, Namespace, QName};
-use crate::failure::{DavError, SyntaxError, ValueError};
-use crate::policy::{DecodeContext, UnknownPolicy};
-use crate::request::{
+use crate::internal::dav::codec::{ReadXml, XmlEvent, XmlPull};
+use crate::internal::dav::element::{ElementName, Namespace, QName};
+use crate::internal::dav::failure::{DavError, SyntaxError, ValueError};
+use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
+use crate::internal::dav::request::{
     CalendarDataRequest, CalendarMultiget, CalendarQuery, Collation, CompFilter, CompSelection,
     FreeBusyQuery, ParamFilter, PropFilter, PropFind, PropName, PropRequest, QueryShape, TextMatch,
     TimeRange,
 };
-use crate::response::CalendarPayload;
-use crate::text::LineEndings;
-use crate::value::{ExtensionName, Href};
+use crate::internal::dav::response::CalendarPayload;
+use crate::internal::dav::text::LineEndings;
+use crate::internal::dav::value::{ExtensionName, Href};
 
 /// The namespace an unprefixed attribute is in, which is none at all.
 ///
@@ -65,7 +65,7 @@ const NO_NAMESPACE: Namespace<'static> = Namespace::Other(b"");
 /// The door a server actually needs: an HTTP layer hands over octets and a method, and which of
 /// the five bodies arrived is a fact about the octets rather than about the method — `REPORT`
 /// carries three of them. Reading it here is also what makes
-/// [`DavError::Unsupported`](crate::DavError::Unsupported) reachable for a whole body, so a
+/// [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) reachable for a whole body, so a
 /// build without `sync-collection` refuses an RFC 6578 `REPORT` instead of answering it with a
 /// full enumeration and letting the client believe it had synchronized.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -80,8 +80,7 @@ pub enum RequestBody {
     /// A `CALDAV:free-busy-query`, RFC 4791 section 9.11.
     FreeBusyQuery(FreeBusyQuery),
     /// A `DAV:sync-collection`, RFC 6578 section 3.
-    #[cfg(feature = "sync-collection")]
-    SyncCollection(crate::request::SyncCollection),
+    SyncCollection(crate::internal::dav::request::SyncCollection),
 }
 
 impl RequestBody {
@@ -129,9 +128,9 @@ impl RequestBody {
             ElementName::FreeBusyQuery => {
                 FreeBusyQuery::read_xml(events, context).map(Self::FreeBusyQuery)
             },
-            #[cfg(feature = "sync-collection")]
             ElementName::SyncCollection => {
-                crate::request::SyncCollection::read_xml(events, context).map(Self::SyncCollection)
+                crate::internal::dav::request::SyncCollection::read_xml(events, context)
+                    .map(Self::SyncCollection)
             },
             other => Err(DavError::Unexpected(other)),
         }
@@ -282,8 +281,7 @@ impl ReadXml for FreeBusyQuery {
     }
 }
 
-#[cfg(feature = "sync-collection")]
-impl ReadXml for crate::request::SyncCollection {
+impl ReadXml for crate::internal::dav::request::SyncCollection {
     fn read_xml(
         events: &mut dyn XmlPull<'_>,
         context: &mut DecodeContext<'_>,
@@ -297,11 +295,10 @@ impl ReadXml for crate::request::SyncCollection {
 }
 
 /// One child of a `DAV:sync-collection`.
-#[cfg(feature = "sync-collection")]
 fn read_sync_child(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
-    request: &mut crate::request::SyncCollection,
+    request: &mut crate::internal::dav::request::SyncCollection,
     known: Option<ElementName>,
 ) -> Result<(), DavError> {
     match known {
@@ -312,7 +309,7 @@ fn read_sync_child(
             request.token = if octets.is_empty() {
                 None
             } else {
-                Some(crate::value::SyncToken::new(
+                Some(crate::internal::dav::value::SyncToken::new(
                     &octets,
                     context.limits,
                     context.meter,
@@ -322,7 +319,7 @@ fn read_sync_child(
         },
         Some(ElementName::SyncLevel) => {
             let octets = read_text(events, context, Whitespace::Layout)?;
-            request.level = crate::request::SyncLevel::parse(&octets)?;
+            request.level = crate::internal::dav::request::SyncLevel::parse(&octets)?;
             Ok(())
         },
         Some(ElementName::Limit) => {
@@ -336,7 +333,6 @@ fn read_sync_child(
 }
 
 /// Read the `DAV:nresults` inside a `DAV:limit`, RFC 5323 section 5.17.
-#[cfg(feature = "sync-collection")]
 fn read_nresults(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
@@ -356,7 +352,6 @@ fn read_nresults(
 }
 
 /// Read an unsigned decimal count, refusing what is not one rather than reading a prefix.
-#[cfg(feature = "sync-collection")]
 fn parse_count(octets: &[u8]) -> Result<u32, DavError> {
     if octets.is_empty() {
         return Err(refused());
@@ -848,7 +843,6 @@ const fn supported(name: ElementName) -> Result<(), DavError> {
 /// this reader will not read. The three cases that used to share it are now named — a foreign
 /// element is [`DavError::Foreign`], a missing attribute is [`ValueError::AttributeMissing`], and
 /// an attribute outside its enumeration is [`ValueError::AttributeValue`].
-#[cfg(feature = "sync-collection")]
 const fn refused() -> DavError {
     DavError::Syntax(SyntaxError::Malformed)
 }
@@ -860,16 +854,16 @@ mod tests {
     use ical_core::{Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter};
 
     use super::{RequestBody, Whitespace, read_text};
-    use crate::codec::{XmlEvent, XmlPull};
-    use crate::element::{ElementName, Namespace, QName};
-    use crate::failure::{DavError, SyntaxError, ValueError};
-    use crate::policy::{DecodeContext, UnknownPolicy};
-    use crate::request::{
+    use crate::internal::dav::codec::{XmlEvent, XmlPull};
+    use crate::internal::dav::element::{ElementName, Namespace, QName};
+    use crate::internal::dav::failure::{DavError, SyntaxError, ValueError};
+    use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
+    use crate::internal::dav::request::{
         CalendarDataRequest, CalendarQuery, Collation, CompFilter, PropFind, PropName, TimeRange,
     };
-    use crate::response::{DavProperty, DavResponse, PropStat, PropValue};
-    use crate::text::{TextMode, decode_text};
-    use crate::value::{Href, Status};
+    use crate::internal::dav::response::{DavProperty, DavResponse, PropStat, PropValue};
+    use crate::internal::dav::text::{TextMode, decode_text};
+    use crate::internal::dav::value::{Href, Status};
 
     /// 2006-01-04T00:00:00Z, the start of RFC 4791 section 7.8.1's own window.
     const RFC_WINDOW_START: i64 = 1_136_332_800;
@@ -1351,15 +1345,19 @@ mod tests {
         let end = Instant::from_unix_seconds(WEEK_LATER);
         assert_eq!(
             read(open_ended),
-            Ok(RequestBody::FreeBusyQuery(crate::request::FreeBusyQuery {
-                range: TimeRange::starting_at(start)
-            }))
+            Ok(RequestBody::FreeBusyQuery(
+                crate::internal::dav::request::FreeBusyQuery {
+                    range: TimeRange::starting_at(start)
+                }
+            ))
         );
         assert_eq!(
             read(open_started),
-            Ok(RequestBody::FreeBusyQuery(crate::request::FreeBusyQuery {
-                range: TimeRange::ending_before(end)
-            }))
+            Ok(RequestBody::FreeBusyQuery(
+                crate::internal::dav::request::FreeBusyQuery {
+                    range: TimeRange::ending_before(end)
+                }
+            ))
         );
     }
 
@@ -1680,9 +1678,11 @@ mod tests {
     }
 
     /// Without the feature, an RFC 6578 `REPORT` is refused rather than answered differently.
-    #[cfg(not(feature = "sync-collection"))]
     #[test]
     fn a_build_without_sync_collection_refuses_the_report_it_cannot_honor() {
+        if crate::internal::dav::SYNC_COLLECTION_ENABLED {
+            return;
+        }
         let wire = br#"<D:sync-collection xmlns:D="DAV:">
             <D:sync-token>http://example.invalid/ns/sync/42</D:sync-token>
             <D:sync-level>1</D:sync-level><D:prop><D:getetag/></D:prop></D:sync-collection>"#;
@@ -1693,9 +1693,11 @@ mod tests {
     }
 
     /// With the feature, the token round-trips through the client without being interpreted.
-    #[cfg(feature = "sync-collection")]
     #[test]
     fn a_sync_collection_carries_an_opaque_token_a_level_and_a_limit() {
+        if !crate::internal::dav::SYNC_COLLECTION_ENABLED {
+            return;
+        }
         let wire = br#"<D:sync-collection xmlns:D="DAV:">
   <D:sync-token>http://example.invalid/ns/sync/42</D:sync-token>
   <D:sync-level>infinite</D:sync-level>
@@ -1709,10 +1711,13 @@ mod tests {
             request
                 .token
                 .as_ref()
-                .map(crate::value::SyncToken::as_bytes),
+                .map(crate::internal::dav::value::SyncToken::as_bytes),
             Some(b"http://example.invalid/ns/sync/42".as_slice())
         );
-        assert_eq!(request.level, crate::request::SyncLevel::Infinite);
+        assert_eq!(
+            request.level,
+            crate::internal::dav::request::SyncLevel::Infinite
+        );
         assert_eq!(request.limit, Some(100));
         assert_eq!(
             request.props.names(),
@@ -1721,16 +1726,18 @@ mod tests {
     }
 
     /// An empty `sync-token` is the absence of one, which is what asks for a full enumeration.
-    #[cfg(feature = "sync-collection")]
     #[test]
     fn an_empty_sync_token_asks_for_an_initial_synchronization() {
+        if !crate::internal::dav::SYNC_COLLECTION_ENABLED {
+            return;
+        }
         let wire = br#"<D:sync-collection xmlns:D="DAV:"><D:sync-token/>
             <D:sync-level>1</D:sync-level><D:prop><D:getetag/></D:prop></D:sync-collection>"#;
         let Ok(RequestBody::SyncCollection(request)) = read(wire) else {
             panic!("a sync-collection REPORT");
         };
         assert_eq!(request.token, None);
-        assert_eq!(request.level, crate::request::SyncLevel::One);
+        assert_eq!(request.level, crate::internal::dav::request::SyncLevel::One);
         assert_eq!(request.limit, None);
     }
 }

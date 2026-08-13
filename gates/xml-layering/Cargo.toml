@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# Not a crate. A gate: it compiles `crates/ical-dav/src/xml/` in a root that has never heard of
+# Not a crate. A gate: it compiles `crates/icalkit/src/internal/dav/xml/` in a root that has never heard of
 # CalDAV, so that a path from the WebDAV grammar into the vocabulary above it is a compile error
 # with a file and a line rather than a convention somebody remembers. That is what keeps the
 # extraction docs/adr/0012 deferred a file move plus a manifest rather than a redesign.
@@ -29,7 +29,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
-# The gate path-includes ical-dav's XML layer, where this dependency is imported.
+# The gate path-includes icalkit's private XML layer, where this dependency is imported.
 # cargo-shear cannot associate an import in a file outside this package directory.
 [package.metadata.cargo-shear]
 ignored = ["xmlparser"]
@@ -38,7 +38,7 @@ ignored = ["xmlparser"]
 ical-core = { path = "../../crates/ical-core", version = "0.0.0" }
 xmlparser = { version = "0.13.6", default-features = false }
 
-# `doc = false` because these are `ical-dav`'s items and documenting them twice would publish a
+# `doc = false` because these are `icalkit`'s items and documenting them twice would publish a
 # second set of pages for one module. `test = false` because without it every file of the layer
 # is compiled into a second test binary: nextest runs its tests twice and `cargo llvm-cov` counts
 # every region twice, which flatters the coverage number in the direction nobody questions.

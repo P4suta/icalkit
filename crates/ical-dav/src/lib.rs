@@ -91,22 +91,39 @@
 
 extern crate alloc;
 
+#[path = "../../icalkit/src/internal/dav/bound.rs"]
 mod bound;
+#[path = "../../icalkit/src/internal/dav/codec.rs"]
 mod codec;
+#[path = "../../icalkit/src/internal/dav/element.rs"]
 mod element;
+#[path = "../../icalkit/src/internal/dav/failure.rs"]
 mod failure;
+#[path = "../../icalkit/src/internal/dav/freshness.rs"]
 mod freshness;
+#[path = "../../icalkit/src/internal/dav/policy.rs"]
 mod policy;
+#[path = "../../icalkit/src/internal/dav/read_request.rs"]
 mod read_request;
+#[path = "../../icalkit/src/internal/dav/read_response.rs"]
 mod read_response;
+#[path = "../../icalkit/src/internal/dav/reader.rs"]
 mod reader;
+#[path = "../../icalkit/src/internal/dav/request.rs"]
 mod request;
+#[path = "../../icalkit/src/internal/dav/response.rs"]
 mod response;
+#[path = "../../icalkit/src/internal/dav/sink.rs"]
 mod sink;
+#[path = "../../icalkit/src/internal/dav/text.rs"]
 mod text;
+#[path = "../../icalkit/src/internal/dav/value.rs"]
 mod value;
+#[path = "../../icalkit/src/internal/dav/write_request.rs"]
 mod write_request;
+#[path = "../../icalkit/src/internal/dav/write_response.rs"]
 mod write_response;
+#[path = "../../icalkit/src/internal/dav/writer.rs"]
 mod writer;
 // The WebDAV XML grammar, kept private and forbidden to name a CalDAV type. Nothing of it is
 // re-exported below, deliberately and permanently: `docs/adr/0012` decided that `webdav-core` is
@@ -115,7 +132,32 @@ mod writer;
 // published crate name cannot be withdrawn; an unexported module can. `gates/xml-layering`
 // compiles it in a root with no CalDAV vocabulary, and the third rule of `just purity` is what
 // keeps that member from being deleted.
+#[path = "../../icalkit/src/internal/dav/xml/mod.rs"]
 mod xml;
+
+// Stable crate-shaped root for source shared with `icalkit::internal::dav`.
+pub(crate) mod internal {
+    #[allow(unused_imports)]
+    pub(crate) mod dav {
+        pub(crate) const SYNC_COLLECTION_ENABLED: bool = cfg!(feature = "sync-collection");
+
+        pub(crate) use crate::request::SyncCollection;
+        pub(crate) use crate::{
+            Bounded, ByteSink, CalendarDataRequest, CalendarMultiget, CalendarPayload,
+            CalendarQuery, Collation, CompFilter, CompSelection, DavError, DavProperty,
+            DavResponse, DecodeContext, DecodedText, Depth, ETag, ElementName, ElementSpec,
+            ErrorBody, ExtensionName, FreeBusyQuery, Href, IF_SCHEDULE_TAG_MATCH, LineEndings,
+            MatchHeader, MultiStatus, MultiStatusReader, MultiStatusWriter, Namespace, ParamFilter,
+            Precondition, Prefer, Presence, PropFind, PropName, PropRequest, PropStat, PropValue,
+            QName, QueryShape, ReadXml, RequestBody, ResourceType, ResponseBody, ResponseSource,
+            Revision, SinkFull, SliceSink, Status, SyncLevel, SyncToken, SyntaxError, TextMatch,
+            TextMode, TextPolicy, TextRun, TimeRange, UNREADABLE_STATUS, UnknownPolicy, ValueError,
+            WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter, bound, codec, element, failure,
+            freshness, policy, read_request, read_response, reader, request, response, sink, text,
+            value, write_request, write_response, writer, xml,
+        };
+    }
+}
 
 // The seven modules above that are not the shared foundation, and what each owns. They were
 // written concurrently against the frozen surface and integrated in one pass, which is why

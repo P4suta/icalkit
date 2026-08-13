@@ -6,10 +6,10 @@
 //!
 //! Nothing here has a field that is meaningful in only one direction. A `calendar-query` is
 //! the same value whether it was built by a client about to `REPORT` or read by a server about
-//! to answer one; the direction shows up in which of [`crate::WriteXml`] and
-//! [`crate::ReadXml`] is called and in the `Limits` the caller passes, never in which fields
+//! to answer one; the direction shows up in which of [`crate::internal::dav::WriteXml`] and
+//! [`crate::internal::dav::ReadXml`] is called and in the `Limits` the caller passes, never in which fields
 //! exist. That is DP-15's structural test and it is the reason this module and
-//! [`crate::response`] are the whole of the protocol's vocabulary.
+//! [`crate::internal::dav::response`] are the whole of the protocol's vocabulary.
 //!
 //! A `time-range` is carried here and evaluated nowhere. Deciding which instances of a
 //! recurring event fall inside one is `ical-recur`'s work and this crate does not depend on
@@ -19,11 +19,11 @@ use alloc::boxed::Box;
 
 use ical_core::{Instant, LimitExceeded, Limits, Meter};
 
-use crate::bound::Bounded;
-use crate::element::ElementName;
-use crate::failure::{DavError, ValueError};
-use crate::response::CalendarPayload;
-use crate::value::{ExtensionName, Href, bounded_cap, copy};
+use crate::internal::dav::bound::Bounded;
+use crate::internal::dav::element::ElementName;
+use crate::internal::dav::failure::{DavError, ValueError};
+use crate::internal::dav::response::CalendarPayload;
+use crate::internal::dav::value::{ExtensionName, Href, bounded_cap, copy};
 
 /// The name of a property, whether or not this crate has a row for it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -205,11 +205,10 @@ impl SyncLevel {
 }
 
 /// A `DAV:sync-collection` body, RFC 6578 section 3.
-#[cfg(feature = "sync-collection")]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SyncCollection {
     /// The token the last synchronization ended at. Absent asks for an initial enumeration.
-    pub token: Option<crate::value::SyncToken>,
+    pub token: Option<crate::internal::dav::value::SyncToken>,
     /// How far below the collection to reach.
     pub level: SyncLevel,
     /// The most responses the client is willing to receive, RFC 5323 section 5.17.
@@ -218,7 +217,6 @@ pub struct SyncCollection {
     pub props: PropRequest,
 }
 
-#[cfg(feature = "sync-collection")]
 impl SyncCollection {
     /// An initial synchronization of a collection's own members.
     #[must_use]
@@ -665,8 +663,8 @@ mod tests {
     use ical_core::{Instant, LimitExceeded, Limits, Meter};
 
     use super::{CompFilter, PropFilter, PropName, PropRequest, TimeRange};
-    use crate::element::ElementName;
-    use crate::failure::{DavError, ValueError};
+    use crate::internal::dav::element::ElementName;
+    use crate::internal::dav::failure::{DavError, ValueError};
 
     #[test]
     fn both_time_range_bounds_are_independently_optional() {

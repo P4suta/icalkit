@@ -28,10 +28,10 @@ use core::fmt::{self, Debug, Display, Formatter};
 
 use alloc::vec::Vec;
 
+use crate::internal::dav::Collation;
 use crate::internal::recur::SearchOutcome;
 use crate::internal::tz::{OffsetAnswer, ResolutionPolicy, ZoneAnswer, ZoneSource};
 use ical_core::{CivilDateTime, DiagnosticCode, Document, Instant, LimitExceeded, Limits, Meter};
-use ical_dav::Collation;
 
 /// Whether a resource satisfies a filter, and the answer an evaluator may not invent.
 ///

@@ -97,13 +97,13 @@ use core::num::NonZeroU32;
 
 use alloc::vec::Vec;
 
+use crate::internal::dav::{CompFilter, TimeRange};
 use crate::internal::recur::{Freq, RecurrenceRule, RuleLimit, RulePart, UntilClock};
 use crate::internal::tz::nominal;
 use ical_core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, Document,
     Duration, Instant, PropertyId, UtcOffset,
 };
-use ical_dav::{CompFilter, TimeRange};
 
 use crate::internal::query::{Budget, Zones};
 
@@ -605,12 +605,12 @@ fn cadence_seconds(freq: Freq, day: CivilDate) -> Option<i64> {
 mod tests {
     use alloc::string::String;
 
+    use crate::internal::dav::{CompFilter, TimeRange};
     use crate::internal::tz::FixedOffsetSource;
     use ical_core::{
         CivilDate, CivilDateTime, CivilTime, Document, IgnoreDiagnostics, Instant, Limits, Meter,
         UtcOffset,
     };
-    use ical_dav::{CompFilter, TimeRange};
 
     use super::{Exclusion, excludes};
     use crate::internal::query::{Budget, Zones};

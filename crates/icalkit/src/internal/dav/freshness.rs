@@ -81,12 +81,12 @@ use alloc::vec::Vec;
 
 use ical_core::{Limits, Meter};
 
-use crate::element::ElementName;
-use crate::failure::DavError;
-use crate::request::PropName;
-use crate::response::{DavProperty, DavResponse, PropStat, PropValue, ResponseBody};
-use crate::sink::ByteSink;
-use crate::value::{Depth, ETag, Href, Precondition, Prefer, Status, SyncToken};
+use crate::internal::dav::element::ElementName;
+use crate::internal::dav::failure::DavError;
+use crate::internal::dav::request::PropName;
+use crate::internal::dav::response::{DavProperty, DavResponse, PropStat, PropValue, ResponseBody};
+use crate::internal::dav::sink::ByteSink;
+use crate::internal::dav::value::{Depth, ETag, Href, Precondition, Prefer, Status, SyncToken};
 
 /// The header a conditional write of a scheduling object resource carries, RFC 6638 section 8.3.
 ///
@@ -467,7 +467,7 @@ fn mix_field(hash: u64, label: u8, octets: &[u8]) -> u64 {
 ///
 /// The value alone, so a caller building a request into a fixed buffer renders every protocol
 /// header value through the same door [`Precondition::write_value`] and [`ETag::write_value`]
-/// use, including on a target where [`crate::SliceSink`] is the only sink there is.
+/// use, including on a target where [`crate::internal::dav::SliceSink`] is the only sink there is.
 pub fn write_depth_value(depth: Depth, out: &mut dyn ByteSink) -> Result<(), DavError> {
     out.write(depth.as_bytes()).map_err(DavError::from)
 }
@@ -494,11 +494,13 @@ mod tests {
     use ical_core::{Limits, Meter};
 
     use super::{IF_SCHEDULE_TAG_MATCH, Presence, Revision, write_depth_value, write_prefer_value};
-    use crate::element::{ElementName, Namespace};
-    use crate::failure::{DavError, ValueError};
-    use crate::request::PropName;
-    use crate::response::{DavProperty, DavResponse, PropStat, PropValue};
-    use crate::value::{Depth, ETag, ExtensionName, Href, Precondition, Prefer, Status, SyncToken};
+    use crate::internal::dav::element::{ElementName, Namespace};
+    use crate::internal::dav::failure::{DavError, ValueError};
+    use crate::internal::dav::request::PropName;
+    use crate::internal::dav::response::{DavProperty, DavResponse, PropStat, PropValue};
+    use crate::internal::dav::value::{
+        Depth, ETag, ExtensionName, Href, Precondition, Prefer, Status, SyncToken,
+    };
 
     fn href(path: &[u8], meter: &mut Meter) -> Href {
         Href::new(path, Limits::DEFAULT, meter).unwrap()

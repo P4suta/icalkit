@@ -19,20 +19,20 @@ use alloc::boxed::Box;
 
 use ical_core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severity};
 
-use crate::bound::Bounded;
-use crate::codec::ResponseSource;
-use crate::failure::DavError;
-use crate::policy::DecodeContext;
-use crate::request::PropName;
-use crate::text::{DecodedText, LineEndings};
-use crate::value::{ETag, Href, ResourceType, Status, SyncToken, bounded_cap, copy};
+use crate::internal::dav::bound::Bounded;
+use crate::internal::dav::codec::ResponseSource;
+use crate::internal::dav::failure::DavError;
+use crate::internal::dav::policy::DecodeContext;
+use crate::internal::dav::request::PropName;
+use crate::internal::dav::text::{DecodedText, LineEndings};
+use crate::internal::dav::value::{ETag, Href, ResourceType, Status, SyncToken, bounded_cap, copy};
 
 /// An iCalendar object as it traveled inside `CALDAV:calendar-data`, with its provenance.
 ///
 /// The octets and the answer to "are these the octets the server stored" are one value,
 /// because they are one question. A caller that means to `PUT` this payload back reads
 /// [`CalendarPayload::is_as_sent`] first: `false` means this reader folded the line endings
-/// under [`crate::TextPolicy::Normalized`], so writing them back would change the resource and
+/// under [`crate::internal::dav::TextPolicy::Normalized`], so writing them back would change the resource and
 /// its `ETag` without anybody having edited it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CalendarPayload {
@@ -298,9 +298,9 @@ impl DavResponse {
     pub fn push_propstat(&mut self, propstat: PropStat, meter: &mut Meter) -> Result<(), DavError> {
         match &mut self.body {
             ResponseBody::PropStats(groups) => groups.push(propstat, meter),
-            ResponseBody::Status(_) => {
-                Err(DavError::Unexpected(crate::element::ElementName::Propstat))
-            },
+            ResponseBody::Status(_) => Err(DavError::Unexpected(
+                crate::internal::dav::element::ElementName::Propstat,
+            )),
         }
     }
 
@@ -429,13 +429,13 @@ mod tests {
     use super::{
         CalendarPayload, DavProperty, DavResponse, MultiStatus, PropStat, PropValue, ResponseBody,
     };
-    use crate::codec::ResponseSource;
-    use crate::element::ElementName;
-    use crate::failure::DavError;
-    use crate::policy::DecodeContext;
-    use crate::request::PropName;
-    use crate::text::LineEndings;
-    use crate::value::{Href, Status};
+    use crate::internal::dav::codec::ResponseSource;
+    use crate::internal::dav::element::ElementName;
+    use crate::internal::dav::failure::DavError;
+    use crate::internal::dav::policy::DecodeContext;
+    use crate::internal::dav::request::PropName;
+    use crate::internal::dav::text::LineEndings;
+    use crate::internal::dav::value::{Href, Status};
 
     /// A source that yields responses a test built, which is what a recorded exchange is once
     /// the tokenizer has run: `docs/adr/0004`'s "an interoperability case is a value, not a

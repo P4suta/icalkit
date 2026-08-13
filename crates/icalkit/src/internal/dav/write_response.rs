@@ -4,7 +4,7 @@
 
 //! Writing a multistatus: the whole body at once, or one response at a time.
 //!
-//! The same types a client reads through [`crate::ResponseSource`] are the ones a server writes
+//! The same types a client reads through [`crate::internal::dav::ResponseSource`] are the ones a server writes
 //! through here, and the direction shows up in which trait is called and in the `Limits` the
 //! caller passes — never in which fields exist. A `getetag` at `200` beside a `displayname` at
 //! `404` is one [`DavResponse`] with two [`PropStat`]s on either side of the wire.
@@ -22,7 +22,7 @@
 //! The prefixes `D:`, `C:` and `CS:` are an output choice and never an input assumption. A peer
 //! that binds `DAV:` to `d:`, to `ns0:`, or to no prefix at all through a default declaration is
 //! naming the same elements; identity is the (namespace, local name) pair
-//! [`crate::ElementName::resolve`] takes, and nothing here writes or reads a prefix as though it
+//! [`crate::internal::dav::ElementName::resolve`] takes, and nothing here writes or reads a prefix as though it
 //! meant something.
 //!
 //! # Nothing here is unbounded
@@ -68,17 +68,19 @@ use core::fmt::{self, Debug, Formatter};
 
 use ical_core::{LimitExceeded, Limits, Meter};
 
-use crate::codec::WriteXml;
-use crate::element::{ElementName, Namespace};
-use crate::failure::{DavError, SyntaxError, ValueError};
-use crate::request::PropName;
-use crate::response::{
+use crate::internal::dav::codec::WriteXml;
+use crate::internal::dav::element::{ElementName, Namespace};
+use crate::internal::dav::failure::{DavError, SyntaxError, ValueError};
+use crate::internal::dav::request::PropName;
+use crate::internal::dav::response::{
     CalendarPayload, DavProperty, DavResponse, ErrorBody, MultiStatus, PropStat, PropValue,
     ResponseBody,
 };
-use crate::sink::ByteSink;
-use crate::text::{write_escaped_attribute, write_escaped_text};
-use crate::value::{ETag, ExtensionName, Href, ResourceType, Status, SyncToken, bounded_cap};
+use crate::internal::dav::sink::ByteSink;
+use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
+use crate::internal::dav::value::{
+    ETag, ExtensionName, Href, ResourceType, Status, SyncToken, bounded_cap,
+};
 
 /// The XML declaration every document this module writes begins with.
 ///
@@ -108,7 +110,7 @@ const PROPERTY_DEPTH: u16 = 5;
 
 /// The most octets a reference may occupy, `&` and `;` included.
 ///
-/// The ceiling `crate::text` scans a reference under, restated here because that constant is
+/// The ceiling `crate::internal::dav::text` scans a reference under, restated here because that constant is
 /// private to the module that reads: a `&` followed by megabytes of digits is not a reference
 /// anybody wrote, and it must not be written either.
 const MAX_REFERENCE_BYTES: usize = 12;
@@ -174,7 +176,7 @@ impl<'a> MultiStatusWriter<'a> {
     /// Close the document, carrying the RFC 6578 token after the responses if there is one.
     ///
     /// The token goes last because RFC 6578 section 3 puts it last, which is also what lets a
-    /// reader answer [`crate::ResponseSource::sync_token`] only once it has been drained.
+    /// reader answer [`crate::internal::dav::ResponseSource::sync_token`] only once it has been drained.
     pub fn finish(self, sync_token: Option<&SyncToken>, meter: &mut Meter) -> Result<(), DavError> {
         let out = self.out;
         if let Some(token) = sync_token {
@@ -856,7 +858,7 @@ fn check_reference(octets: &[u8], start: usize) -> Result<(), DavError> {
     // A numeric character reference is resolvable exactly when the XML layer would resolve it,
     // so the two doors agree on what a document may hold rather than on what it may say.
     let mut resolved: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    crate::xml::chars::push_reference(octets, start, &mut resolved)
+    crate::internal::dav::xml::chars::push_reference(octets, start, &mut resolved)
         .map(|_| ())
         .map_err(DavError::from)
 }
@@ -868,22 +870,22 @@ mod tests {
     use ical_core::{LimitExceeded, Limits, Meter};
 
     use super::MultiStatusWriter;
-    use crate::codec::WriteXml;
-    use crate::element::{ElementName, Namespace};
-    use crate::failure::{DavError, SyntaxError};
-    use crate::request::PropName;
-    use crate::response::{
+    use crate::internal::dav::codec::WriteXml;
+    use crate::internal::dav::element::{ElementName, Namespace};
+    use crate::internal::dav::failure::{DavError, SyntaxError};
+    use crate::internal::dav::request::PropName;
+    use crate::internal::dav::response::{
         CalendarPayload, DavProperty, DavResponse, ErrorBody, MultiStatus, PropStat, PropValue,
     };
-    use crate::sink::SliceSink;
-    use crate::text::{TextMode, decode_text};
-    use crate::value::{ETag, ExtensionName, Href, ResourceType, Status, SyncToken};
+    use crate::internal::dav::sink::SliceSink;
+    use crate::internal::dav::text::{TextMode, decode_text};
+    use crate::internal::dav::value::{ETag, ExtensionName, Href, ResourceType, Status, SyncToken};
 
     /// The `.ics` the three recorded server exchanges are all carrying, byte for byte.
     ///
     /// The same fixture `tests/calendar_data_collision.rs` proves the read against, so the two
     /// halves of the round trip are asserted over one payload rather than two that might drift.
-    const PAYLOAD: &[u8] = include_bytes!("../tests/fixtures/calendar-data-payload.ics");
+    const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");
 
     /// What every document this module writes begins with.
     const PROLOGUE: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\

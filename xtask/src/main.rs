@@ -79,7 +79,7 @@
 //! There are two of them now and [`LAYERING_GATES`] is a table rather than a second pair of
 //! constants, because the second layer arrived and copying the rule would have made "what a
 //! layering gate is" a fact stated twice. The second is `gates/xml-layering` over
-//! `crates/ical-dav/src/xml/`, which `docs/adr/0012` requires may not name a CalDAV type: that
+//! `crates/icalkit/src/internal/dav/xml/`, which `docs/adr/0012` requires may not name a CalDAV type: that
 //! boundary is what keeps the `webdav-core` extraction that ADR declines to publish a file move
 //! plus a manifest rather than a redesign. Both the textual rule above and the member rule here
 //! are stated over the table, so a third layer is three strings.
@@ -198,15 +198,18 @@ const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 ///
 /// Their temporary packages may remain as shared-source conformance harnesses while callers are
 /// migrated, but the facade must never depend back on a boundary it already absorbed.
-const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-itip", "ical-recur", "ical-tz"];
+const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-dav", "ical-itip", "ical-recur", "ical-tz"];
 
 /// Narrow third-party boundaries required by the unified public facade.
 ///
 /// This is intentionally keyed by both owner and package. Adding an external dependency to
 /// another core crate, or adding another package to `icalkit`, remains a gate failure until
 /// the architecture records the new boundary explicitly.
-const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] =
-    &[("icalkit", "jiff"), ("ical-dav", "xmlparser")];
+const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[
+    ("icalkit", "jiff"),
+    ("icalkit", "xmlparser"),
+    ("ical-dav", "xmlparser"),
+];
 
 /// Private tools isolated from the production API and release graph.
 ///
@@ -254,7 +257,7 @@ struct LayeringGate {
 /// Every member that makes a layer a fact rather than a directory.
 ///
 /// `gates/grammar-layering` compiles `ical-core`'s content-line grammar with no model in scope
-/// (`docs/adr/0004`, D-0003). `gates/xml-layering` compiles `ical-dav`'s WebDAV XML module with
+/// (`docs/adr/0004`, D-0003). `gates/xml-layering` compiles `icalkit`'s private WebDAV XML module with
 /// no CalDAV vocabulary in scope, which is what keeps the extraction `docs/adr/0012` deferred a
 /// file move rather than a redesign.
 const LAYERING_GATES: [LayeringGate; 2] = [
@@ -276,10 +279,10 @@ const LAYERING_GATES: [LayeringGate; 2] = [
 ///
 /// Written out for the reason [`GRAMMAR_ROOT`] is: it is what `gates/xml-layering` compiles
 /// alone, and every message about it is about a position relative to this one directory.
-const XML_ROOT: &str = "crates/ical-dav/src/xml";
+const XML_ROOT: &str = "crates/icalkit/src/internal/dav/xml";
 
 /// The crate the WebDAV XML layer sits in, spelled as a path spells it.
-const XML_OWNER: &str = "ical_dav";
+const XML_OWNER: &str = "icalkit";
 
 /// The type a wildcard match arm would silently swallow a variant of.
 const GUARDED_ENUM: &str = "Token";
@@ -2255,16 +2258,18 @@ jiff = { version = "0.2.35", default-features = false, features = ["alloc"] }
     }
 
     #[test]
-    fn only_the_dav_implementation_may_own_the_private_xml_lexer() {
+    fn only_the_facade_and_its_dav_compatibility_harness_may_own_the_private_xml_lexer() {
         let manifest = r#"
 [dependencies]
 xmlparser = { version = "0.13.6", default-features = false }
 "#;
-        assert_eq!(
-            manifest_violations("ical-dav", manifest),
-            Vec::<String>::new(),
-            "the DAV wrapper owns namespace and structural checks around the private lexer"
-        );
+        for package in ["icalkit", "ical-dav"] {
+            assert_eq!(
+                manifest_violations(package, manifest),
+                Vec::<String>::new(),
+                "the facade and temporary DAV harness compile the same private lexer wrapper"
+            );
+        }
         assert!(
             manifest_violations("ical-core", manifest)
                 .iter()
@@ -2852,12 +2857,14 @@ ical-query = { path = "../ical-query" }
     fn a_migrated_implementation_cannot_return_as_a_facade_dependency() {
         let facade = r#"
 [dependencies]
+ical-dav = { path = "../ical-dav" }
 ical-itip = { path = "../ical-itip" }
 ical-recur = { path = "../ical-recur" }
 ical-tz = { path = "../ical-tz" }
 "#;
         let violations = migrated_facade_dependency_violations(facade);
-        assert_eq!(violations.len(), 3);
+        assert_eq!(violations.len(), 4);
+        assert!(violations.iter().any(|line| line.contains("`ical-dav`")));
         assert!(violations.iter().any(|line| line.contains("`ical-itip`")));
         assert!(violations.iter().any(|line| line.contains("`ical-recur`")));
         assert!(violations.iter().any(|line| line.contains("`ical-tz`")));

@@ -17,12 +17,12 @@
 
 use ical_core::{Limits, Meter};
 
-use crate::element::{ElementName, Namespace, QName};
-use crate::failure::DavError;
-use crate::policy::DecodeContext;
-use crate::response::DavResponse;
-use crate::sink::ByteSink;
-use crate::text::DecodedText;
+use crate::internal::dav::element::{ElementName, Namespace, QName};
+use crate::internal::dav::failure::DavError;
+use crate::internal::dav::policy::DecodeContext;
+use crate::internal::dav::response::DavResponse;
+use crate::internal::dav::sink::ByteSink;
+use crate::internal::dav::text::DecodedText;
 
 /// One step of a document, as the tokenizer yields it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -51,7 +51,7 @@ pub enum XmlEvent<'a> {
 
 /// A pull tokenizer over one body.
 ///
-/// The lifetime is the body's, so [`crate::TextRun::Wire`] can borrow from it and a
+/// The lifetime is the body's, so [`crate::internal::dav::TextRun::Wire`] can borrow from it and a
 /// `calendar-data` payload reaches `ical-core` without being copied.
 pub trait XmlPull<'a> {
     /// The next event, or `None` at the end of the document.
@@ -127,7 +127,7 @@ pub trait WriteXml {
 
 /// A multistatus, delivered one response at a time.
 ///
-/// This is the ingestion primitive and the owned [`crate::MultiStatus`] is one consumer of it.
+/// This is the ingestion primitive and the owned [`crate::internal::dav::MultiStatus`] is one consumer of it.
 /// No response-count bound both defends a client with tens of kilobytes against a forged flood
 /// and lets a server enumerate a real forty-thousand-resource collection, because a count
 /// cannot tell a truthful entry from a forged one. A reader that never builds the collection

@@ -66,7 +66,7 @@
 //! is character data, and a tokenizer that dropped it would be deciding significance on its
 //! caller's behalf; readers above it ignore a run they did not ask for. Every span goes to
 //! [`decode_text`] under the mode [`TextMode::of`] derives from the enclosing element and the
-//! caller's [`crate::TextPolicy`] — this file never chooses that mode, which is what keeps the
+//! caller's [`crate::internal::dav::TextPolicy`] — this file never chooses that mode, which is what keeps the
 //! `calendar-data` carve-out one element wide.
 //!
 //! **An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets between its
@@ -94,17 +94,17 @@ use alloc::vec::Vec;
 use ical_core::{DiagnosticCode, LimitExceeded, Meter, Severity};
 use xmlparser::{Error as LexerError, StreamError, Token, Tokenizer};
 
-use crate::codec::{XmlEvent, XmlPull};
-use crate::element::{ElementName, Namespace, QName};
-use crate::failure::{DavError, SyntaxError};
-use crate::policy::{DecodeContext, UnknownPolicy};
-use crate::text::{TextMode, check_chars, decode_text, normalize_attribute};
+use crate::internal::dav::codec::{XmlEvent, XmlPull};
+use crate::internal::dav::element::{ElementName, Namespace, QName};
+use crate::internal::dav::failure::{DavError, SyntaxError};
+use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
+use crate::internal::dav::text::{TextMode, check_chars, decode_text, normalize_attribute};
 // The lexical layer and the namespace binding stack are XML's rather than CalDAV's, so they live
 // in the private module `gates/xml-layering` compiles alone (docs/adr/0012). What stays in this
 // file is the state machine, which is stated over `ElementName` and `Namespace` and is therefore
 // the half of the tokenizer that layer may not name.
-use crate::xml::bind::PrefixStack;
-use crate::xml::scan::{
+use crate::internal::dav::xml::bind::PrefixStack;
+use crate::internal::dav::xml::scan::{
     BYTE_ORDER_MARK, CDATA_CLOSE, CDATA_OPEN, COMMENT_CLOSE, COMMENT_OPEN, DECLARATION_OPEN,
     NO_NAMESPACE, check_encoding, check_name, declared_prefix, find, is_attribute_name_end,
     is_name_end, is_space, space_end, split_name,
@@ -115,7 +115,7 @@ use crate::xml::scan::{
 /// Re-exported from the private XML layer, which is where the constant now lives: RFC 4918
 /// section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, and reading
 /// that name back is this crate's business rather than the layer's.
-pub(crate) use crate::xml::scan::XML_URI;
+pub(crate) use crate::internal::dav::xml::scan::XML_URI;
 
 /// Where in the document the reader sits, which decides what is legal next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,7 +183,7 @@ enum Step<'a> {
 /// A pull tokenizer over one contiguous body.
 ///
 /// The lifetime is the body's, so a `calendar-data` payload reaches `ical-core` as
-/// [`crate::TextRun::Wire`] — a borrowed slice, no copy — which is the property
+/// [`crate::internal::dav::TextRun::Wire`] — a borrowed slice, no copy — which is the property
 /// `docs/adr/0001`'s round trip needs on the way through the XML envelope.
 ///
 /// Every reading door takes the caller's [`DecodeContext`], and this type holds no policy and
@@ -215,7 +215,7 @@ impl<'a> XmlReader<'a> {
     /// A reader over one whole body.
     ///
     /// Contiguous by construction: a chunked transport gives up the borrow that makes
-    /// [`crate::TextRun::Wire`] possible, and this type would rather say so in its signature
+    /// [`crate::internal::dav::TextRun::Wire`] possible, and this type would rather say so in its signature
     /// than copy on the caller's behalf.
     ///
     /// Nothing is read here and nothing is charged here. The body's own length is checked
@@ -944,24 +944,23 @@ mod tests {
     };
 
     use super::{XML_URI, XmlReader};
-    use crate::codec::{XmlEvent, XmlPull};
-    use crate::element::{ElementName, Namespace, QName};
-    use crate::failure::{DavError, SyntaxError};
-    use crate::policy::{DecodeContext, UnknownPolicy};
-    use crate::text::{LineEndings, TextPolicy, write_escaped_text};
+    use crate::internal::dav::codec::{XmlEvent, XmlPull};
+    use crate::internal::dav::element::{ElementName, Namespace, QName};
+    use crate::internal::dav::failure::{DavError, SyntaxError};
+    use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
+    use crate::internal::dav::text::{LineEndings, TextPolicy, write_escaped_text};
 
     /// The `.ics` all three fixtures carry, byte for byte.
-    const PAYLOAD: &[u8] = include_bytes!("../tests/fixtures/calendar-data-payload.ics");
+    const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");
 
     /// `SabreDAV`: `d:` and `cal:` prefixes, literal `CRLF`, two responses, four statuses.
-    const SABREDAV: &[u8] = include_bytes!("../tests/fixtures/sabredav-calendar-multiget.xml");
+    const SABREDAV: &[u8] = include_bytes!("fixtures/sabredav-calendar-multiget.xml");
 
     /// Radicale: `ns0:` and `ns1:` from `ElementTree`, an apostrophe-quoted declaration.
-    const RADICALE: &[u8] = include_bytes!("../tests/fixtures/radicale-calendar-multiget.xml");
+    const RADICALE: &[u8] = include_bytes!("fixtures/radicale-calendar-multiget.xml");
 
     /// Calendar Server: a default `DAV:` declaration, `C:` beside it, `CR` as `&#13;`.
-    const CALENDAR_SERVER: &[u8] =
-        include_bytes!("../tests/fixtures/calendarserver-calendar-multiget.xml");
+    const CALENDAR_SERVER: &[u8] = include_bytes!("fixtures/calendarserver-calendar-multiget.xml");
 
     /// One event, as a table writes it.
     #[derive(Clone, Debug, PartialEq, Eq)]
