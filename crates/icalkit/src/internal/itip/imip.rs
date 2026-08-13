@@ -193,6 +193,21 @@ impl MediaTypeParams {
         self.charset.as_deref()
     }
 
+    /// Whether the declared charset and the decoded part body can both be true.
+    ///
+    /// RFC 6047 section 2.4 requires UTF-8 when the object carries characters outside
+    /// US-ASCII. RFC 2046 makes US-ASCII the default for a text part with no charset.
+    /// This checks the declaration only; UTF-8 validity remains the calendar parser's job.
+    #[must_use]
+    pub fn charset_agrees_with(&self, body: &[u8]) -> bool {
+        match self.charset() {
+            Some(charset) if charset.eq_ignore_ascii_case(b"utf-8") => true,
+            Some(charset) if charset.eq_ignore_ascii_case(b"us-ascii") => body.is_ascii(),
+            None => body.is_ascii(),
+            Some(_) => false,
+        }
+    }
+
     /// Whether the envelope's `method` parameter names `message`'s own `METHOD`.
     ///
     /// RFC 6047 section 2.4 requires the parameter and requires it to agree, so an absent one is
@@ -956,6 +971,53 @@ mod tests {
         }
         assert!(parse(REPLY_HEADER).unwrap().is_calendar());
         assert!(!parse(b"text/plain; method=REPLY").unwrap().is_calendar());
+    }
+
+    #[test]
+    fn the_declared_charset_and_the_decoded_body_can_both_be_true() {
+        let ascii = b"SUMMARY:plain";
+        let utf8 = "SUMMARY:calf\u{e9}".as_bytes();
+        for (shape, header, body, expected) in [
+            (
+                "UTF-8 admits every octet and leaves validity to the calendar parser",
+                b"text/calendar; charset=UTF-8".as_slice(),
+                b"SUMMARY:\xff".as_slice(),
+                true,
+            ),
+            (
+                "US-ASCII agrees with an ASCII body",
+                b"text/calendar; charset=us-ascii",
+                ascii,
+                true,
+            ),
+            (
+                "US-ASCII contradicts a high octet",
+                b"text/calendar; charset=us-ascii",
+                utf8,
+                false,
+            ),
+            (
+                "an absent text charset defaults to US-ASCII",
+                b"text/calendar",
+                ascii,
+                true,
+            ),
+            (
+                "an absent charset cannot explain a high octet",
+                b"text/calendar",
+                utf8,
+                false,
+            ),
+            (
+                "no private legacy encoding is guessed",
+                b"text/calendar; charset=windows-1252",
+                ascii,
+                false,
+            ),
+        ] {
+            let params = parse(header).unwrap();
+            assert_eq!(params.charset_agrees_with(body), expected, "{shape}");
+        }
     }
 
     /// Presence, and nothing else. Every row is an address and whether the component names it.

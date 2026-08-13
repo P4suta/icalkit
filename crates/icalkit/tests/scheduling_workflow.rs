@@ -8,7 +8,7 @@ use icalkit::caldav::{Match, Query};
 use icalkit::interop::{Import, RfcRepairV1};
 use icalkit::scheduling::{Actor, Message};
 use icalkit::time::{DateTime, OffsetResolution, Timestamp, ZoneDatabase, ZoneResolution};
-use icalkit::{Calendar, Engine};
+use icalkit::{Calendar, Engine, ResourcePolicy};
 
 const WRAP_HEAD: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n";
 const WRAP_TAIL: &str = "END:VCALENDAR\r\n";
@@ -228,6 +228,69 @@ fn all_eight_outbound_methods_are_built_with_caller_supplied_time() {
                 .any(|window| window == b"DTSTAMP:19700101T000000Z")
         );
     }
+}
+
+#[test]
+fn imip_content_type_is_checked_against_the_decoded_calendar_body() {
+    let request = Message::read(range_series::REQUEST).unwrap();
+    let content_type = request.imip_content_type();
+    assert_eq!(content_type, "text/calendar; charset=UTF-8; method=REQUEST");
+    let received = Message::read_imip(content_type.as_bytes(), &request.to_bytes()).unwrap();
+    assert_eq!(received, request);
+
+    for (header, code) in [
+        (
+            b"text/plain; charset=UTF-8; method=REQUEST".as_slice(),
+            "icalkit.scheduling.imip-media-type",
+        ),
+        (
+            b"text/calendar; charset=UTF-8; method=REPLY",
+            "icalkit.scheduling.imip-method-mismatch",
+        ),
+        (
+            b"text/calendar; charset=windows-1252; method=REQUEST",
+            "icalkit.scheduling.imip-charset-mismatch",
+        ),
+        (
+            b"text/calendar; charset=UTF-8; method=REQUEST; method=CANCEL",
+            "icalkit.scheduling.imip-content-type-invalid",
+        ),
+    ] {
+        let error = Message::read_imip(header, range_series::REQUEST).unwrap_err();
+        assert_eq!(error.code().as_str(), code, "{header:?}");
+    }
+}
+
+#[test]
+fn imip_charset_gate_sees_the_decoded_octets_and_uses_the_session_budget() {
+    let utf8 = payload(
+        "UID:utf8@example.test\r\nDTSTAMP:20260302T080000Z\r\n\
+         DTSTART:20260310T140000Z\r\nSUMMARY:Café\r\n\
+         ORGANIZER:mailto:chair@example.test\r\n\
+         ATTENDEE:mailto:alice@example.test\r\nSEQUENCE:1\r\n",
+    );
+    let message = Message::request(&utf8, supplied_time()).unwrap();
+    let body = message.to_bytes();
+
+    let absent = Message::read_imip(b"text/calendar; method=REQUEST", &body).unwrap_err();
+    assert_eq!(
+        absent.code().as_str(),
+        "icalkit.scheduling.imip-charset-mismatch"
+    );
+    Message::read_imip(b"text/calendar; charset=UTF-8; method=REQUEST", &body).unwrap();
+
+    let header = b"text/calendar; charset=UTF-8; method=REQUEST";
+    let engine = Engine::builder()
+        .resource_policy(
+            ResourcePolicy::secure().with_max_input_bytes(u64::try_from(header.len() - 1).unwrap()),
+        )
+        .build();
+    let mut session = engine.session();
+    let exhausted = Message::read_imip_in(&mut session, header, &body).unwrap_err();
+    assert_eq!(
+        exhausted.code().as_str(),
+        "icalkit.scheduling.imip-content-type-invalid"
+    );
 }
 
 #[test]

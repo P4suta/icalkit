@@ -240,6 +240,10 @@ END:VCALENDAR\r\n";
         header(request.headers(), "Recipient"),
         Some(b"mailto:bob@example.test".as_slice())
     );
+    assert_eq!(
+        header(request.headers(), "Content-Type"),
+        Some(message.imip_content_type().as_bytes())
+    );
     assert_eq!(request.body(), message.to_bytes());
 
     operation

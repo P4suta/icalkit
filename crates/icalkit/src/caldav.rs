@@ -1530,7 +1530,7 @@ impl Client {
             }
             recipient_value.extend_from_slice(recipient.as_bytes());
         }
-        let content_type = format!("text/calendar; charset=utf-8; method={}", message.method());
+        let content_type = message.imip_content_type();
         let request = WireRequest::new(
             "POST",
             outbox_uri,

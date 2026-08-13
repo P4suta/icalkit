@@ -221,9 +221,13 @@ pub const fn icalkit::scheduling::Message::as_calendar(&self) -> &icalkit::Calen
 pub fn icalkit::scheduling::Message::cancel(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::counter(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::decline_counter(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::imip_content_type(&self) -> alloc::string::String
 pub fn icalkit::scheduling::Message::method(&self) -> &'static str
 pub fn icalkit::scheduling::Message::publish(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::read(&[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::read_imip(&[u8], &[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::read_imip_in(&mut icalkit::Session<'_>, &[u8], &[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::scheduling::Message::read_in(&mut icalkit::Session<'_>, &[u8]) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::refresh(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::reply(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::request(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>

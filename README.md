@@ -124,8 +124,17 @@ use icalkit::time::Timestamp;
 # let payload = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:planning@example.test\r\nDTSTART:20260815T090000Z\r\nSUMMARY:Planning\r\nORGANIZER:mailto:alice@example.test\r\nATTENDEE:mailto:bob@example.test\r\nSEQUENCE:1\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 let message = Message::request(payload, Timestamp::constant(1_786_656_000, 0))?;
 assert_eq!(message.method(), "REQUEST");
+let content_type = message.imip_content_type();
+let received = Message::read_imip(content_type.as_bytes(), &message.to_bytes())?;
+assert_eq!(received, message);
 # Ok::<(), icalkit::Error>(())
 ```
+
+For email transport, the mail implementation first removes Content-Transfer-Encoding and passes
+the unfolded `Content-Type` value plus decoded part octets to `Message::read_imip`. That validates
+the media type, charset declaration, and envelope/body method agreement. It does not trust email
+`From` as a calendar identity; pass only the separately authenticated envelope sender as `Actor`
+when reviewing the message.
 
 ## CalDAV sync and server workflows
 

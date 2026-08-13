@@ -38,6 +38,7 @@ pub use identity::{
     FoldSide, InstanceClock, InstanceMatch, InstanceRef, MessageIdentity, Revision, SequenceRead,
     Uid,
 };
+pub use imip::MediaTypeParams;
 pub use instance::{
     ResolvedInstance, check_exclusions_are_placeable, exclusions_are_placeable, resolve_instance,
 };

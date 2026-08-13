@@ -37,9 +37,17 @@ guarantees and not against the ones nobody made.
 
 **It never authenticates a sender.** `evaluate_message` judges the actor *the caller supplies*.
 Establishing that the actor really sent the message is the transport's job: an authenticated
-CalDAV session, or the RFC 6047 envelope checks behind the `imip` feature. Handing the gate an
-address taken from a `From:` header nobody verified reproduces the whole of the classic forged
-invitation, and no gate here can see that caller's code.
+CalDAV session, or an authenticated mail envelope. `Message::read_imip` checks the RFC 6047
+`Content-Type` media type, charset declaration, and method agreement with the calendar body; it
+does not authenticate `From` or turn it into an `Actor`. Handing the scheduling gate an address
+taken from a `From:` header nobody verified reproduces the whole of the classic forged invitation,
+and no gate here can see that caller's code.
+
+**The iMIP body passed to icalkit must already be transfer-decoded.** The mail implementation must
+remove Content-Transfer-Encoding before calling `Message::read_imip`. Passing the base64 or
+quoted-printable wire spelling can make an all-ASCII wrapper appear consistent with an absent
+charset while hiding non-ASCII decoded content. The strict calendar parser may reject such input,
+but that is not a substitute for performing the transport decode at the MIME boundary.
 
 **What it compares the actor against depends on whether the caller holds the component.** When
 it does, the actor is looked up in the caller's own copy — the `ORGANIZER` line a recipient

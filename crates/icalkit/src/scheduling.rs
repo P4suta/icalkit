@@ -13,8 +13,8 @@ use crate::internal::core::{
     Property, PropertyId, TextValue, UtcOffset,
 };
 use crate::internal::itip::{
-    ComponentTarget, ItipMessage, Method, PartyId, ScheduleTarget, ScheduledComponent,
-    ScheduledView, Transition, evaluate_message, inspect_message,
+    ComponentTarget, ItipMessage, MediaTypeParams, Method, PartyId, ScheduleTarget,
+    ScheduledComponent, ScheduledView, Transition, evaluate_message, inspect_message,
 };
 
 use crate::calendar::parse_calendar;
@@ -33,8 +33,54 @@ pub struct Message {
 impl Message {
     /// Strictly read a complete inbound iTIP message.
     pub fn read(bytes: &[u8]) -> Result<Self, Error> {
-        let calendar = Calendar::parse(bytes)?;
-        Self::from_calendar(calendar)
+        let engine = Engine::default();
+        let mut session = engine.session();
+        Self::read_in(&mut session, bytes)
+    }
+
+    /// Strictly read an iTIP message under an engine session's aggregate resource budget.
+    pub fn read_in(session: &mut Session<'_>, bytes: &[u8]) -> Result<Self, Error> {
+        let calendar = session.parse(bytes)?;
+        Self::from_calendar_in(calendar, session.engine.policy, &mut session.meter)
+    }
+
+    /// Read a decoded RFC 6047 section 2.4 `text/calendar` MIME part.
+    ///
+    /// `content_type` is the unfolded field value after `Content-Type:`. `decoded_body` must
+    /// already have had its Content-Transfer-Encoding removed by the mail implementation. The
+    /// email envelope's `From` identity is deliberately not accepted here: pass the separately
+    /// authenticated envelope sender as [`Actor`] when reviewing the returned message.
+    pub fn read_imip(content_type: &[u8], decoded_body: &[u8]) -> Result<Self, Error> {
+        let engine = Engine::default();
+        let mut session = engine.session();
+        Self::read_imip_in(&mut session, content_type, decoded_body)
+    }
+
+    /// Read a decoded RFC 6047 MIME part under one aggregate session budget.
+    ///
+    /// The header and decoded calendar body both charge the supplied session.
+    pub fn read_imip_in(
+        session: &mut Session<'_>,
+        content_type: &[u8],
+        decoded_body: &[u8],
+    ) -> Result<Self, Error> {
+        let declared = MediaTypeParams::read(
+            content_type,
+            session.engine.policy.limits,
+            &mut session.meter,
+        )
+        .map_err(|_| Error::single("icalkit.scheduling.imip-content-type-invalid"))?;
+        if !declared.is_calendar() {
+            return Err(Error::single("icalkit.scheduling.imip-media-type"));
+        }
+        if !declared.charset_agrees_with(decoded_body) {
+            return Err(Error::single("icalkit.scheduling.imip-charset-mismatch"));
+        }
+        let message = Self::read_in(session, decoded_body)?;
+        if declared.declared_method() != Some(message.method) {
+            return Err(Error::single("icalkit.scheduling.imip-method-mismatch"));
+        }
+        Ok(message)
     }
 
     /// Build a PUBLISH message, using the caller-supplied DTSTAMP.
@@ -81,6 +127,17 @@ impl Message {
     #[must_use]
     pub fn method(&self) -> &'static str {
         core::str::from_utf8(self.method.as_bytes()).unwrap_or("")
+    }
+
+    /// A canonical RFC 6047 `Content-Type` value for this message.
+    ///
+    /// UTF-8 is stated even for an ASCII-only body, and `method` is derived from the validated
+    /// iTIP object so the emitted envelope cannot disagree with it.
+    #[must_use]
+    pub fn imip_content_type(&self) -> String {
+        let mut value = String::from("text/calendar; charset=UTF-8; method=");
+        value.push_str(self.method());
+        value
     }
 
     /// The validated calendar carrying this message.
@@ -201,16 +258,24 @@ impl Message {
     }
 
     fn from_calendar(calendar: Calendar) -> Result<Self, Error> {
+        let policy = calendar.policy;
+        let mut meter = Meter::new(policy.limits);
+        Self::from_calendar_in(calendar, policy, &mut meter)
+    }
+
+    fn from_calendar_in(
+        calendar: Calendar,
+        policy: ResourcePolicy,
+        meter: &mut Meter,
+    ) -> Result<Self, Error> {
         let method = {
             let component = root_component(&calendar)
                 .ok_or_else(|| Error::single("icalkit.scheduling.message-invalid"))?;
             let view = ScheduledView::of(component);
-            let mut meter = Meter::new(calendar.policy.limits);
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let message =
-                ItipMessage::read(&view, calendar.policy.limits, &mut meter, &mut diagnostics)
-                    .map_err(|_| Error::single("icalkit.scheduling.message-invalid"))?;
-            inspect_message(&message, None, &mut meter, &mut diagnostics);
+            let message = ItipMessage::read(&view, policy.limits, meter, &mut diagnostics)
+                .map_err(|_| Error::single("icalkit.scheduling.message-invalid"))?;
+            inspect_message(&message, None, meter, &mut diagnostics);
             let issues: Vec<Issue> = diagnostics
                 .into_iter()
                 .map(Issue::from_diagnostic)
