@@ -286,6 +286,123 @@ END:VCALENDAR\r\n";
     );
 }
 
+#[test]
+fn expand_projection_replaces_a_rule_with_bounded_utc_instances() {
+    const RECURRING: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit query tests//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:expand@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060102T120000Z\r\n\
+DURATION:PT1H\r\n\
+RRULE:FREQ=DAILY;COUNT=5\r\n\
+SUMMARY:Master\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:expand@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060104T140000Z\r\n\
+DURATION:PT1H\r\n\
+RECURRENCE-ID:20060104T120000Z\r\n\
+SUMMARY:Moved override\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    const QUERY: &[u8] =
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+  <C:expand start="20060103T000000Z" end="20060105T000000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#;
+
+    let query = Query::parse(QUERY).unwrap();
+    let calendar = Calendar::parse(RECURRING).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    let projected = query.project(&mut session, &calendar).unwrap();
+    let bytes = projected.as_bytes();
+    assert!(!bytes.windows(6).any(|part| part == b"RRULE:"));
+    assert_eq!(
+        bytes
+            .windows(b"BEGIN:VEVENT".len())
+            .filter(|part| *part == b"BEGIN:VEVENT")
+            .count(),
+        2
+    );
+    assert!(
+        bytes
+            .windows(24)
+            .any(|part| part == b"DTSTART:20060103T120000Z")
+    );
+    assert!(
+        bytes
+            .windows(22)
+            .any(|part| part == b"DTEND:20060103T130000Z")
+    );
+    assert!(
+        bytes
+            .windows(24)
+            .any(|part| part == b"DTSTART:20060104T140000Z")
+    );
+    assert!(
+        bytes
+            .windows(b"SUMMARY:Moved override".len())
+            .any(|part| part == b"SUMMARY:Moved override")
+    );
+}
+
+#[test]
+fn expand_projection_applies_this_and_future_property_changes() {
+    const RECURRING: &[u8] = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit query tests//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:expand-future@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060102T120000Z\r\n\
+DURATION:PT1H\r\n\
+RRULE:FREQ=DAILY;COUNT=5\r\n\
+LOCATION:Headquarters\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:expand-future@example.test\r\n\
+DTSTAMP:20060206T001121Z\r\n\
+DTSTART:20060103T120000Z\r\n\
+DURATION:PT1H\r\n\
+RECURRENCE-ID;RANGE=THISANDFUTURE:20060103T120000Z\r\n\
+LOCATION:Remote\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    const QUERY: &[u8] =
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+  <C:expand start="20060105T000000Z" end="20060106T000000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#;
+
+    let query = Query::parse(QUERY).unwrap();
+    let calendar = Calendar::parse(RECURRING).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert!(
+        projected
+            .as_bytes()
+            .windows(b"LOCATION:Remote".len())
+            .any(|part| part == b"LOCATION:Remote")
+    );
+    assert!(
+        !projected
+            .as_bytes()
+            .windows(b"LOCATION:Headquarters".len())
+            .any(|part| part == b"LOCATION:Headquarters")
+    );
+}
+
 struct FixedNewYork;
 
 impl ZoneDatabase for FixedNewYork {

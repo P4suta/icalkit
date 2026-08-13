@@ -98,12 +98,12 @@ use alloc::vec::{IntoIter, Vec};
 use core::{mem, slice};
 
 use ical_core::{
-    Component, DateTimeValue, DecodeValue, Document, Duration, Instant, Item, LimitExceeded,
-    Limits, Meter, Period, Property, PropertyId, UtcOffset,
+    CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration, EncodeValue, Instant,
+    Item, LimitExceeded, Limits, Meter, Period, Property, PropertyId, UtcOffset, ValueBuf,
 };
 use ical_dav::{CompSelection, TimeRange};
 
-use crate::expand::override_impacts;
+use crate::expand::{component_start, expand_component, override_impacts, override_recurrence_id};
 use crate::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
 /// The identity [`zone_id`] looks up.
@@ -356,6 +356,226 @@ pub fn limit_recurrence_set_in_window(
         },
         budget,
     )
+}
+
+/// Replace recurring components with the UTC instances inside `window`.
+pub fn expand_calendar(
+    source: &Selection,
+    window: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Selection, QueryError> {
+    let mut items = Vec::new();
+    for entry in source.calendar().items() {
+        match entry {
+            Item::Property(property) => items.push(Item::Property(property.clone())),
+            Item::Component(component) if component.is_named(CALENDAR) => {
+                items.push(Item::Component(expand_calendar_component(
+                    component, window, zones, budget,
+                )?));
+            },
+            Item::Component(component) => items.push(Item::Component(component.clone())),
+        }
+    }
+    let calendar = Document::new(items);
+    budget
+        .meter
+        .try_charge_bytes(u64::try_from(calendar.to_bytes().len()).unwrap_or(u64::MAX))
+        .map_err(QueryError::Limit)?;
+    Ok(Selection::new(
+        calendar,
+        Reduction {
+            expanded: true,
+            ..source.reduction()
+        },
+    ))
+}
+
+/// Expand the recurrence sets directly inside one `VCALENDAR`.
+fn expand_calendar_component(
+    calendar: &Component,
+    window: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Component, QueryError> {
+    let siblings = calendar.items();
+    let components: Vec<&Component> = calendar.components().collect();
+    let mut items = Vec::new();
+    for entry in siblings {
+        let Item::Component(master) = entry else {
+            items.push(entry.clone());
+            continue;
+        };
+        if is_override(master) {
+            if components
+                .iter()
+                .copied()
+                .any(|candidate| is_override_of(master, candidate))
+            {
+                continue;
+            }
+            items.push(entry.clone());
+            continue;
+        }
+        let related: Vec<&Component> = components
+            .iter()
+            .copied()
+            .filter(|candidate| is_override_of(candidate, master))
+            .collect();
+        let recurring = master.properties_named(&PropertyId::RRULE).next().is_some()
+            || master.properties_named(&PropertyId::RDATE).next().is_some()
+            || !related.is_empty();
+        if !recurring {
+            items.push(entry.clone());
+            continue;
+        }
+
+        let expansion = expand_component(master, siblings, window, zones, budget)?;
+        if expansion.incomplete().is_some() {
+            return Err(QueryError::Unrepresentable);
+        }
+        let initial = component_start(master, zones).map_err(|_| QueryError::Unrepresentable)?;
+        for instance in expansion.instances() {
+            let template = effective_template(master, &related, *instance, zones)?;
+            items.push(Item::Component(materialize_instance(
+                &template, *instance, initial,
+            )?));
+        }
+    }
+    Ok(Component::new(
+        calendar.begin().clone(),
+        items,
+        calendar.end().cloned(),
+    ))
+}
+
+/// Compose every range anchor in force and then the exact override, if one exists.
+fn effective_template(
+    master: &Component,
+    related: &[&Component],
+    instance: crate::Instance,
+    zones: Zones<'_>,
+) -> Result<Component, QueryError> {
+    let mut anchors: Vec<(Instant, &Component)> = related
+        .iter()
+        .copied()
+        .filter(|candidate| is_range_anchor(candidate))
+        .map(|candidate| {
+            override_recurrence_id(master, candidate, zones)
+                .map(|recurrence_id| (recurrence_id, candidate))
+                .map_err(|_| QueryError::Unrepresentable)
+        })
+        .collect::<Result<_, _>>()?;
+    anchors.sort_by_key(|(recurrence_id, _)| *recurrence_id);
+
+    let mut built = master.clone();
+    for (_, anchor) in anchors
+        .into_iter()
+        .filter(|(recurrence_id, _)| *recurrence_id <= instance.recurrence_id())
+    {
+        overlay_properties(&mut built, anchor);
+    }
+    if let Some(exact) = related.iter().copied().find(|candidate| {
+        override_recurrence_id(master, candidate, zones).ok() == Some(instance.recurrence_id())
+    }) {
+        overlay_properties(&mut built, exact);
+    }
+    Ok(built)
+}
+
+/// Apply the properties one override states, leaving omitted base properties alone.
+fn overlay_properties(target: &mut Component, overlay: &Component) {
+    let mut names: Vec<&[u8]> = Vec::new();
+    for property in overlay.properties() {
+        if is_expansion_control(property) || names.iter().any(|name| property.is_named(name)) {
+            continue;
+        }
+        names.push(property.name().as_bytes());
+    }
+    for name in names {
+        target.items_mut().retain(|entry| {
+            entry
+                .as_property()
+                .is_none_or(|property| !property.is_named(name))
+        });
+        for property in overlay
+            .properties()
+            .filter(|property| property.is_named(name))
+        {
+            insert_property(target, property.clone());
+        }
+    }
+}
+
+/// Properties rebuilt from an [`Instance`](crate::Instance), never copied as an override diff.
+fn is_expansion_control(property: &Property) -> bool {
+    [
+        &PropertyId::RRULE,
+        &PropertyId::RDATE,
+        &PropertyId::EXDATE,
+        &PropertyId::RECURRENCE_ID,
+        &PropertyId::DTSTART,
+        &PropertyId::DTEND,
+        &PropertyId::DURATION,
+    ]
+    .iter()
+    .any(|id| property.has_id(id))
+}
+
+/// Whether this override is a `RANGE=THISANDFUTURE` anchor.
+fn is_range_anchor(component: &Component) -> bool {
+    component
+        .properties_named(&PropertyId::RECURRENCE_ID)
+        .next()
+        .is_some_and(|property| {
+            property
+                .parameters_named(b"RANGE")
+                .any(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"THISANDFUTURE"))
+        })
+}
+
+/// Build one UTC instance while retaining the selected template's non-recurrence properties.
+fn materialize_instance(
+    template: &Component,
+    instance: crate::Instance,
+    initial: Instant,
+) -> Result<Component, QueryError> {
+    let mut built = template.clone();
+    built.items_mut().retain(|entry| {
+        entry
+            .as_property()
+            .is_none_or(|property| !is_expansion_control(property))
+    });
+    insert_property(&mut built, utc_property(b"DTSTART", instance.start())?);
+    insert_property(&mut built, utc_property(b"DTEND", instance.end())?);
+    if instance.recurrence_id() != initial {
+        insert_property(
+            &mut built,
+            utc_property(b"RECURRENCE-ID", instance.recurrence_id())?,
+        );
+    }
+    Ok(built)
+}
+
+/// One canonical UTC date-time property.
+fn utc_property(name: &[u8], instant: Instant) -> Result<Property, QueryError> {
+    let stamp =
+        CivilDateTime::from_instant(instant, UtcOffset::UTC).ok_or(QueryError::Unrepresentable)?;
+    let mut value = ValueBuf::new();
+    DateTimeValue::Utc(stamp)
+        .encode_value(&mut value)
+        .map_err(|_| QueryError::Unrepresentable)?;
+    Property::create(name, Vec::new(), value.as_bytes()).map_err(|_| QueryError::Unrepresentable)
+}
+
+/// Insert a property before any nested component.
+fn insert_property(component: &mut Component, property: Property) {
+    let at = component
+        .items()
+        .iter()
+        .position(|entry| entry.as_component().is_some())
+        .unwrap_or(component.items().len());
+    component.items_mut().insert(at, Item::Property(property));
 }
 
 /// Keep the `FREEBUSY` periods that intersect `window`, RFC 4791 section 9.6.7.

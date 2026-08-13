@@ -666,6 +666,136 @@ fn is_this_and_future(component: &Component) -> bool {
         })
 }
 
+/// Expand one stored recurring component together with its sibling overrides.
+pub(crate) fn expand_component(
+    component: &Component,
+    siblings: &[Item],
+    range: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Expansion, QueryError> {
+    macro_rules! decided {
+        ($answer:expr) => {
+            match $answer {
+                Ok(value) => value,
+                Err(reason) => return Ok(incomplete_expansion(reason)),
+            }
+        };
+    }
+
+    let Some(kind) = component.kind() else {
+        return Ok(incomplete_expansion(Undecided::OverlapUndefined));
+    };
+    if !matches!(
+        kind,
+        ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
+    ) {
+        return Ok(incomplete_expansion(Undecided::OverlapUndefined));
+    }
+    let related: Vec<&Component> = siblings
+        .iter()
+        .filter_map(Item::as_component)
+        .filter(|candidate| is_override_of(candidate, component))
+        .collect();
+    let opening = decided!(required(component.dtstart()));
+    let clock = decided!(clock_of(opening));
+    let dtstart = decided!(nominal_value(opening, clock, zones));
+    let dtstart_kind = if matches!(opening, DateTimeValue::Date(_)) {
+        ValueKind::Date
+    } else {
+        ValueKind::DateTime
+    };
+    let occupies = decided!(instance_span(component, kind, opening, clock, zones));
+    let mut rule = decided!(recurrence_rule(component));
+    if let Some(parsed) = rule.as_mut() {
+        decided!(project_rule_limit(parsed, clock, zones));
+    }
+    let mut rdates = instant_list(component, &ids::RDATE, clock, zones)?;
+    let mut exdates = instant_list(component, &ids::EXDATE, clock, zones)?;
+    rdates.sort_unstable();
+    rdates.dedup();
+    exdates.sort_unstable();
+    exdates.dedup();
+
+    let mut entries = Vec::new();
+    entries
+        .try_reserve(related.len())
+        .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
+    for candidate in related {
+        let addressed = decided!(required(
+            candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
+        ));
+        let recurrence_id = decided!(nominal_value(addressed, clock, zones));
+        let moved_to = match decided!(optional(candidate.dtstart())) {
+            Some(value) => Some(decided!(nominal_value(value, clock, zones))),
+            None => None,
+        };
+        entries.push(Override::new(
+            recurrence_id,
+            if is_this_and_future(candidate) {
+                OverrideRange::ThisAndFuture
+            } else {
+                OverrideRange::ThisOnly
+            },
+            moved_to,
+            PropertyDiff::empty(),
+        ));
+    }
+    entries.sort_by_key(|entry| entry.recurrence_id());
+    let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
+    let mut diagnostics = ical_core::IgnoreDiagnostics;
+    expand(
+        Series {
+            dtstart,
+            dtstart_kind,
+            clock,
+            occupies,
+            rule: rule.as_ref(),
+            rdates: &rdates,
+            exdates: &exdates,
+            overrides,
+        },
+        range,
+        zones,
+        budget,
+        &mut diagnostics,
+    )
+}
+
+/// An expansion that could not establish all of its instances.
+const fn incomplete_expansion(reason: Undecided) -> Expansion {
+    Expansion {
+        instances: Vec::new(),
+        reduction: Reduction {
+            expanded: true,
+            ..Reduction::FAITHFUL
+        },
+        incomplete: Some(reason),
+    }
+}
+
+/// The UTC recurrence identifier an override addresses under its master's clock.
+pub(crate) fn override_recurrence_id(
+    master: &Component,
+    candidate: &Component,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
+    let opening = required(master.dtstart())?;
+    let clock = clock_of(opening)?;
+    let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
+    let nominal = nominal_value(addressed, clock, zones)?;
+    clock.place(nominal, zones)
+}
+
+/// The first instance's UTC recurrence identifier.
+pub(crate) fn component_start(
+    component: &Component,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
+    let opening = required(component.dtstart())?;
+    placed_value(opening, zones)
+}
+
 /// Assemble and search one component known to carry a recurrence set.
 fn recurring_component_overlaps<S>(
     component: &Component,

@@ -94,18 +94,17 @@ impl Query {
             .calendar_data
             .as_ref()
             .ok_or_else(|| Error::single("icalkit.caldav.calendar-data-not-requested"))?;
-        if request.expand.is_some() {
-            return Err(Error::single("icalkit.caldav.projection-unsupported"));
-        }
-
         let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
         let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-        if let Some(window) = request.limit_recurrence_set {
+        if let Some(window) = request.expand.or(request.limit_recurrence_set) {
             let zone_adapter = ZoneAdapter(session.engine.zone_database());
             let zones = Zones::new(&zone_adapter);
-            source =
+            source = if request.expand.is_some() {
+                ical_query::expand_calendar(&source, window, zones, &mut budget)
+            } else {
                 ical_query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
-                    .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+            }
+            .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
         }
         let mut selected = ical_query::select(&source, request.comp.as_ref(), &mut budget)
             .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;

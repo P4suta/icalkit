@@ -91,7 +91,7 @@ pub use crate::overlap::OVERLAP_SECTIONS;
 pub use crate::prefilter::PREFILTER_SECTIONS;
 pub use crate::prop::PROPERTY_FILTER_SECTIONS;
 pub use crate::subset::{
-    SUBSELECTION_SECTIONS, limit_freebusy_set, limit_recurrence_set,
+    SUBSELECTION_SECTIONS, expand_calendar, limit_freebusy_set, limit_recurrence_set,
     limit_recurrence_set_in_window, select, without_values,
 };
 pub use crate::walk::{COMPONENT_FILTER_SECTIONS, matches};
