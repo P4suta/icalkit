@@ -52,16 +52,20 @@ impl Query {
         policy: ResourcePolicy,
         meter: &mut Meter,
     ) -> Result<Self, Error> {
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics)
-            .with_unknown(UnknownPolicy::Reject);
-        let mut events = XmlReader::new(bytes);
-        let RequestBody::CalendarQuery(query) = RequestBody::read(&mut events, &mut context)
+        let RequestBody::CalendarQuery(query) = decode_dav_request(bytes, policy, meter)
             .map_err(|_| Error::single("icalkit.caldav.query-invalid"))?
         else {
             return Err(Error::single("icalkit.caldav.query-invalid"));
         };
-        let query_zone = read_query_zone(&query, policy, context.meter)?;
+        Self::from_decoded(query, policy, meter)
+    }
+
+    fn from_decoded(
+        query: ical_dav::CalendarQuery,
+        policy: ResourcePolicy,
+        meter: &mut Meter,
+    ) -> Result<Self, Error> {
+        let query_zone = read_query_zone(&query, policy, meter)?;
         Ok(Self { query, query_zone })
     }
 
@@ -94,28 +98,52 @@ impl Query {
             .calendar_data
             .as_ref()
             .ok_or_else(|| Error::single("icalkit.caldav.calendar-data-not-requested"))?;
-        let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
-        let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-        if let Some(window) = request.expand.or(request.limit_recurrence_set) {
-            let zone_adapter = ZoneAdapter(session.engine.zone_database());
-            let zones = Zones::new(&zone_adapter);
-            source = if request.expand.is_some() {
-                ical_query::expand_calendar(&source, window, zones, &mut budget)
-            } else {
-                ical_query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
-            }
-            .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
-        }
-        let mut selected = ical_query::select(&source, request.comp.as_ref(), &mut budget)
-            .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
-        if let Some(window) = request.limit_freebusy_set {
-            selected = ical_query::limit_freebusy_set(&selected, window, &mut budget)
-                .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
-        }
-        Ok(ProjectedCalendar {
-            bytes: selected.calendar().to_bytes().into_boxed_slice(),
-        })
+        project_calendar_data(request, session, calendar)
     }
+}
+
+fn project_calendar_data(
+    request: &CalendarDataRequest,
+    session: &mut Session<'_>,
+    calendar: &Calendar,
+) -> Result<ProjectedCalendar, Error> {
+    let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
+    let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
+    if let Some(window) = request.expand.or(request.limit_recurrence_set) {
+        let zone_adapter = ZoneAdapter(session.engine.zone_database());
+        let zones = Zones::new(&zone_adapter);
+        source = if request.expand.is_some() {
+            ical_query::expand_calendar(&source, window, zones, &mut budget)
+        } else {
+            ical_query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
+        }
+        .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+    }
+    let mut selected = ical_query::select(&source, request.comp.as_ref(), &mut budget)
+        .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+    if let Some(window) = request.limit_freebusy_set {
+        selected = ical_query::limit_freebusy_set(&selected, window, &mut budget)
+            .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+    }
+    Ok(ProjectedCalendar {
+        bytes: selected.calendar().to_bytes().into_boxed_slice(),
+    })
+}
+
+fn decode_dav_request(
+    bytes: &[u8],
+    policy: ResourcePolicy,
+    meter: &mut Meter,
+) -> Result<RequestBody, ical_dav::DavError> {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics)
+        .with_unknown(UnknownPolicy::Reject);
+    let mut events = XmlReader::new(bytes);
+    let request = RequestBody::read(&mut events, &mut context)?;
+    if events.next_event(&mut context)?.is_some() {
+        return Err(ical_dav::DavError::Foreign);
+    }
+    Ok(request)
 }
 
 fn read_query_zone(
@@ -317,6 +345,35 @@ pub struct SyncChange {
 }
 
 impl SyncChange {
+    /// Construct an updated member with validated URI and optional entity tag.
+    pub fn updated(
+        href: impl Into<String>,
+        etag: Option<&str>,
+        calendar: Calendar,
+    ) -> Result<Self, Error> {
+        let href = href.into();
+        validate_uri(&href)?;
+        let etag = etag.map(canonical_entity_tag).transpose()?;
+        Ok(Self {
+            href,
+            removed: false,
+            etag,
+            calendar: Some(calendar),
+        })
+    }
+
+    /// Construct a member removal.
+    pub fn removed(href: impl Into<String>) -> Result<Self, Error> {
+        let href = href.into();
+        validate_uri(&href)?;
+        Ok(Self {
+            href,
+            removed: true,
+            etag: None,
+            calendar: None,
+        })
+    }
+
     /// Resource URI named by the report.
     #[must_use]
     pub fn href(&self) -> &str {
@@ -350,6 +407,21 @@ pub struct SyncResult {
 }
 
 impl SyncResult {
+    /// Construct a completed synchronization page ending at `token`.
+    pub fn new(token: SyncToken, changes: Vec<SyncChange>) -> Result<Self, Error> {
+        if changes.iter().enumerate().any(|(index, change)| {
+            changes[..index]
+                .iter()
+                .any(|earlier| earlier.href == change.href)
+        }) {
+            return Err(Error::single("icalkit.caldav.sync-result-invalid"));
+        }
+        Ok(Self {
+            token: Some(token),
+            changes,
+        })
+    }
+
     /// Token that represents the complete returned state.
     #[must_use]
     pub const fn token(&self) -> Option<&SyncToken> {
@@ -570,6 +642,18 @@ fn is_request_status(value: &str) -> bool {
         && !detail.is_empty()
         && class.bytes().all(|octet| octet.is_ascii_digit())
         && detail.bytes().all(|octet| octet.is_ascii_digit())
+}
+
+fn canonical_entity_tag(value: &str) -> Result<String, Error> {
+    let parsed =
+        ETag::parse(value.as_bytes()).map_err(|_| Error::single("icalkit.caldav.etag-invalid"))?;
+    let tag = str::from_utf8(parsed.as_bytes())
+        .map_err(|_| Error::single("icalkit.caldav.etag-invalid"))?;
+    if parsed.is_weak() {
+        Ok(format!("W/\"{tag}\""))
+    } else {
+        Ok(format!("\"{tag}\""))
+    }
 }
 
 fn encode_xml(
@@ -1732,6 +1816,131 @@ fn query_response(
     ))
 }
 
+fn sync_change_response(
+    request: &SyncCollection,
+    change: SyncChange,
+    policy: ResourcePolicy,
+    session: &mut Session<'_>,
+    meter: &mut Meter,
+) -> Result<DavResponse, Error> {
+    let href = Href::new(change.href.as_bytes(), policy.limits, meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    if change.removed {
+        return Ok(DavResponse::with_status(href, Status::NOT_FOUND));
+    }
+
+    let calendar = change
+        .calendar
+        .ok_or_else(|| Error::single("icalkit.caldav.sync-response-invalid"))?;
+    let mut success = PropStat::new(Status::OK, policy.limits);
+    let mut missing = PropStat::new(Status::NOT_FOUND, policy.limits);
+    for name in request.props.names() {
+        if matches!(name, PropName::Known(ElementName::CalendarData)) {
+            continue;
+        }
+        let property = if matches!(name, PropName::Known(ElementName::Getetag)) {
+            change
+                .etag
+                .as_deref()
+                .map(|etag| {
+                    ETag::parse(etag.as_bytes())
+                        .map(|value| DavProperty {
+                            name: name.clone(),
+                            value: PropValue::Entity(value),
+                        })
+                        .map_err(|_| Error::single("icalkit.caldav.sync-response-invalid"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let (group, property) = match property {
+            Some(property) => (&mut success, property),
+            None => (
+                &mut missing,
+                DavProperty {
+                    name: name.clone(),
+                    value: PropValue::Empty,
+                },
+            ),
+        };
+        group
+            .push(property, meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    if let Some(calendar_data) = request.props.calendar_data.as_ref() {
+        let projected = project_calendar_data(calendar_data, session, &calendar)?;
+        let payload = CalendarPayload::from_octets(projected.as_bytes(), policy.limits, meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+        success
+            .push(
+                DavProperty {
+                    name: PropName::Known(ElementName::CalendarData),
+                    value: PropValue::CalendarData(payload),
+                },
+                meter,
+            )
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+
+    let mut response = DavResponse::with_propstats(href, policy.limits);
+    if !success.props().is_empty() {
+        response
+            .push_propstat(success, meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    if !missing.props().is_empty() {
+        response
+            .push_propstat(missing, meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    if response.propstats().is_empty() {
+        response.body = ResponseBody::Status(Status::OK);
+    }
+    Ok(response)
+}
+
+fn sync_response(
+    request: &SyncCollection,
+    result: SyncResult,
+    policy: ResourcePolicy,
+) -> Result<WireResponse, Error> {
+    if request
+        .limit
+        .is_some_and(|limit| usize::try_from(limit).unwrap_or(usize::MAX) < result.changes.len())
+    {
+        return Err(Error::single("icalkit.caldav.sync-response-limit"));
+    }
+    let token = result
+        .token
+        .ok_or_else(|| Error::single("icalkit.caldav.sync-response-invalid"))?;
+    let mut meter = Meter::new(policy.limits);
+    let engine = Engine::builder().resource_policy(policy).build();
+    let mut session = engine.session();
+    let mut multistatus = MultiStatus::new(policy.limits);
+    multistatus.sync_token = Some(
+        DavSyncToken::new(token.as_bytes(), policy.limits, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?,
+    );
+
+    for change in result.changes {
+        let response = sync_change_response(request, change, policy, &mut session, &mut meter)?;
+        multistatus
+            .push(response, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+
+    let body = encode_xml(&multistatus, policy, &mut meter)?;
+    Ok(WireResponse::new(
+        207,
+        vec![Header::new(
+            "Content-Type",
+            b"application/xml; charset=utf-8".to_vec(),
+        )],
+        body,
+    ))
+}
+
 /// A server workflow factory.
 #[derive(Clone, Debug)]
 pub struct Server {
@@ -1767,7 +1976,7 @@ impl Server {
     /// Decode a supported request and expose its ACL and storage dependencies as needs.
     pub fn handle(&self, request: WireRequest) -> Result<ServerOperation, Error> {
         match request.method.as_str() {
-            "REPORT" => self.handle_query(request),
+            "REPORT" => self.handle_report(request),
             "MKCALENDAR" => self.handle_mkcalendar(request),
             "POST" => self.handle_schedule(request),
             "PUT" => self.handle_put(request),
@@ -1775,14 +1984,26 @@ impl Server {
         }
     }
 
-    fn handle_query(&self, request: WireRequest) -> Result<ServerOperation, Error> {
+    fn handle_report(&self, request: WireRequest) -> Result<ServerOperation, Error> {
         let mut meter = Meter::new(self.policy.limits);
-        let query = Query::parse_with_policy(&request.body, self.policy, &mut meter)?;
+        let report = decode_dav_request(&request.body, self.policy, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.report-invalid"))?;
+        match report {
+            RequestBody::CalendarQuery(query) => {
+                let query = Query::from_decoded(query, self.policy, &mut meter)?;
+                Ok(self.handle_query(request, query))
+            },
+            RequestBody::SyncCollection(sync) => self.handle_sync(request, sync),
+            _ => Err(Error::single("icalkit.caldav.report-unsupported")),
+        }
+    }
+
+    fn handle_query(&self, request: WireRequest, query: Query) -> ServerOperation {
         let method = request.method;
         let uri = request.uri;
         let need = ServerNeed::request("caldav.authorize", &method, &uri);
         let policy = self.policy;
-        Ok(ServerOperation::from_responder(
+        ServerOperation::from_responder(
             need,
             Box::new(move |answer| {
                 let ServerAnswerKind::Authorized(authorized) = answer.kind else {
@@ -1803,6 +2024,52 @@ impl Server {
                             return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
                         };
                         query_response(&query, resources, policy).map(ServerStep::Done)
+                    }),
+                ))
+            }),
+            policy,
+        )
+    }
+
+    fn handle_sync(
+        &self,
+        request: WireRequest,
+        sync: SyncCollection,
+    ) -> Result<ServerOperation, Error> {
+        if sync.level != ical_dav::SyncLevel::One {
+            return Err(Error::single("icalkit.caldav.sync-level-unsupported"));
+        }
+        let token = sync
+            .token
+            .as_ref()
+            .map(|token| SyncToken::new(token.as_bytes()))
+            .transpose()?;
+        let method = request.method;
+        let uri = request.uri;
+        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let policy = self.policy;
+        Ok(ServerOperation::from_responder(
+            need,
+            Box::new(move |answer| {
+                let ServerAnswerKind::Authorized(authorized) = answer.kind else {
+                    return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                };
+                if !authorized {
+                    return Ok(ServerStep::Done(WireResponse::new(
+                        403,
+                        Vec::new(),
+                        Vec::new(),
+                    )));
+                }
+                let need =
+                    ServerNeed::sync("caldav.sync.changes", &method, &uri, token, sync.limit);
+                Ok(ServerStep::Need(
+                    need,
+                    Box::new(move |answer| {
+                        let ServerAnswerKind::Sync(result) = answer.kind else {
+                            return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                        };
+                        sync_response(&sync, result, policy).map(ServerStep::Done)
                     }),
                 ))
             }),
@@ -1981,6 +2248,8 @@ pub struct ServerNeed {
     recipients: Vec<String>,
     calendar: Option<Box<Calendar>>,
     revision: Option<Revision>,
+    sync_token: Option<SyncToken>,
+    sync_limit: Option<u32>,
 }
 
 impl ServerNeed {
@@ -1997,6 +2266,8 @@ impl ServerNeed {
             recipients: Vec::new(),
             calendar: None,
             revision: None,
+            sync_token: None,
+            sync_limit: None,
         }
     }
 
@@ -2011,6 +2282,8 @@ impl ServerNeed {
             recipients: Vec::new(),
             calendar: None,
             revision: None,
+            sync_token: None,
+            sync_limit: None,
         }
     }
 
@@ -2025,6 +2298,8 @@ impl ServerNeed {
             recipients: Vec::new(),
             calendar: None,
             revision: None,
+            sync_token: None,
+            sync_limit: None,
         }
     }
 
@@ -2039,6 +2314,8 @@ impl ServerNeed {
             recipients: request.recipients,
             calendar: None,
             revision: None,
+            sync_token: None,
+            sync_limit: None,
         }
     }
 
@@ -2053,6 +2330,30 @@ impl ServerNeed {
             recipients: Vec::new(),
             calendar: Some(Box::new(request.calendar)),
             revision: Some(request.revision),
+            sync_token: None,
+            sync_limit: None,
+        }
+    }
+
+    fn sync(
+        code: &'static str,
+        method: &str,
+        uri: &str,
+        token: Option<SyncToken>,
+        limit: Option<u32>,
+    ) -> Self {
+        Self {
+            code,
+            method: Some(method.to_string()),
+            uri: Some(uri.to_string()),
+            body: Vec::new(),
+            message: None,
+            originator: None,
+            recipients: Vec::new(),
+            calendar: None,
+            revision: None,
+            sync_token: token,
+            sync_limit: limit,
         }
     }
 
@@ -2109,6 +2410,18 @@ impl ServerNeed {
     pub const fn revision(&self) -> Option<&Revision> {
         self.revision.as_ref()
     }
+
+    /// Previous opaque RFC 6578 token, or `None` for an initial synchronization.
+    #[must_use]
+    pub const fn sync_token(&self) -> Option<&SyncToken> {
+        self.sync_token.as_ref()
+    }
+
+    /// Maximum number of changes requested by the client, when it supplied DAV:limit.
+    #[must_use]
+    pub const fn sync_limit(&self) -> Option<u32> {
+        self.sync_limit
+    }
 }
 
 /// An application answer supplied to a server workflow.
@@ -2124,6 +2437,7 @@ enum ServerAnswerKind {
     Created(bool),
     Resources(Vec<StoredResource>),
     Schedule(ScheduleResponse),
+    Sync(SyncResult),
     Written(Option<Revision>),
 }
 
@@ -2168,6 +2482,14 @@ impl ServerAnswer {
         }
     }
 
+    /// Supply a bounded change page and the token at which that page ends.
+    #[must_use]
+    pub fn sync_result(result: SyncResult) -> Self {
+        Self {
+            kind: ServerAnswerKind::Sync(result),
+        }
+    }
+
     /// Supply the new stored revision, or `None` when the precondition lost a race.
     #[must_use]
     pub fn written(revision: Option<Revision>) -> Self {
@@ -2185,6 +2507,7 @@ impl ServerAnswer {
             | ServerAnswerKind::Created(_)
             | ServerAnswerKind::Resources(_)
             | ServerAnswerKind::Schedule(_)
+            | ServerAnswerKind::Sync(_)
             | ServerAnswerKind::Written(_) => &[],
         }
     }

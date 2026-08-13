@@ -7,7 +7,7 @@
 use icalkit::Calendar;
 use icalkit::caldav::{
     Client, Header, Revision, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer,
-    StoredResource, WireRequest,
+    StoredResource, SyncChange, SyncResult, SyncToken, WireRequest,
 };
 use icalkit::scheduling::Message;
 use icalkit::time::Timestamp;
@@ -459,5 +459,90 @@ fn server_conditional_put_rejects_a_weak_precondition_before_acl() {
     assert_eq!(
         error.issues()[0].code().as_str(),
         "icalkit.caldav.write-request-invalid"
+    );
+}
+
+#[test]
+fn server_sync_report_round_trips_updates_removals_and_the_new_token() {
+    let previous = SyncToken::new("data:,sync-1").unwrap();
+    let mut client_operation = Client::new()
+        .sync("/calendars/alice/work/", Some(&previous))
+        .unwrap();
+    let request = client_operation.next_request().unwrap().clone();
+    let mut server_operation = Server::new().handle(request).unwrap();
+
+    server_operation
+        .supply(ServerAnswer::authorized(true))
+        .unwrap();
+    let changes = server_operation.next_need().unwrap();
+    assert_eq!(changes.code(), "caldav.sync.changes");
+    assert_eq!(changes.sync_token(), Some(&previous));
+    assert_eq!(changes.sync_limit(), None);
+
+    let next = SyncToken::new("data:,sync-2").unwrap();
+    let result = SyncResult::new(
+        next.clone(),
+        vec![
+            SyncChange::updated(
+                "/calendars/alice/work/one.ics",
+                Some("\"v2\""),
+                Calendar::parse(MATCHING).unwrap(),
+            )
+            .unwrap(),
+            SyncChange::removed("/calendars/alice/work/gone.ics").unwrap(),
+        ],
+    )
+    .unwrap();
+    server_operation
+        .supply(ServerAnswer::sync_result(result))
+        .unwrap();
+
+    let wire_response = server_operation.finish().unwrap();
+    assert_eq!(wire_response.status(), 207);
+    client_operation.accept(wire_response).unwrap();
+    let decoded = client_operation.finish().unwrap();
+    assert_eq!(decoded.token(), Some(&next));
+    assert_eq!(decoded.changes().len(), 2);
+    assert_eq!(decoded.changes()[0].etag(), Some("\"v2\""));
+    assert_eq!(
+        decoded.changes()[0].calendar().unwrap().to_bytes(),
+        MATCHING
+    );
+    assert!(decoded.changes()[1].is_removed());
+}
+
+#[test]
+fn server_sync_exposes_initial_limit_and_rejects_an_oversized_page() {
+    let request = WireRequest::new(
+        "REPORT",
+        "/calendars/alice/work/",
+        Vec::new(),
+        br#"<D:sync-collection xmlns:D="DAV:">
+<D:sync-token/><D:sync-level>1</D:sync-level>
+<D:limit><D:nresults>1</D:nresults></D:limit>
+<D:prop><D:getetag/></D:prop>
+</D:sync-collection>"#
+            .to_vec(),
+    );
+    let mut operation = Server::new().handle(request).unwrap();
+    operation.supply(ServerAnswer::authorized(true)).unwrap();
+    let need = operation.next_need().unwrap();
+    assert_eq!(need.sync_token(), None);
+    assert_eq!(need.sync_limit(), Some(1));
+
+    let result = SyncResult::new(
+        SyncToken::new("data:,page-1").unwrap(),
+        vec![
+            SyncChange::removed("/calendars/alice/work/one.ics").unwrap(),
+            SyncChange::removed("/calendars/alice/work/two.ics").unwrap(),
+        ],
+    )
+    .unwrap();
+    let error = operation
+        .supply(ServerAnswer::sync_result(result))
+        .unwrap_err();
+    assert_eq!(
+        error.issues()[0].code().as_str(),
+        "icalkit.caldav.sync-response-limit"
     );
 }
