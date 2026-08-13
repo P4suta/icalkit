@@ -110,6 +110,10 @@ while let Some(occurrence) = occurrences.try_next()? {
 # Ok::<(), icalkit::Error>(())
 ```
 
+For a validated calendar, `Calendar::occurrences` selects a master by `UID` and composes its
+`RRULE`, `RDATE`, `EXDATE`, and detached overrides. It uses the session's zone database and
+budget, returns effective-start order, and resumes through the same opaque `Cursor` type.
+
 ## iTIP scheduling
 
 Inbound messages pass through a borrowed read-review-authorize-apply flow. Authorization is

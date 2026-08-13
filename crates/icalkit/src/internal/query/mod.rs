@@ -78,11 +78,11 @@ pub use crate::internal::query::vocabulary::{
 // Unit re-exports. One line per unit, appended by that unit and by nothing else, in the order
 // the module block above already has.
 pub use crate::internal::query::collate::COLLATION_SECTIONS;
-pub(crate) use crate::internal::query::expand::recurrence_set_contains;
 pub use crate::internal::query::expand::{
     EXPANSION_SECTIONS, Expansion, Instance, InstanceSpan, SearchBounds, Series, SeriesClock,
     ZONE_SLACK_SECONDS, expand, overlaps,
 };
+pub(crate) use crate::internal::query::expand::{expand_component, recurrence_set_contains};
 pub use crate::internal::query::freebusy::{
     BusyAnswer, FREE_BUSY_SECTIONS, Placement, Unplaced, free_busy,
 };

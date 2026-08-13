@@ -108,8 +108,11 @@ method, URI, headers, and body. Client operations follow
 the API.
 
 Query evaluation returns the three-valued `Match`. Recurrence always has a time window and a
-fallible pull operation, so budget exhaustion cannot be confused with completion. Scheduling
-authorization borrows the reviewed inputs and is consumed by apply.
+fallible pull operation, so budget exhaustion cannot be confused with completion.
+`Calendar::occurrences` composes the stored master, `RDATE`, `EXDATE`, and sibling overrides
+through the same zone-aware recurrence-set assembly used by query evaluation, then exposes
+effective-start order and an opaque cursor. Scheduling authorization borrows the reviewed inputs
+and is consumed by apply.
 
 ## Conformance isolation
 

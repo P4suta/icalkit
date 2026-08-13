@@ -292,7 +292,9 @@ impl icalkit::Calendar
 pub fn icalkit::Calendar::edit(&mut self) -> icalkit::Editor<'_>
 pub fn icalkit::Calendar::events(&self) -> impl core::iter::traits::iterator::Iterator<Item = icalkit::model::EventRef<'_>>
 pub fn icalkit::Calendar::issues(&self) -> &[icalkit::Issue]
+pub fn icalkit::Calendar::occurrences<'a>(&'a self, &'a mut icalkit::Session<'_>, &str, icalkit::recurrence::Window) -> core::result::Result<icalkit::recurrence::Occurrences<'a>, icalkit::Error>
 pub fn icalkit::Calendar::parse(&[u8]) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::Calendar::resume_occurrences<'a>(&'a self, &'a mut icalkit::Session<'_>, &str, icalkit::recurrence::Window, icalkit::recurrence::Cursor) -> core::result::Result<icalkit::recurrence::Occurrences<'a>, icalkit::Error>
 pub fn icalkit::Calendar::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub struct icalkit::Editor<'a>
 impl icalkit::Editor<'_>

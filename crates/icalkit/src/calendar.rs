@@ -11,8 +11,10 @@ use crate::internal::core::{
 };
 
 use crate::ResourcePolicy;
+use crate::Session;
 use crate::failure::{Error, Issue};
 use crate::model::EventRef;
+use crate::recurrence::{Cursor, Occurrences, Window};
 
 /// A strictly validated, losslessly stored calendar object.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,30 @@ impl Calendar {
             .filter_map(Item::as_component)
             .filter(|component| component.is_named(b"VEVENT"))
             .map(EventRef::new)
+    }
+
+    /// Expand one stored component's complete recurrence set over a mandatory window.
+    ///
+    /// The master, `RRULE`, `RDATE`, `EXDATE`, and sibling `RECURRENCE-ID` overrides are
+    /// composed internally. Results are ordered by effective start rather than cadence key.
+    pub fn occurrences<'a>(
+        &'a self,
+        session: &'a mut Session<'_>,
+        uid: &str,
+        window: Window,
+    ) -> Result<Occurrences<'a>, Error> {
+        crate::recurrence::calendar_occurrences(self, session, uid, window)
+    }
+
+    /// Resume a stored recurrence set after an opaque cursor.
+    pub fn resume_occurrences<'a>(
+        &'a self,
+        session: &'a mut Session<'_>,
+        uid: &str,
+        window: Window,
+        cursor: Cursor,
+    ) -> Result<Occurrences<'a>, Error> {
+        crate::recurrence::resume_calendar_occurrences(self, session, uid, window, cursor)
     }
 
     /// Begin a transaction over a private copy of this calendar.
