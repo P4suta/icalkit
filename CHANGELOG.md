@@ -689,3 +689,9 @@ the other order. What version this becomes is a decision nobody has made.
   references are gone. Act 2 itself gained the four spellings that walked around it: whitespace
   inside a path, `extern crate self as ical_core;`, `#[path]` into the layer, and a `.rs` file
   the module root never declares. See `docs/adr/0004`, amendment 18.
+- **The iTIP kernel moved physically behind `icalkit::internal::itip`.** The scheduling facade
+  calls the private module and no longer depends on `ical-itip`. A temporary unpublished
+  compatibility package compiles those same source files for the legacy conformance suite, so
+  there is one implementation rather than a synchronized copy; the architecture gate prevents
+  the facade from depending back on the absorbed boundary. Free-busy and iMIP remain
+  unconditional capabilities of `icalkit` under its two-feature contract.

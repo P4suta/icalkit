@@ -74,23 +74,61 @@
 
 extern crate alloc;
 
+#[path = "../../icalkit/src/internal/itip/authorize.rs"]
 pub mod authorize;
+#[path = "../../icalkit/src/internal/itip/component.rs"]
 pub mod component;
+#[path = "../../icalkit/src/internal/itip/diff.rs"]
 pub mod diff;
 #[cfg(feature = "freebusy")]
+#[path = "../../icalkit/src/internal/itip/freebusy.rs"]
 pub mod freebusy;
+#[path = "../../icalkit/src/internal/itip/identity.rs"]
 pub mod identity;
 #[cfg(feature = "imip")]
+#[path = "../../icalkit/src/internal/itip/imip.rs"]
 pub mod imip;
+#[path = "../../icalkit/src/internal/itip/instance.rs"]
 pub mod instance;
+#[path = "../../icalkit/src/internal/itip/message.rs"]
 pub mod message;
+#[path = "../../icalkit/src/internal/itip/method.rs"]
 pub mod method;
+#[path = "../../icalkit/src/internal/itip/party.rs"]
 pub mod party;
+#[path = "../../icalkit/src/internal/itip/report.rs"]
 pub mod report;
+#[path = "../../icalkit/src/internal/itip/state.rs"]
 pub mod state;
+#[path = "../../icalkit/src/internal/itip/table.rs"]
 pub mod table;
+#[path = "../../icalkit/src/internal/itip/target.rs"]
 pub mod target;
+#[path = "../../icalkit/src/internal/itip/transition.rs"]
 pub mod transition;
+
+// Isolation bridge for the moved source. The implementation uses one stable, crate-shaped
+// private root in both its real home and this temporary compatibility harness.
+pub(crate) mod internal {
+    #[allow(unused_imports)]
+    pub(crate) mod itip {
+        #[cfg(feature = "freebusy")]
+        pub(crate) use crate::freebusy;
+        #[cfg(feature = "imip")]
+        pub(crate) use crate::imip;
+        pub(crate) use crate::{
+            ANSWERED_AT, ActorRole, Authorization, AuthorizationDenied, FoldSide, InstanceMatch,
+            InstanceRef, ItipMessage, PartyId, PropertyOccurrence, ScheduledComponent,
+            ScheduledView, Transition, apply_transition, describe_message, evaluate_message,
+            resolve_instance,
+        };
+        pub(crate) use crate::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
+        pub(crate) use crate::{
+            authorize, component, diff, identity, instance, message, method, party, report, state,
+            table, target, transition,
+        };
+    }
+}
 
 pub use crate::authorize::{
     Authorization, AuthorizationDenied, Commitment, actor_role, apply_transition, attendee_index,

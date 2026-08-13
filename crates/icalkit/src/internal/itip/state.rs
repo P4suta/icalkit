@@ -13,8 +13,8 @@ use core::fmt::Debug;
 
 use ical_core::{ComponentKind, Instant, PropertyId};
 
-use crate::identity::{InstanceRef, SequenceRead};
-use crate::party::{Attendee, Party};
+use crate::internal::itip::identity::{InstanceRef, SequenceRead};
+use crate::internal::itip::party::{Attendee, Party};
 
 /// One property *occurrence*: an identity and which of the properties carrying it.
 ///
@@ -28,7 +28,7 @@ use crate::party::{Attendee, Party};
 /// in `ical-core`: a `DTSTART` inside a `VALARM` belongs to the alarm, and counting it would
 /// make one occurrence number address two different lines depending on what is nested.
 ///
-/// `Ord` sorts by name and then by index, so a [`crate::Transition`] keyed on this iterates in
+/// `Ord` sorts by name and then by index, so a [`crate::internal::itip::Transition`] keyed on this iterates in
 /// an order that does not depend on which side of a diff a change was found on.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PropertyOccurrence {
@@ -89,7 +89,7 @@ impl PropertyOccurrence {
 /// # What an implementation owes
 ///
 /// - Every octet slice handed back is a **value**: RFC 6868's caret encoding is resolved
-///   before it reaches [`Party`] or [`Attendee`], per [`crate::party`]'s own contract.
+///   before it reaches [`Party`] or [`Attendee`], per [`crate::internal::itip::party`]'s own contract.
 /// - [`ScheduledComponent::property_line`] hands back the whole content line — name,
 ///   parameters and value together, unfolded, with no terminator — because that is the unit
 ///   [`ical_core::ProposedChange::Replace`] takes and the unit a diff compares.
@@ -103,8 +103,8 @@ pub trait ScheduledComponent: Debug {
 
     /// The `METHOD` value, absent when there is no such property.
     ///
-    /// Raw rather than a [`crate::Method`], so that "absent" and "present and not a method
-    /// RFC 5546 defines" stay two answers. [`crate::Method::read`] makes the second one.
+    /// Raw rather than a [`crate::internal::itip::Method`], so that "absent" and "present and not a method
+    /// RFC 5546 defines" stay two answers. [`crate::internal::itip::Method::read`] makes the second one.
     fn method(&self) -> Option<&[u8]>;
 
     /// The `UID` value, absent when there is no such property.
@@ -118,8 +118,8 @@ pub trait ScheduledComponent: Debug {
 
     /// The `RECURRENCE-ID`, absent when this is about a whole series.
     ///
-    /// The [`crate::FoldSide`] of what is returned is whatever the implementation could
-    /// resolve, which for one that holds no zone is [`crate::FoldSide::Unresolved`].
+    /// The [`crate::internal::itip::FoldSide`] of what is returned is whatever the implementation could
+    /// resolve, which for one that holds no zone is [`crate::internal::itip::FoldSide::Unresolved`].
     fn recurrence_id(&self) -> Option<InstanceRef>;
 
     /// The `ORGANIZER`, absent when there is no such property.
@@ -142,7 +142,7 @@ pub trait ScheduledComponent: Debug {
     /// The default is `None`, which says the state records nothing and is not a claim that the
     /// attendee never answered. A gate handed `None` cannot order two answers and admits the
     /// second, which is the direction that keeps a legitimate change of mind working; a store
-    /// that does record the time gets the refusal instead. [`crate::ANSWERED_AT`] is how the
+    /// that does record the time gets the refusal instead. [`crate::internal::itip::ANSWERED_AT`] is how the
     /// shipped bridge spells it, and a store keeping its own column answers from that.
     fn attendee_answered_at(&self, index: usize) -> Option<Instant> {
         let _ = index;

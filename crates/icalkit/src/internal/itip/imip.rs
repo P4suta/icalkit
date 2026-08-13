@@ -33,7 +33,7 @@
 //!
 //! Nothing here evaluates anything. This module reads no clock, opens nothing, adds no
 //! dependency, and **changes no authorization answer**: a caller composes it *in front of*
-//! [`crate::evaluate_message`], which is judged against the address the caller supplies and
+//! [`crate::internal::itip::evaluate_message`], which is judged against the address the caller supplies and
 //! against the object itself. A version of this module that returned a verdict would be a second
 //! gate, and two gates that can disagree is one gate too many.
 //!
@@ -55,10 +55,10 @@ use alloc::vec::Vec;
 
 use ical_core::{Limits, Meter};
 
-use crate::message::ItipMessage;
-use crate::method::Method;
-use crate::party::{Attendee, PartyId};
-use crate::state::ScheduledComponent;
+use crate::internal::itip::message::ItipMessage;
+use crate::internal::itip::method::Method;
+use crate::internal::itip::party::{Attendee, PartyId};
+use crate::internal::itip::state::ScheduledComponent;
 
 /// Why a `Content-Type` header value was not read.
 ///
@@ -238,9 +238,9 @@ impl MediaTypeParams {
 /// negative — a message from an address the component has never heard of is one a caller may
 /// drop before spending anything on it — and that is the whole of this function's contract.
 ///
-/// Whether the party may act is [`crate::evaluate_message`]'s question, judged against the same
+/// Whether the party may act is [`crate::internal::itip::evaluate_message`]'s question, judged against the same
 /// address, and this function must never be composed as if it answered that: `true` here is
-/// consistent with every denial [`crate::AuthorizationDenied`] states.
+/// consistent with every denial [`crate::internal::itip::AuthorizationDenied`] states.
 ///
 /// The `ORGANIZER` and `ATTENDEE` lines directly inside `component` are consulted, together with
 /// their `SENT-BY` agents and the addresses a delegation names on either side. Lines inside a
@@ -476,12 +476,12 @@ mod tests {
     use ical_recur::OverrideRange;
 
     use super::{MediaTypeError, MediaTypeParams, sender_is_named};
-    use crate::authorize::{AuthorizationDenied, evaluate_message};
-    use crate::identity::{InstanceClock, InstanceRef, SequenceRead};
-    use crate::message::ItipMessage;
-    use crate::party::{Attendee, Party, PartyId};
-    use crate::state::{PropertyOccurrence, ScheduledComponent};
-    use crate::transition::TransitionReason;
+    use crate::internal::itip::authorize::{AuthorizationDenied, evaluate_message};
+    use crate::internal::itip::identity::{InstanceClock, InstanceRef, SequenceRead};
+    use crate::internal::itip::message::ItipMessage;
+    use crate::internal::itip::party::{Attendee, Party, PartyId};
+    use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
+    use crate::internal::itip::transition::TransitionReason;
 
     /// The organizer of every fixture here.
     const CHAIR: &[u8] = b"mailto:chair@example.com";

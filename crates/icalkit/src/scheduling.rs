@@ -8,13 +8,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
 
+use crate::internal::itip::{
+    ComponentTarget, ItipMessage, Method, PartyId, ScheduleTarget, ScheduledComponent,
+    ScheduledView, Transition, evaluate_message, inspect_message,
+};
 use ical_core::{
     CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
     Property, PropertyId, TextValue, UtcOffset,
-};
-use ical_itip::{
-    ComponentTarget, ItipMessage, Method, PartyId, ScheduleTarget, ScheduledComponent,
-    ScheduledView, Transition, evaluate_message, inspect_message,
 };
 
 use crate::calendar::parse_calendar;
@@ -136,7 +136,7 @@ impl Message {
             && authorization
                 .identity()
                 .instance()
-                .is_some_and(ical_itip::InstanceRef::is_this_and_future);
+                .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future);
         let target = if split {
             let anchor = range_anchor_component(&self.calendar, uid)
                 .ok_or_else(|| Rejection::new("icalkit.scheduling.authorization-denied"))?;
@@ -444,7 +444,7 @@ fn range_anchor_component<'a>(calendar: &'a Calendar, uid: &[u8]) -> Option<&'a 
         .find(|component| {
             ScheduledView::of(component)
                 .recurrence_id()
-                .is_some_and(ical_itip::InstanceRef::is_this_and_future)
+                .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future)
         })
 }
 

@@ -194,6 +194,12 @@ const PRIVATE_IMPLEMENTATION: &[&str] = &[
 /// Package boundaries whose sources have moved behind the facade and may not be recreated.
 const RETIRED_IMPLEMENTATION: &[&str] = &["ical-query"];
 
+/// Package implementations already moved behind the facade.
+///
+/// Their temporary packages may remain as shared-source conformance harnesses while callers are
+/// migrated, but the facade must never depend back on a boundary it already absorbed.
+const MIGRATED_FACADE_DEPENDENCIES: &[&str] = &["ical-itip"];
+
 /// Narrow third-party boundaries required by the unified public facade.
 ///
 /// This is intentionally keyed by both owner and package. Adding an external dependency to
@@ -416,6 +422,7 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
     violations.extend(retired_crate_violations(&root, &facade));
+    violations.extend(migrated_facade_dependency_violations(&facade));
     let mut features = table_keys(&facade, "features");
     features.sort();
     let mut expected = vec![
@@ -437,6 +444,25 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// Dependencies that would make an absorbed implementation boundary authoritative again.
+fn migrated_facade_dependency_violations(facade: &str) -> Vec<String> {
+    let dependencies = declared_dependencies(facade);
+    MIGRATED_FACADE_DEPENDENCIES
+        .iter()
+        .filter(|migrated| {
+            dependencies
+                .iter()
+                .any(|dependency| dependency.package == **migrated)
+        })
+        .map(|migrated| {
+            format!(
+                "crates/icalkit/Cargo.toml: facade depends on migrated implementation package \
+                 `{migrated}` (ADR 0013)"
+            )
+        })
+        .collect()
 }
 
 /// References that would recreate a retired implementation package boundary.
@@ -2072,9 +2098,9 @@ mod tests {
         collect_architecture_violations, collect_codes_violations, collect_purity_violations,
         core_list_violations, declared_dependencies, declares, dependency_subtable_name,
         enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
-        layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
-        recipe_violations, release_violations, retired_crate_violations, snapshot_violations,
-        table_keys,
+        layering_violations, manifest_violations, match_arm_violations,
+        migrated_facade_dependency_violations, private_crate_violations, recipe_violations,
+        release_violations, retired_crate_violations, snapshot_violations, table_keys,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -2818,6 +2844,25 @@ ical-query = { path = "../ical-query" }
                 "[workspace]\nmembers = [\"crates/icalkit\"]",
                 "[dependencies]\njiff = \"0.2\"",
             ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_migrated_implementation_cannot_return_as_a_facade_dependency() {
+        let facade = r#"
+[dependencies]
+ical-itip = { path = "../ical-itip" }
+"#;
+        assert_eq!(
+            migrated_facade_dependency_violations(facade),
+            [String::from(
+                "crates/icalkit/Cargo.toml: facade depends on migrated implementation package \
+                 `ical-itip` (ADR 0013)"
+            )]
+        );
+        assert_eq!(
+            migrated_facade_dependency_violations("[dependencies]\njiff = \"0.2\""),
             Vec::<String>::new()
         );
     }

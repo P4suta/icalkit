@@ -9,7 +9,7 @@
 //!
 //! # This is not a second gate
 //!
-//! [`crate::evaluate_message`] has already decided whether the change may be made, and decided
+//! [`crate::internal::itip::evaluate_message`] has already decided whether the change may be made, and decided
 //! it whole: there is no partial success there, because applying a message's permitted half
 //! would leave the caller holding a component no party ever described. A target that refused on
 //! *scheduling* grounds would be a second and weaker authorization check running after the
@@ -21,7 +21,7 @@
 //!
 //! # The address, and why the occurrence door
 //!
-//! A change is addressed to a [`crate::PropertyOccurrence`] — the second `ATTENDEE`, not
+//! A change is addressed to a [`crate::internal::itip::PropertyOccurrence`] — the second `ATTENDEE`, not
 //! `ATTENDEE` — so it goes through [`ical_core::Component::apply_to_occurrence`] and never
 //! through [`ical_core::Component::apply`]. The identity-addressed door writes *every*
 //! occurrence of a name, which is the right rule for a caller naming an identity and the wrong
@@ -39,12 +39,12 @@
 //! - `impl ScheduleTarget for Component` writes under [`Limits::DEFAULT`], because a bare
 //!   component carries no policy and the trait method has nowhere to take one from. It is here
 //!   because a caller holding a `Component` should not have to name a wrapper for the ordinary
-//!   case, and the ordinary case is safe: those octets came out of an [`crate::ItipMessage`]
+//!   case, and the ordinary case is safe: those octets came out of an [`crate::internal::itip::ItipMessage`]
 //!   already read under the caller's own bounds, so the write-side ceiling is a second check on
 //!   octets that already cleared a first one.
 //!
 //! That last sentence is the whole of the argument, and it stops holding in one place worth
-//! naming: [`crate::Transition::new`] and [`crate::Transition::record`] are public, so a
+//! naming: [`crate::internal::itip::Transition::new`] and [`crate::internal::itip::Transition::record`] are public, so a
 //! hand-built transition's octets have cleared nothing. A caller that builds its own transition,
 //! or whose policy is not the default one, uses [`ComponentTarget`].
 //!
@@ -72,13 +72,13 @@
 
 use ical_core::{Component, Limits, MutationError, ProposedChange};
 
-use crate::state::PropertyOccurrence;
-use crate::transition::{ScheduleTarget, WriteRejected};
+use crate::internal::itip::state::PropertyOccurrence;
+use crate::internal::itip::transition::{ScheduleTarget, WriteRejected};
 
 /// An [`ical_core::Component`] to write into, under the caller's own bounds.
 ///
 /// The door for a caller whose [`Limits`] are not the default ones, and the door for a caller
-/// applying a transition it built itself rather than one an [`crate::ItipMessage`] produced.
+/// applying a transition it built itself rather than one an [`crate::internal::itip::ItipMessage`] produced.
 /// See this module's own documentation for why the bare `impl ScheduleTarget for Component`
 /// writes under [`Limits::DEFAULT`] instead.
 ///
@@ -205,8 +205,8 @@ mod tests {
     };
 
     use super::{ComponentTarget, refusal_for};
-    use crate::state::PropertyOccurrence;
-    use crate::transition::{
+    use crate::internal::itip::state::PropertyOccurrence;
+    use crate::internal::itip::transition::{
         ApplyReport, ScheduleTarget, Transition, TransitionReason, WriteRejected,
     };
 
@@ -287,9 +287,9 @@ mod tests {
             .collect()
     }
 
-    /// Apply `transition` the way [`crate::apply_transition`] does.
+    /// Apply `transition` the way [`crate::internal::itip::apply_transition`] does.
     ///
-    /// That function takes an `Authorization`, which is sealed inside `crate::authorize` and
+    /// That function takes an `Authorization`, which is sealed inside `crate::internal::itip::authorize` and
     /// has no constructor this module can reach, so its loop is repeated here. The report is
     /// assembled through the same two public recorders, so what a caller sees is what this
     /// produces.

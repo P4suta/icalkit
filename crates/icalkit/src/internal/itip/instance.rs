@@ -10,7 +10,7 @@
 //! contract [`ical_tz::seam`] states, and this module may not restate or reinterpret it.
 //!
 //! This is the only place `ical-itip` asks a zone anything. The gate holds no zone by design —
-//! [`crate::evaluate_message`] takes a message, a state and a party, and nothing else — so
+//! [`crate::internal::itip::evaluate_message`] takes a message, a state and a party, and nothing else — so
 //! everything a zone decides is decided here, before the gate runs, and is carried into it on
 //! the values the caller already passes.
 //!
@@ -26,9 +26,9 @@
 //! picks its own half and resolves to [`FoldSide::Earlier`] or [`FoldSide::Later`]. One written
 //! as a wall clock — with a `TZID` or with nothing — names *both* halves, so nothing here can
 //! pick between them and the answer stays [`FoldSide::Unresolved`]. That is reported as
-//! `scheduling-instance-ambiguous` and it stays a denial: [`crate::InstanceRef::compare`]
-//! answers [`crate::InstanceMatch::Ambiguous`], [`crate::evaluate_message`] refuses it as
-//! [`crate::AuthorizationDenied::AmbiguousInstance`], and a guess between the two halves
+//! `scheduling-instance-ambiguous` and it stays a denial: [`crate::internal::itip::InstanceRef::compare`]
+//! answers [`crate::internal::itip::InstanceMatch::Ambiguous`], [`crate::internal::itip::evaluate_message`] refuses it as
+//! [`crate::internal::itip::AuthorizationDenied::AmbiguousInstance`], and a guess between the two halves
 //! cancels somebody else's meeting.
 //!
 //! # The hour that happened to nobody, which is the caller's reading and not this crate's
@@ -46,7 +46,7 @@
 //! [`FoldSide::Nowhere`] is not [`FoldSide::Unresolved`], and the difference is what a caller
 //! is told: an identity nothing could tell from its neighbor is *ambiguous*, and one that names
 //! no instant is *different from everything* — so the gate refuses it as
-//! [`crate::AuthorizationDenied::NoMatchingInstance`], which is what naming an instance the
+//! [`crate::internal::itip::AuthorizationDenied::NoMatchingInstance`], which is what naming an instance the
 //! state does not have actually is. A gap has no neighbor and must never be reported as though
 //! it had one.
 //!
@@ -71,7 +71,7 @@
 //!
 //! [`exclusions_are_placeable`] is that precondition and
 //! [`check_exclusions_are_placeable`] is it with the report attached. It is wired **before**
-//! [`crate::evaluate_message`] and not inside it, because the gate is handed no zone and no
+//! [`crate::internal::itip::evaluate_message`] and not inside it, because the gate is handed no zone and no
 //! exclusion list and inventing a parameter for one would put a zone inside the authorization
 //! decision:
 //!
@@ -114,7 +114,7 @@ use ical_core::{
 };
 use ical_tz::{AnswerBasis, ResolvedExclusions, ZoneAnswer, ZoneSource, ZonedSeries};
 
-use crate::identity::{FoldSide, InstanceClock, InstanceRef};
+use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef};
 
 /// What a zone said about one instance identity, and how much of the zone stood behind it.
 ///
@@ -148,7 +148,7 @@ impl ResolvedInstance {
 
     /// Whether a zone told this identity from its neighbor.
     ///
-    /// `false` means the comparison below it answers [`crate::InstanceMatch::Ambiguous`] and
+    /// `false` means the comparison below it answers [`crate::internal::itip::InstanceMatch::Ambiguous`] and
     /// the gate refuses, which is the conservative direction and the intended one.
     #[must_use]
     pub const fn is_resolved(self) -> bool {
@@ -427,7 +427,7 @@ mod tests {
         ResolvedInstance, check_exclusions_are_placeable, exclusions_are_placeable,
         resolve_instance,
     };
-    use crate::identity::{
+    use crate::internal::itip::identity::{
         FoldSide, InstanceClock, InstanceMatch, InstanceRef, Revision, SequenceRead,
     };
 

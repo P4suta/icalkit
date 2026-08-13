@@ -23,16 +23,16 @@
 //! `ParameterEdit::set` does not encode it again. Encoding twice writes `^^'` where the file
 //! had `^'`, and no gate in this workspace catches that.
 
-use crate::method::ActorRole;
+use crate::internal::itip::method::ActorRole;
 
 /// The parameter an `ATTENDEE` line records the time of its own answer in.
 ///
 /// RFC 5545 registers no parameter for it and RFC 5546 section 2.1.5 needs one: two replies
 /// from one attendee are one revision answered twice, and nothing else on the line says which
 /// came first. Section 3.2 admits an `x-param` on any property, so this is where the fact goes
-/// — written by the reply diff, read back by [`crate::ScheduledView`], and named here so that a
+/// — written by the reply diff, read back by [`crate::internal::itip::ScheduledView`], and named here so that a
 /// store keeping its own column can answer
-/// [`ScheduledComponent::attendee_answered_at`](crate::ScheduledComponent::attendee_answered_at)
+/// [`ScheduledComponent::attendee_answered_at`](crate::internal::itip::ScheduledComponent::attendee_answered_at)
 /// from the same fact under another name.
 ///
 /// The value is a UTC `DATE-TIME`, which is what a `DTSTAMP` is.
@@ -419,7 +419,7 @@ impl<'a> Attendee<'a> {
 #[cfg(test)]
 mod tests {
     use super::{Attendee, PartStat, Party, PartyId, Role};
-    use crate::method::ActorRole;
+    use crate::internal::itip::method::ActorRole;
 
     /// RFC 5321 section 2.4, in both directions: the host is the receiver's to case-fold and
     /// the mailbox is not ours to.

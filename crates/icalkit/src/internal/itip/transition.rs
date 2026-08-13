@@ -14,7 +14,7 @@
 //! [`ParameterEdit`](ical_core::ParameterEdit), reused rather than reinvented, which is the
 //! coupling DP-13 bought. The *address* is this crate's, because
 //! `ical-core`'s [`PropertyId`](ical_core::PropertyId) names an identity and a scheduling
-//! message changes one attendee among many. [`crate::PropertyOccurrence`] is that address, and
+//! message changes one attendee among many. [`crate::internal::itip::PropertyOccurrence`] is that address, and
 //! [`ical_core::Component::apply_to_occurrence`] is the door it is applied through — a second
 //! door beside the identity-addressed [`ical_core::Component::apply`], not a widening of it.
 //!
@@ -28,7 +28,7 @@ use core::fmt::Debug;
 
 use ical_core::ProposedChange;
 
-use crate::state::PropertyOccurrence;
+use crate::internal::itip::state::PropertyOccurrence;
 
 /// What kind of change a message describes, in RFC 5546's own terms.
 ///
@@ -64,7 +64,7 @@ pub enum TransitionReason {
 ///
 /// Inert. No method here reaches a component, so a transition can be shown, stored, counted
 /// and thrown away, and none of that applies anything. Applying one needs a
-/// [`crate::Authorization`], which cannot be built from a transition.
+/// [`crate::internal::itip::Authorization`], which cannot be built from a transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transition {
     /// What kind of change this is.
@@ -77,7 +77,7 @@ impl Transition {
     /// A transition of kind `reason` that changes nothing yet.
     ///
     /// Public because a transition is inert: it describes and never acts, so nothing rests on
-    /// who built one. What rests on provenance is [`crate::Authorization`], which this cannot
+    /// who built one. What rests on provenance is [`crate::internal::itip::Authorization`], which this cannot
     /// become.
     #[must_use]
     pub const fn new(reason: TransitionReason) -> Self {
@@ -349,7 +349,7 @@ mod tests {
         ApplyReport, FieldRule, Transition, TransitionReason, WriteRejected, field_rule,
         is_time_property,
     };
-    use crate::state::PropertyOccurrence;
+    use crate::internal::itip::state::PropertyOccurrence;
 
     fn line(text: &[u8]) -> ProposedChange {
         ProposedChange::Replace(RawText::from_bytes(text))

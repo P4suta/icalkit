@@ -19,7 +19,7 @@
 //! [`ItipMessage::read`], because a message whose `METHOD` names nothing cannot be read at
 //! all; the other three are here.
 //!
-//! The second half of the pass is [`crate::table`] evaluated rather than consulted. RFC 5546
+//! The second half of the pass is [`crate::internal::itip::table`] evaluated rather than consulted. RFC 5546
 //! section 3's tables are transcribed there as data, and a transcription nothing exercises is
 //! a claim rather than a fact. Every `0` row and every required row is walked here against a
 //! real payload, so a reviewer checking the table against the specification is checking
@@ -27,14 +27,14 @@
 //!
 //! The three scheduling codes this module does **not** emit are the three that need a zone
 //! answer: `scheduling-instance-ambiguous`, `scheduling-zone-continued` and
-//! `scheduling-exclusion-unplaced` belong to `crate::instance`, which takes the series and the
+//! `scheduling-exclusion-unplaced` belong to `crate::internal::itip::instance`, which takes the series and the
 //! caller's source. Nothing here resolves a zone, so nothing here may claim that a wall clock
 //! repeats — a payload this module cannot tell from its neighbor might be a fold, and might
 //! equally be a producer that wrote one `RECURRENCE-ID` twice.
 //!
 //! # It reports, and it decides nothing
 //!
-//! Every condition below is one [`crate::evaluate_message`] already refuses as an `Err`, and
+//! Every condition below is one [`crate::internal::itip::evaluate_message`] already refuses as an `Err`, and
 //! that gate does not consult this module. Running this pass or not running it cannot change
 //! an authorization answer, which is what makes it safe to run over a message a caller has
 //! not decided anything about yet — and what makes it useless as a substitute for the gate.
@@ -57,20 +57,20 @@ use ical_core::{
     report_diagnostic,
 };
 
-use crate::authorize::actor_role;
-use crate::identity::{InstanceRef, SequenceRead};
-use crate::message::ItipMessage;
-use crate::method::Method;
-use crate::party::{Party, PartyId};
-use crate::state::ScheduledComponent;
-use crate::table::MethodRule;
+use crate::internal::itip::authorize::actor_role;
+use crate::internal::itip::identity::{InstanceRef, SequenceRead};
+use crate::internal::itip::message::ItipMessage;
+use crate::internal::itip::method::Method;
+use crate::internal::itip::party::{Party, PartyId};
+use crate::internal::itip::state::ScheduledComponent;
+use crate::internal::itip::table::MethodRule;
 
 /// The methods RFC 5546 does not permit `RANGE=THISANDFUTURE` under.
 ///
-/// Data rather than a `match`, for the reason [`crate::table`] is data: section 3.2.3's
+/// Data rather than a `match`, for the reason [`crate::internal::itip::table`] is data: section 3.2.3's
 /// `REPLY` table admits one `RECURRENCE-ID` referring to one instance, and a reply reaching
 /// every later instance answers for meetings the sender was never asked about. Section 3.2.6's
-/// `REFRESH` is the same shape. The rows are the ones [`crate::evaluate_message`] refuses on,
+/// `REFRESH` is the same shape. The rows are the ones [`crate::internal::itip::evaluate_message`] refuses on,
 /// and the two lists must stay the same list.
 static RANGE_FORBIDDEN: &[Method] = &[Method::Reply, Method::Refresh];
 
@@ -200,7 +200,7 @@ fn inspect_sequence<S: DiagnosticSink + ?Sized>(
 /// that *lacked* one, and `scheduling-required-property-missing` is the only code the closed
 /// golden list has for that row — so the cardinality half stays with
 /// `ical_core::Component::audit`'s `duplicate-property`, which is a claim this pass can make
-/// without over-claiming. [`crate::evaluate_message`] refuses the over-count either way.
+/// without over-claiming. [`crate::internal::itip::evaluate_message`] refuses the over-count either way.
 fn inspect_properties<S: DiagnosticSink + ?Sized>(
     constraints: MethodRule,
     payload: &dyn ScheduledComponent,
@@ -266,7 +266,7 @@ fn inspect_range<S: DiagnosticSink + ?Sized>(
 
 /// Report an actor RFC 5546 section 3's prose does not permit to send this method.
 ///
-/// Reported only where the payload resolves the actor into an [`crate::ActorRole`] that fails
+/// Reported only where the payload resolves the actor into an [`crate::internal::itip::ActorRole`] that fails
 /// the rule. An actor the payload names in no role at all is somebody this message says
 /// nothing about, and the party who may answer that — the caller's own copy of the component
 /// — is not here. The subject is the method, because what was violated is the method's row.
@@ -324,11 +324,11 @@ mod tests {
     use ical_recur::OverrideRange;
 
     use super::inspect_message;
-    use crate::authorize::{AuthorizationDenied, evaluate_message};
-    use crate::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
-    use crate::message::ItipMessage;
-    use crate::party::{Attendee, Party, PartyId};
-    use crate::state::{PropertyOccurrence, ScheduledComponent};
+    use crate::internal::itip::authorize::{AuthorizationDenied, evaluate_message};
+    use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
+    use crate::internal::itip::message::ItipMessage;
+    use crate::internal::itip::party::{Attendee, Party, PartyId};
+    use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
 
     /// A `VEVENT` that satisfies RFC 5546 section 3.2.2's `REQUEST` table exactly.
     const REQUEST_LINES: &[&[u8]] = &[

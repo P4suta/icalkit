@@ -8,9 +8,9 @@
 //! `VFREEBUSY`), RFC 5545 section 3.6.4 (the component), section 3.8.2.6 (`FREEBUSY`), section
 //! 3.2.9 (`FBTYPE`), section 3.3.9 (`PERIOD`) and section 3.8.2.2 (`DTEND`).
 //!
-//! Behind the `freebusy` feature. Without it a `VFREEBUSY` payload is refused outright at
-//! [`crate::ItipMessage::read`] rather than ignored, because a scheduling message a build
-//! cannot reason about is not a message it may accept.
+//! This is unconditional in `icalkit`: protocol capabilities are not Cargo features on the
+//! unified public boundary. The temporary compatibility harness may still gate its old module
+//! re-export while legacy consumers migrate.
 //!
 //! # The two questions this module answers
 //!
@@ -22,9 +22,9 @@
 //! repeated lines — [`busy_periods`], which reads both and keeps them apart by occurrence.
 //!
 //! Everything else about a `VFREEBUSY` message already lives somewhere. Which properties each
-//! of the three methods admits is [`crate::table`]'s transcription of the sections 3.3.1 to
-//! 3.3.3 tables; whether the sender may send it is [`crate::evaluate_message`]; what the
-//! message would change is [`crate::describe_message`]. None of that is restated here, and a
+//! of the three methods admits is [`crate::internal::itip::table`]'s transcription of the sections 3.3.1 to
+//! 3.3.3 tables; whether the sender may send it is [`crate::internal::itip::evaluate_message`]; what the
+//! message would change is [`crate::internal::itip::describe_message`]. None of that is restated here, and a
 //! `FREEBUSY` property on a `REQUEST` — which section 3.3.2's table forbids — is read by this
 //! module and refused by the gate, because reading a value and permitting it are two answers.
 //!
@@ -34,7 +34,7 @@
 //! read is not a free calendar. Both silences say *available* to whatever schedules against
 //! them, so a `DTEND` that does not follow its `DTSTART`, a bound written in a clock the
 //! message does not name, and a period that runs backwards each refuse the whole component.
-//! That is the direction [`crate::message`] takes with a limit breach, for the same reason: a
+//! That is the direction [`crate::internal::itip::message`] takes with a limit breach, for the same reason: a
 //! degraded answer here is not a worse answer but a *different* one, and an attacker who can
 //! shape the message picks which of the two the reader believes.
 //!
@@ -55,7 +55,7 @@ use ical_core::{
     UtcOffset,
 };
 
-use crate::state::{PropertyOccurrence, ScheduledComponent};
+use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
 
 /// Seconds in the day a [`Duration`]'s day field counts.
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -241,7 +241,7 @@ pub fn window_of(component: &dyn ScheduledComponent) -> Result<(Instant, Instant
 ///
 /// Every period is charged to `meter`, so a component whose list is longer than the caller's
 /// policy retains is refused rather than truncated. Truncation is the unsafe direction here
-/// for the reason [`crate::message`] gives about an attendee list: a dropped period turns
+/// for the reason [`crate::internal::itip::message`] gives about an attendee list: a dropped period turns
 /// "busy" into "free", and a producer that can pad a list chooses which of the two is believed.
 ///
 /// # Errors
@@ -487,14 +487,14 @@ mod tests {
         BusyPeriod, FreeBusyError, FreeBusyKind, busy_periods, line_parameter, requested_window,
         split_line, window_of,
     };
-    use crate::authorize::{Authorization, AuthorizationDenied, evaluate_message};
-    use crate::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
-    use crate::message::ItipMessage;
-    use crate::method::Method;
-    use crate::party::{Attendee, Party, PartyId};
-    use crate::state::{PropertyOccurrence, ScheduledComponent};
-    use crate::table::MethodRule;
-    use crate::transition::TransitionReason;
+    use crate::internal::itip::authorize::{Authorization, AuthorizationDenied, evaluate_message};
+    use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
+    use crate::internal::itip::message::ItipMessage;
+    use crate::internal::itip::method::Method;
+    use crate::internal::itip::party::{Attendee, Party, PartyId};
+    use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
+    use crate::internal::itip::table::MethodRule;
+    use crate::internal::itip::transition::TransitionReason;
 
     /// The properties RFC 5546 section 3.3.2 requires of a `REQUEST`, as the exchange in its
     /// section 4.4 writes them: an organizer asking one attendee about one day.

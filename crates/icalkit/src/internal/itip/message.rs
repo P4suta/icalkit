@@ -15,7 +15,7 @@
 //! re-checks any of it, which is why [`ItipMessage::read`] is the only constructor.
 //!
 //! The property list is counted and charged here because it is the cardinality a *judgment* is
-//! proportional to: [`crate::evaluate_message`] describes a transition per property occurrence
+//! proportional to: [`crate::internal::itip::evaluate_message`] describes a transition per property occurrence
 //! and takes no ledger, on this type's promise that the message it was handed is already
 //! bounded. A payload whose lines were never counted breaks that promise quietly — the message
 //! reads for four units and costs a hundred thousand allocations to judge — and an inbox
@@ -39,10 +39,10 @@ use ical_core::{
     report_diagnostic,
 };
 
-use crate::identity::{MessageIdentity, Uid};
-use crate::method::Method;
-use crate::state::ScheduledComponent;
-use crate::table::MethodRule;
+use crate::internal::itip::identity::{MessageIdentity, Uid};
+use crate::internal::itip::method::Method;
+use crate::internal::itip::state::ScheduledComponent;
+use crate::internal::itip::table::MethodRule;
 
 /// Why a stream of components is not a scheduling message.
 ///
@@ -74,8 +74,9 @@ pub enum MessageError {
     MixedUids,
     /// A component this build will not reason about as a scheduling payload.
     ///
-    /// A `VFREEBUSY` without the `freebusy` feature is this, refused rather than ignored: a
-    /// scheduling message a build cannot reason about is not one it may accept.
+    /// For example, a nested or extension component at the payload position is refused rather
+    /// than ignored: a scheduling message the kernel cannot reason about is not one it may
+    /// accept.
     UnsupportedPayload(ComponentKind),
     /// Two payloads of different component types in one message.
     MixedPayloadKinds,
@@ -203,7 +204,7 @@ impl<'a> ItipMessage<'a> {
 
     /// The payload addressing the same thing `current` does, if this message carries one.
     ///
-    /// The match is [`crate::InstanceMatch::Same`] and nothing weaker: an ambiguous instance —
+    /// The match is [`crate::internal::itip::InstanceMatch::Same`] and nothing weaker: an ambiguous instance —
     /// two halves of a repeated hour that nothing told apart — answers `None` here rather than
     /// picking one, because picking is how a message about one meeting reaches another.
     #[must_use]
@@ -328,15 +329,14 @@ enum Payload {
 
 /// What `kind` is at the top level of a message.
 ///
-/// A `VFREEBUSY` is refused rather than ignored without the `freebusy` feature, because a
-/// scheduling message a build cannot reason about is not a message it may accept.
+/// `VFREEBUSY` is always available in the unified crate; protocol capabilities are not Cargo
+/// features at this boundary.
 const fn classify(kind: ComponentKind) -> Payload {
     match kind {
-        ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal => Payload::Scheduling,
-        #[cfg(feature = "freebusy")]
-        ComponentKind::FreeBusy => Payload::Scheduling,
-        #[cfg(not(feature = "freebusy"))]
-        ComponentKind::FreeBusy => Payload::Refused,
+        ComponentKind::Event
+        | ComponentKind::Todo
+        | ComponentKind::Journal
+        | ComponentKind::FreeBusy => Payload::Scheduling,
         ComponentKind::TimeZone => Payload::Ignored,
         // `ComponentKind` is `#[non_exhaustive]`, so this arm covers `VCALENDAR`, the two
         // observances, `VALARM`, and any kind a later RFC adds. All of them are refused
@@ -406,7 +406,7 @@ fn agreed_uid(calendar: &dyn ScheduledComponent, payloads: &[usize]) -> Result<U
 /// Charge every property of every payload, refusing a payload with more than policy admits.
 ///
 /// The bound this type's own promise rests on. `ItipMessage` means *already checked and already
-/// charged*, and [`crate::evaluate_message`] takes no ledger because of it — so the cardinality
+/// charged*, and [`crate::internal::itip::evaluate_message`] takes no ledger because of it — so the cardinality
 /// a judgment is proportional to has to be counted here or nowhere. A transition is described
 /// per property occurrence of the payload, so an uncounted property list is a message that
 /// costs a caller one allocation per line it never agreed to pay for, and an inbox sharing one

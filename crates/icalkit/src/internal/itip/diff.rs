@@ -26,17 +26,17 @@ use ical_core::{
 };
 use ical_tz::wall_clock;
 
-use crate::message::ItipMessage;
-use crate::method::Method;
-use crate::party::{ANSWERED_AT, PartyId};
-use crate::state::{PropertyOccurrence, ScheduledComponent};
-use crate::transition::{Transition, TransitionReason, is_time_property};
+use crate::internal::itip::message::ItipMessage;
+use crate::internal::itip::method::Method;
+use crate::internal::itip::party::{ANSWERED_AT, PartyId};
+use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
+use crate::internal::itip::transition::{Transition, TransitionReason, is_time_property};
 
 /// What `message` would change about `current`, described and not made.
 ///
 /// Hands a caller what a *denied* message tried to do without handing it the ability to do it,
 /// which is ADR-0005's recommendation that a rejected reply stay inspectable. The result is
-/// inert: applying it needs a [`crate::Authorization`], and no route leads from here to one.
+/// inert: applying it needs a [`crate::internal::itip::Authorization`], and no route leads from here to one.
 #[must_use]
 pub fn describe_message(message: &ItipMessage<'_>, current: &dyn ScheduledComponent) -> Transition {
     let Some(payload) = message.payload_for(current).or_else(|| message.payload(0)) else {
@@ -96,7 +96,7 @@ pub fn describe_payload(
 /// The reply's own `ATTENDEE` line is matched into the local list by `CAL-ADDRESS`, so the
 /// occurrence named is the recipient's own numbering rather than the sender's. A reply from an
 /// address the local copy does not carry describes nothing at all — saying so is
-/// [`crate::evaluate_message`]'s job, and describing an addition here would be this function
+/// [`crate::internal::itip::evaluate_message`]'s job, and describing an addition here would be this function
 /// inventing the participant that the gate exists to refuse.
 fn describe_reply(
     payload: &dyn ScheduledComponent,

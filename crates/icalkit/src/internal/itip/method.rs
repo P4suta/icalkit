@@ -9,7 +9,7 @@
 //!
 //! `METHOD` is not a switch. Each of the eight has its own required properties, its own
 //! permitted sender, and its own legal prior states, stated per component type across pages of
-//! section 3. This module carries the identity and the sender rule; [`crate::table`] carries
+//! section 3. This module carries the identity and the sender rule; [`crate::internal::itip::table`] carries
 //! the property constraints as transcribed data, so that a reviewer checks a table against the
 //! specification rather than reading control flow.
 
@@ -114,7 +114,7 @@ impl Method {
     /// asking for semantics the specification does not state, which is a refusal.
     #[must_use]
     pub fn is_defined_for(self, kind: ComponentKind) -> bool {
-        crate::table::MethodRule::lookup(self, kind).is_some()
+        crate::internal::itip::table::MethodRule::lookup(self, kind).is_some()
     }
 }
 

@@ -34,11 +34,11 @@
 //! A [`Presence`] is a statement about a well-formed message. It is not by itself an
 //! authorization answer: a forbidden property in a message a caller is only inspecting is a
 //! fact about the file, and the same property in a message an attendee sent is a denial. Which
-//! of the two it is belongs to [`crate::authorize`].
+//! of the two it is belongs to [`crate::internal::itip::authorize`].
 
 use ical_core::ComponentKind;
 
-use crate::method::{Method, SenderRule};
+use crate::internal::itip::method::{Method, SenderRule};
 
 /// How often RFC 5546 section 3 permits one name inside one component of one message.
 ///
@@ -1533,7 +1533,7 @@ mod tests {
     use ical_core::ComponentKind;
 
     use super::{MethodRule, Presence, PriorState, RULES};
-    use crate::method::{Method, SenderRule};
+    use crate::internal::itip::method::{Method, SenderRule};
 
     /// Every table RFC 5546 section 3 prints is here exactly once, and nothing else is.
     #[test]

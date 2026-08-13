@@ -80,6 +80,15 @@ passed to persistence APIs as a complete calendar.
 The conformance runner becomes a private CLI/corpus communicating through a versioned JSONL
 subject protocol. It is not a second Rust library API.
 
+## Implementation status
+
+The query evaluator now lives only under `icalkit::internal::query` and its former package is
+retired. The iTIP kernel likewise lives under `icalkit::internal::itip`; the facade calls that
+module directly and cannot regain an `ical-itip` dependency under the architecture gate.
+The old unpublished package remains temporarily as a shared-source compatibility harness for
+conformance tests, so this migration stage has one implementation and two compilation roots
+rather than two source copies. Core, recurrence, time-zone, and DAV sources remain to move.
+
 ## Consequences
 
 Users learn one crate and one input pipeline. Repairs are auditable and cannot occur

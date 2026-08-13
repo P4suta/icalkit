@@ -29,14 +29,16 @@ ical-tz = { path = "../ical-tz", version = "0.0.0", default-features = false }
 
 [features]
 default = []
-# RFC 6047: the MIME envelope around an iTIP object, and the checks that keep the envelope's
-# claims from being taken for the body's. Adds no dependency and changes no authorization
-# answer; without it those checks are the caller's to write.
+# Compatibility-only exports while old conformance consumers migrate. Both capabilities are
+# compiled unconditionally in the unified icalkit implementation.
 imip = []
-# RFC 5546 section 3.3: `VFREEBUSY` payloads. Without it such a payload is refused at
-# `ItipMessage::read` rather than silently ignored, because a scheduling message a build
-# cannot reason about is not a message it may accept.
 freebusy = []
 
 [lints]
 workspace = true
+
+# The temporary compatibility harness compiles source that physically lives under
+# `crates/icalkit` through `#[path]`. cargo-shear scans only this package directory and therefore
+# cannot see these two production imports in `component.rs`, `identity.rs`, and `instance.rs`.
+[package.metadata.cargo-shear]
+ignored = ["ical-recur", "ical-tz"]

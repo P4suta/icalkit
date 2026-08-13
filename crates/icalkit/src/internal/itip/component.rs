@@ -37,7 +37,7 @@
 //!
 //! # Values, not spellings
 //!
-//! The contract [`crate::party`] states from the other end. `SENT-BY`, `PARTSTAT`, `ROLE`,
+//! The contract [`crate::internal::itip::party`] states from the other end. `SENT-BY`, `PARTSTAT`, `ROLE`,
 //! `DELEGATED-FROM` and `DELEGATED-TO` are read as *values*: the section 3.2 `DQUOTE` pair is
 //! removed and then [`ical_core::decode_caret`] is applied, in that order, because that is the
 //! order a writer applies them in and a reader has to undo them in the reverse one.
@@ -67,16 +67,16 @@
 //! A `RECURRENCE-ID` that is present and does not decode is the sharpest of these. Answering
 //! `None` would make a message about one instance look like a message about the whole series,
 //! which is how a `CANCEL` for Tuesday cancels the year. It answers an instance reference whose
-//! fold side is [`crate::FoldSide::Unresolved`] instead, and an unresolved side can never
-//! compare [`crate::InstanceMatch::Same`] — so the gate above denies rather than guesses.
+//! fold side is [`crate::internal::itip::FoldSide::Unresolved`] instead, and an unresolved side can never
+//! compare [`crate::internal::itip::InstanceMatch::Same`] — so the gate above denies rather than guesses.
 //!
 //! # A wall clock is the series' clock, whether or not the file repeats the zone
 //!
 //! A `RECURRENCE-ID` written with a trailing `Z` names an instant and falls in no fold. Every
 //! other spelling names a wall clock, and this crate resolves no zone, so both the `TZID` form
-//! and the bare form answer [`crate::FoldSide::Unresolved`] and a caller holding the zone
-//! attaches a side with [`crate::resolve_instance`]. The bare form used to answer
-//! [`crate::FoldSide::Once`] on the reading that a floating value projects onto the nominal
+//! and the bare form answer [`crate::internal::itip::FoldSide::Unresolved`] and a caller holding the zone
+//! attaches a side with [`crate::internal::itip::resolve_instance`]. The bare form used to answer
+//! [`crate::internal::itip::FoldSide::Once`] on the reading that a floating value projects onto the nominal
 //! timeline as itself. That is true of a series that runs on no zone and false of the value
 //! several producers actually emit — a bare override of a *zoned* series — and the difference
 //! was one reply answering both halves of a repeated hour, which the zoned spelling of the same
@@ -104,9 +104,9 @@ use ical_core::{
 use ical_recur::OverrideRange;
 use ical_tz::nominal;
 
-use crate::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
-use crate::party::{ANSWERED_AT, Attendee, Party};
-use crate::state::{PropertyOccurrence, ScheduledComponent};
+use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef, SequenceRead};
+use crate::internal::itip::party::{ANSWERED_AT, Attendee, Party};
+use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
 
 /// The RFC 6868-resolved parameter values one `ORGANIZER` or `ATTENDEE` line states.
 ///
@@ -162,7 +162,7 @@ impl<'a> PropertyLine<'a> {
 /// does not store — the reconstructed content lines and the resolved parameter values.
 ///
 /// A caller that holds a `Component` builds one of these and hands it to
-/// [`crate::evaluate_message`]; a caller whose state is a database row implements
+/// [`crate::internal::itip::evaluate_message`]; a caller whose state is a database row implements
 /// [`ScheduledComponent`] against its rows and never builds one at all.
 pub struct ScheduledView<'a> {
     /// The component this is a reading of.
@@ -376,7 +376,7 @@ fn party_values(property: &Property) -> Option<PartyValues> {
 /// comma-separated list of quoted addresses, and [`Attendee`] has one slot for it: splitting
 /// would let an answer to a two-delegate line write only the first delegate back, while keeping
 /// the list whole makes it match nobody — the conservative direction, and the same one
-/// [`crate::PartyId`] takes for an address that does not decode.
+/// [`crate::internal::itip::PartyId`] takes for an address that does not decode.
 fn parameter_value(property: &Property, name: &[u8]) -> Option<RawText> {
     let held = property
         .parameters_named(name)
@@ -431,7 +431,7 @@ fn instance_reading(property: &Property) -> Option<(Instant, InstanceClock)> {
 /// value repeats the `TZID`: producers emit a bare `RECURRENCE-ID` for an override of a zoned
 /// series, and reading that as a value on no zone at all was how one reply answered both halves
 /// of a repeated hour. So a floating value is [`FoldSide::Unresolved`] exactly as a zoned one
-/// is, and a caller holding the zone attaches a side with [`crate::resolve_instance`] and
+/// is, and a caller holding the zone attaches a side with [`crate::internal::itip::resolve_instance`] and
 /// [`InstanceRef::with_side`]. The cost lands where it should: a message whose instance nobody
 /// placed is refused rather than applied to a guess.
 const fn side_of(clock: InstanceClock) -> FoldSide {
@@ -622,12 +622,14 @@ mod tests {
     };
 
     use super::ScheduledView;
-    use crate::authorize::{AuthorizationDenied, apply_transition, evaluate_message};
-    use crate::identity::{InstanceMatch, SequenceRead};
-    use crate::message::ItipMessage;
-    use crate::party::{PartStat, PartyId, Role};
-    use crate::state::{PropertyOccurrence, ScheduledComponent};
-    use crate::transition::{ScheduleTarget, WriteRejected};
+    use crate::internal::itip::authorize::{
+        AuthorizationDenied, apply_transition, evaluate_message,
+    };
+    use crate::internal::itip::identity::{InstanceMatch, SequenceRead};
+    use crate::internal::itip::message::ItipMessage;
+    use crate::internal::itip::party::{PartStat, PartyId, Role};
+    use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
+    use crate::internal::itip::transition::{ScheduleTarget, WriteRejected};
 
     /// The recipient's own copy: two attendees, an organizer with an assistant, and a
     /// `DELEGATED-TO` whose value carries a `"` in RFC 6868's spelling of it.

@@ -56,14 +56,14 @@
 
 use ical_core::{ComponentKind, Instant, PropertyId, ProposedChange};
 
-use crate::diff::{attendee_occurrence_of, describe_payload, reason_for};
-use crate::identity::{MessageIdentity, Revision, Uid};
-use crate::message::ItipMessage;
-use crate::method::{ActorRole, Method};
-use crate::party::PartyId;
-use crate::state::{PropertyOccurrence, ScheduledComponent};
-use crate::table::{MethodRule, PriorState};
-use crate::transition::{
+use crate::internal::itip::diff::{attendee_occurrence_of, describe_payload, reason_for};
+use crate::internal::itip::identity::{MessageIdentity, Revision, Uid};
+use crate::internal::itip::message::ItipMessage;
+use crate::internal::itip::method::{ActorRole, Method};
+use crate::internal::itip::party::PartyId;
+use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
+use crate::internal::itip::table::{MethodRule, PriorState};
+use crate::internal::itip::transition::{
     ApplyReport, FieldRule, ScheduleTarget, Transition, TransitionReason, field_rule,
 };
 
@@ -81,7 +81,7 @@ pub enum AuthorizationDenied {
     /// The message names an instance nothing could tell from its neighbor.
     ///
     /// The two halves of a repeated hour are one cadence key, and a guess between them
-    /// cancels or moves somebody else's meeting. See [`crate::FoldSide`].
+    /// cancels or moves somebody else's meeting. See [`crate::internal::itip::FoldSide`].
     AmbiguousInstance,
     /// The sender is on neither the attendee list nor the organizer line.
     UnknownAttendee,
@@ -461,7 +461,7 @@ fn matching_payload<'a>(
             };
             if !payload
                 .recurrence_id()
-                .is_some_and(crate::InstanceRef::is_this_and_future)
+                .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future)
             {
                 continue;
             }
@@ -476,9 +476,9 @@ fn matching_payload<'a>(
     }
     let target = MessageIdentity::new(message.uid().clone(), current.recurrence_id());
     let ambiguous = (0..message.payload_count()).any(|index| {
-        message
-            .payload_identity(index)
-            .is_some_and(|identity| identity.matches(&target) == crate::InstanceMatch::Ambiguous)
+        message.payload_identity(index).is_some_and(|identity| {
+            identity.matches(&target) == crate::internal::itip::InstanceMatch::Ambiguous
+        })
     });
     if ambiguous {
         Err(AuthorizationDenied::AmbiguousInstance)
@@ -500,7 +500,7 @@ fn matching_payload<'a>(
 /// what that costs is stated plainly: for a first message this gate proves that the actor the
 /// caller named is a party **the message names**, and nothing more. Whether that actor really
 /// sent it is the transport's answer — an authenticated CalDAV session, or the iMIP envelope
-/// checks in [`crate::imip`] — and `SECURITY.md` says so in the same words.
+/// checks in [`crate::internal::itip::imip`] — and `SECURITY.md` says so in the same words.
 const fn sender_state<'a>(
     current: &'a dyn ScheduledComponent,
     payload: &'a dyn ScheduledComponent,
@@ -612,7 +612,7 @@ fn check_answer(
 /// So it describes nothing rather than being refused, because the commonest message of this
 /// shape is a message already applied arriving twice, and a caller shown "no change" for a
 /// duplicate is being told the truth. What the message *claimed* stays reachable through
-/// [`describe_message`](crate::describe_message), which is ADR-0005's own recommendation.
+/// [`describe_message`](crate::internal::itip::describe_message), which is ADR-0005's own recommendation.
 ///
 /// Attendee-authored methods are left alone: a `REPLY` or a `COUNTER` restates the revision it
 /// answers and never claims to be a newer one, so there is nothing here for section 2.1.4 to
@@ -653,7 +653,7 @@ fn check_range(
 ) -> Result<(), AuthorizationDenied> {
     let reaching = payload
         .recurrence_id()
-        .is_some_and(crate::InstanceRef::is_this_and_future);
+        .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future);
     if reaching && matches!(method, Method::Reply | Method::Refresh) {
         return Err(AuthorizationDenied::RangeNotPermitted);
     }
@@ -674,7 +674,7 @@ fn check_range(
 /// which is the shape a reader must never resolve by picking.
 ///
 /// The `COMPONENTS` rows are deliberately **not** read here. They state which top-level
-/// components a message may carry, and [`crate::ItipMessage::read`] already refuses a second
+/// components a message may carry, and [`crate::internal::itip::ItipMessage::read`] already refuses a second
 /// payload kind (`MixedPayloadKinds`) and a payload the tables never nest at the top level
 /// (`UnsupportedPayload`) — earlier than this gate and for the whole message rather than for
 /// one payload. A second reading here would be a weaker restatement of a refusal that already
@@ -808,7 +808,7 @@ fn keeps_the_actor(change: &ProposedChange, actor: PartyId<'_>) -> bool {
 ///
 /// The value is what follows the first `:` outside a quoted parameter value, which is RFC 5545
 /// section 3.1's own division of a content line and is the same one
-/// [`crate::ScheduledView`] assembles a line by.
+/// [`crate::internal::itip::ScheduledView`] assembles a line by.
 fn address_of(line: &[u8]) -> Option<PartyId<'_>> {
     let mut quoted = false;
     let cut = line.iter().position(|octet| match *octet {
@@ -850,8 +850,8 @@ mod tests {
     use ical_core::{ParameterEdit, ProposedChange, RawText};
 
     use super::{address_of, keeps_the_actor};
-    use crate::party::PartyId;
-    use crate::table::RULES;
+    use crate::internal::itip::party::PartyId;
+    use crate::internal::itip::table::RULES;
 
     /// The second half of "its own `ATTENDEE` line": a line the actor no longer appears on is
     /// not the actor's line, however it is addressed.
