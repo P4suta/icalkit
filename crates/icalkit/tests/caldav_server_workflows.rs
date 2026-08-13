@@ -6,7 +6,7 @@
 
 use icalkit::Calendar;
 use icalkit::caldav::{
-    Client, Header, Revision, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer,
+    Client, Discovery, Header, Revision, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer,
     StoredResource, SyncChange, SyncResult, SyncToken, WireRequest,
 };
 use icalkit::scheduling::Message;
@@ -545,4 +545,37 @@ fn server_sync_exposes_initial_limit_and_rejects_an_oversized_page() {
         error.issues()[0].code().as_str(),
         "icalkit.caldav.sync-response-limit"
     );
+}
+
+#[test]
+fn server_propfind_drives_client_service_discovery_end_to_end() {
+    let discovery = Discovery::new(
+        "/principals/alice/",
+        "/calendars/alice/",
+        Some("/outbox/alice/"),
+    )
+    .unwrap();
+    let mut client_operation = Client::new().discover("/").unwrap();
+
+    for expected_uri in ["/", "/principals/alice/"] {
+        let request = client_operation.next_request().unwrap().clone();
+        assert_eq!(request.uri(), expected_uri);
+        let mut server_operation = Server::new().handle(request).unwrap();
+        server_operation
+            .supply(ServerAnswer::authorized(true))
+            .unwrap();
+        let need = server_operation.next_need().unwrap();
+        assert_eq!(need.code(), "caldav.discovery.properties");
+        server_operation
+            .supply(ServerAnswer::discovery(discovery.clone()))
+            .unwrap();
+        client_operation
+            .accept(server_operation.finish().unwrap())
+            .unwrap();
+    }
+
+    let decoded = client_operation.finish().unwrap();
+    assert_eq!(decoded.principal_uri(), "/principals/alice/");
+    assert_eq!(decoded.calendar_home_uri(), "/calendars/alice/");
+    assert_eq!(decoded.scheduling_outbox_uri(), Some("/outbox/alice/"));
 }

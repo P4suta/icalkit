@@ -316,6 +316,27 @@ pub struct Discovery {
 }
 
 impl Discovery {
+    /// Construct validated service discovery properties.
+    pub fn new(
+        principal: impl Into<String>,
+        calendar_home: impl Into<String>,
+        scheduling_outbox: Option<impl Into<String>>,
+    ) -> Result<Self, Error> {
+        let principal = principal.into();
+        let calendar_home = calendar_home.into();
+        let scheduling_outbox = scheduling_outbox.map(Into::into);
+        validate_uri(&principal)?;
+        validate_uri(&calendar_home)?;
+        if let Some(outbox) = scheduling_outbox.as_deref() {
+            validate_uri(outbox)?;
+        }
+        Ok(Self {
+            principal,
+            calendar_home,
+            scheduling_outbox,
+        })
+    }
+
     /// The authenticated principal resource.
     #[must_use]
     pub fn principal_uri(&self) -> &str {
@@ -1941,6 +1962,98 @@ fn sync_response(
     ))
 }
 
+fn discovery_response(
+    uri: &str,
+    request: PropFind,
+    discovery: &Discovery,
+    policy: ResourcePolicy,
+) -> Result<WireResponse, Error> {
+    let (mut names, names_only) = match request {
+        PropFind::Props(properties) => (properties.names().to_vec(), false),
+        PropFind::AllProp(included) => {
+            let mut names = vec![
+                PropName::Known(ElementName::CurrentUserPrincipal),
+                PropName::Known(ElementName::CalendarHomeSet),
+                PropName::Known(ElementName::ScheduleOutboxUrl),
+            ];
+            for name in included.names() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+            (names, false)
+        },
+        PropFind::Names => (
+            vec![
+                PropName::Known(ElementName::CurrentUserPrincipal),
+                PropName::Known(ElementName::CalendarHomeSet),
+                PropName::Known(ElementName::ScheduleOutboxUrl),
+            ],
+            true,
+        ),
+    };
+    let mut meter = Meter::new(policy.limits);
+    let href = Href::new(uri.as_bytes(), policy.limits, &mut meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    let mut success = PropStat::new(Status::OK, policy.limits);
+    let mut missing = PropStat::new(Status::NOT_FOUND, policy.limits);
+    for name in names.drain(..) {
+        let value = if names_only {
+            Some(PropValue::Empty)
+        } else {
+            let target = match &name {
+                PropName::Known(ElementName::CurrentUserPrincipal) => {
+                    Some(discovery.principal.as_str())
+                },
+                PropName::Known(ElementName::CalendarHomeSet) => {
+                    Some(discovery.calendar_home.as_str())
+                },
+                PropName::Known(ElementName::ScheduleOutboxUrl) => {
+                    discovery.scheduling_outbox.as_deref()
+                },
+                _ => None,
+            };
+            target
+                .map(|target| Href::new(target.as_bytes(), policy.limits, &mut meter))
+                .transpose()
+                .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?
+                .map(PropValue::Reference)
+        };
+        let (group, value) = match value {
+            Some(value) => (&mut success, value),
+            None => (&mut missing, PropValue::Empty),
+        };
+        group
+            .push(DavProperty { name, value }, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+
+    let mut response = DavResponse::with_propstats(href, policy.limits);
+    if !success.props().is_empty() {
+        response
+            .push_propstat(success, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    if !missing.props().is_empty() {
+        response
+            .push_propstat(missing, &mut meter)
+            .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    }
+    let mut multistatus = MultiStatus::new(policy.limits);
+    multistatus
+        .push(response, &mut meter)
+        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
+    let body = encode_xml(&multistatus, policy, &mut meter)?;
+    Ok(WireResponse::new(
+        207,
+        vec![Header::new(
+            "Content-Type",
+            b"application/xml; charset=utf-8".to_vec(),
+        )],
+        body,
+    ))
+}
+
 /// A server workflow factory.
 #[derive(Clone, Debug)]
 pub struct Server {
@@ -1980,6 +2093,7 @@ impl Server {
             "MKCALENDAR" => self.handle_mkcalendar(request),
             "POST" => self.handle_schedule(request),
             "PUT" => self.handle_put(request),
+            "PROPFIND" => self.handle_propfind(request),
             _ => Err(Error::single("icalkit.caldav.server-method-unsupported")),
         }
     }
@@ -1996,6 +2110,46 @@ impl Server {
             RequestBody::SyncCollection(sync) => self.handle_sync(request, sync),
             _ => Err(Error::single("icalkit.caldav.report-unsupported")),
         }
+    }
+
+    fn handle_propfind(&self, request: WireRequest) -> Result<ServerOperation, Error> {
+        let mut meter = Meter::new(self.policy.limits);
+        let RequestBody::PropFind(propfind) =
+            decode_dav_request(&request.body, self.policy, &mut meter)
+                .map_err(|_| Error::single("icalkit.caldav.propfind-invalid"))?
+        else {
+            return Err(Error::single("icalkit.caldav.propfind-invalid"));
+        };
+        let method = request.method;
+        let uri = request.uri;
+        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let policy = self.policy;
+        Ok(ServerOperation::from_responder(
+            need,
+            Box::new(move |answer| {
+                let ServerAnswerKind::Authorized(authorized) = answer.kind else {
+                    return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                };
+                if !authorized {
+                    return Ok(ServerStep::Done(WireResponse::new(
+                        403,
+                        Vec::new(),
+                        Vec::new(),
+                    )));
+                }
+                let need = ServerNeed::request("caldav.discovery.properties", &method, &uri);
+                Ok(ServerStep::Need(
+                    need,
+                    Box::new(move |answer| {
+                        let ServerAnswerKind::Discovery(discovery) = answer.kind else {
+                            return Err(Error::single("icalkit.caldav.answer-kind-mismatch"));
+                        };
+                        discovery_response(&uri, propfind, &discovery, policy).map(ServerStep::Done)
+                    }),
+                ))
+            }),
+            policy,
+        ))
     }
 
     fn handle_query(&self, request: WireRequest, query: Query) -> ServerOperation {
@@ -2435,6 +2589,7 @@ enum ServerAnswerKind {
     Bytes(Vec<u8>),
     Authorized(bool),
     Created(bool),
+    Discovery(Discovery),
     Resources(Vec<StoredResource>),
     Schedule(ScheduleResponse),
     Sync(SyncResult),
@@ -2463,6 +2618,14 @@ impl ServerAnswer {
     pub const fn created(created: bool) -> Self {
         Self {
             kind: ServerAnswerKind::Created(created),
+        }
+    }
+
+    /// Supply service discovery properties loaded by the application adapter.
+    #[must_use]
+    pub fn discovery(discovery: Discovery) -> Self {
+        Self {
+            kind: ServerAnswerKind::Discovery(discovery),
         }
     }
 
@@ -2505,6 +2668,7 @@ impl ServerAnswer {
             ServerAnswerKind::Bytes(body) => body,
             ServerAnswerKind::Authorized(_)
             | ServerAnswerKind::Created(_)
+            | ServerAnswerKind::Discovery(_)
             | ServerAnswerKind::Resources(_)
             | ServerAnswerKind::Schedule(_)
             | ServerAnswerKind::Sync(_)
