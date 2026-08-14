@@ -61,7 +61,7 @@ use crate::internal::itip::identity::{MessageIdentity, Revision, Uid};
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::{ActorRole, Method};
 use crate::internal::itip::party::PartyId;
-use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
+use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent, property_value};
 use crate::internal::itip::table::{MethodRule, PriorState};
 use crate::internal::itip::transition::{
     ApplyReport, FieldRule, ScheduleTarget, Transition, TransitionReason, field_rule,
@@ -115,6 +115,10 @@ pub enum AuthorizationDenied {
     PriorStateForbidden(PriorState),
     /// A `RECURRENCE-ID` reached further than this method may.
     RangeNotPermitted,
+    /// A `CANCEL` carried `STATUS` with a value other than `CANCELLED`.
+    CancellationStatusInvalid,
+    /// A `CANCEL` named neither an instance, an entire component, nor an affected attendee.
+    CancellationTargetMissing,
     /// The message states a property RFC 5546 forbids it, or one this sender may not change.
     MethodForbidsField(PropertyOccurrence),
     /// The message lacks a property RFC 5546 requires of it.
@@ -429,6 +433,37 @@ pub fn evaluate_initial_payload<'a>(
     evaluate_selected(message, current, actor, prior, payload)
 }
 
+/// Judge one explicitly selected payload as a not-yet-materialized instance of a held master.
+///
+/// This is the narrow composition seam used by the public workflow after it has proved that
+/// the payload's `RECURRENCE-ID` belongs to the master's recurrence set. The low-level
+/// [`evaluate_message`] keeps its exact-component identity contract; callers cannot
+/// accidentally turn an arbitrary instance reference into stored state through it.
+pub(crate) fn evaluate_new_instance_payload<'a>(
+    message: &'a ItipMessage<'a>,
+    current: &'a dyn ScheduledComponent,
+    payload_index: usize,
+    actor: PartyId<'_>,
+) -> Result<Authorization<'a>, AuthorizationDenied> {
+    let constraints = message.rule();
+    let prior = prior_state(current);
+    if prior != PriorState::Present || !constraints.permits_prior(prior) {
+        return Err(AuthorizationDenied::PriorStateForbidden(prior));
+    }
+    if current.recurrence_id().is_some()
+        || !message
+            .uid()
+            .matches(&Uid::new(current.uid().unwrap_or(&[])))
+    {
+        return Err(AuthorizationDenied::UidMismatch);
+    }
+    let payload = message
+        .payload(payload_index)
+        .filter(|payload| payload.recurrence_id().is_some())
+        .ok_or(AuthorizationDenied::NoMatchingInstance)?;
+    evaluate_selected(message, current, actor, prior, payload)
+}
+
 fn evaluate_selected<'a>(
     message: &'a ItipMessage<'a>,
     current: &'a dyn ScheduledComponent,
@@ -441,6 +476,7 @@ fn evaluate_selected<'a>(
     check_conformance(constraints, payload)?;
     check_nesting(constraints, payload)?;
     check_range(message.method(), payload)?;
+    check_cancellation(message.method(), payload)?;
     if !constraints.presence_of(b"SEQUENCE").is_forbidden() {
         check_revision(payload, current)?;
     }
@@ -690,6 +726,30 @@ fn check_range(
         .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future);
     if reaching && matches!(method, Method::Reply | Method::Refresh) {
         return Err(AuthorizationDenied::RangeNotPermitted);
+    }
+    Ok(())
+}
+
+/// RFC 5546 sections 3.2.5, 3.4.5, and 3.5.3's conditional `CANCEL` rows.
+fn check_cancellation(
+    method: Method,
+    payload: &dyn ScheduledComponent,
+) -> Result<(), AuthorizationDenied> {
+    if method != Method::Cancel {
+        return Ok(());
+    }
+    let status = property_value(payload, b"STATUS");
+    if status.is_some_and(|value| !value.eq_ignore_ascii_case(b"CANCELLED")) {
+        return Err(AuthorizationDenied::CancellationStatusInvalid);
+    }
+    if matches!(
+        payload.component_kind(),
+        Some(ComponentKind::Event | ComponentKind::Todo)
+    ) && payload.recurrence_id().is_none()
+        && status.is_none()
+        && payload.attendee_count() == 0
+    {
+        return Err(AuthorizationDenied::CancellationTargetMissing);
     }
     Ok(())
 }

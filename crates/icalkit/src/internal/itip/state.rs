@@ -173,6 +173,34 @@ pub trait ScheduledComponent: Debug {
     fn child(&self, index: usize) -> Option<&dyn ScheduledComponent>;
 }
 
+/// The first value carried by a directly contained property named `name`.
+///
+/// The separator is the first colon outside a quoted parameter value, matching RFC 5545's
+/// content-line grammar. This small helper keeps method-specific gates from each inventing a
+/// less complete split.
+#[must_use]
+pub fn property_value<'a>(component: &'a dyn ScheduledComponent, name: &[u8]) -> Option<&'a [u8]> {
+    for index in 0..component.property_count() {
+        if !component
+            .property_name(index)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        let line = component.property_line(index)?;
+        let mut quoted = false;
+        for (at, octet) in line.iter().enumerate() {
+            match *octet {
+                b'"' => quoted = !quoted,
+                b':' if !quoted => return line.get(at.saturating_add(1)..),
+                _ => {},
+            }
+        }
+        return None;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use crate::internal::core::PropertyId;

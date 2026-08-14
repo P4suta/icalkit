@@ -13,9 +13,9 @@ use crate::internal::core::{
     Property, PropertyId, TextValue, UtcOffset,
 };
 use crate::internal::itip::{
-    ComponentTarget, ItipMessage, MediaTypeParams, Method, PartyId, ScheduleTarget,
-    ScheduledComponent, ScheduledView, Transition, evaluate_initial_payload, evaluate_message,
-    inspect_message,
+    ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method, PartyId,
+    ScheduleTarget, ScheduledComponent, ScheduledView, Transition, evaluate_initial_payload,
+    evaluate_message, evaluate_new_instance_payload, inspect_message,
 };
 
 use crate::calendar::parse_calendar;
@@ -189,54 +189,81 @@ impl Message {
         if current_components.is_empty() {
             return self.review_creation(current, actor, &message);
         }
+        self.review_existing(session, current, actor, &message, &current_components)
+    }
 
-        let mut changes = Vec::new();
-        for (item, current_component) in current_components.iter().copied() {
-            let current_view = ScheduledView::of(current_component);
-            if message.payload_for(&current_view).is_none() {
-                continue;
-            }
-            let authorization =
-                evaluate_message(&message, &current_view, PartyId::new(actor.as_str()))
-                    .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
-            changes.push(ReviewedChange {
-                target: ChangeTarget::Existing { item },
-                transition: authorization.into_transition(),
-            });
+    /// Map every payload onto an exact component or one recurrence-proven master.
+    fn review_existing<'a>(
+        &'a self,
+        session: &mut Session<'_>,
+        current: &'a Calendar,
+        actor: &Actor,
+        message: &ItipMessage<'_>,
+        current_components: &[(usize, &'a Component)],
+    ) -> Result<Review<'a>, Rejection> {
+        let payloads = message_payloads(&self.calendar, message);
+        if payloads.len() != message.payload_count() {
+            return Err(Rejection::new("icalkit.scheduling.message-invalid"));
         }
-        if changes.len() == message.payload_count() {
-            return Ok(Review {
-                message: self,
-                current,
-                changes,
-            });
-        }
-        if !changes.is_empty() || message.payload_count() != 1 {
-            return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
-        }
-
-        let (item, current_component) = current_components
+        let mut masters = current_components
             .iter()
             .copied()
-            .find(|(_, component)| ScheduledView::of(component).recurrence_id().is_none())
-            .ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?;
-        let current_view = ScheduledView::of(current_component);
-        let authorization = evaluate_message(&message, &current_view, PartyId::new(actor.as_str()))
+            .filter(|(_, component)| ScheduledView::of(component).recurrence_id().is_none());
+        let master = masters.next();
+        if masters.next().is_some() {
+            return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+        }
+        let mut used = Vec::new();
+        let mut changes = Vec::with_capacity(payloads.len());
+        for (payload_index, (source, payload)) in payloads.into_iter().enumerate() {
+            let payload_view = ScheduledView::of(payload);
+            let mut exact = None;
+            for (item, current_component) in current_components.iter().copied() {
+                match compare_instances(
+                    payload_view.recurrence_id(),
+                    ScheduledView::of(current_component).recurrence_id(),
+                ) {
+                    InstanceMatch::Same if exact.is_none() => {
+                        exact = Some((item, current_component));
+                    },
+                    InstanceMatch::Same | InstanceMatch::Ambiguous => {
+                        return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+                    },
+                    InstanceMatch::Different => {},
+                }
+            }
+            if let Some((item, current_component)) = exact {
+                if used.contains(&item) {
+                    return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+                }
+                used.push(item);
+                let current_view = ScheduledView::of(current_component);
+                let authorization =
+                    evaluate_message(message, &current_view, PartyId::new(actor.as_str()))
+                        .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+                changes.push(ReviewedChange {
+                    target: ChangeTarget::Existing { item },
+                    transition: authorization.into_transition(),
+                });
+                continue;
+            }
+
+            let (master_item, master_component) =
+                master.ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?;
+            let master_view = ScheduledView::of(master_component);
+            let authorization = evaluate_new_instance_payload(
+                message,
+                &master_view,
+                payload_index,
+                PartyId::new(actor.as_str()),
+            )
             .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
-        let split = current_view.recurrence_id().is_none()
-            && authorization
-                .identity()
-                .instance()
-                .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future);
-        let target = if split {
-            let anchor = range_anchor_component(&self.calendar, uid)
-                .ok_or_else(|| Rejection::new("icalkit.scheduling.authorization-denied"))?;
-            let source = ZoneAdapter::new(session.engine.zone_database());
-            let zones = Zones::new(&source);
+            let zone_source = ZoneAdapter::new(session.engine.zone_database());
+            let zones = Zones::new(&zone_source);
             let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
             let membership = recurrence_set_contains(
-                current_component,
-                anchor,
+                master_component,
+                payload,
                 zones,
                 &mut budget,
                 &mut session.recurrence_diagnostics,
@@ -245,15 +272,23 @@ impl Message {
             if membership != KernelMatch::Matched {
                 return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
             }
-            ChangeTarget::SplitAfter { master: item }
-        } else {
-            ChangeTarget::Existing { item }
-        };
-        let transition = authorization.into_transition();
+            let no_change = authorization.transition().is_empty();
+            changes.push(ReviewedChange {
+                target: if no_change {
+                    ChangeTarget::Existing { item: master_item }
+                } else {
+                    ChangeTarget::Detach {
+                        master: master_item,
+                        source,
+                    }
+                },
+                transition: authorization.into_transition(),
+            });
+        }
         Ok(Review {
             message: self,
             current,
-            changes: alloc::vec![ReviewedChange { target, transition }],
+            changes,
         })
     }
 
@@ -434,9 +469,10 @@ impl AuthorizedChange<'_> {
     }
 
     /// Apply to a private clone of the reviewed state, consuming this authorization.
-    pub fn apply(self) -> Result<Calendar, Error> {
+    pub fn apply(mut self) -> Result<Calendar, Error> {
         let mut updated = self.current.clone();
         let policy = updated.policy;
+        self.changes.sort_by_key(|change| change.target.phase());
         {
             let calendar = updated
                 .document
@@ -460,8 +496,11 @@ impl AuthorizedChange<'_> {
                             .and_then(Item::as_component_mut)
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
                         apply_to(component, &change.transition, policy)?;
+                        if self.message.method == Method::Cancel {
+                            mark_cancelled(component)?;
+                        }
                     },
-                    ChangeTarget::SplitAfter { master } => {
+                    ChangeTarget::Detach { master, source } => {
                         let mut detached = calendar
                             .items()
                             .get(master)
@@ -469,9 +508,11 @@ impl AuthorizedChange<'_> {
                             .cloned()
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
                         apply_to(&mut detached, &change.transition, policy)?;
-                        calendar
-                            .items_mut()
-                            .insert(master.saturating_add(1), Item::Component(detached));
+                        copy_recurrence_id(&mut detached, &self.message.calendar, source)?;
+                        if self.message.method == Method::Cancel {
+                            mark_cancelled(&mut detached)?;
+                        }
+                        calendar.items_mut().push(Item::Component(detached));
                     },
                 }
             }
@@ -491,8 +532,18 @@ enum ChangeTarget {
     Create { source: usize },
     /// Mutate the component that was reviewed.
     Existing { item: usize },
-    /// Clone the reviewed master, apply the property diff, and insert the detached anchor.
-    SplitAfter { master: usize },
+    /// Clone the reviewed master, apply the property diff, and append a detached instance.
+    Detach { master: usize, source: usize },
+}
+
+impl ChangeTarget {
+    /// Apply indexed mutations before appending components, keeping every reviewed index stable.
+    const fn phase(self) -> u8 {
+        match self {
+            Self::Existing { .. } => 0,
+            Self::Create { .. } | Self::Detach { .. } => 1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -581,23 +632,46 @@ fn message_payloads<'a>(
         .collect()
 }
 
-fn range_anchor_component<'a>(calendar: &'a Calendar, uid: &[u8]) -> Option<&'a Component> {
-    root_component(calendar)?
+fn compare_instances(left: Option<InstanceRef>, right: Option<InstanceRef>) -> InstanceMatch {
+    match (left, right) {
+        (None, None) => InstanceMatch::Same,
+        (Some(left), Some(right)) => left.compare(right),
+        _ => InstanceMatch::Different,
+    }
+}
+
+fn copy_recurrence_id(
+    target: &mut Component,
+    message: &Calendar,
+    source: usize,
+) -> Result<(), Error> {
+    if target
+        .properties()
+        .any(|property| property.has_id(&PropertyId::RECURRENCE_ID))
+    {
+        return Ok(());
+    }
+    let property = root_component(message)
+        .and_then(|calendar| calendar.items().get(source))
+        .and_then(Item::as_component)
+        .and_then(|component| {
+            component
+                .properties()
+                .find(|property| property.has_id(&PropertyId::RECURRENCE_ID))
+        })
+        .cloned()
+        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+    let at = target
         .items()
         .iter()
-        .filter_map(Item::as_component)
-        .filter(|component| {
-            component.is_named(b"VEVENT")
-                && component
-                    .properties()
-                    .find(|property| property.is_named(b"UID"))
-                    .is_some_and(|property| property.value_text().as_bytes() == uid)
-        })
-        .find(|component| {
-            ScheduledView::of(component)
-                .recurrence_id()
-                .is_some_and(crate::internal::itip::InstanceRef::is_this_and_future)
-        })
+        .position(|item| item.as_component().is_some())
+        .unwrap_or(target.items().len());
+    target.items_mut().insert(at, Item::Property(property));
+    Ok(())
+}
+
+fn mark_cancelled(component: &mut Component) -> Result<(), Error> {
+    set_property(component, &PropertyId::STATUS, b"STATUS", b"CANCELLED")
 }
 
 fn is_scheduling_payload(component: &Component) -> bool {

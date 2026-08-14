@@ -156,6 +156,7 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | scheduling-sequence-unreadable | A `SEQUENCE` was present and was not an integer, so no revision ordering could be read from it. | Violation | M3 |
 | scheduling-property-not-allowed | A scheduling payload carried a property RFC 5546 section 3 forbids for its `METHOD` and component type. | Violation | M3 |
 | scheduling-required-property-missing | A scheduling payload lacked a property RFC 5546 section 3 requires for its `METHOD` and component type. | Violation | M3 |
+| scheduling-cancellation-status-invalid | A `CANCEL` payload carried `STATUS` with a value other than `CANCELLED`. | Violation | M3 |
 | scheduling-instance-ambiguous | A `RECURRENCE-ID` named a wall clock its series' zone repeats, and nothing said which of the two instants it addresses. | Violation | M3 |
 | scheduling-range-not-permitted | A `RECURRENCE-ID` carried `RANGE=THISANDFUTURE` under a `METHOD` RFC 5546 does not permit it for. | Violation | M3 |
 | scheduling-exclusion-unplaced | A scheduling message addressed a component carrying an exclusion no zone could place, so which instances it has is not decidable. | Violation | M3 |

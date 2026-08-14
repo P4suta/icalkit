@@ -214,7 +214,7 @@ fn all_eight_outbound_methods_are_built_with_caller_supplied_time() {
     );
     let cancel = payload(
         "UID:one@example.test\r\nDTSTAMP:20260302T080000Z\r\n\
-         ORGANIZER:mailto:chair@example.test\r\nSEQUENCE:2\r\n",
+         ORGANIZER:mailto:chair@example.test\r\nSEQUENCE:2\r\nSTATUS:CANCELLED\r\n",
     );
     let refresh = payload(
         "UID:one@example.test\r\nDTSTAMP:20260302T080000Z\r\n\
@@ -324,6 +324,81 @@ fn imip_charset_gate_sees_the_decoded_octets_and_uses_the_session_budget() {
     assert_eq!(
         exhausted.code().as_str(),
         "icalkit.scheduling.imip-content-type-invalid"
+    );
+}
+
+#[test]
+fn a_cancel_must_identify_a_component_instance_or_affected_attendee() {
+    let missing_target = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:CANCEL\r\n\
+BEGIN:VEVENT\r\n\
+UID:one@example.test\r\n\
+DTSTAMP:20260302T080000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+SEQUENCE:2\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let error = Message::read(missing_target).unwrap_err();
+    assert_eq!(error.code().as_str(), "icalkit.scheduling.message-invalid");
+    assert!(
+        error
+            .issues()
+            .iter()
+            .any(|issue| issue.code().as_str() == "scheduling-required-property-missing")
+    );
+
+    let wrong_status = payload(
+        "UID:one@example.test\r\nDTSTAMP:20260302T080000Z\r\n\
+         ORGANIZER:mailto:chair@example.test\r\nSEQUENCE:2\r\nSTATUS:CONFIRMED\r\n",
+    );
+    let error = Message::read(&{
+        let mut bytes = wrong_status;
+        let at = bytes
+            .windows(b"BEGIN:VEVENT".len())
+            .position(|window| window == b"BEGIN:VEVENT")
+            .unwrap();
+        bytes.splice(at..at, b"METHOD:CANCEL\r\n".iter().copied());
+        bytes
+    })
+    .unwrap_err();
+    assert!(
+        error
+            .issues()
+            .iter()
+            .any(|issue| issue.code().as_str() == "scheduling-cancellation-status-invalid")
+    );
+}
+
+#[test]
+fn a_statusless_cancel_for_an_affected_attendee_cancels_the_recipient_copy() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let cancel = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:CANCEL\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+ATTENDEE:mailto:alice@example.test\r\n\
+SEQUENCE:3\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::read(cancel).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+    let updated = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+    assert!(
+        updated
+            .windows(b"STATUS:CANCELLED".len())
+            .any(|window| window == b"STATUS:CANCELLED")
     );
 }
 
@@ -609,6 +684,300 @@ fn a_this_and_future_request_splits_the_series_into_a_detached_anchor() {
     );
 
     assert_revised_range_is_queryable(&revised_calendar).unwrap();
+}
+
+#[test]
+fn a_vtodo_this_and_future_request_materializes_a_detached_anchor() {
+    const HELD: &[u8] = concat!(
+        "BEGIN:VCALENDAR\r\n",
+        "VERSION:2.0\r\n",
+        "PRODID:-//icalkit tests//EN\r\n",
+        "BEGIN:VTODO\r\n",
+        "UID:todo-range@example.test\r\n",
+        "DTSTAMP:20260301T120000Z\r\n",
+        "DTSTART:20260310T140000Z\r\n",
+        "PRIORITY:5\r\n",
+        "SUMMARY:Original task\r\n",
+        "ORGANIZER:mailto:chair@example.test\r\n",
+        "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@example.test\r\n",
+        "RRULE:FREQ=WEEKLY;COUNT=4\r\n",
+        "SEQUENCE:2\r\n",
+        "END:VTODO\r\n",
+        "END:VCALENDAR\r\n",
+    )
+    .as_bytes();
+    const REQUEST: &[u8] = concat!(
+        "BEGIN:VCALENDAR\r\n",
+        "VERSION:2.0\r\n",
+        "PRODID:-//icalkit tests//EN\r\n",
+        "METHOD:REQUEST\r\n",
+        "BEGIN:VTODO\r\n",
+        "UID:todo-range@example.test\r\n",
+        "RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z\r\n",
+        "DTSTAMP:20260302T120000Z\r\n",
+        "DTSTART:20260317T160000Z\r\n",
+        "PRIORITY:5\r\n",
+        "SUMMARY:Moved task\r\n",
+        "ORGANIZER:mailto:chair@example.test\r\n",
+        "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@example.test\r\n",
+        "SEQUENCE:3\r\n",
+        "END:VTODO\r\n",
+        "END:VCALENDAR\r\n",
+    )
+    .as_bytes();
+    let current = Calendar::parse(HELD).unwrap();
+    let message = Message::read(REQUEST).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let updated = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+    assert_eq!(
+        updated
+            .windows(b"BEGIN:VTODO".len())
+            .filter(|window| *window == b"BEGIN:VTODO")
+            .count(),
+        2
+    );
+    assert!(
+        updated
+            .windows(b"RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z".len())
+            .any(|window| window == b"RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z")
+    );
+}
+
+#[test]
+fn a_reply_for_an_unmaterialized_instance_creates_an_addressed_detached_state() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let reply = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:REPLY\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+RECURRENCE-ID:20260317T140000Z\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n\
+SEQUENCE:2\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::read(reply).unwrap();
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+
+    let updated = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+    assert_eq!(
+        updated
+            .windows(b"BEGIN:VEVENT".len())
+            .filter(|window| *window == b"BEGIN:VEVENT")
+            .count(),
+        2
+    );
+    for expected in [
+        b"RECURRENCE-ID:20260317T140000Z".as_slice(),
+        b"ATTENDEE;PARTSTAT=ACCEPTED".as_slice(),
+    ] {
+        assert!(
+            updated
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "{expected:?}"
+        );
+    }
+}
+
+#[test]
+fn a_this_and_future_cancel_is_stored_as_cancelled_for_later_occurrences() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let cancel = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:CANCEL\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+SEQUENCE:3\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::read(cancel).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+    let updated = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let bytes = updated.to_bytes();
+
+    for expected in [
+        b"RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z".as_slice(),
+        b"STATUS:CANCELLED".as_slice(),
+    ] {
+        assert!(
+            bytes
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "{expected:?}"
+        );
+    }
+
+    let query = Query::parse(
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data/></D:prop>
+<C:filter>
+  <C:comp-filter name="VCALENDAR">
+    <C:comp-filter name="VEVENT">
+      <C:time-range start="20260324T140000Z" end="20260324T140001Z"/>
+      <C:prop-filter name="STATUS"><C:text-match>CANCELLED</C:text-match></C:prop-filter>
+    </C:comp-filter>
+  </C:comp-filter>
+</C:filter>
+</C:calendar-query>"#,
+    )
+    .unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    assert_eq!(
+        query.matches(&mut session, &updated).unwrap(),
+        Match::Matched,
+        "the cancellation anchor governs later recurrence instances"
+    );
+}
+
+#[test]
+fn one_cancel_materializes_multiple_instances_atomically() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let cancel = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:CANCEL\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+RECURRENCE-ID:20260317T140000Z\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+SEQUENCE:3\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+RECURRENCE-ID:20260324T140000Z\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+SEQUENCE:3\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::read(cancel).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+    let updated = message
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+
+    assert_eq!(
+        updated
+            .windows(b"BEGIN:VEVENT".len())
+            .filter(|window| *window == b"BEGIN:VEVENT")
+            .count(),
+        3
+    );
+    assert_eq!(
+        updated
+            .windows(b"STATUS:CANCELLED".len())
+            .filter(|window| *window == b"STATUS:CANCELLED")
+            .count(),
+        2
+    );
+    for recurrence_id in [
+        b"RECURRENCE-ID:20260317T140000Z".as_slice(),
+        b"RECURRENCE-ID:20260324T140000Z".as_slice(),
+    ] {
+        assert!(
+            updated
+                .windows(recurrence_id.len())
+                .any(|window| window == recurrence_id)
+        );
+    }
+}
+
+#[test]
+fn a_multi_instance_cancel_is_refused_whole_when_one_key_is_not_in_the_series() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let cancel = b"BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//icalkit tests//EN\r\n\
+METHOD:CANCEL\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+RECURRENCE-ID:20260317T140000Z\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+SEQUENCE:3\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:range@example.test\r\n\
+RECURRENCE-ID:20260318T140000Z\r\n\
+DTSTAMP:20260302T120000Z\r\n\
+ORGANIZER:mailto:chair@example.test\r\n\
+SEQUENCE:3\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    let message = Message::read(cancel).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let rejection = message.review(&current, &actor).unwrap_err();
+    assert_eq!(
+        rejection.code().as_str(),
+        "icalkit.scheduling.authorization-denied"
+    );
+    assert_eq!(
+        current.to_bytes(),
+        range_series::HELD,
+        "review cannot partially materialize the first valid cancellation"
+    );
+}
+
+#[test]
+fn a_new_instance_is_not_attached_to_an_ambiguous_duplicate_master() {
+    let mut duplicated = range_series::HELD.to_vec();
+    let event_start = range_series::HELD
+        .windows(b"BEGIN:VEVENT".len())
+        .position(|window| window == b"BEGIN:VEVENT")
+        .unwrap();
+    let event_end = range_series::HELD
+        .windows(b"END:VEVENT\r\n".len())
+        .position(|window| window == b"END:VEVENT\r\n")
+        .map(|at| at + b"END:VEVENT\r\n".len())
+        .unwrap();
+    let duplicate = range_series::HELD[event_start..event_end].to_vec();
+    let calendar_end = duplicated
+        .windows(b"END:VCALENDAR".len())
+        .position(|window| window == b"END:VCALENDAR")
+        .unwrap();
+    duplicated.splice(calendar_end..calendar_end, duplicate);
+    let current = Calendar::parse(&duplicated).unwrap();
+    let message = Message::read(range_series::REQUEST).unwrap();
+    let actor = Actor::new("mailto:chair@example.test").unwrap();
+
+    let rejection = message.review(&current, &actor).unwrap_err();
+    assert_eq!(
+        rejection.code().as_str(),
+        "icalkit.scheduling.authorization-denied"
+    );
 }
 
 #[test]

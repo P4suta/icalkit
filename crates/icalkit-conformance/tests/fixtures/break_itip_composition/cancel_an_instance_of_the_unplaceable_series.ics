@@ -7,5 +7,6 @@ UID:unplaced-series@example.test
 DTSTAMP:20260302T080000Z
 ORGANIZER:mailto:chair@example.com
 SEQUENCE:3
+STATUS:CANCELLED
 END:VEVENT
 END:VCALENDAR

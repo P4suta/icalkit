@@ -361,6 +361,11 @@ pub enum DiagnosticCode {
     /// The presence `1` and `1+` rows of the section 3 constraint tables, and the sibling of
     /// [`DiagnosticCode::SchedulingPropertyNotAllowed`] at the other end of the same row.
     SchedulingRequiredPropertyMissing,
+    /// A `CANCEL` payload carried `STATUS` with a value other than `CANCELLED`.
+    ///
+    /// RFC 5546 sections 3.2.5, 3.4.5, and 3.5.3 make this a method-specific
+    /// value constraint rather than an iCalendar value-type error.
+    SchedulingCancellationStatusInvalid,
     /// A `RECURRENCE-ID` named a wall clock its series' zone repeats, and nothing said which of the two instants it addresses.
     ///
     /// The two halves of a fold are one cadence key on the nominal timeline `ical_tz::seam`
@@ -580,6 +585,7 @@ impl DiagnosticCode {
             Self::SchedulingSequenceUnreadable => "scheduling-sequence-unreadable",
             Self::SchedulingPropertyNotAllowed => "scheduling-property-not-allowed",
             Self::SchedulingRequiredPropertyMissing => "scheduling-required-property-missing",
+            Self::SchedulingCancellationStatusInvalid => "scheduling-cancellation-status-invalid",
             Self::SchedulingInstanceAmbiguous => "scheduling-instance-ambiguous",
             Self::SchedulingRangeNotPermitted => "scheduling-range-not-permitted",
             Self::SchedulingExclusionUnplaced => "scheduling-exclusion-unplaced",

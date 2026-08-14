@@ -53,8 +53,8 @@
 use alloc::collections::BTreeMap;
 
 use crate::internal::core::{
-    Diagnostic, DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject,
-    report_diagnostic,
+    ComponentKind, Diagnostic, DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId,
+    Severity, Subject, report_diagnostic,
 };
 
 use crate::internal::itip::authorize::actor_role;
@@ -62,7 +62,7 @@ use crate::internal::itip::identity::{InstanceRef, SequenceRead};
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::Method;
 use crate::internal::itip::party::{Party, PartyId};
-use crate::internal::itip::state::ScheduledComponent;
+use crate::internal::itip::state::{ScheduledComponent, property_value};
 use crate::internal::itip::table::MethodRule;
 
 /// The methods RFC 5546 does not permit `RANGE=THISANDFUTURE` under.
@@ -76,10 +76,11 @@ static RANGE_FORBIDDEN: &[Method] = &[Method::Reply, Method::Refresh];
 
 /// Report what is wrong with `message`, walking every payload it carries.
 ///
-/// Six codes, every one of them a [`Severity::Violation`]:
+/// Seven codes, every one of them a [`Severity::Violation`]:
 /// `scheduling-calendar-address-unreadable`, `scheduling-sequence-unreadable`,
 /// `scheduling-property-not-allowed`, `scheduling-required-property-missing`,
-/// `scheduling-range-not-permitted` and `scheduling-sender-not-permitted`.
+/// `scheduling-cancellation-status-invalid`, `scheduling-range-not-permitted` and
+/// `scheduling-sender-not-permitted`.
 ///
 /// `actor` is the party whose entitlement to send this method is being asked about, and is
 /// optional because most callers of a reporting pass have not got one yet: an inbox rendering
@@ -118,6 +119,7 @@ fn inspect_payload<S: DiagnosticSink + ?Sized>(
     inspect_parties(payload, meter, sink);
     inspect_sequence(payload, meter, sink);
     inspect_properties(message.rule(), payload, meter, sink);
+    inspect_cancellation(message.method(), payload, meter, sink);
     if meter.is_exhausted() {
         // A pass that ran out of ledger has not seen every property of this payload, and the
         // two checks below would then report about a component only partly read.
@@ -125,6 +127,48 @@ fn inspect_payload<S: DiagnosticSink + ?Sized>(
     }
     inspect_range(message.method(), payload, meter, sink);
     inspect_sender(message.rule(), payload, actor, meter, sink);
+}
+
+/// Report the conditional `STATUS` and target rules on `CANCEL` payloads.
+fn inspect_cancellation<S: DiagnosticSink + ?Sized>(
+    method: Method,
+    payload: &dyn ScheduledComponent,
+    meter: &mut Meter,
+    sink: &mut S,
+) {
+    if method != Method::Cancel {
+        return;
+    }
+    for _ in 0..payload.property_count() {
+        if !meter.charge(1) {
+            return;
+        }
+    }
+    let status = property_value(payload, b"STATUS");
+    if status.is_some_and(|value| !value.eq_ignore_ascii_case(b"CANCELLED")) {
+        about(
+            sink,
+            meter,
+            DiagnosticCode::SchedulingCancellationStatusInvalid,
+            Severity::Violation,
+            b"STATUS",
+        );
+    }
+    if matches!(
+        payload.component_kind(),
+        Some(ComponentKind::Event | ComponentKind::Todo)
+    ) && payload.recurrence_id().is_none()
+        && status.is_none()
+        && payload.attendee_count() == 0
+    {
+        about(
+            sink,
+            meter,
+            DiagnosticCode::SchedulingRequiredPropertyMissing,
+            Severity::Violation,
+            b"STATUS",
+        );
+    }
 }
 
 /// Report every `ORGANIZER` or `ATTENDEE` that is present and identifies nobody.

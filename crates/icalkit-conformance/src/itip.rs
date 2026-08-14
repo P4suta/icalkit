@@ -1154,8 +1154,9 @@ mod tests {
                 zoned: false,
                 // Section 3.2.5 states the kind and not the extent. What this project describes
                 // is the octet diff, which for a cancellation states a removal for every
-                // property the message does not restate: seven occurrences here.
-                outcome: Outcome::Allowed(TransitionReason::Cancelled, Some(7)),
+                // property the message does not restate, plus the explicit cancelled state:
+                // eight occurrences here.
+                outcome: Outcome::Allowed(TransitionReason::Cancelled, Some(8)),
             },
             Case {
                 id: "refresh-asking-for-the-latest-version",
@@ -1372,6 +1373,12 @@ mod tests {
                 "scheduling-required-property-missing",
                 Severity::Violation,
                 "reply-without-a-dtstamp",
+            ),
+            (
+                DiagnosticCode::SchedulingCancellationStatusInvalid,
+                "scheduling-cancellation-status-invalid",
+                Severity::Violation,
+                "cancel-with-a-non-cancelled-status",
             ),
             (
                 DiagnosticCode::SchedulingInstanceAmbiguous,

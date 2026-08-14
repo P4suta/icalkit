@@ -25,6 +25,7 @@ mod target;
 mod transition;
 
 pub use crate::internal::core::{Limits, Meter, ParameterEdit, PropertyId, ProposedChange};
+pub(crate) use authorize::evaluate_new_instance_payload;
 pub use authorize::{
     Authorization, AuthorizationDenied, Commitment, actor_role, apply_transition, attendee_index,
     evaluate_initial_payload, evaluate_message,
@@ -46,7 +47,7 @@ pub use message::{ItipMessage, MessageError};
 pub use method::{ActorRole, Method, SenderRule};
 pub use party::{ANSWERED_AT, Attendee, PartStat, Party, PartyId, Role};
 pub use report::inspect_message;
-pub use state::{PropertyOccurrence, ScheduledComponent};
+pub use state::{PropertyOccurrence, ScheduledComponent, property_value};
 pub use table::{MethodRule, Presence, PriorState, Rule};
 pub use target::ComponentTarget;
 pub use transition::{
