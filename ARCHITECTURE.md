@@ -131,7 +131,8 @@ evidence exists, the profile does not guess at CP1252 or vendor `TZID` mappings.
 ## Mechanical enforcement
 
 - `just architecture` freezes the single production package, rejects retired package names,
-  freezes the two-feature vocabulary, and holds the public guide's workflow order.
+  freezes the two-feature vocabulary, holds the public guide and closure ledger, and keeps both
+  DAV body encoders on the shared stack-balanced `XmlWriter`.
 - `just public-api` compares committed default and no-default snapshots and rejects additions,
   removals, moves, or duplicate canonical paths.
 - `just purity` and the two layering members enforce the private DAG and keep grammar/XML
@@ -139,6 +140,9 @@ evidence exists, the profile does not guess at CP1252 or vendor `TZID` mappings.
 - `just codes` freezes diagnostic identifiers and meanings.
 - `just lint` denies warnings with every feature and with no default features.
 - `just test` runs process-isolated tests and compile-checked rustdoc.
+- `just allocation` measures peak and retained cost for iCalendar items and XML elements; the
+  conformance suite includes the 200,000-property hostile input and fixed 5,000-resource query
+  benchmark.
 - `just no-std` and `just wasm` prove the non-OS build boundary.
 - `just shear`, `just deny`, and `just reuse` hold dependencies, supply-chain policy, and
   licensing.

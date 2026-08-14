@@ -17,6 +17,20 @@ fn payload(lines: &str) -> Vec<u8> {
     format!("{WRAP_HEAD}BEGIN:VEVENT\r\n{lines}END:VEVENT\r\n{WRAP_TAIL}").into_bytes()
 }
 
+fn scheduling_payload(
+    method: &str,
+    uid: &str,
+    dtstamp: &str,
+    sequence: u32,
+    fields: &str,
+) -> Vec<u8> {
+    format!(
+        "{WRAP_HEAD}METHOD:{method}\r\nBEGIN:VEVENT\r\nUID:{uid}\r\n\
+         DTSTAMP:{dtstamp}\r\n{fields}SEQUENCE:{sequence}\r\nEND:VEVENT\r\n{WRAP_TAIL}"
+    )
+    .into_bytes()
+}
+
 fn supplied_time() -> Timestamp {
     Timestamp::constant(0, 0)
 }
@@ -614,6 +628,150 @@ fn review_authorization_borrows_inputs_and_apply_consumes_it() {
             .windows(b"SEQUENCE:3".len())
             .any(|window| window == b"SEQUENCE:3")
     );
+}
+
+#[test]
+fn a_later_reply_persists_its_ordering_witness_and_refuses_an_earlier_replay() {
+    const HELD: &[u8] = include_bytes!(
+        "../../icalkit-conformance/tests/fixtures/break_itip_sequence/held_series.ics"
+    );
+    const EARLIER: &[u8] = include_bytes!(
+        "../../icalkit-conformance/tests/fixtures/break_itip_sequence/reply_cy_accepted_earlier.ics"
+    );
+    const LATER: &[u8] = include_bytes!(
+        "../../icalkit-conformance/tests/fixtures/break_itip_sequence/reply_cy_declined_later.ics"
+    );
+    let current = Calendar::parse(HELD).unwrap();
+    let actor = Actor::new("mailto:cy@example.com").unwrap();
+    let updated = Message::read(LATER)
+        .unwrap()
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let bytes = updated.to_bytes();
+    assert!(
+        bytes
+            .windows(b"PARTSTAT=DECLINED".len())
+            .any(|window| window == b"PARTSTAT=DECLINED")
+    );
+    assert!(
+        bytes
+            .windows(b"X-ICALKIT-ANSWERED-AT=20260301T140000Z".len())
+            .any(|window| window == b"X-ICALKIT-ANSWERED-AT=20260301T140000Z")
+    );
+
+    let rejection = Message::read(EARLIER)
+        .unwrap()
+        .review(&updated, &actor)
+        .unwrap_err();
+    assert_eq!(
+        rejection.code().as_str(),
+        "icalkit.scheduling.authorization-denied"
+    );
+    assert_eq!(
+        updated.to_bytes(),
+        bytes,
+        "reviewing a replay cannot mutate the accepted later answer"
+    );
+}
+
+#[test]
+fn a_delegate_reply_is_held_until_an_organizer_request_adds_the_delegate() {
+    let held = payload(
+        "UID:delegation@example.test\r\nDTSTAMP:20260301T100000Z\r\n\
+         DTSTART:20260310T140000Z\r\nSUMMARY:Delegation\r\n\
+         ORGANIZER:mailto:c@x\r\n\
+         ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:a@x\r\nSEQUENCE:1\r\n",
+    );
+    let delegated = scheduling_payload(
+        "REPLY",
+        "delegation@example.test",
+        "20260301T120000Z",
+        1,
+        "ORGANIZER:mailto:c@x\r\n\
+         ATTENDEE;PARTSTAT=DELEGATED;DELEGATED-TO=\"mailto:b@x\":mailto:a@x\r\n",
+    );
+    let waiting_reply = scheduling_payload(
+        "REPLY",
+        "delegation@example.test",
+        "20260301T130000Z",
+        1,
+        "ORGANIZER:mailto:c@x\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED;DELEGATED-FROM=\"mailto:a@x\":mailto:b@x\r\n",
+    );
+    let organizer_request = scheduling_payload(
+        "REQUEST",
+        "delegation@example.test",
+        "20260301T140000Z",
+        2,
+        "DTSTART:20260310T140000Z\r\nSUMMARY:Delegation\r\n\
+         ORGANIZER:mailto:c@x\r\n\
+         ATTENDEE;PARTSTAT=DELEGATED;DELEGATED-TO=\"mailto:b@x\":mailto:a@x\r\n\
+         ATTENDEE;PARTSTAT=NEEDS-ACTION;DELEGATED-FROM=\"mailto:a@x\":mailto:b@x\r\n",
+    );
+    let released_reply = scheduling_payload(
+        "REPLY",
+        "delegation@example.test",
+        "20260301T150000Z",
+        2,
+        "ORGANIZER:mailto:c@x\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED;DELEGATED-FROM=\"mailto:a@x\":mailto:b@x\r\n",
+    );
+    let alice = Actor::new("mailto:a@x").unwrap();
+    let bob = Actor::new("mailto:b@x").unwrap();
+    let chair = Actor::new("mailto:c@x").unwrap();
+    let delegated_state = Message::read(&delegated)
+        .unwrap()
+        .review(&Calendar::parse(&held).unwrap(), &alice)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+
+    let waiting_state = Message::read(&waiting_reply)
+        .unwrap()
+        .review(&delegated_state, &bob)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    assert!(
+        !waiting_state
+            .to_bytes()
+            .windows(b"ATTENDEE;PARTSTAT=ACCEPTED".len())
+            .any(|window| window == b"ATTENDEE;PARTSTAT=ACCEPTED"),
+        "the delegate is not yet an attendee the organizer can update"
+    );
+
+    let released_state = Message::read(&organizer_request)
+        .unwrap()
+        .review(&waiting_state, &chair)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let accepted = Message::read(&released_reply)
+        .unwrap()
+        .review(&released_state, &bob)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+    for expected in [
+        b"ATTENDEE;PARTSTAT=ACCEPTED;DELEGATED-FROM=\"mailto:a@x\"".as_slice(),
+        b"AT=20260301T150000Z:mailto:b@x".as_slice(),
+    ] {
+        assert!(
+            accepted
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "{}",
+            String::from_utf8_lossy(&accepted)
+        );
+    }
 }
 
 #[test]

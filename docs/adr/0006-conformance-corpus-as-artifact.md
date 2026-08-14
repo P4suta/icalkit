@@ -1,6 +1,7 @@
 # ADR-0006: the conformance and interoperability corpus is a deliverable
 
-- Status: accepted
+- Status: accepted for evidence provenance; public/library and live-bridge delivery shape
+  superseded by ADR-0014's private JSONL CLI/corpus
 - Date: 2026-08-05
 - Amended: 2026-08-10, 2026-08-11 (two amendments)
 

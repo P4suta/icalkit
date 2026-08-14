@@ -88,8 +88,8 @@ wasm:
 purity:
     cargo run --quiet -p xtask -- purity
 
-# Hold the single public crate boundary and the facade's two-feature vocabulary
-# (docs/adr/0013).
+# Hold the single public crate boundary, the facade's two-feature vocabulary, shared DAV XML
+# writer, external-consumer example, and current closure ledger (docs/adr/0013 and 0014).
 architecture:
     cargo run --quiet -p xtask -- architecture
 

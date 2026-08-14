@@ -1,6 +1,8 @@
 # `ical-itip` public API
 
-- Status: accepted
+- Status: historical public-crate design; public workflow superseded by
+  [ADR 0013](../adr/0013-unified-public-crate-and-explicit-interop.md) and
+  [ADR 0014](../adr/0014-private-kernel-and-conformance-isolation.md)
 - Date: 2026-08-10
 - Implements: [ADR 0005](../adr/0005-scheduling-apart-from-the-model.md), with
   [0007](../adr/0007-allocation-policy.md), [0009](../adr/0009-error-and-diagnostic-model.md),

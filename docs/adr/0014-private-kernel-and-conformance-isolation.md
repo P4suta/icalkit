@@ -67,6 +67,23 @@ full conformance suite mechanically hold the resulting boundary.
 Every package remains at `0.0.0`. Publication is deferred indefinitely until an explicit
 release instruction; architecture completion does not imply release authorization.
 
+## Completion note
+
+The locally implementable production-0.1 scope was closed on 2026-08-14. The facade now owns the
+strict import/normalization/validation pipeline, transactional editing, complete stored
+recurrence sets, reply/delegation ordering, all outbound iTIP methods, strict iMIP, atomic
+scheduling changes for exact and unmaterialized recurrence instances, three-valued CalDAV query
+evaluation, discovery/sync/conditional-write/MKCALENDAR/outbox client operations, and the mirror
+server state machine. DAV request and response bodies share the stack-balanced `XmlWriter`; the
+architecture gate rejects duplicate structural encoders.
+
+The conformance artifact's locally stable boundary is `icalkit-conformance/1` JSONL. Synthetic
+client-shaped fixtures remain robustness cases only. Real Google Calendar, Microsoft 365, and
+Apple Calendar captures were not available in the workspace, so no compatibility behavior was
+inferred from them and `CommonClientsV1` remains evidence-empty. Supplying, anonymizing, and
+minimizing those captures is the only unfinished evidence task; it does not reopen the production
+architecture or authorize a release.
+
 ## Consequences
 
 Consumers see one canonical API and cannot couple themselves to tokenizer, XML, meter,

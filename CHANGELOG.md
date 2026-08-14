@@ -713,3 +713,30 @@ the other order. What version this becomes is a decision nobody has made.
   while a root-local capability preserves the old harness's feature-on and feature-off
   conformance cases. The XML layering gate follows the moved source, and the anonymized
   SabreDAV, Radicale, and CalendarServer fixtures now live beside their sole implementation.
+
+### Changed
+
+- Completed the single-crate migration: `icalkit` is the sole production package, the former
+  `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`, `ical-query`, and `ical-dav` packages are
+  retired, and the unpublished conformance helper provides white-box isolation without adding a
+  second production API. Default and no-default public surfaces are frozen under `api/`.
+- Replaced the conformance library contract with the versioned `icalkit-conformance/1` JSONL
+  subject protocol. Synthetic client fixtures remain labeled as synthetic; `CommonClientsV1`
+  performs no repair without reduced, anonymized real-client evidence.
+- Completed the public recurrence workflow over stored calendars. `Calendar::occurrences`
+  composes masters, `RDATE`, `EXDATE`, detached overrides, and `RANGE=THISANDFUTURE`, resolves
+  through the session zone database, returns effective-start order, and resumes through an
+  opaque fallible cursor.
+- Completed public scheduling composition. All outbound methods take caller-supplied time,
+  iMIP is strict and unconditional, initial and multi-component changes apply atomically,
+  recurrence-instance `REPLY`/`CANCEL` payloads materialize only after recurrence membership is
+  proven, reply order witnesses survive apply, and delegate replies are held until an organizer
+  request releases them.
+- Completed CalDAV client and server sans-I/O workflows for discovery, conditional writes,
+  synchronization, query/projection, MKCALENDAR, and RFC 6638 outbox POST and
+  `schedule-response`. Request and response bodies now use one stack-balanced `XmlWriter`,
+  protected by `xtask architecture`.
+- Added fixed allocation and scale gates for 200,000 properties, retained/peak iCalendar and XML
+  cost, and 5,000-resource queries, plus the external-consumer compile fixture and the full
+  default/no-default, bare-metal, WASM, MSRV, API, dependency, and licensing contract. The
+  workspace remains `0.0.0` and intentionally unreleased.

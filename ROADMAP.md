@@ -4,8 +4,41 @@
 > single `icalkit` production crate; ADR-0014 is authoritative for the current package graph,
 > Jiff boundary, private XML lexer, and conformance isolation.
 
-Everything here is text in, text out. No network, no clock, no hardware: every milestone
-is verifiable by `cargo test` on `ubuntu-latest`.
+## Current closure ledger — 2026-08-14
+
+All locally implementable work in the production-0.1 plan is complete:
+
+- `icalkit` is the only production crate. Its private DAG, two-feature vocabulary, `no_std`
+  boundary, Jiff/system-zone exception, public API snapshots, and conformance isolation are
+  mechanically gated.
+- The strict `Import -> Normalization -> Calendar` pipeline, transactional editor, unknown-data
+  preservation, aggregate budgets, 200,000-property hostile case, and peak/per-item allocation
+  measurements are green.
+- Stored recurrence sets compose `RRULE`, `RDATE`, `EXDATE`, detached overrides, DST resolution,
+  effective-start ordering, resumable cursors, and `RANGE=THISANDFUTURE` under one session
+  budget.
+- All outbound iTIP methods, strict iMIP media handling, replay/delegation ordering, atomic
+  multi-component creation/update, unmaterialized recurrence instances, conditional `CANCEL`,
+  and scheduling outbox integration are exercised through the facade.
+- CalDAV discovery, conditional writes, RFC 6578 sync, query/projection, MKCALENDAR, RFC 6638
+  POST/`schedule-response`, and client/server sans-I/O state machines are complete. DAV request
+  and response bodies use the single stack-balanced XML writer.
+- The private conformance subject speaks versioned JSONL; the RFC/adversarial/DAV corpus,
+  5,000-resource query benchmark, default/no-default, bare-metal, WASM, MSRV, architecture,
+  diagnostic, dependency, licensing, and workflow gates make up the local CI contract.
+
+What remains is external evidence, not inferred compatibility behavior: reduced, anonymized,
+versioned captures from Google Calendar, Microsoft 365, and Apple Calendar. Until those captures
+are supplied, `CommonClientsV1` intentionally performs no evidence-free repair. Publication is
+also intentionally deferred: every package remains `0.0.0` until a separate explicit release
+instruction.
+
+The milestone narrative below is retained as implementation history. Statements about package
+names, proposed surfaces, and work that was “owed” describe the point at which that paragraph was
+written; this ledger and ADR-0014 are authoritative for current status.
+
+Everything is text in, text out. Production workflows use no network, clock, storage, or
+application ACL implementation; the system-zone adapter is the sole gated OS contact.
 
 ## M0 — Model and round trip
 
@@ -25,16 +58,13 @@ against the caller's budget as they are appended, never sliced out of pre-unfold
 may refuse, and an error means no item could be built at all
 ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)).
 
-Gates this milestone owed, five met: the `DiagnosticCode` golden list and its diff check, a
+Gates this milestone owed, all met: the `DiagnosticCode` golden list and its diff check, a
 round-trip property test over the corpus, a fold that splits a UTF-8 codepoint, a CP1252
-`SUMMARY`, and a structural test that `Document` is built from the public token path. Two are
-still owed: a hostile input of 200,000 one-byte properties, and a peak-allocation ceiling as a
-multiple of input size. The fold bomb and the depth bomb reach neither — one bounds what a
-single line retains and the other what a walk survives, and the question both of these ask is
-what a whole document costs. The second is retargeted rather than merely built: it must report
-bytes retained *per item* and *per XML element* as well as peak charged bytes, because per-unit
-retention is what turns `max_items` and `max_xml_elements` from asserted numbers into measured
-ones ([ADR 0010](docs/adr/0010-shared-resource-limits.md) amendment 1).
+`SUMMARY`, a structural test that `Document` is built from the public token path, a hostile input
+of 200,000 one-byte properties, and a peak-allocation ceiling as a multiple of input size. The
+dedicated allocation process reports retained bytes per item and per XML element as well as peak
+charged bytes, turning `max_items` and `max_xml_elements` into measured limits
+([ADR 0010](docs/adr/0010-shared-resource-limits.md) amendment 1).
 
 ## M1 — Recurrence
 
@@ -75,11 +105,11 @@ every cadence to satisfy an upper edge nothing read; a `BYWEEKNO` read as a filt
 calendar year rather than an expansion of the week-numbering one; and a `BYDAY` ordinal answered
 two ways under the frequencies that forbid one, the quieter of which emptied a whole series.
 
-Two things are known and named: emission is ordered by cadence key rather than by effective
-start, and the period walk's own vocabulary is on the public surface as an integration artifact
-and is expected to narrow. A third was listed here and is struck: what a floating `UNTIL` against
-a zoned `DTSTART` means was closed by M2, with a test and the golden-listed
-`recurrence-until-not-utc` behind it.
+Two integration artifacts named here were closed by the unified facade. The private engine may
+still merge by cadence key, but public `Occurrences` is ordered by effective start. The period
+walk and candidate vocabulary are private and absent from the public API snapshots. A third —
+what a floating `UNTIL` against a zoned `DTSTART` means — was closed by M2, with a test and the
+golden-listed `recurrence-until-not-utc` behind it.
 
 ## M2 — Time zones
 
@@ -211,35 +241,28 @@ the other were the same silent answer; and a message of a hundred thousand prope
 for four units and described in full. ADR 0005 amendments 7 to 11 record what changed, and two
 diagnostic codes are new: `scheduling-method-ambiguous` and `scheduling-instance-nonexistent`.
 
-Five things were known and named, and three of them are now decided rather than merely named.
-An attendee's `REPLY` carrying a moved `DTSTART` is *ignored* rather than refused — the transition
-holds one change on the sender's own `ATTENDEE` line, so the security property holds, but a caller
-that applies `Authorization::message`'s payload instead of the transition moves the meeting. A
-legitimate `COUNTER` is refused, because the field rule has no per-method dimension — the
-interoperability cost the design document said it preferred, now observed rather than predicted.
-[ADR 0005](docs/adr/0005-scheduling-apart-from-the-model.md) amendment 12 answers both: the field
-rule takes the method, so the `COUNTER` is admitted, and an overreaching `REPLY` is refused rather
-than dropped. A delegate's `REPLY` describes nothing, and the sentence that stood here — that it
-describes nothing *until the delegator's own reply has been applied* — is wrong: the corpus fixture
-that is the post-delegator-reply state still describes nothing, because a delegator's reply writes
-parameter edits and never adds the delegate's own `ATTENDEE` line. Amendment 13 names the hold and
-records the organizer `REQUEST` as its only release. Ordering two replies from one attendee needs the state to record when the first was
-written, so a store that keeps no such column keeps the change-of-mind case and loses that
-defense. And a component whose own `ORGANIZER` line names an attendee authorizes that attendee
-to cancel it: RFC 5546 section 1.3 lets one calendar user be both, so the defense is that no
-message may write that line, and the corpus asserts the state is unreachable rather than
-asserting a reading of the file that cannot exist.
+Five questions recorded during M3 are now represented in the workflow. A `COUNTER` uses
+method-specific field rules, while an overreaching `REPLY` is refused rather than silently
+trimmed. A delegate's reply is explicitly held until an organizer `REQUEST` adds that delegate
+as an attendee. Reply application persists `X-ICALKIT-ANSWERED-AT` on the addressed attendee
+line, so an older answer replayed after a newer one is refused without ordering one attendee
+against another. The public facade exercises both paths through read-review-apply. Finally, no
+scheduling message may rewrite the held `ORGANIZER` line; the corpus keeps the dual-role case
+without granting an attendee a takeover path. ADR 0005 amendments 12 and 13 retain the detailed
+rationale and the capture-dependent alternative delegation policy.
 
 ## M4 — CalDAV
 
 `ical-dav`: RFC 4791 requests and responses, sans-I/O, usable from both sides. Calendar
 collections, `REPORT` queries, `ETag` conditional writes, and sync tokens.
 
-At this point writing a calendar client or a self-hosted server in Rust becomes a
-reasonable thing to attempt, which it currently is not.
+At this point writing a calendar client or a self-hosted server in Rust becomes a reasonable
+thing to attempt. The `icalkit` client and server state machines now supply that protocol core;
+the application still supplies HTTP, persistence, credentials, and ACL decisions.
 
-What now binds it. The XML tokenizer is this crate's own, namespace-resolving and bounded, and
-no outside XML crate may be added ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)).
+What now binds it. `xmlparser` is the private lexical authority. The wrapper remains
+namespace-resolving and bounded and owns every structural/security guarantee the lexical crate
+does not provide ([ADR 0014](docs/adr/0014-private-kernel-and-conformance-isolation.md)).
 Reading a multi-status is an incremental decoder holding one `DavResponse` at a time and
 writing one is an incremental encoder, with the owned `MultiStatus` as one optional consumer.
 Per-property status is a `PropStat` list, a `time-range` has two independently optional
@@ -249,8 +272,8 @@ Gates this milestone owed, all met: compile-checked examples for those three sha
 the incremental codec pair compiling under `no_std` on `thumbv7em-none-eabi`, which is the
 part this design had never proved.
 
-**Met.** `ical-dav` reads and writes every body RFC 4791 defines, from both ends, over a
-tokenizer that is this crate's own and depends on nothing. A client builds a `REPORT` and
+**Met.** The private DAV layer reads and writes every body RFC 4791 defines, from both ends, over
+the `xmlparser` lexer and icalkit's structural wrapper. A client builds a `REPORT` and
 reads the multistatus; a server reads the same `REPORT` and builds the same multistatus; the
 direction is visible only in which codec trait is called. `tests/interop.rs` drives the two
 halves through each other rather than each against a stand-in, which is where a disagreement
@@ -286,11 +309,11 @@ or an `If-Match: *` that means something else, and a 403 is not read as an absen
 that is how a client creates a second copy of an event it was merely not allowed to see. The
 authenticated principal is answered by the vocabulary — `DAV:current-user-principal` joined to
 `CALDAV:calendar-user-address-set` — rather than by a check this crate has no standing to make.
-An `ORGANIZER` change on write gets its refusal modeled and on the wire. The reply timestamp
-stays a store's column. The superseding `icalkit` facade now closes organizer `REQUEST`
-`RANGE=THISANDFUTURE` splitting, recurrence-set membership and later-anchor updates; remaining
-method-specific range behavior is still work. A store should build the `ical_core::Component`
-rather than a second source of truth for claims its own octets carry.
+An `ORGANIZER` change on write gets its refusal modeled and on the wire. Reply ordering is
+persisted on the attendee line by the scheduling workflow. The facade handles exact and
+unmaterialized instances, multiple payloads, `RANGE=THISANDFUTURE`, recurrence-set membership,
+and later-anchor updates for every supported scheduling component kind. A store should persist
+the validated `Calendar` rather than create a second source of truth for claims its octets carry.
 
 ### Is a calendar client or a self-hosted server now a reasonable thing to attempt?
 
@@ -300,45 +323,20 @@ values a caller builds and reads; the caller brings the HTTP client it already h
 what ADR 0004 chose deliberately rather than what this workspace failed to supply. Nothing
 below is missing from that path.
 
-For a **server**, the sentence above is overstated, and the honest version is that this crate
-supplies the protocol layer and not the server. Four things stand between a reader of this
-document and a working one, none of them small:
+For a **server**, `ServerOperation` is now the sans-I/O protocol engine. It parses and evaluates
+`calendar-query` filters against host-supplied resources, projects requested data without making
+it persistable as a complete calendar, handles discovery, sync, conditional writes,
+`MKCALENDAR`, and RFC 6638 scheduling POST, and renders the final response. Its
+`next_need -> supply -> finish` state machine asks the application for storage, routing, and ACL
+answers instead of importing those policies into the kernel. This is the intended closure:
+`icalkit` supplies the complete calendaring protocol workflow, while a deployable service still
+supplies its chosen HTTP runtime, persistence, credentials, and authorization policy.
 
-- **Nothing here evaluates a filter yet, and the crate that will is named.** A `comp-filter`, a
-  `time-range` and a `text-match` are represented, refused when they contradict themselves, and
-  handed back; deciding which resources match is work a server does by composing them with
-  `ical-recur` and `ical-core`. ADR 0004 always said so. It is the largest single piece of a
-  server this workspace does not contain *today*:
-  [ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md) decides
-  that it is `ical-query`, a published crate above `ical-core`, `ical-recur`, `ical-tz` and
-  `ical-dav`, and that `ical-dav` takes no dependency to make it possible.
-- **The vocabulary is CalDAV's and stops there, on purpose.** `MKCALENDAR` (RFC 4791 section
-  5.3.1) has a request body and no row, and that half is work this milestone owes.
-  Everything in RFC 3744 is a scope decision and it is made:
-  [ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendment 14 declines ACL's semantics and
-  the principal-discovery reports, which are now in the Non-goals below. Six of those roots gain
-  recognition-only rows so a server can tell a standard report this crate will not honor from a
-  root somebody invented — the deployed answer to which is an empty `207`, not a `403` — but
-  nothing reads or writes them, and a multi-user server still supplies its own ACL.
-- **Two gaps inside what is modeled — both now closed, by the attack rather than by this
-  plan.** `CALDAV:timezone` has a row, a field on `CalendarQuery`, and the line-ending
-  carve-out its value earns, so the zone a client stated survives a read and a re-encode
-  instead of being dropped as foreign. `DAV:allprop` and `DAV:propname` inside a
-  `calendar-query` are `QueryShape`, so RFC 4791 section 9.5's own production is a body this
-  crate reads and writes rather than one it answers `DavError::Unexpected` to. What replaced
-  them on this list was `calendar-multiget`, whose grammar admits the same three shapes and
-  which still carries only a property list. That is now decided the same way: ADR 0004 amendment
-  15 gives the multiget a `QueryShape`, because "nobody is known to send it" is the argument M4
-  declined one element over, and it fixes the *production* as the rule that says which bodies
-  carry the group at all.
-- **Scheduling over HTTP is half here.** RFC 6638's preconditions, `schedule-tag` and the
-  inbox and outbox properties are modeled, and `ical-itip` holds the semantics; the POST to a
-  scheduling outbox and the `CALDAV:schedule-response` body it answers with are not.
-
-So: a client, yes, today. A server, with the filter engine `ical-query` will ship and with an
-ACL vocabulary a reader supplies, since this workspace has declined that one. Both of those were true before this
-milestone as well; what changed is that the protocol layer under them exists and the reasons
-are specific enough to be worked through rather than discovered.
+The four gaps recorded in the earlier text are closed locally. Query evaluation is private
+`icalkit::internal::query` rather than a new public crate; MKCALENDAR has client and server
+operations; allprop/propname/multiget and calendar-timezone round-trip; and RFC 6638 outbox POST
+reads and writes `CALDAV:schedule-response`. RFC 3744 ACL semantics remain an explicit
+application port and non-goal, not an unfinished CalDAV parser.
 
 ### What four adversaries found after that was written
 
@@ -378,22 +376,17 @@ is one the peer discards whole. And a property that mixes character data with el
 text and reports the markup dropped, because one `Box<[u8]>` cannot hold both without inventing
 an order between them.
 
-One piece of internal debt is named rather than left: `write_request.rs` and
-`write_response.rs` each carry a private element encoder instead of going through
-`XmlWriter`, because both were written before it existed. All three share the one escaping
-path and `tests/interop.rs` holds all three to the same tokenizer, so they cannot drift
-silently; what the two private encoders lack is `XmlWriter`'s open-element stack, which makes
-an unbalanced write unrepresentable. The obstacle is a borrow — `XmlWriter` holds the meter
-for its whole lifetime and a nested `WriteXml` tree hands every level its own — and it is not
-resolved.
+The former duplicate request/response element encoders are gone. `write_request.rs` and
+`write_response.rs` both use the shared stack-balanced `XmlWriter`, and `xtask architecture`
+rejects either a missing shared import or the return of private structural helper functions.
 
 ## M5 — Interoperability evidence
 
-`icalkit-conformance` grown into a private differential corpus and versioned JSONL CLI: what
-Google Calendar, Microsoft 365, and Apple Calendar each emit and accept, where they disagree
-with the RFC and with each other, and what this project chose. Captures must be reduced and
-anonymized with provenance; synthetic client-shaped fixtures cannot justify compatibility
-repairs. The CLI is runnable without creating a second Rust library API.
+`icalkit-conformance` is a private differential corpus and versioned JSONL CLI. Its external
+evidence goal is to record what Google Calendar, Microsoft 365, and Apple Calendar each emit and
+accept, where they disagree with the RFC and with each other, and what this project chose.
+Captures must be reduced and anonymized with provenance; synthetic client-shaped fixtures cannot
+justify compatibility repairs. The CLI is runnable without creating a second Rust library API.
 
 What now binds it. A case is addressed to a specification section and evaluated through the
 subject trait, and it states the `Limits` policy it ran under, because an outcome that depends
@@ -402,23 +395,21 @@ on a budget is not reproducible without one
 `DiagnosticCode` and its channel, which is what the golden list of
 [ADR 0009](docs/adr/0009-error-and-diagnostic-model.md) exists to keep stable.
 
-Gates this milestone owes, restated by
-[ADR 0006](docs/adr/0006-conformance-corpus-as-artifact.md) amendment 1. The owed gate is the
-corpus against the committed `Observed` matrix: no external runtime, no kill wrapper, runs on
-every supported target including the two cross-targets, required, and red for exactly one reason
-— our answers moved against the recorded ones. The foreign-implementation bridge is no longer an
-owed gate. It survives as `xtask observed-refresh`, a scheduled non-required job whose only
-output is a classified diff for human review, which never commits and can never fail a build;
-promoting it to a required gate is a measurement with its threshold already fixed in that
-amendment.
+The locally reproducible half is met. The unpublished CLI speaks
+`icalkit-conformance/1` JSONL, refuses protocol/version mismatches as correlated answers, and
+runs the committed RFC, adversarial, synthetic-client, and DAV corpus without a foreign runtime
+or second Rust library contract. Cross-target compilation, allocation, and query-scale checks are
+ordinary CI gates. ADR-0014 supersedes ADR-0006's proposed live-bridge delivery shape.
 
-Two measurements land here and neither may be argued afterwards. Whether the gap-case default
-flips to shift needs one export apiece from three producers, with two shifting and none skipping
+The evidence-dependent half remains deliberately unclaimed. Whether the gap-case default flips
+to shift needs one export apiece from three producers, with two shifting and none skipping
 ([ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md) amendment 4); if they
-cannot be obtained by the close of this milestone the clause is struck rather than rolled
-forward. Whether a delegator's `REPLY` may carry two `ATTENDEE` lines needs two captures apiece
+cannot be obtained, strict behavior remains unchanged. Whether a delegator's `REPLY` may carry
+two `ATTENDEE` lines needs two captures apiece
 from four clients ([ADR 0005](docs/adr/0005-scheduling-apart-from-the-model.md) amendment 13);
-if none can be captured the refusal stands by default and is recorded as untested.
+until then the explicit hold-and-organizer-release policy stands and is recorded as untested
+against those producers. Neither question authorizes a `CommonClientsV1` rule without reduced,
+anonymized, versioned source captures.
 
 ## Non-goals
 
@@ -429,7 +420,7 @@ than a scope to assume now.
 RFC 3744's access-control vocabulary and the principal-discovery reports
 (`DAV:principal-match`, `DAV:principal-property-search`, `DAV:principal-search-property-set`,
 `DAV:acl-principal-prop-set`) together with `DAV:expand-property`. This workspace does not model
-them; a server that needs access control supplies it. `ical-dav` recognizes those roots by name
+them; a server that needs access control supplies it. The private DAV layer recognizes those roots by name
 and honors none of them, and the boundary
 [ADR 0012](docs/adr/0012-query-evaluation-crate-and-the-deferred-webdav-extraction.md) draws
 inherits the limit rather than becoming the place they were always going to live
@@ -441,6 +432,6 @@ rule; the mapping is a caller-side decorator
 ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md) amendment 16).
 
 An allocation-free tier is a named gap rather than a non-goal: it belongs to a future crate
-with its own lint profile, not to a feature flag on these
+with its own lint profile, not to a feature flag on `icalkit`
 ([ADR 0007](docs/adr/0007-allocation-policy.md)). `just no-std` proves these crates build for
-`thumbv7em-none-eabi`, not that they build without a global allocator.
+`thumbv7em-none-eabi`, not that it builds without a global allocator.

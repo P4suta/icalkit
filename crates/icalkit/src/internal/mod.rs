@@ -12,9 +12,8 @@ pub mod core;
 #[allow(dead_code, unused_imports, unreachable_pub)]
 pub mod dav;
 
-// The migrated source still contains its former public surface, including units not yet reached
-// by a facade workflow. This private ancestor makes those items unreachable outside icalkit.
-// Keep the exemption on this one migration boundary until each unit is connected or removed.
+// Query evaluation is reached only through the CalDAV workflow. This private ancestor keeps its
+// RFC-shaped implementation vocabulary unreachable outside icalkit.
 #[allow(dead_code, unused_imports, unreachable_pub)]
 pub mod query;
 

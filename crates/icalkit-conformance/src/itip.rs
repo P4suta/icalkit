@@ -35,28 +35,21 @@
 //! an over-long list turns "this party may reply" into "this party is unknown" and lets whoever
 //! padded the list choose which of the two a server believes.
 //!
-//! # Where the three big clients disagree with the table
+//! # Synthetic interoperability hypotheses
 //!
-//! The corpus records what was observed, not only what this project chose.
+//! The three shapes below came from implementation folklore, not from reduced captures committed
+//! with producer/version/date provenance. They are useful robustness cases and are deliberately
+//! labeled synthetic; they do not establish what Google Calendar, Microsoft 365, or Apple
+//! Calendar emits or accepts, and cannot justify a `CommonClientsV1` repair.
 //!
-//! - **An `ATTENDEE` in a `PUBLISH`.** RFC 5546 section 3.2.1's table says `0`. Google Calendar
-//!   emits `PUBLISH` bodies carrying the full attendee list on its "publish" and subscribed-feed
-//!   exports; Microsoft 365 emits `PUBLISH` with `ATTENDEE` from published-calendar and
-//!   `.ics`-attachment paths; Apple Calendar's exported invitations likewise keep the attendee
-//!   list under `METHOD:PUBLISH`. All three *accept* such a body on import and show the
-//!   attendee list. This project refuses the message whole, which is the strict reading and is
-//!   the known interoperability cost: `publish_with_attendee.ics` is the shape the three
-//!   produce, and it is refused here.
+//! - **An `ATTENDEE` in a `PUBLISH`.** RFC 5546 section 3.2.1's table says `0`. The synthetic
+//!   `publish_with_attendee.ics` fixture pins the strict answer: refuse the whole message.
 //! - **A `VALARM` in a `REPLY`.** Section 3.2.3's table says `0` for the subcomponent, and the
 //!   reason is not aesthetic: an alarm is a component the recipient's client will act on, and
-//!   an attendee's reply is not a place to install one. Apple Calendar and several mobile
-//!   clients echo the whole event, alarms included, back into the reply; Microsoft 365 strips
-//!   them. Nothing observed *rejects* the reply for carrying one.
+//!   an attendee's reply is not a place to install one. The synthetic fixture is refused.
 //! - **A `REPLY` with no `SEQUENCE`.** RFC 5546 section 3.2 reads an absent `SEQUENCE` as zero,
-//!   which is a revision and not an unknown. Google's replies omit `SEQUENCE` for
-//!   never-rescheduled events; Microsoft 365 echoes the request's. Reading absent as "unknown"
-//!   and accepting it is how a stale reply overwrites a newer state, so this project reads zero
-//!   and the case pins it.
+//!   which is a revision and not an unknown. Reading absent as "unknown" and accepting it is how
+//!   a stale reply overwrites a newer state, so this project reads zero and the case pins it.
 //!
 //! # The two-turn exchange
 //!
@@ -97,23 +90,18 @@
 //!   rule then refused the attendee for removals the diff invented. It describes nothing now,
 //!   and the revision gate is skipped for any method whose own table forbids a `SEQUENCE`.
 //!
-//! # What is still owed here
+//! # Current evidence boundary
 //!
-//! iMIP has prose and no cases. RFC 6047 section 2.5's point — that the envelope's `From` is
-//! not the `ORGANIZER` or `ATTENDEE` the iCalendar object names, and that treating the two as
-//! interchangeable is how a forged invitation is accepted — belongs to the `imip` feature, and
-//! this chapter does not turn it on: a feature enabled through a dev-dependency is enabled for
-//! the whole unified build, so switching it on here would quietly change what every other case
-//! in the workspace compiles against. Those cases want the feature named on their own row, and
-//! that is the next unit of work rather than a line in this one.
+//! iMIP is now an unconditional facade workflow rather than a feature on this former kernel.
+//! `crates/icalkit/tests/scheduling_workflow.rs` drives RFC 6047 media-type, charset, method,
+//! aggregate-budget, and authenticated-actor boundaries through the public API. In particular,
+//! email `From` is never substituted for the `ORGANIZER` or `ATTENDEE` identity the calendar
+//! names.
 //!
-//! All ten `scheduling-*` diagnostic codes have an emitter as of the integration pass — six in
-//! `icalkit_conformance::internal::itip::report`, three in `icalkit_conformance::internal::itip::instance`, and `scheduling-method-unknown` where a
-//! message is read — but this chapter drives only the last of them through a live sink. The
-//! other nine have their condition carried by a case and their spelling and severity asserted
-//! against the golden list, which is not the same as watching them arrive; running
-//! `inspect_message` and `resolve_instance` over this corpus's own subjects is the next unit of
-//! work here.
+//! The `scheduling-*` diagnostics are exercised on their emitting paths across this chapter,
+//! the composition/attacker suites, and the facade workflow tests. The table below additionally
+//! freezes each spelling, severity, and channel; it is a registry assertion rather than a list
+//! of unfinished emitters.
 
 #[cfg(test)]
 mod tests {
@@ -758,8 +746,8 @@ mod tests {
                 message: PUBLISH_WITH_ATTENDEE,
                 actor: CHAIR,
                 zoned: false,
-                // Section 3.2.1's table gives `ATTENDEE` the value `0`. Google, Microsoft 365
-                // and Apple all emit and accept this shape; this project refuses it whole.
+                // Section 3.2.1's table gives `ATTENDEE` the value `0`. This synthetic
+                // interoperability shape is therefore refused whole.
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsField(attendee_at(0))),
             },
             Case {
@@ -1396,13 +1384,13 @@ mod tests {
                 DiagnosticCode::SchedulingExclusionUnplaced,
                 "scheduling-exclusion-unplaced",
                 Severity::Violation,
-                "owed: no surface places an exclusion for a scheduling message yet",
+                "emitted while placing exclusions in the recurrence composition path",
             ),
             (
                 DiagnosticCode::SchedulingZoneContinued,
                 "scheduling-zone-continued",
                 Severity::Note,
-                "owed: the zone answer that would continue past a table is the caller's here",
+                "emitted when instance placement continues a finite zone answer",
             ),
             (
                 DiagnosticCode::SchedulingSenderNotPermitted,

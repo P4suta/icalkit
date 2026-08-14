@@ -412,6 +412,11 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
     let readme = fs::read_to_string(workspace.join("README.md"))?;
     let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
+    let roadmap = fs::read_to_string(workspace.join("ROADMAP.md"))?;
+    let internal_modules =
+        fs::read_to_string(workspace.join("crates/icalkit/src/internal/mod.rs"))?;
+    let scheduling_chapter =
+        fs::read_to_string(workspace.join("crates/icalkit-conformance/src/itip.rs"))?;
     let example_path = workspace.join("crates/icalkit/examples/golden_path.rs");
     let request_writer =
         fs::read_to_string(workspace.join("crates/icalkit/src/internal/dav/write_request.rs"))?;
@@ -419,6 +424,11 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         fs::read_to_string(workspace.join("crates/icalkit/src/internal/dav/write_response.rs"))?;
     violations.extend(retired_crate_violations(&root, &facade));
     violations.extend(documentation_violations(&readme, &architecture));
+    violations.extend(closure_status_violations(
+        &roadmap,
+        &internal_modules,
+        &scheduling_chapter,
+    ));
     violations.extend(xml_writer_violations(&request_writer, &response_writer));
     match fs::read_to_string(&example_path) {
         Ok(example) => violations.extend(basic_example_violations(&example)),
@@ -449,6 +459,52 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// Keep current-facing status documents separate from the historical milestone narrative.
+fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) -> Vec<String> {
+    const LEDGER: &str = "## Current closure ledger — 2026-08-14";
+    const RETIRED_ROADMAP_PROSE: &[&str] = &[
+        "still owed: a hostile input of 200,000",
+        "which it currently is not",
+        "no outside XML crate may be added",
+        "remaining method-specific range behavior is still work",
+        "One piece of internal debt is named rather than left",
+    ];
+
+    let mut violations = Vec::new();
+    if !roadmap.contains(LEDGER) {
+        violations.push(format!(
+            "ROADMAP.md: missing current closure marker `{LEDGER}`"
+        ));
+    }
+    for stale in RETIRED_ROADMAP_PROSE {
+        if roadmap.contains(stale) {
+            violations.push(format!(
+                "ROADMAP.md: completed work remains described as current debt: `{stale}`"
+            ));
+        }
+    }
+    if internal.contains("including units not yet reached") {
+        violations.push(
+            "crates/icalkit/src/internal/mod.rs: migrated query code is still described as \
+             unconnected"
+                .to_owned(),
+        );
+    }
+    for stale in [
+        "# What is still owed here",
+        "# Where the three big clients disagree with the table",
+        "The corpus records what was observed",
+    ] {
+        if scheduling.contains(stale) {
+            violations.push(format!(
+                "crates/icalkit-conformance/src/itip.rs: stale debt or unsupported capture claim \
+                 remains: `{stale}`"
+            ));
+        }
+    }
+    violations
 }
 
 /// Keep DAV request and response grammars on the one stack-balanced XML primitive.
@@ -2185,13 +2241,13 @@ fn row_codes(rows: &[Row]) -> impl Iterator<Item = &str> {
 mod tests {
     use super::{
         LAYERING_GATES, LayerEntry, LayeringGate, as_str_arms, basic_example_violations,
-        codes_violations, collect_architecture_violations, collect_codes_violations,
-        collect_purity_violations, core_list_violations, declared_dependencies, declares,
-        dependency_subtable_name, documentation_violations, enum_variants, file_path_violations,
-        golden_rows, is_dependency_table, layer_violations, layering_violations,
-        manifest_violations, match_arm_violations, private_crate_violations, recipe_violations,
-        release_violations, retired_crate_violations, snapshot_violations, table_keys,
-        xml_writer_violations,
+        closure_status_violations, codes_violations, collect_architecture_violations,
+        collect_codes_violations, collect_purity_violations, core_list_violations,
+        declared_dependencies, declares, dependency_subtable_name, documentation_violations,
+        enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
+        layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
+        recipe_violations, release_violations, retired_crate_violations, snapshot_violations,
+        table_keys, xml_writer_violations,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -3024,6 +3080,45 @@ name = \"icalkit\"
             violations
                 .iter()
                 .any(|violation| violation.contains("open_extension"))
+        );
+    }
+
+    #[test]
+    fn current_status_rejects_historical_debt_as_live_work() {
+        let current_roadmap = "## Current closure ledger — 2026-08-14\n";
+        assert!(
+            closure_status_violations(
+                current_roadmap,
+                "private modules are connected through workflows",
+                "# Current evidence boundary"
+            )
+            .is_empty()
+        );
+
+        let violations = closure_status_violations(
+            "Two are still owed: a hostile input of 200,000",
+            "including units not yet reached",
+            "# What is still owed here",
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("missing current closure marker"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("completed work"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("unconnected"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("unsupported capture claim"))
         );
     }
 

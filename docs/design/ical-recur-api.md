@@ -1,6 +1,8 @@
 # ical-recur: the public API
 
-- Status: accepted
+- Status: historical public-crate design; package boundary and surface superseded by
+  [ADR 0013](../adr/0013-unified-public-crate-and-explicit-interop.md) and
+  [ADR 0014](../adr/0014-private-kernel-and-conformance-isolation.md)
 - Date: 2026-08-10
 - Carries: DP-09, DP-10 (crate); DP-01, DP-08, DP-17, DP-18 (workspace)
 - Skeleton: assembled with the other five into one workspace and compiled together; see
