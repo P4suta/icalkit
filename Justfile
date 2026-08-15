@@ -93,6 +93,12 @@ purity:
 architecture:
     cargo run --quiet -p xtask -- architecture
 
+# Hold the public repository's support, security, contribution, release, and hosting policy
+# entry points together. The deterministic gate is local; docs/repository-policy.md records
+# the corresponding GitHub settings for remote audit.
+repository:
+    cargo run --quiet -p xtask -- repository
+
 # Freeze the sole production crate's canonical API with default and no default features.
 public-api:
     cargo run --quiet -p xtask -- public-api
@@ -136,9 +142,9 @@ msrv:
     cargo msrv verify --path xtask
 
 # Fast deterministic checks used during the edit/commit loop.
-check: fmt-check toml-check typos lint purity architecture public-api codes shear reuse actionlint zizmor
+check: fmt-check toml-check typos lint purity architecture repository public-api codes shear reuse actionlint zizmor
     @echo "fast local checks passed"
 
 # Every practical CI gate available on a developer machine.
-ci: fmt-check toml-check typos lint feature-matrix test-ci allocation doc no-std wasm purity architecture public-api codes deny shear reuse actionlint zizmor msrv
+ci: fmt-check toml-check typos lint feature-matrix test-ci allocation doc no-std wasm purity architecture repository public-api codes deny shear reuse actionlint zizmor msrv
     @echo "local CI passed"

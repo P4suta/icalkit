@@ -58,18 +58,13 @@ first. For those the actor is looked up in the message, so the gate proves the a
 the transport that delivered it. Every later message about the same identity is held against
 what the caller already has.
 
-**It proves no freshness.** An `Authorization` borrows both of its inputs and has no owned form,
-so it cannot be encoded, stored in a session, or replayed — a caller that tries gets a compile
-error rather than a forgeable token. What no lifetime can see is that the borrowed state is a
-snapshot read minutes ago. A `Commitment` crosses a request boundary and deliberately carries
-**no authority**: it is compared only to cause a refusal, its digest is a checksum and not a MAC,
-and an attacker who forges one gains exactly the ability to decline to be told that the target
-moved. The gate ran fresh either way. Binding a transition to a revision is designed and is still
-nobody's default. `ical_dav::Revision` carries the `ETag` a read returned and `Revision::digest`
-is the number a caller stores beside a `Commitment` and re-derives after the confirming read.
-But `ical-dav` may not name `ical-itip`'s types and does not, so the binding is the caller's to
-make and nothing here can see whether it was made — until it is, the propose-and-confirm flow is
-not safe against a racing organizer update and must not be described as if it were.
+**It proves no storage freshness.** `AuthorizedChange` borrows the exact `Message` and `Calendar`
+that were reviewed and is consumed by `apply`, so the capability cannot be encoded, stored, or
+replayed. What no Rust lifetime can see is that the borrowed calendar is a snapshot read minutes
+ago. The caller must bind that snapshot to an `icalkit::caldav::Revision` and use the resulting
+strong `If-Match` or `If-None-Match` condition when writing. A failed precondition means reread,
+review, and authorize again; applying the old result after a racing organizer update is unsafe.
+`Revision` rejects weak entity tags because they cannot protect a state-changing write.
 
 **Refusal is whole, and a refused message stays inspectable.** There is no partial success: a
 message that overreaches on one property is denied entire, because applying its permitted half
@@ -92,11 +87,12 @@ won the tie it declined to offer. An organizer-authored message that is neither 
 than the state describes nothing, because RFC 5546 section 2.1.4 requires an update to increment
 `SEQUENCE` and two messages at one revision are one version. Two replies from one attendee are
 one revision answered twice and the component's own `DTSTAMP` cannot order them, so the time
-each answer was written at is recorded on the line it answers for — `ical_itip::ANSWERED_AT` in
-the shipped bridge, `ScheduledComponent::attendee_answered_at` for a store keeping its own
-column. **A state that records no such time cannot order two answers and admits the second**: a
-caller whose storage discards that parameter keeps the change-of-mind case working and loses the
-defense against an attendee's own earlier answer being replayed.
+each answer was written at is recorded on the line it answers for. The built-in `Calendar` bridge
+uses the private `X-ICALKIT-ANSWERED-AT` parameter; a caller that converts the calendar into
+another storage model must preserve an equivalent value. **A state that records no such time
+cannot order two answers and admits the second**: storage that discards the witness keeps the
+change-of-mind case working and loses the defense against an attendee's own earlier answer being
+replayed.
 
 **Absence is absence, and identity is compared or the message is refused.** A component that
 states anything at all is a component the caller holds, so the payload fallback above is reached
@@ -121,6 +117,8 @@ Expect an acknowledgement within seven days.
 
 ## Supported versions
 
-While the project is pre-1.0, only the latest release receives fixes.
+Until the first release, security fixes target the current `main` branch only. After releases
+begin, only the latest released series will receive fixes unless a security advisory says
+otherwise.
 
 [advisories]: https://github.com/P4suta/icalkit/security/advisories/new

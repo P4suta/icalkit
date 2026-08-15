@@ -4,6 +4,9 @@
 
 blank_issues_enabled: false
 contact_links:
+  - name: Questions and support
+    url: https://github.com/P4suta/icalkit/discussions
+    about: Ask usage questions and get help reducing a reproducer before filing an issue.
   - name: RFC 5545 (iCalendar)
     url: https://www.rfc-editor.org/rfc/rfc5545.html
     about: The specification this library implements; iTIP and CalDAV are layered on it.
