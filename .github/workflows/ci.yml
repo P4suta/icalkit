@@ -282,6 +282,7 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           version: 0.11.32
+          enable-cache: false
       - run: just reuse
 
   deny:
