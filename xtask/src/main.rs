@@ -413,6 +413,7 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let readme = fs::read_to_string(workspace.join("README.md"))?;
     let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
     let roadmap = fs::read_to_string(workspace.join("ROADMAP.md"))?;
+    let ci_workflow = fs::read_to_string(workspace.join(".github/workflows/ci.yml"))?;
     let internal_modules =
         fs::read_to_string(workspace.join("crates/icalkit/src/internal/mod.rs"))?;
     let scheduling_chapter =
@@ -430,6 +431,7 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         &scheduling_chapter,
     ));
     violations.extend(xml_writer_violations(&request_writer, &response_writer));
+    violations.extend(public_api_workflow_violations(&ci_workflow));
     match fs::read_to_string(&example_path) {
         Ok(example) => violations.extend(basic_example_violations(&example)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => violations.push(
@@ -459,6 +461,27 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
         );
     }
     Ok(violations)
+}
+
+/// Keep the snapshot generator on the same pinned nightly that produced the committed API.
+fn public_api_workflow_violations(workflow: &str) -> Vec<String> {
+    const JOB_START: &str = "\n  public-api:\n";
+    const NEXT_JOB: &str = "\n  doc:\n";
+    const PINNED_NIGHTLY: &str = "toolchain: nightly-2026-07-02";
+
+    let Some((_, after_start)) = workflow.split_once(JOB_START) else {
+        return vec![".github/workflows/ci.yml: missing public-api job".to_owned()];
+    };
+    let job = after_start
+        .split_once(NEXT_JOB)
+        .map_or(after_start, |(body, _)| body);
+    if job.contains(PINNED_NIGHTLY) {
+        Vec::new()
+    } else {
+        vec![format!(
+            ".github/workflows/ci.yml: public-api job does not install pinned `{PINNED_NIGHTLY}`"
+        )]
+    }
 }
 
 /// Keep current-facing status documents separate from the historical milestone narrative.
@@ -2246,8 +2269,8 @@ mod tests {
         declared_dependencies, declares, dependency_subtable_name, documentation_violations,
         enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
         layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
-        recipe_violations, release_violations, retired_crate_violations, snapshot_violations,
-        table_keys, xml_writer_violations,
+        public_api_workflow_violations, recipe_violations, release_violations,
+        retired_crate_violations, snapshot_violations, table_keys, xml_writer_violations,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -3054,6 +3077,20 @@ name = \"icalkit\"
         assert_eq!(
             collect_architecture_violations().unwrap(),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn public_api_snapshots_install_the_pinned_nightly_they_run_on() {
+        let valid = "\n  public-api:\n    steps:\n      - with:\n          toolchain: nightly-2026-07-02\n\n  doc:\n";
+        assert!(public_api_workflow_violations(valid).is_empty());
+
+        let stable_only =
+            "\n  public-api:\n    steps:\n      - uses: rust-toolchain # stable\n\n  doc:\n";
+        assert!(
+            public_api_workflow_violations(stable_only)
+                .iter()
+                .any(|violation| violation.contains("nightly-2026-07-02"))
         );
     }
 
