@@ -27,11 +27,16 @@ homepage.workspace = true
 [lib]
 doc = false
 
+[[bin]]
+name = "capture-audit"
+path = "src/bin/capture_audit.rs"
+
 # The private source is path-included from `crates/icalkit`, outside this package directory, so
-# cargo-shear cannot see its direct jiff/xmlparser imports. The iTIP chapter is likewise included
-# by tests/itip_chapter.rs until that corpus moves behind the subject protocol.
+# cargo-shear cannot see its direct xmlparser import. jiff is visible through capture-audit. The
+# iTIP chapter is likewise included by tests/itip_chapter.rs until that corpus moves behind the
+# subject protocol.
 [package.metadata.cargo-shear]
-ignored = ["jiff", "xmlparser"]
+ignored = ["xmlparser"]
 ignored-paths = ["src/itip.rs"]
 
 [dependencies]
@@ -42,6 +47,7 @@ jiff = { version = "0.2.35", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 xmlparser = { version = "0.13.6", default-features = false }
 
 [lints]

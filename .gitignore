@@ -23,3 +23,7 @@
 .DS_Store
 Thumbs.db
 .claude/
+
+# Emergency landing zone only. capture-audit requires the real intake bundle to live outside
+# the workspace, but this keeps an accidentally dropped raw calendar out of git status.
+/.capture-intake/

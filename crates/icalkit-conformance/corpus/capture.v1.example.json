@@ -1,0 +1,15 @@
+{
+  "schema": "icalkit-capture/1",
+  "client": "Google Calendar",
+  "surface": "Google Calendar Web",
+  "version": "web",
+  "account_type": "consumer",
+  "observed_on": "2026-08-15",
+  "ics": "export.ics",
+  "rendering_evidence": "render.png",
+  "scenario": {
+    "id": "dst-gap-daily-series-v1",
+    "outcome": "offset-before",
+    "rendered_local": "2027-03-14T03:30:00"
+  }
+}

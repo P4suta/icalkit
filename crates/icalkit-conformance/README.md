@@ -24,3 +24,9 @@ The versioned corpus manifest is `corpus/manifest.v1.jsonl`. Existing client-sha
 marked `synthetic`; they are not evidence for a compatibility repair. A captured Google Calendar,
 Microsoft 365, or Apple Calendar row must record its version and observation date and attest its
 reduction and anonymization before it can justify `CommonClientsV1` behavior.
+
+Raw producer material enters through the non-writing capture-audit maintainer CLI and remains
+outside the workspace. The exact DST-gap scenario, Google and Outlook export steps, versioned
+capture metadata, rendering buckets, privacy boundary, and corpus admission fields are documented
+in [CAPTURE.md](CAPTURE.md). capture-audit reports hashes and structural readiness only; it does
+not claim that an export has been anonymized.

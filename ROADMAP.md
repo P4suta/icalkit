@@ -33,6 +33,13 @@ are supplied, `CommonClientsV1` intentionally performs no evidence-free repair. 
 also intentionally deferred: every package remains `0.0.0` until a separate explicit release
 instruction.
 
+The credential-free intake side is ready: the private capture-audit helper accepts only an
+outside-workspace, versioned bundle, validates ADR-0011's DST-gap scenario and producer rendering,
+and reports artifact hashes without copying or disclosing raw material. The captured-manifest
+contract requires those hashes and observations after anonymization. This does not count as a
+producer measurement; Google, Microsoft, and Apple account owners still have to supply the
+captures.
+
 The milestone narrative below is retained as implementation history. Statements about package
 names, proposed surfaces, and work that was “owed” describe the point at which that paragraph was
 written; this ledger and ADR-0014 are authoritative for current status.
