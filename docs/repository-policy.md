@@ -60,6 +60,10 @@ Dependency graph alerts, Dependabot security updates, CodeQL, secret scanning, s
 push protection, and private vulnerability reporting are enabled. Public issues direct
 security-sensitive reports to the private advisory flow in `SECURITY.md`.
 
+GitHub currently reports the optional non-provider pattern and validity extensions as disabled
+for this personal public repository. They are not counted as active controls; maintainers should
+enable them and update this paragraph if repository-plan availability changes.
+
 The repository stores no application credentials and no raw private calendar exports. A
 real-client fixture must be minimized, anonymized, and accompanied by provenance. Raw intake
 stays outside the worktree and is never committed.

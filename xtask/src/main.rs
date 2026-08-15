@@ -490,6 +490,7 @@ fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> V
             "draft pull request",
             "`0.0.0`",
             "explicit release decision",
+            "optional non-provider pattern and validity extensions",
         ],
         &mut violations,
     );
@@ -3349,7 +3350,8 @@ name = \"icalkit\"
                       Do not include confidential data.",
             license: "MIT OR Apache-2.0; LICENSES/MIT.txt; LICENSES/Apache-2.0.txt",
             policy: "`main`; `ci-required`; squash; draft pull request; `0.0.0`; \
-                     explicit release decision",
+                     explicit release decision; optional non-provider pattern and validity \
+                     extensions",
             feature_request: "name: Design proposal\nlabels: [\"enhancement\"]\nSee SECURITY.md",
             issue_config: "blank_issues_enabled: false\n\
                            https://github.com/P4suta/icalkit/discussions\n\
