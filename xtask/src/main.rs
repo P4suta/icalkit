@@ -158,6 +158,14 @@
 //! committed twice: once with default features and once with no features. `cargo-public-api`
 //! generates both lists and this task compares them exactly. An addition, removal, move, or
 //! duplicate canonical path therefore needs an intentional snapshot edit in the same review.
+//!
+//! # `repository`
+//!
+//! Public hosting is part of the product boundary too: a contributor must be able to find the
+//! support and security channels, the release posture, and the exact protection policy before
+//! opening a change. This task holds those repository-owned files and their essential links
+//! together. It deliberately does not call GitHub: remote enforcement is audited against
+//! `docs/repository-policy.md`, while this deterministic half remains runnable offline.
 
 use std::fs;
 use std::io;
@@ -309,6 +317,7 @@ fn main() -> ExitCode {
         Some("architecture") => report("architecture", collect_architecture_violations()),
         Some("codes") => report("codes", collect_codes_violations()),
         Some("public-api") => report("public-api", collect_public_api_violations()),
+        Some("repository") => report("repository", collect_repository_violations()),
         Some(task) => {
             eprintln!("xtask: unknown task `{task}`");
             print_usage();
@@ -323,7 +332,251 @@ fn main() -> ExitCode {
 
 /// Print the available tasks.
 fn print_usage() {
-    eprintln!("usage: cargo run -p xtask -- <purity|architecture|codes|public-api>");
+    eprintln!("usage: cargo run -p xtask -- <purity|architecture|codes|public-api|repository>");
+}
+
+/// Files that make the public repository navigable and its maintenance policy reviewable.
+const REQUIRED_REPOSITORY_FILES: &[&str] = &[
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "LICENSE",
+    "CODE_OF_CONDUCT.md",
+    "docs/repository-policy.md",
+    ".github/CODEOWNERS",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/interoperability_disagreement.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/ISSUE_TEMPLATE/documentation.md",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/dependabot.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/codeql.yml",
+];
+
+/// The documents whose cross-file promises are held by
+/// [`repository_documentation_violations`].
+struct RepositoryDocuments<'a> {
+    readme: &'a str,
+    contributing: &'a str,
+    security: &'a str,
+    support: &'a str,
+    license: &'a str,
+    policy: &'a str,
+    feature_request: &'a str,
+    issue_config: &'a str,
+    ci: &'a str,
+    codeql: &'a str,
+    dependabot: &'a str,
+    codeowners: &'a str,
+}
+
+/// Check the repository-owned half of the public hosting policy without requiring a network.
+fn collect_repository_violations() -> io::Result<Vec<String>> {
+    let workspace = workspace_root()?;
+    let mut violations = Vec::new();
+    let mut sources = Vec::new();
+
+    for path in REQUIRED_REPOSITORY_FILES {
+        match fs::read_to_string(workspace.join(path)) {
+            Ok(source) => {
+                if source.trim().is_empty() {
+                    violations.push(format!("{path}: required repository file is empty"));
+                }
+                sources.push((*path, source));
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                violations.push(format!("{path}: required repository file is missing"));
+                sources.push((*path, String::new()));
+            },
+            Err(error) => return Err(error),
+        }
+    }
+
+    let source = |path: &str| {
+        sources
+            .iter()
+            .find_map(|(candidate, source)| (*candidate == path).then_some(source.as_str()))
+            .unwrap_or("")
+    };
+    violations.extend(repository_documentation_violations(&RepositoryDocuments {
+        readme: source("README.md"),
+        contributing: source("CONTRIBUTING.md"),
+        security: source("SECURITY.md"),
+        support: source("SUPPORT.md"),
+        license: source("LICENSE"),
+        policy: source("docs/repository-policy.md"),
+        feature_request: source(".github/ISSUE_TEMPLATE/feature_request.yml"),
+        issue_config: source(".github/ISSUE_TEMPLATE/config.yml"),
+        ci: source(".github/workflows/ci.yml"),
+        codeql: source(".github/workflows/codeql.yml"),
+        dependabot: source(".github/dependabot.yml"),
+        codeowners: source(".github/CODEOWNERS"),
+    }));
+    Ok(violations)
+}
+
+/// Hold the public entry points, release posture, automation, and ownership policy together.
+fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    require_markers(
+        "README.md",
+        documents.readme,
+        &[
+            "actions/workflows/ci.yml/badge.svg?branch=main",
+            "actions/workflows/codeql.yml/badge.svg?branch=main",
+            "[Contributing](CONTRIBUTING.md)",
+            "[Support](SUPPORT.md)",
+            "[Security policy](SECURITY.md)",
+            "[repository policy](docs/repository-policy.md)",
+        ],
+        &mut violations,
+    );
+    forbid_markers(
+        "CONTRIBUTING.md",
+        documents.contributing,
+        &[
+            "`ical-core`",
+            "`ical-recur`",
+            "`ical-tz`",
+            "`ical-itip`",
+            "`ical-dav`",
+        ],
+        &mut violations,
+    );
+    forbid_markers(
+        "SECURITY.md",
+        documents.security,
+        &["ical_dav::", "ical_itip::", "`ical-dav`", "`ical-itip`"],
+        &mut violations,
+    );
+    require_markers(
+        "SECURITY.md",
+        documents.security,
+        &["Until the first release", "security/advisories/new"],
+        &mut violations,
+    );
+    require_markers(
+        "SUPPORT.md",
+        documents.support,
+        &[
+            "GitHub Discussions",
+            "public GitHub issue",
+            "security/advisories/new",
+            "Do not include confidential",
+        ],
+        &mut violations,
+    );
+    require_markers(
+        "LICENSE",
+        documents.license,
+        &[
+            "MIT OR Apache-2.0",
+            "LICENSES/MIT.txt",
+            "LICENSES/Apache-2.0.txt",
+        ],
+        &mut violations,
+    );
+    require_markers(
+        "docs/repository-policy.md",
+        documents.policy,
+        &[
+            "`main`",
+            "`ci-required`",
+            "squash",
+            "draft pull request",
+            "`0.0.0`",
+            "explicit release decision",
+        ],
+        &mut violations,
+    );
+    violations.extend(repository_automation_violations(documents));
+
+    violations
+}
+
+/// Hold issue routing, CI security analysis, dependency updates, and ownership together.
+fn repository_automation_violations(documents: &RepositoryDocuments<'_>) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    require_markers(
+        ".github/ISSUE_TEMPLATE/feature_request.yml",
+        documents.feature_request,
+        &[
+            "name: Design proposal",
+            "labels: [\"enhancement\"]",
+            "SECURITY.md",
+        ],
+        &mut violations,
+    );
+    require_markers(
+        ".github/ISSUE_TEMPLATE/config.yml",
+        documents.issue_config,
+        &[
+            "blank_issues_enabled: false",
+            "https://github.com/P4suta/icalkit/discussions",
+            "security/advisories/new",
+        ],
+        &mut violations,
+    );
+    require_markers(
+        ".github/workflows/ci.yml",
+        documents.ci,
+        &[
+            "repository policy",
+            "- run: just repository",
+            "- repository",
+        ],
+        &mut violations,
+    );
+    require_markers(
+        ".github/workflows/codeql.yml",
+        documents.codeql,
+        &["security-extended", "security-events: write"],
+        &mut violations,
+    );
+    require_markers(
+        ".github/dependabot.yml",
+        documents.dependabot,
+        &[
+            "package-ecosystem: cargo",
+            "package-ecosystem: github-actions",
+        ],
+        &mut violations,
+    );
+    require_markers(
+        ".github/CODEOWNERS",
+        documents.codeowners,
+        &["/SECURITY.md @P4suta", "/docs/repository-policy.md @P4suta"],
+        &mut violations,
+    );
+
+    violations
+}
+
+/// Require short, stable policy phrases without pretending to parse Markdown or YAML.
+fn require_markers(path: &str, source: &str, markers: &[&str], violations: &mut Vec<String>) {
+    for marker in markers {
+        if !source.contains(marker) {
+            violations.push(format!(
+                "{path}: missing required repository marker `{marker}`"
+            ));
+        }
+    }
+}
+
+/// Reject public-facing names that would restore a retired canonical path by documentation.
+fn forbid_markers(path: &str, source: &str, markers: &[&str], violations: &mut Vec<String>) {
+    for marker in markers {
+        if source.contains(marker) {
+            violations.push(format!(
+                "{path}: contains retired repository marker `{marker}`"
+            ));
+        }
+    }
 }
 
 /// Generate and compare both feature profiles of the sole public crate.
@@ -2263,14 +2516,16 @@ fn row_codes(rows: &[Row]) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LAYERING_GATES, LayerEntry, LayeringGate, as_str_arms, basic_example_violations,
-        closure_status_violations, codes_violations, collect_architecture_violations,
-        collect_codes_violations, collect_purity_violations, core_list_violations,
-        declared_dependencies, declares, dependency_subtable_name, documentation_violations,
-        enum_variants, file_path_violations, golden_rows, is_dependency_table, layer_violations,
-        layering_violations, manifest_violations, match_arm_violations, private_crate_violations,
+        LAYERING_GATES, LayerEntry, LayeringGate, RepositoryDocuments, as_str_arms,
+        basic_example_violations, closure_status_violations, codes_violations,
+        collect_architecture_violations, collect_codes_violations, collect_purity_violations,
+        collect_repository_violations, core_list_violations, declared_dependencies, declares,
+        dependency_subtable_name, documentation_violations, enum_variants, file_path_violations,
+        golden_rows, is_dependency_table, layer_violations, layering_violations,
+        manifest_violations, match_arm_violations, private_crate_violations,
         public_api_workflow_violations, recipe_violations, release_violations,
-        retired_crate_violations, snapshot_violations, table_keys, xml_writer_violations,
+        repository_documentation_violations, retired_crate_violations, snapshot_violations,
+        table_keys, xml_writer_violations,
     };
 
     /// The grammar layer's gate, which every layer rule below is stated over.
@@ -3076,6 +3331,71 @@ name = \"icalkit\"
     fn the_committed_tree_has_one_public_crate_and_two_features() {
         assert_eq!(
             collect_architecture_violations().unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn repository_documents_hold_public_entry_points_and_remote_policy_together() {
+        let valid = RepositoryDocuments {
+            readme: "actions/workflows/ci.yml/badge.svg?branch=main\n\
+                     actions/workflows/codeql.yml/badge.svg?branch=main\n\
+                     [Contributing](CONTRIBUTING.md) [Support](SUPPORT.md)\n\
+                     [Security policy](SECURITY.md)\n\
+                     [repository policy](docs/repository-policy.md)",
+            contributing: "The private kernel stays no_std and sans-I/O.",
+            security: "Until the first release, main receives fixes. security/advisories/new",
+            support: "GitHub Discussions; public GitHub issue; security/advisories/new; \
+                      Do not include confidential data.",
+            license: "MIT OR Apache-2.0; LICENSES/MIT.txt; LICENSES/Apache-2.0.txt",
+            policy: "`main`; `ci-required`; squash; draft pull request; `0.0.0`; \
+                     explicit release decision",
+            feature_request: "name: Design proposal\nlabels: [\"enhancement\"]\nSee SECURITY.md",
+            issue_config: "blank_issues_enabled: false\n\
+                           https://github.com/P4suta/icalkit/discussions\n\
+                           security/advisories/new",
+            ci: "name: repository policy\n- run: just repository\n- repository",
+            codeql: "security-extended\nsecurity-events: write",
+            dependabot: "package-ecosystem: cargo\npackage-ecosystem: github-actions",
+            codeowners: "/SECURITY.md @P4suta\n/docs/repository-policy.md @P4suta",
+        };
+        assert!(repository_documentation_violations(&valid).is_empty());
+    }
+
+    #[test]
+    fn repository_documents_reject_missing_channels_and_retired_paths() {
+        let incomplete = RepositoryDocuments {
+            readme: "",
+            contributing: "The `ical-core` crate is public.",
+            security: "Use ical_dav::Revision and `ical-itip`.",
+            support: "",
+            license: "",
+            policy: "",
+            feature_request: "",
+            issue_config: "",
+            ci: "",
+            codeql: "",
+            dependabot: "",
+            codeowners: "",
+        };
+        let violations = repository_documentation_violations(&incomplete);
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("README.md") && violation.contains("badge.svg"))
+        );
+        assert!(violations.iter().any(|violation| {
+            violation.contains("CONTRIBUTING.md") && violation.contains("ical-core")
+        }));
+        assert!(violations.iter().any(|violation| {
+            violation.contains("SECURITY.md") && violation.contains("ical_dav::")
+        }));
+    }
+
+    #[test]
+    fn the_committed_tree_carries_the_repository_policy() {
+        assert_eq!(
+            collect_repository_violations().unwrap(),
             Vec::<String>::new()
         );
     }

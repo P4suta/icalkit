@@ -6,6 +6,9 @@
 /Cargo.lock @P4suta
 /rust-toolchain.toml @P4suta
 /.github/ @P4suta
+/SECURITY.md @P4suta
+/SUPPORT.md @P4suta
+/docs/repository-policy.md @P4suta
 
 # The frozen decisions. A change here changes what the library is allowed to be.
 /docs/adr/ @P4suta

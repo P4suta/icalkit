@@ -1,5 +1,10 @@
 # icalkit
 
+[![CI](https://github.com/P4suta/icalkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml)
+![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-blue)
+[![MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+
 A pure-Rust, sans-I/O calendaring stack for iCalendar (RFC 5545), recurrence, time
 zones, iTIP scheduling (RFC 5546/6047), and CalDAV (RFC 4791/6578/6638).
 
@@ -196,6 +201,18 @@ just ci             # every practical local CI gate
 
 The private `icalkit-conformance` subject speaks a versioned JSONL protocol. Its synthetic
 fixtures exercise robustness but are not evidence for `CommonClientsV1` repairs.
+
+## Project governance
+
+icalkit is developed in public, but it is still intentionally unreleased. Start with
+[Contributing](CONTRIBUTING.md) for the TDD workflow and review rules, [Support](SUPPORT.md)
+for choosing between Discussions and an issue, and the [Security policy](SECURITY.md) for
+private vulnerability reports. The checked [repository policy](docs/repository-policy.md)
+records the protected-branch, merge, automation, and release posture mirrored in GitHub.
+
+Questions belong in [GitHub Discussions](https://github.com/P4suta/icalkit/discussions).
+Actionable defects and proposals use the structured issue forms. Real-client captures must be
+reduced and anonymized before they enter an issue or the conformance corpus.
 
 ## License
 

@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Design proposal
+description: Propose a new workflow, public API, compatibility rule, or supported RFC behavior
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Proposals are evaluated against the single-crate public API, sans-I/O boundary, bounded
+        work model, and standards evidence. A proposal is not a release commitment. For a
+        security-sensitive behavior, stop and follow
+        [SECURITY.md](../../SECURITY.md) instead of filing publicly.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and use case
+      description: What concrete caller workflow cannot be expressed today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the outcome and the smallest public API needed to reach it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: standards
+    attributes:
+      label: Standards and interoperability evidence
+      description: >-
+        Cite relevant RFC sections and any reduced, anonymized client observations. Say when no
+        standard governs the request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and non-goals
+      description: What can callers do now, and what should remain outside icalkit?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Public API impact
+      options:
+        - No public API change
+        - Additive public API
+        - Existing public API would move or change
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary check
+      options:
+        - label: The proposal does not require icalkit to own HTTP, storage, credentials, a clock, or application ACL policy.
+          required: true
+        - label: Any attached calendar or wire data is reduced and anonymized.
+          required: true

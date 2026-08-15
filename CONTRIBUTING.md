@@ -18,21 +18,33 @@ just ci             # everything CI runs, locally
 `just ci` is also the pre-push hook. If it passes locally it passes in CI; if it fails,
 fix the cause rather than narrowing the gate.
 
+## Test-driven changes
+
+Start by adding the smallest test that expresses the missing behavior and confirm that it fails
+for the intended reason. Implement the behavior, run the focused test until it passes, then run
+`just check` and the relevant portability or conformance gates. Before pushing, run `just ci`.
+
+Work on a topic branch and open a draft pull request while the change is still evolving. Keep
+generated artifacts, public API snapshots, corpus evidence, and documentation in the same pull
+request as the source change that requires them. The complete hosting and merge rules are in the
+[repository policy](docs/repository-policy.md).
+
 ## Rules that are not negotiable
 
 - **No `allow` and no `ignore`.** Every gate is strict on purpose. Make the code pass
   instead of suppressing the finding. If a lint is genuinely wrong for this codebase,
   change the shared configuration and say why in the commit message.
-- **The core stays `no_std` and sans-I/O.** `ical-core`, `ical-recur`, `ical-tz`, `ical-itip`,
-  and `ical-dav` must not gain `std`, a bundled time zone database, a
-  clock, or a transport. `just purity`, `just no-std`, and `just wasm` enforce it. A zone
-  answer comes from a caller-supplied source and names that source
+- **The private kernel stays `no_std` and sans-I/O.** `icalkit` is the only production crate.
+  Its crate root remains `#![no_std]` and its private kernel must not gain a clock, transport,
+  store, application policy, or bundled time zone database. The `std` and `system-tz` features
+  activate only the documented adapter boundary. `just purity`, `just no-std`, and `just wasm`
+  enforce it. A zone answer comes from a caller-supplied source and names that source
   ([ADR 0003](docs/adr/0003-caller-supplied-time-zones.md)); "now" is an instant the caller
   passed in ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md)). A dependency's key is a
-  nickname; `just purity` reads the package it links, so a `package = "..."` rename is itself
-  a violation, and so is a dependency that comes from a registry rather than from this
-  workspace.
-- **The core is `alloc`, and every allocated byte is charged.** Each core crate declares
+  nickname; `just purity` reads the package it links, so renaming a package cannot hide a new
+  boundary. Jiff and xmlparser are the two recorded third-party boundaries; another dependency
+  requires an architecture decision.
+- **The kernel uses `alloc`, and every allocated byte is charged.** The production crate declares
   `extern crate alloc;` and `just purity` checks for the line. There is no allocation-free
   build and no feature flag pretending otherwise; a genuinely alloc-free tier would be a new
   crate with its own lint profile ([ADR 0007](docs/adr/0007-allocation-policy.md)). Bytes are
@@ -45,16 +57,15 @@ fix the cause rather than narrowing the gate.
   the type is neither `Copy` nor `Default` so that doing it is at least visible. Accepting a
   meter and never charging it still compiles, which is why this is a rule and not only a
   signature.
-- **A violation is a diagnostic, and an error means nothing could be built.** Those are the
-  two channels, and which one a condition travels on is frozen per code
-  ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)). `DiagnosticCode` is one
-  workspace-wide vocabulary: a variant may be added, its meaning may not be edited without a
-  rename or a deprecation, and a sink is always allowed to refuse — no reader may treat
-  refusal as a reason to stop reading.
-- **The token layer is the parser.** `Document::parse` goes through the same public token
-  path a streaming caller uses; a private fast path is how one name acquires two grammars
-  ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). Token payloads are `&[u8]`,
-  and UTF-8 is demanded only in the typed view, where failure is a diagnostic.
+- **A violation is an issue, and an error means no validated value could be built.** Those are
+  separate channels, and which one a condition travels on is frozen per code
+  ([ADR 0009](docs/adr/0009-error-and-diagnostic-model.md)). The internal diagnostic vocabulary
+  and the public `IssueCode` string newtype must keep stable meanings. A sink refusing retention
+  never changes how much input the parser validates.
+- **There is one token path.** Strict validation, lossless import, and editing all go through the
+  same private content-line tokenizer; a private fast path beside it would give one public name
+  two grammars ([ADR 0008](docs/adr/0008-parser-layering-and-pull-api.md)). Token payloads stay
+  octets internally, and UTF-8 is demanded only by a typed view that requires it.
 - **The grammar is a layer inside `icalkit`'s private kernel, and it names nothing above itself.**
   `crates/icalkit/src/internal/core/grammar/` is a private module tree inside the unified crate,
   and
@@ -62,10 +73,10 @@ fix the cause rather than narrowing the gate.
   no model, so naming one is a compile error there. That member cannot see a `crate::X` for an
   `X` the root re-exports from the grammar itself, so the rest is the second rule of
   `just purity`: in `mod.rs` neither `crate::` nor `super::`, in the files beside it neither
-  `crate::` nor `super::super::`, no `ical_core::`, no `extern crate`, no `#[path]`, and every
-  `.rs` file beside `mod.rs` declared by it. The check is textual and a macro or a generated
-  path goes through it ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendments 17 and
-  18).
+  `crate::` nor `super::super::`, no path through a retired crate alias, no `extern crate`, no
+  `#[path]`, and every `.rs` file beside `mod.rs` declared by it. The check is textual and a
+  macro or a generated path goes through it
+  ([ADR 0004](docs/adr/0004-sans-io-protocol-layer.md) amendments 17 and 18).
 - **Time arithmetic is checked and never coerces.** `checked_*`, `div_euclid`, `rem_euclid`;
   no `Duration` carries years or months; a recurrence instance whose date or local time does
   not exist is filtered per RFC 5545 section 3.3.10, never moved to a nearby one
