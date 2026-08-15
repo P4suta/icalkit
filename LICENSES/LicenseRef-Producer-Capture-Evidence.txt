@@ -1,0 +1,7 @@
+Producer Capture Evidence Notice
+
+This file contains a minimized or cropped producer rendering retained solely as factual
+interoperability and conformance evidence. No license is granted for the producer's names,
+marks, interface, or other protected material. All rights in that material remain with the
+relevant producer. Redistribution of the evidence is limited to the repository's testing,
+review, and archival purposes.

@@ -50,6 +50,9 @@ extend-exclude = [
   # both: where the corpus lives is a question the milestone that collects it answers.
   "**/tests/corpus/**",
   "**/tests/fixtures/**",
+  # Cropped producer renderings are compressed binary evidence. Passing their PNG byte
+  # stream through `typos --write-changes` can corrupt the evidence rather than inspect it.
+  "**/corpus/evidence/*.png",
 ]
 
 [type.toml]

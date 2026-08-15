@@ -4,7 +4,7 @@
 > single `icalkit` production crate; ADR-0014 is authoritative for the current package graph,
 > Jiff boundary, private XML lexer, and conformance isolation.
 
-## Current closure ledger — 2026-08-14
+## Current closure ledger — 2026-08-15
 
 All locally implementable work in the production-0.1 plan is complete:
 
@@ -27,18 +27,18 @@ All locally implementable work in the production-0.1 plan is complete:
   5,000-resource query benchmark, default/no-default, bare-metal, WASM, MSRV, architecture,
   diagnostic, dependency, licensing, and workflow gates make up the local CI contract.
 
-What remains is external evidence, not inferred compatibility behavior: reduced, anonymized,
-versioned captures from Google Calendar, Microsoft 365, and Apple Calendar. Until those captures
-are supplied, `CommonClientsV1` intentionally performs no evidence-free repair. Publication is
-also intentionally deferred: every package remains `0.0.0` until a separate explicit release
+What remains is external evidence, not inferred compatibility behavior. A reduced, anonymized
+Google Calendar Web 70.9054 consumer capture now records `offset-before` for the versioned DST-gap
+scenario. Microsoft 365 and Apple Calendar remain unobserved, so the three-producer threshold is
+not met and `CommonClientsV1` intentionally performs no evidence-free repair. Publication is also
+intentionally deferred: every package remains `0.0.0` until a separate explicit release
 instruction.
 
 The credential-free intake side is ready: the private capture-audit helper accepts only an
 outside-workspace, versioned bundle, validates ADR-0011's DST-gap scenario and producer rendering,
 and reports artifact hashes without copying or disclosing raw material. The captured-manifest
-contract requires those hashes and observations after anonymization. This does not count as a
-producer measurement; Google, Microsoft, and Apple account owners still have to supply the
-captures.
+contract requires those hashes and observations after anonymization. Google now satisfies that
+contract; Microsoft and Apple account owners still have to supply their captures.
 
 The milestone narrative below is retained as implementation history. Statements about package
 names, proposed surfaces, and work that was “owed” describe the point at which that paragraph was

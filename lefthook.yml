@@ -32,6 +32,7 @@ pre-commit:
 
     typos:
       tags: spell
+      exclude: "**/*.png"
       run: mise exec -- typos --write-changes {staged_files}
       stage_fixed: true
 

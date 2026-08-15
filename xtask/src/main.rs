@@ -463,7 +463,7 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
 
 /// Keep current-facing status documents separate from the historical milestone narrative.
 fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) -> Vec<String> {
-    const LEDGER: &str = "## Current closure ledger — 2026-08-14";
+    const LEDGER: &str = "## Current closure ledger — 2026-08-15";
     const RETIRED_ROADMAP_PROSE: &[&str] = &[
         "still owed: a hostile input of 200,000",
         "which it currently is not",
@@ -3085,7 +3085,7 @@ name = \"icalkit\"
 
     #[test]
     fn current_status_rejects_historical_debt_as_live_work() {
-        let current_roadmap = "## Current closure ledger — 2026-08-14\n";
+        let current_roadmap = "## Current closure ledger — 2026-08-15\n";
         assert!(
             closure_status_violations(
                 current_roadmap,
