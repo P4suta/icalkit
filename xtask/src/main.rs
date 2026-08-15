@@ -530,6 +530,7 @@ fn repository_automation_violations(documents: &RepositoryDocuments<'_>) -> Vec<
             "repository policy",
             "- run: just repository",
             "- repository",
+            "enable-cache: false",
         ],
         &mut violations,
     );
@@ -3356,7 +3357,8 @@ name = \"icalkit\"
             issue_config: "blank_issues_enabled: false\n\
                            https://github.com/P4suta/icalkit/discussions\n\
                            security/advisories/new",
-            ci: "name: repository policy\n- run: just repository\n- repository",
+            ci: "name: repository policy\n- run: just repository\n- repository\n\
+                 enable-cache: false",
             codeql: "security-extended\nsecurity-events: write",
             dependabot: "package-ecosystem: cargo\npackage-ecosystem: github-actions",
             codeowners: "/SECURITY.md @P4suta\n/docs/repository-policy.md @P4suta",
@@ -3392,6 +3394,30 @@ name = \"icalkit\"
         assert!(violations.iter().any(|violation| {
             violation.contains("SECURITY.md") && violation.contains("ical_dav::")
         }));
+    }
+
+    #[test]
+    fn repository_policy_rejects_uv_cache_without_dependency_metadata() {
+        let documents = RepositoryDocuments {
+            readme: "",
+            contributing: "",
+            security: "",
+            support: "",
+            license: "",
+            policy: "",
+            feature_request: "",
+            issue_config: "",
+            ci: "- uses: astral-sh/setup-uv@pinned\n  with:\n    version: 0.11.32",
+            codeql: "",
+            dependabot: "",
+            codeowners: "",
+        };
+
+        assert!(
+            repository_documentation_violations(&documents)
+                .iter()
+                .any(|violation| violation.contains("enable-cache: false"))
+        );
     }
 
     #[test]
