@@ -14,8 +14,7 @@
 # with no dependencies, so a path out of that layer is a compile error (docs/adr/0004).
 #
 # Policy:
-#   - Every third-party action is SHA-pinned (Dependabot bumps them weekly); the comment
-#     records the human-readable version.
+#   - Every third-party action is SHA-pinned (Renovate updates them); the comment records the human-readable version.
 #   - Every job runs the same `just` recipe a developer runs locally, so CI and the dev box
 #     cannot drift.
 #   - `no_std`, `wasm`, and `purity` are required gates, not advisory ones. They are what
