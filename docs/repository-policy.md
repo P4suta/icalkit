@@ -50,15 +50,14 @@ requests. Each workflow grants narrower write permission only where a job needs 
 `security-events: write` for CodeQL uploads. Third-party Actions are pinned to full commit SHAs
 and are audited by actionlint and zizmor.
 
-Dependabot checks Cargo and GitHub Actions weekly. Compatible Cargo updates are grouped; major
-updates remain isolated for explicit compatibility review. Automated dependency pull requests
-must pass the same protected checks as maintainer changes.
+Renovate checks Cargo and GitHub Actions through the centrally managed repository configuration.
+Compatible Cargo updates are grouped; major updates remain isolated for explicit compatibility review.
+Automated dependency pull requests must pass the same protected checks as maintainer changes.
 
 ## Security settings
 
-Dependency graph alerts, Dependabot security updates, CodeQL, secret scanning, secret-scanning
-push protection, and private vulnerability reporting are enabled. Public issues direct
-security-sensitive reports to the private advisory flow in `SECURITY.md`.
+Dependency graph alerts, CodeQL, secret scanning, secret-scanning push protection, and private vulnerability reporting are enabled.
+Public issues direct security-sensitive reports to the private advisory flow in `SECURITY.md`.
 
 GitHub currently reports the optional non-provider pattern and validity extensions as disabled
 for this personal public repository. They are not counted as active controls; maintainers should

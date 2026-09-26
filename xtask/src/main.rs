@@ -351,7 +351,6 @@ const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     ".github/ISSUE_TEMPLATE/feature_request.yml",
     ".github/ISSUE_TEMPLATE/documentation.md",
     ".github/ISSUE_TEMPLATE/config.yml",
-    ".github/dependabot.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
 ];
@@ -369,7 +368,6 @@ struct RepositoryDocuments<'a> {
     issue_config: &'a str,
     ci: &'a str,
     codeql: &'a str,
-    dependabot: &'a str,
     codeowners: &'a str,
 }
 
@@ -412,7 +410,6 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
         issue_config: source(".github/ISSUE_TEMPLATE/config.yml"),
         ci: source(".github/workflows/ci.yml"),
         codeql: source(".github/workflows/codeql.yml"),
-        dependabot: source(".github/dependabot.yml"),
         codeowners: source(".github/CODEOWNERS"),
     }));
     Ok(violations)
@@ -491,7 +488,14 @@ fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> V
             "`0.0.0`",
             "explicit release decision",
             "optional non-provider pattern and validity extensions",
+            "Renovate",
         ],
+        &mut violations,
+    );
+    forbid_markers(
+        "docs/repository-policy.md",
+        documents.policy,
+        &["Dependabot"],
         &mut violations,
     );
     violations.extend(repository_automation_violations(documents));
@@ -540,13 +544,10 @@ fn repository_automation_violations(documents: &RepositoryDocuments<'_>) -> Vec<
         &["security-extended", "security-events: write"],
         &mut violations,
     );
-    require_markers(
-        ".github/dependabot.yml",
-        documents.dependabot,
-        &[
-            "package-ecosystem: cargo",
-            "package-ecosystem: github-actions",
-        ],
+    forbid_markers(
+        ".github/workflows/ci.yml",
+        documents.ci,
+        &["Dependabot"],
         &mut violations,
     );
     require_markers(
@@ -3352,7 +3353,7 @@ name = \"icalkit\"
             license: "MIT OR Apache-2.0; LICENSES/MIT.txt; LICENSES/Apache-2.0.txt",
             policy: "`main`; `ci-required`; squash; draft pull request; `0.0.0`; \
                      explicit release decision; optional non-provider pattern and validity \
-                     extensions",
+                     extensions; Renovate",
             feature_request: "name: Design proposal\nlabels: [\"enhancement\"]\nSee SECURITY.md",
             issue_config: "blank_issues_enabled: false\n\
                            https://github.com/P4suta/icalkit/discussions\n\
@@ -3360,7 +3361,6 @@ name = \"icalkit\"
             ci: "name: repository policy\n- run: just repository\n- repository\n\
                  enable-cache: false",
             codeql: "security-extended\nsecurity-events: write",
-            dependabot: "package-ecosystem: cargo\npackage-ecosystem: github-actions",
             codeowners: "/SECURITY.md @P4suta\n/docs/repository-policy.md @P4suta",
         };
         assert!(repository_documentation_violations(&valid).is_empty());
@@ -3379,7 +3379,6 @@ name = \"icalkit\"
             issue_config: "",
             ci: "",
             codeql: "",
-            dependabot: "",
             codeowners: "",
         };
         let violations = repository_documentation_violations(&incomplete);
@@ -3409,7 +3408,6 @@ name = \"icalkit\"
             issue_config: "",
             ci: "- uses: astral-sh/setup-uv@pinned\n  with:\n    version: 0.11.32",
             codeql: "",
-            dependabot: "",
             codeowners: "",
         };
 

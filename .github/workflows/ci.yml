@@ -14,8 +14,7 @@
 # with no dependencies, so a path out of that layer is a compile error (docs/adr/0004).
 #
 # Policy:
-#   - Every third-party action is SHA-pinned (Dependabot bumps them weekly); the comment
-#     records the human-readable version.
+#   - Every third-party action is SHA-pinned (Renovate updates them); the comment records the human-readable version.
 #   - Every job runs the same `just` recipe a developer runs locally, so CI and the dev box
 #     cannot drift.
 #   - `no_std`, `wasm`, and `purity` are required gates, not advisory ones. They are what
@@ -359,3 +358,21 @@ jobs:
             fi
           done
           echo "all required jobs passed"
+
+  # The one status check branch protection requires,
+  # named the same in every P4suta repository.
+  # It passes only when every job it needs succeeded or was skipped.
+  required:
+    name: required
+    if: always()
+    needs: [ci-required]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail unless every needed job succeeded or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "${RESULTS}"
+          jq -e 'all(.[]; IN("success", "skipped"))' <<< "${RESULTS}"
