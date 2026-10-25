@@ -1256,7 +1256,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
             property.write_xml(&mut out, limits, &mut meter),
             Err(DavError::Syntax(SyntaxError::Malformed))
         );
-        assert!(out.is_empty());
+        assert_eq!(out.as_slice(), b"");
     }
 
     #[test]
@@ -1345,7 +1345,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
             MultiStatusWriter::new(&mut out, limits, &mut meter),
             Err(DavError::Limit(LimitExceeded::Depth))
         ));
-        assert!(out.is_empty());
+        assert_eq!(out.as_slice(), b"");
     }
 
     #[test]
@@ -1367,7 +1367,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">";
             body.write_xml(&mut out, limits, &mut meter),
             Err(DavError::Limit(LimitExceeded::Budget))
         );
-        assert!(out.is_empty());
+        assert_eq!(out.as_slice(), b"");
     }
 
     #[test]

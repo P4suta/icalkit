@@ -28,7 +28,7 @@ fn root_types_are_the_only_setup_a_normal_consumer_needs() {
 
     assert_eq!(calendar.to_bytes(), VALID);
     assert_eq!(calendar.events().next().unwrap().uid(), "one@example.test");
-    assert!(calendar.issues().is_empty());
+    assert_eq!(calendar.issues(), []);
 
     let _: Option<Error> = None;
     let _: Option<Issue> = None;
@@ -90,23 +90,13 @@ fn normalization_reports_changes_is_idempotent_and_never_mutates_the_import() {
 
     let repaired = original.normalize(RfcRepairV1).unwrap();
     assert_eq!(original.as_bytes(), bare_lf);
-    assert!(!repaired.changes().is_empty());
+    assert_ne!(repaired.changes(), []);
     assert_eq!(repaired.output().as_bytes(), VALID);
-    assert!(
-        repaired
-            .output()
-            .normalize(RfcRepairV1)
-            .unwrap()
-            .changes()
-            .is_empty()
+    assert_eq!(
+        repaired.output().normalize(RfcRepairV1).unwrap().changes(),
+        []
     );
-    assert!(
-        original
-            .normalize(CommonClientsV1)
-            .unwrap()
-            .changes()
-            .is_empty()
-    );
+    assert_eq!(original.normalize(CommonClientsV1).unwrap().changes(), []);
 }
 
 #[test]

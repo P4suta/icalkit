@@ -390,7 +390,7 @@ fn every_derived_traversal_of_a_sixty_five_thousand_deep_document_returns() {
     );
     assert_eq!(copy.cmp(&document), Ordering::Equal);
     assert_eq!(hashed(&copy), hashed(&document), "equal, hashed unequally");
-    assert!(!format!("{document:?}").is_empty());
+    assert_ne!(format!("{document:?}"), "");
     assert_eq!(copy.to_bytes(), octets, "P1 at the depth ceiling");
 
     drop(copy);
@@ -421,7 +421,7 @@ fn a_tree_built_far_past_the_policy_ceiling_is_copied_compared_and_dropped() {
     );
     assert_eq!(copy.cmp(&document), Ordering::Equal);
     assert_eq!(hashed(&copy), hashed(&document), "equal, hashed unequally");
-    assert!(!copy.to_bytes().is_empty());
+    assert_ne!(copy.to_bytes().as_slice(), b"");
 
     drop(copy);
     drop(document);

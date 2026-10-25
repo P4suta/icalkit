@@ -1252,7 +1252,7 @@ END:VTIMEZONE
     fn a_table_written_as_dates_stops_where_its_dates_do() {
         let (zones, reported) = read(NEW_YORK_DATED);
         let table = zones.table("America/New_York").unwrap();
-        assert!(codes(&reported).is_empty());
+        assert_eq!(codes(&reported).as_slice(), []);
         assert!(!table.is_truncated());
         let starts: Vec<CivilDate> = table
             .observances()
@@ -1292,7 +1292,7 @@ END:VTIMEZONE
     fn a_zone_that_changed_its_rules_keeps_both_and_dates_each_on_its_own_clock() {
         let (zones, reported) = read(NEW_YORK_BOTH_RULES);
         let table = zones.table("America/New_York").unwrap();
-        assert!(codes(&reported).is_empty());
+        assert_eq!(codes(&reported).as_slice(), []);
         assert_eq!(table.observances().len(), 4);
         let through: Vec<Option<CivilDate>> = table
             .observances()
@@ -1556,7 +1556,7 @@ END:VTIMEZONE
         let tzid = vtimezone.read_vtimezone(&mut meter, &mut reported, &mut out);
         assert_eq!(tzid, Some(Box::from("America/New_York")));
         assert_eq!(out.len(), 2);
-        assert!(reported.is_empty());
+        assert_eq!(reported.as_slice(), []);
         assert_eq!(
             meter.vtimezone_observances(),
             0,

@@ -190,7 +190,7 @@ fn a_daily_rule_that_ends_before_the_gap_is_not_the_capture_scenario()
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.as_slice(), b"");
     Ok(())
 }
 
@@ -211,7 +211,7 @@ fn a_gap_outcome_must_match_the_producer_rendering() -> Result<(), Box<dyn std::
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.as_slice(), b"");
     Ok(())
 }
 
@@ -234,6 +234,6 @@ fn a_raw_bundle_inside_the_workspace_is_refused() -> Result<(), Box<dyn std::err
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.as_slice(), b"");
     Ok(())
 }

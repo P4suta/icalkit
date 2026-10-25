@@ -1154,7 +1154,7 @@ mod tests {
             .by_day(ByList::from_slice(&[weekday(None, Weekday::Thursday)]))
             .build()
             .unwrap();
-        assert!(candidates(&daily, start, 0).is_empty());
+        assert_eq!(candidates(&daily, start, 0).as_slice(), []);
         assert_eq!(
             candidates(&daily, start, 2),
             expected(&[(1997, 9, 4, 9, 0)])
@@ -1684,7 +1684,7 @@ mod tests {
         let empty = CandidateSet::default();
         assert!(empty.is_empty());
         assert_eq!(empty.len(), 0);
-        assert!(empty.as_slice().is_empty());
+        assert_eq!(empty.as_slice(), []);
     }
 
     /// The arithmetic the negative forms all share, at both ends and at the value RFC 5545

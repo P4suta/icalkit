@@ -892,7 +892,7 @@ mod tests {
 
         property.set_value_text(RawText::from_bytes(b"goodbye"));
         assert!(property.layout().is_refolded());
-        assert!(property.layout().folds().is_empty());
+        assert_eq!(property.layout().folds(), []);
         assert_eq!(
             property.layout().ending(),
             Some(LineEnding::CrLf),
@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(copy, deep);
         assert_eq!(copy.cmp(&deep), Ordering::Equal);
         assert_eq!(hashed(&copy), hashed(&deep));
-        assert!(!format!("{deep:?}").is_empty());
+        assert_ne!(format!("{deep:?}"), "");
 
         // Through the derives that delegate to those, which is how a caller reaches them.
         let document = Document::new(vec![Item::Component(deep)]);
@@ -1042,6 +1042,6 @@ mod tests {
         assert_eq!(document.items().len(), 2);
         assert_eq!(document.components().count(), 1);
         assert_eq!(document.components_mut().count(), 1);
-        assert!(Document::default().items().is_empty());
+        assert_eq!(Document::default().items(), []);
     }
 }

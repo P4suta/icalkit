@@ -25,13 +25,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  schedule:
-    # Weekly re-scan (Mon 03:27 UTC) so newly-published CodeQL queries run against unchanged
-    # code, not only on new commits.
-    - cron: "27 3 * * 1"
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
@@ -40,8 +40,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       security-events: write # upload the SARIF results to code scanning
-      actions: read
-      contents: read
+      actions: read # Read workflow metadata for CodeQL analysis.
+      contents: read # Read the source being analyzed.
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +52,8 @@ jobs:
             build-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: initialize CodeQL
         uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v3
         with:

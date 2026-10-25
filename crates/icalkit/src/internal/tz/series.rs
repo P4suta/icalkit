@@ -1165,7 +1165,7 @@ mod tests {
             Some(7_200),
             "taking the instant as written would cut the series two hours short"
         );
-        assert!(reported.is_empty());
+        assert_eq!(reported.as_slice(), []);
 
         let expiring = windows_western_europe();
         let far = ZonedSeries::new(

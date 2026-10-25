@@ -829,7 +829,7 @@ mod tests {
         let shifted = resolve_instance(&ungated, sprang, &mut meter, &mut quiet);
         assert_eq!(shifted.side(), FoldSide::Once);
         assert!(shifted.is_resolved());
-        assert!(quiet.is_empty());
+        assert_eq!(quiet.as_slice(), []);
         assert_ne!(missing.side(), shifted.side());
 
         let mut elsewhere = Vec::new();
@@ -963,7 +963,7 @@ mod tests {
             &placeable, &mut meter, &mut quiet
         ));
         assert!(exclusions_are_placeable(&ResolvedExclusions::empty()));
-        assert!(quiet.is_empty());
+        assert_eq!(quiet.as_slice(), []);
     }
 
     /// The composition this unit feeds, as the table the milestone asks for: prior state,
@@ -1066,6 +1066,6 @@ mod tests {
             Verdict::Act,
             "two messages at revision zero are not stale against each other"
         );
-        assert!(noise.is_empty());
+        assert_eq!(noise.as_slice(), []);
     }
 }

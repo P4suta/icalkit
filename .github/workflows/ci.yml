@@ -2,33 +2,9 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# CI for icalkit (iCalendar, recurrence, time zones, iTIP scheduling, and CalDAV).
-#
-# Layout under test:
-#   - icalkit       the sole production crate; no_std sans-I/O kernel plus the std/system-tz adapter.
-#   - icalkit-conformance  the private conformance JSONL CLI and corpus (docs/adr/0013).
-#   - xtask         repository policy checks shared by Just and CI.
-#
-# Two members under gates/ and xtask/ are not crates and are not published. `gates/` holds
-# compile-only members: `ical-grammar-layering` builds icalkit's private grammar a second time
-# with no dependencies, so a path out of that layer is a compile error (docs/adr/0004).
-#
-# Policy:
-#   - Every third-party action is SHA-pinned (Renovate updates them); the comment records the human-readable version.
-#   - Every job runs the same `just` recipe a developer runs locally, so CI and the dev box
-#     cannot drift.
-#   - `no_std`, `wasm`, and `purity` are required gates, not advisory ones. They are what
-#     make the architecture in docs/adr/ true rather than aspirational — `purity` in
-#     particular is what keeps a bundled time zone database, a system clock, and an HTTP
-#     client out of the workspace (docs/adr/0003, docs/adr/0004).
-#   - A single `ci-required` aggregation gate is the one status context branch protection
-#     references, so the ruleset never desyncs as jobs are added or renamed.
-
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -36,7 +12,6 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref to keep the queue lean.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -44,335 +19,39 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
-  # NOTE: `-D warnings` is applied per job, only on the stable toolchain we can reproduce
-  # locally. It is deliberately not global: the msrv job installs an older toolchain whose
-  # version-specific warnings would turn CI red for a reason invisible to every local gate.
-  # That job still fails on real errors.
+  MISE_AUTO_INSTALL: false
 
 jobs:
-  fmt:
-    name: rustfmt
-    runs-on: ubuntu-latest
+  ordinary:
+    name: ordinary Linux checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          components: rustfmt
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          tool: just@1.50.0
-      - run: just fmt-check
+          version: v2026.10.17
+          install_args: rust just taplo typos uv actionlint zizmor cargo-binstall cargo:cargo-nextest cargo:cargo-deny cargo:cargo-shear
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: mise x -- just check
 
-  toml:
-    name: taplo (TOML formatting)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0,taplo-cli@0.10.0
-      - run: just toml-check
-
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          components: clippy
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: just lint
-
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      RUSTFLAGS: -D warnings
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0,nextest@0.9.140
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # Nothing here reads a clock, a locale, or the host's time zone (docs/adr/0003), so
-      # the same calendar has to produce the same answer on all three. A per-OS difference
-      # means something reached outside its input, which is what this matrix is here to find.
-      - run: just test-ci
-
-  allocation:
-    name: peak allocation and per-item retention
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: just allocation
-
-  feature-matrix:
-    name: feature matrix (cargo-hack, all targets)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0,cargo-hack@0.6.45
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: just feature-matrix
-
-  no_std:
-    name: no_std (thumbv7em)
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          targets: thumbv7em-none-eabi
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # A device with no operating system showing a schedule is a real deployment, and a
-      # bare-metal build is what proves docs/adr/0004 physically rather than by convention:
-      # a crate that reached for `std::time` or a socket cannot link here.
-      - run: just no-std
-
-  wasm:
-    name: wasm (wasm32-unknown-unknown)
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # Most calendar interfaces are rendered in a browser, and a stack carrying a tzdb or
-      # an HTTP client does not go there. Keeping this green is the practical test of
-      # whether the boundaries in docs/adr/0003 and docs/adr/0004 still hold.
-      - run: just wasm
-
-  purity:
-    name: purity (no std, clock, network, or bundled tzdb in the core)
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # Each forbidden dependency corresponds to a decision that stops being true the
-      # moment it arrives: a bundled tzdb makes the library wrong when a government moves
-      # DST, and a clock makes "is this in the past" untestable (docs/adr/0003).
-      - run: just purity
-      # ADR-0009 freezes a diagnostic code's meaning, and a freeze nothing reads is a
-      # convention. `just codes` diffs report.rs against the committed golden list, so an
-      # edited meaning fails here rather than in the release notes of whoever depended on it.
-      # It rides in this job because the job id is what the gate list below names.
-      - run: just codes
-
-  repository:
-    name: repository policy
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: just repository
-
-  public-api:
-    name: public API snapshots (default + no-default)
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: -D warnings
-      RUSTUP_TOOLCHAIN: nightly-2026-07-02
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
-        with:
-          toolchain: nightly-2026-07-02
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: cargo-public-api@0.52.0,just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: just public-api
-
-  doc:
-    name: doc (rustdoc, warnings are errors)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - env:
-          RUSTDOCFLAGS: -D warnings
-        run: just doc
-
-  typos:
-    name: typos
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
-
-  msrv:
-    name: msrv (every crate at the edition 2024 floor, 1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: cargo-msrv@0.19.3,just@1.50.0
-      # `cargo-msrv verify` reads each crate's declared `rust-version` and proves it builds
-      # on that floor.
-      - name: verify declared MSRVs
-        run: just msrv
-
-  reuse:
-    name: reuse (SPDX/REUSE compliance)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0
-      # Run REUSE through `uvx` exactly as `just reuse` does locally rather than the
-      # `fsfe/reuse-action` Docker action, whose anonymous Docker Hub pulls fail
-      # intermittently for reasons unrelated to compliance.
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-        with:
-          version: 0.11.32
-          enable-cache: false
-      - run: just reuse
-
-  deny:
-    name: dependency policy (cargo-deny + cargo-shear)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: cargo-deny@0.20.2,cargo-shear@1.13.3,just@1.50.0
-      - run: just deny
-      - run: just shear
-
-  actionlint:
-    name: actionlint + zizmor (workflow self-check)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
-        with:
-          tool: just@1.50.0,zizmor@1.28.0
-      - name: actionlint
-        env:
-          ACTIONLINT_VERSION: 1.7.12
-          # Official digest published on the v1.7.12 GitHub Release asset.
-          ACTIONLINT_LINUX_AMD64_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-        run: |-
-          asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          archive="$RUNNER_TEMP/$asset"
-          curl --fail --show-error --location --retry 5 --retry-connrefused \
-            --output "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$asset"
-          printf '%s  %s\n' "$ACTIONLINT_LINUX_AMD64_SHA256" "$archive" |
-            sha256sum --check --strict -
-          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -color
-      - name: zizmor (offline, high severity)
-        run: just zizmor
-
-  # Single aggregation gate. `if: always()` makes failures and cancellations visible
-  # through the one branch-protection status.
-  ci-required:
-    name: ci-required
-    if: always()
-    needs:
-      - fmt
-      - toml
-      - clippy
-      - test
-      - allocation
-      - feature-matrix
-      - no_std
-      - wasm
-      - purity
-      - repository
-      - public-api
-      - doc
-      - typos
-      - msrv
-      - reuse
-      - deny
-      - actionlint
-    runs-on: ubuntu-latest
-    steps:
-      - name: verify all required jobs passed (skipped counts as pass)
-        run: |-
-          results="${{ join(needs.*.result, ' ') }}"
-          echo "needs results: $results"
-          for r in $results; do
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              echo "::error::a required job did not pass ($r)"
-              exit 1
-            fi
-          done
-          echo "all required jobs passed"
-
-  # The one status check branch protection requires,
-  # named the same in every P4suta repository.
-  # It passes only when every job it needs succeeded or was skipped.
   required:
     name: required
     if: always()
-    needs: [ci-required]
-    runs-on: ubuntu-latest
+    needs: [ordinary]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
     steps:
-      - name: Fail unless every needed job succeeded or was skipped
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust
+      - name: Require the complete ordinary inventory
         env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
-        run: |
-          echo "${RESULTS}"
-          jq -e 'all(.[]; IN("success", "skipped"))' <<< "${RESULTS}"
+          ORDINARY_RESULT: ${{ needs.ordinary.result }}
+        run: mise x -- cargo run --quiet --locked -p xtask -- ci-summary ordinary ordinary "$ORDINARY_RESULT"

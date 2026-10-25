@@ -1157,9 +1157,9 @@ mod tests {
     #[test]
     fn an_empty_input_is_an_empty_document_and_not_a_failure() {
         let (document, kept) = build(Vec::new());
-        assert!(document.items().is_empty());
-        assert!(kept.is_empty());
-        assert!(rewrite(&document).is_empty());
+        assert_eq!(document.items(), []);
+        assert_eq!(kept.as_slice(), []);
+        assert_eq!(rewrite(&document).as_slice(), b"");
     }
 
     #[test]
@@ -1603,7 +1603,7 @@ mod tests {
             rewrite(&document),
             b"ATTENDEE;CN=\"Doe, John; the third: esq.\":mailto:d@example.test\r\n"
         );
-        assert!(kept.is_empty());
+        assert_eq!(kept.as_slice(), []);
     }
 
     /// A parameter value as written, and the span of the note it earns — `None` where RFC 6868

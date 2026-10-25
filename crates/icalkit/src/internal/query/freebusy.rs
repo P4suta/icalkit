@@ -1257,7 +1257,7 @@ mod tests {
         let mut budget = Budget::new(Limits::DEFAULT, &mut meter);
         let answer = free_busy(query(WINDOW_START, WINDOW_END), &placements, &mut budget).unwrap();
 
-        assert!(answer.report().periods().is_empty());
+        assert_eq!(answer.report().periods(), []);
         assert!(answer.is_complete());
     }
 

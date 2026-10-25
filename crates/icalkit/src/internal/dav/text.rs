@@ -563,7 +563,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         )
         .unwrap();
         assert_eq!(decoded.run.as_bytes(), b"Ann\nWork");
-        assert!(reported.is_empty());
+        assert_eq!(reported.as_slice(), []);
     }
 
     #[test]

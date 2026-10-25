@@ -17,6 +17,9 @@ use icalkit_conformance::internal::dav::{
     DecodeContext, MultiStatus, MultiStatusReader, XmlPull, XmlReader,
 };
 
+#[path = "allocation_gate/arithmetic.rs"]
+mod arithmetic;
+
 const PROPERTIES: usize = 200_000;
 const RESPONSES: usize = 20_000;
 const XML_ELEMENTS: usize = 1 + RESPONSES * 3;
@@ -74,6 +77,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
             // that conservative transient peak before delegating; it can overestimate but never
             // hides a peak the gate is intended to cap.
             note_peak(
+                &PEAK,
                 CURRENT
                     .load(Ordering::Relaxed)
                     .saturating_add(as_u64(new_size)),
@@ -103,23 +107,29 @@ fn charge(bytes: usize) {
     let current = CURRENT
         .fetch_add(bytes, Ordering::Relaxed)
         .saturating_add(bytes);
-    note_peak(current);
+    note_peak(&PEAK, current);
 }
 
 fn release(bytes: usize) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let bytes = as_u64(bytes);
-    let _ = CURRENT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_sub(bytes))
-    });
+    release_counter(&CURRENT, as_u64(bytes));
 }
 
-fn note_peak(candidate: u64) {
-    let _ = PEAK.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |peak| {
-        (candidate > peak).then_some(candidate)
-    });
+fn release_counter(counter: &AtomicU64, bytes: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = arithmetic::released_count(current, bytes);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn note_peak(counter: &AtomicU64, candidate: u64) {
+    counter.fetch_max(candidate, Ordering::Relaxed);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -275,4 +285,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         comment_allocation.peak,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::{note_peak, release_counter};
+
+    #[test]
+    fn release_counter_preserves_zero_exact_and_saturated_boundaries() {
+        for (current, bytes, expected) in [
+            (0, 0, 0),
+            (0, 1, 0),
+            (1, 0, 1),
+            (1, 1, 0),
+            (1, 2, 0),
+            (u64::MAX, 0, u64::MAX),
+            (u64::MAX, u64::MAX, 0),
+            (u64::MAX, u64::MAX - 1, 1),
+        ] {
+            let counter = AtomicU64::new(current);
+            release_counter(&counter, bytes);
+            assert_eq!(counter.load(Ordering::Relaxed), expected);
+        }
+    }
+
+    #[test]
+    fn concurrent_releases_preserve_both_updates() {
+        let counter = AtomicU64::new(16);
+        std::thread::scope(|threads| {
+            threads.spawn(|| release_counter(&counter, 8));
+            threads.spawn(|| release_counter(&counter, 8));
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn peak_counter_never_decreases() {
+        let counter = AtomicU64::new(1);
+        for (candidate, expected) in [(0, 1), (1, 1), (2, 2), (u64::MAX, u64::MAX)] {
+            note_peak(&counter, candidate);
+            assert_eq!(counter.load(Ordering::Relaxed), expected);
+        }
+    }
 }

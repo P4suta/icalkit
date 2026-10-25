@@ -446,7 +446,7 @@ fn flood_of_rdates() -> String {
 fn adr0010_a_ten_thousand_year_sweep_terminates_and_agrees_with_the_rule() {
     let octets = include_bytes!("fixtures/break_tz_hostile/endless_rule_year_zero_to_9999.ics");
     let (reported, table) = zone(octets, "Antarctic/Endless").expect("the fixture declares it");
-    assert!(reported.is_empty());
+    assert_eq!(reported.as_slice(), []);
     assert_eq!(
         table.coverage_end(),
         None,
@@ -548,7 +548,7 @@ fn rfc5545_3_6_a_vtimezone_nested_in_an_event_defines_no_zone() {
     let octets = include_bytes!("fixtures/break_tz_hostile/vtimezone_nested_in_a_vevent.ics");
     let (reported, tables) =
         zones_of(octets, Limits::DEFAULT).expect("the fixture parses as a calendar");
-    assert!(tables.is_empty());
+    assert_eq!(tables.as_slice(), []);
     assert_eq!(
         codes(&reported),
         vec![DiagnosticCode::MissingTimeZoneDefinition]
@@ -571,7 +571,7 @@ fn adr0010_a_calendar_nested_as_deeply_as_the_parse_admits_is_walked_on_the_heap
     text.push_str("END:VCALENDAR\r\n");
     let (reported, tables) =
         zones_of(text.as_bytes(), Limits::DEFAULT).expect("a nested calendar still parses");
-    assert!(tables.is_empty());
+    assert_eq!(tables.as_slice(), []);
     assert_eq!(
         u32::try_from(reported.len()).ok(),
         Some(depth),

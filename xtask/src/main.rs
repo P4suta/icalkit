@@ -301,9 +301,125 @@ const PUBLIC_API_DEFAULT: &str = "api/icalkit.default.txt";
 
 /// The facade's committed public API with every default feature disabled.
 const PUBLIC_API_NO_DEFAULT: &str = "api/icalkit.no-default.txt";
+const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
+const CI_POLICY_ACTION: &str =
+    "P4suta/project-template/.github/actions/ci-policy@ee6265bd944c53097191f97dcb7a6ac678794b43";
 
 /// The golden list's columns, in the order its cells are read.
 const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
+
+mod ci;
+use ci::{
+    ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
+    CiJob, CiPhase, CiResults, JobState, ObservedJob, REJECTING_PROBE, REQUIRED_PROOFS,
+    TrackedSource,
+};
+
+fn ci_results(phase: CiPhase, arguments: &[String]) -> Option<CiResults> {
+    let mut pairs = arguments.chunks_exact(2);
+    if !pairs.remainder().is_empty() || pairs.len() != phase.jobs().len() {
+        return None;
+    }
+    let observations: Option<Vec<_>> = pairs
+        .by_ref()
+        .map(|pair| {
+            Some(ObservedJob {
+                job: CiJob::parse(pair.first()?.as_str())?,
+                state: JobState::parse(pair.get(1)?.as_str())?,
+            })
+        })
+        .collect();
+    CiResults::from_observations(phase, &observations?)
+}
+
+fn candidate_revision(arguments: &[String]) -> io::Result<Vec<String>> {
+    let [requested] = arguments else {
+        return Ok(vec![
+            "candidate-revision requires one complete commit ID".to_owned(),
+        ]);
+    };
+    let Some(requested) = CandidateRevision::parse(requested) else {
+        return Ok(vec![
+            "candidate-revision requires a 40-digit hexadecimal commit ID".to_owned(),
+        ]);
+    };
+    candidate_checkout(&workspace_root()?, requested)
+}
+
+fn candidate_checkout(workspace: &Path, requested: CandidateRevision) -> io::Result<Vec<String>> {
+    let output = repository_git(workspace)?
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(
+            "git could not identify the candidate checkout",
+        ));
+    }
+    let actual = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let actual = CandidateRevision::parse(actual.trim())
+        .ok_or_else(|| io::Error::other("git reported an invalid candidate commit"))?;
+    let source = TrackedSource::from_differences(
+        tracked_difference(workspace, false)?,
+        tracked_difference(workspace, true)?,
+    );
+    if requested.qualifies(actual, source) {
+        return Ok(Vec::new());
+    }
+    Ok(vec![if requested.matches(actual) {
+        "candidate tracked source differs from the requested commit".to_owned()
+    } else {
+        "candidate commit differs from the actual checkout".to_owned()
+    }])
+}
+
+fn tracked_difference(workspace: &Path, index: bool) -> io::Result<bool> {
+    let mut command = repository_git(workspace)?;
+    command.args(["diff", "--quiet", "--no-ext-diff", "--no-textconv"]);
+    if index {
+        command.arg("--cached");
+    }
+    let status = command.args(["HEAD", "--"]).status()?;
+    match status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(io::Error::other(
+            "git could not inspect tracked candidate source",
+        )),
+    }
+}
+
+fn repository_git(workspace: &Path) -> io::Result<Command> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--local-env-vars"])
+        .output()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(io::Error::other(
+            "git could not enumerate its repository-local environment",
+        ));
+    }
+    let variables = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut command = Command::new("git");
+    command.current_dir(workspace);
+    for variable in variables.lines() {
+        command.env_remove(variable);
+    }
+    Ok(command)
+}
+
+fn ci_summary(arguments: &[String]) -> Vec<String> {
+    let Some((phase, results)) = arguments.split_first() else {
+        return vec!["ci-summary needs a phase and its complete job inventory".to_owned()];
+    };
+    let Some(phase) = CiPhase::parse(phase) else {
+        return vec!["ci-summary received an unknown phase".to_owned()];
+    };
+    match ci_results(phase, results) {
+        Some(results) if results.succeeded() => Vec::new(),
+        _ => vec!["CI jobs are missing, unexpected, malformed, or unsuccessful".to_owned()],
+    }
+}
 
 /// The milestones a row may name as owing the emitter. Mirrors `ROADMAP.md`.
 ///
@@ -318,6 +434,14 @@ fn main() -> ExitCode {
         Some("codes") => report("codes", collect_codes_violations()),
         Some("public-api") => report("public-api", collect_public_api_violations()),
         Some("repository") => report("repository", collect_repository_violations()),
+        Some("candidate-revision") => report(
+            "candidate-revision",
+            candidate_revision(&std::env::args().skip(2).collect::<Vec<_>>()),
+        ),
+        Some("ci-summary") => report(
+            "ci-summary",
+            Ok(ci_summary(&std::env::args().skip(2).collect::<Vec<_>>())),
+        ),
         Some(task) => {
             eprintln!("xtask: unknown task `{task}`");
             print_usage();
@@ -332,7 +456,9 @@ fn main() -> ExitCode {
 
 /// Print the available tasks.
 fn print_usage() {
-    eprintln!("usage: cargo run -p xtask -- <purity|architecture|codes|public-api|repository>");
+    eprintln!(
+        "usage: cargo run -p xtask -- <purity|architecture|codes|public-api|repository|candidate-revision COMMIT|ci-summary PHASE JOB RESULT ...>"
+    );
 }
 
 /// Files that make the public repository navigable and its maintenance policy reviewable.
@@ -352,6 +478,7 @@ const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     ".github/ISSUE_TEMPLATE/documentation.md",
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/workflows/ci.yml",
+    ".github/workflows/candidate.yml",
     ".github/workflows/codeql.yml",
 ];
 
@@ -412,6 +539,12 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
         codeql: source(".github/workflows/codeql.yml"),
         codeowners: source(".github/CODEOWNERS"),
     }));
+    violations.extend(ci_source_violations(
+        source(".github/workflows/ci.yml"),
+        source(".github/workflows/candidate.yml"),
+        &fs::read_to_string(workspace.join(JUSTFILE))?,
+        &fs::read_to_string(workspace.join("lefthook.yml"))?,
+    ));
     Ok(violations)
 }
 
@@ -482,7 +615,7 @@ fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> V
         documents.policy,
         &[
             "`main`",
-            "`ci-required`",
+            "`required`",
             "squash",
             "draft pull request",
             "`0.0.0`",
@@ -530,12 +663,7 @@ fn repository_automation_violations(documents: &RepositoryDocuments<'_>) -> Vec<
     require_markers(
         ".github/workflows/ci.yml",
         documents.ci,
-        &[
-            "repository policy",
-            "- run: just repository",
-            "- repository",
-            "enable-cache: false",
-        ],
+        &["mise x -- just check", "ci-summary ordinary"],
         &mut violations,
     );
     require_markers(
@@ -601,6 +729,7 @@ fn collect_public_api_violations() -> io::Result<Vec<String>> {
 /// Ask cargo-public-api for one deterministic facade surface.
 fn generate_public_api(workspace: &Path, no_default_features: bool) -> io::Result<String> {
     let mut command = Command::new("cargo");
+    command.arg(format!("+{PUBLIC_API_TOOLCHAIN}"));
     command.args(["public-api", "-p", "icalkit", "-sss", "--color", "never"]);
     if no_default_features {
         command.arg("--no-default-features");
@@ -669,7 +798,7 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let readme = fs::read_to_string(workspace.join("README.md"))?;
     let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
     let roadmap = fs::read_to_string(workspace.join("ROADMAP.md"))?;
-    let ci_workflow = fs::read_to_string(workspace.join(".github/workflows/ci.yml"))?;
+    let ci_workflow = fs::read_to_string(workspace.join(".github/workflows/candidate.yml"))?;
     let internal_modules =
         fs::read_to_string(workspace.join("crates/icalkit/src/internal/mod.rs"))?;
     let scheduling_chapter =
@@ -721,23 +850,348 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
 
 /// Keep the snapshot generator on the same pinned nightly that produced the committed API.
 fn public_api_workflow_violations(workflow: &str) -> Vec<String> {
-    const JOB_START: &str = "\n  public-api:\n";
-    const NEXT_JOB: &str = "\n  doc:\n";
-    const PINNED_NIGHTLY: &str = "toolchain: nightly-2026-07-02";
+    const PINNED_NIGHTLY: &str = "rustup toolchain install nightly-2026-07-02 --profile minimal";
 
-    let Some((_, after_start)) = workflow.split_once(JOB_START) else {
-        return vec![".github/workflows/ci.yml: missing public-api job".to_owned()];
+    let Some(job) = workflow_job(workflow, "public-api") else {
+        return vec![".github/workflows/candidate.yml: missing public-api job".to_owned()];
     };
-    let job = after_start
-        .split_once(NEXT_JOB)
-        .map_or(after_start, |(body, _)| body);
-    if job.contains(PINNED_NIGHTLY) {
+    if job.contains(PINNED_NIGHTLY) && job.contains("RUSTUP_TOOLCHAIN: nightly-2026-07-02") {
+        Vec::new()
+    } else {
+        vec![".github/workflows/candidate.yml: public-api job does not install and use nightly-2026-07-02".to_owned()]
+    }
+}
+
+fn workflow_job_names(source: &str) -> Vec<&str> {
+    let Some((_, jobs)) = source.split_once("\njobs:\n") else {
+        return Vec::new();
+    };
+    jobs.lines()
+        .filter_map(|line| {
+            let key = line.strip_prefix("  ")?;
+            (!key.starts_with(' ')).then_some(key)?.strip_suffix(':')
+        })
+        .collect()
+}
+
+fn workflow_job<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let (_, jobs) = source.split_once("\njobs:\n")?;
+    let marker = format!("  {name}:\n");
+    let (_, body) = jobs.split_once(&marker)?;
+    let end = body
+        .split_inclusive('\n')
+        .take_while(|line| {
+            !line.starts_with("  ") || line.starts_with("    ") || line.trim().is_empty()
+        })
+        .map(str::len)
+        .sum();
+    Some(&body[..end])
+}
+
+fn ci_source_violations(ci: &str, candidate: &str, justfile: &str, hooks: &str) -> Vec<String> {
+    let mut violations = workflow_phase_violations(ci, candidate);
+    violations.extend(summary_source_violations(ci, candidate, justfile));
+    violations.extend(recipe_phase_violations(justfile, hooks));
+    violations.extend(public_api_workflow_violations(candidate));
+    violations
+}
+
+fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for marker in [
+        "\n  workflow_dispatch:",
+        "CANDIDATE_REVISION: ${{ inputs.revision }}",
+    ] {
+        if !candidate.contains(marker) {
+            violations.push(format!("candidate CI is missing {marker}"));
+        }
+    }
+    if workflow_job_names(ci) != ["ordinary", "required"] {
+        violations.push("ordinary CI must contain only ordinary and required jobs".to_owned());
+    }
+    let mut candidate_jobs: Vec<_> = CANDIDATE_JOBS.iter().map(|job| job.label()).collect();
+    candidate_jobs.push("candidate-required");
+    if workflow_job_names(candidate) != candidate_jobs {
+        violations.push("candidate CI job inventory differs from its complete summary".to_owned());
+    }
+    for (source, phase) in [(ci, "ordinary"), (candidate, "candidate")] {
+        if source.contains("\n  push:")
+            || source.contains("\n  schedule:")
+            || (phase == "candidate"
+                && (source.contains("\n  pull_request:") || source.contains("\n  merge_group:")))
+        {
+            violations.push(format!("{phase} CI has an unexpected automatic trigger"));
+        }
+    }
+    for marker in [
+        "\n  pull_request:",
+        "\n  merge_group:",
+        "\n  workflow_dispatch:",
+    ] {
+        if !ci.contains(marker) {
+            violations.push(format!("ordinary CI is missing {marker}"));
+        }
+    }
+    for (name, command) in [
+        ("ordinary", "check"),
+        ("platform", "test-ci"),
+        ("features", "feature-matrix"),
+        ("portability", "no-std wasm"),
+        ("public-api", "public-api"),
+        ("msrv", "msrv"),
+    ] {
+        let body = workflow_job(candidate, name).unwrap_or("");
+        for marker in [
+            "ref: ${{ inputs.revision }}".to_owned(),
+            "candidate-revision \"$CANDIDATE_REVISION\"".to_owned(),
+            format!("run: mise x -- just {command}"),
+        ] {
+            if !body.contains(&marker) {
+                violations.push(format!("candidate {name} is missing {marker}"));
+            }
+        }
+        violations.extend(candidate_identity_violations(
+            body,
+            &format!("run: mise x -- just {command}"),
+            name,
+        ));
+    }
+    let platform = workflow_job(candidate, "platform").unwrap_or("");
+    if !platform
+        .lines()
+        .any(|line| line.trim() == "os: [windows-2025, macos-15]")
+    {
+        violations.push("candidate platform tests must cover Windows and macOS".to_owned());
+    }
+    violations
+}
+
+fn candidate_identity_violations(body: &str, command: &str, job: &str) -> Vec<String> {
+    const IDENTITY: &str = "candidate-revision \"$CANDIDATE_REVISION\"";
+    const POST: &str = "      - name: Recheck candidate source\n        if: always()\n        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision \"$CANDIDATE_REVISION\"";
+    let bracketed = body
+        .find(IDENTITY)
+        .zip(body.rfind(IDENTITY))
+        .zip(body.find(command))
+        .is_some_and(|((before, after), check)| before < check && check < after);
+    if body.matches(IDENTITY).count() == 2 && bracketed && body.trim_end().ends_with(POST) {
         Vec::new()
     } else {
         vec![format!(
-            ".github/workflows/ci.yml: public-api job does not install pinned `{PINNED_NIGHTLY}`"
+            "candidate {job} must verify its source before and after its checks"
         )]
     }
+}
+
+fn summary_source_violations(ci: &str, candidate: &str, justfile: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let ordinary = workflow_job(ci, "ordinary").unwrap_or("");
+    if !ordinary.contains("run: mise x -- just check") {
+        violations.push("ordinary CI does not run the project ordinary command".to_owned());
+    }
+    let required = workflow_job(ci, "required").unwrap_or("");
+    for marker in [
+        "if: always()",
+        "needs: [ordinary]",
+        "ORDINARY_RESULT: ${{ needs.ordinary.result }}",
+        "ci-summary ordinary ordinary \"$ORDINARY_RESULT\"",
+    ] {
+        if !required.contains(marker) {
+            violations.push(format!("ordinary summary is missing {marker}"));
+        }
+    }
+    let summary = workflow_job(candidate, "candidate-required").unwrap_or("");
+    violations.extend(candidate_identity_violations(
+        summary,
+        "ci-summary candidate",
+        "candidate-required",
+    ));
+    for marker in [
+        "if: always()",
+        "needs: [ordinary, platform, features, portability, public-api, msrv, proof]",
+        "candidate-revision \"$CANDIDATE_REVISION\"",
+        "ci-summary candidate",
+    ] {
+        if !summary.contains(marker) {
+            violations.push(format!("candidate summary is missing {marker}"));
+        }
+    }
+    for (job, variable) in [
+        ("ordinary", "ORDINARY"),
+        ("platform", "PLATFORM"),
+        ("features", "FEATURES"),
+        ("portability", "PORTABILITY"),
+        ("public-api", "PUBLIC_API"),
+        ("msrv", "MSRV"),
+        ("proof", "PROOF"),
+    ] {
+        for marker in [
+            format!("{variable}_RESULT: ${{{{ needs.{job}.result }}}}"),
+            format!("{job} \"${variable}_RESULT\""),
+        ] {
+            if !summary.contains(&marker) {
+                violations.push(format!("candidate summary is missing {marker}"));
+            }
+        }
+    }
+    violations.extend(proof_source_violations(candidate, justfile));
+    violations
+}
+
+fn proof_source_violations(candidate: &str, justfile: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let proof = workflow_job(candidate, "proof").unwrap_or("");
+    for marker in [
+        "ref: ${{ inputs.revision }}",
+        "candidate-revision \"$CANDIDATE_REVISION\"",
+        "run: mise x -- just prove-ci",
+    ] {
+        if !proof.contains(marker) {
+            violations.push(format!("candidate proof is missing {marker}"));
+        }
+    }
+    violations.extend(candidate_identity_violations(
+        proof,
+        "run: mise x -- just prove-ci",
+        "proof",
+    ));
+    let acquisition = proof
+        .find(CI_POLICY_ACTION)
+        .zip(proof.find("run: mise x -- just prove-ci"));
+    if acquisition.is_none_or(|(setup, check)| setup >= check) {
+        violations.push(
+            "candidate proof must acquire the immutable shared policy helper before verification"
+                .to_owned(),
+        );
+    }
+    let commands: Vec<_> =
+        justfile
+            .split_once("\nprove-ci:\n")
+            .map_or_else(Vec::new, |(_, body)| {
+                body.lines()
+                    .take_while(|line| {
+                        line.starts_with(' ') || line.starts_with('#') || line.trim().is_empty()
+                    })
+                    .map(str::trim)
+                    .collect()
+            });
+    for (source, inventory, counterexample) in [
+        ("xtask/src/ci.rs", REQUIRED_PROOFS, REJECTING_PROBE),
+        (
+            "crates/icalkit-conformance/src/bin/allocation_gate/arithmetic.rs",
+            ALLOCATION_REQUIRED_PROOFS,
+            ALLOCATION_REJECTING_PROBE,
+        ),
+    ] {
+        let command = format!(
+            "ci-policy prove-source --source {source} --require-json '{inventory}' --counterexample {counterexample}"
+        );
+        if !commands.contains(&command.as_str()) {
+            violations.push(format!("source proof recipe is missing {command}"));
+        }
+    }
+    violations
+}
+
+fn recipe_phase_violations(justfile: &str, hooks: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let ordinary_recipe = justfile
+        .lines()
+        .find(|line| line.starts_with("check:"))
+        .unwrap_or("");
+    for command in [
+        "fmt-check",
+        "toml-check",
+        "typos",
+        "lint",
+        "test-ci",
+        "allocation",
+        "doc",
+        "purity",
+        "architecture",
+        "repository",
+        "codes",
+        "deny",
+        "shear",
+        "reuse",
+        "actionlint",
+        "zizmor",
+    ] {
+        if !ordinary_recipe
+            .split_whitespace()
+            .any(|word| word == command)
+        {
+            violations.push(format!("ordinary recipe is missing {command}"));
+        }
+    }
+    for command in ["feature-matrix", "no-std", "wasm", "public-api", "msrv"] {
+        if ordinary_recipe
+            .split_whitespace()
+            .any(|word| word == command)
+        {
+            violations.push(format!("ordinary recipe invokes candidate-only {command}"));
+        }
+        let full = justfile
+            .lines()
+            .find(|line| line.starts_with("ci:"))
+            .unwrap_or("");
+        if !full.split_whitespace().any(|word| word == command) {
+            violations.push(format!("complete local qualification is missing {command}"));
+        }
+    }
+    let push = hooks
+        .split_once("\npre-push:\n")
+        .and_then(|(_, after)| after.split_once("\nlocal-ci:\n"))
+        .map_or("", |(push, _)| push);
+    if !push.contains("run: mise exec -- just check") || push.contains("just ci") {
+        violations.push("pre-push must run only the ordinary project gate".to_owned());
+    }
+    violations.extend(candidate_recipe_violations(justfile, hooks));
+    violations
+}
+
+fn candidate_recipe_violations(justfile: &str, hooks: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let commit = hooks
+        .split_once("\npre-commit:\n")
+        .and_then(|(_, after)| after.split_once("\npre-push:\n"))
+        .map_or("", |(commit, _)| commit);
+    for candidate in [
+        "ci",
+        "public-api",
+        "feature-matrix",
+        "no-std",
+        "wasm",
+        "msrv",
+        "prove-ci",
+    ] {
+        if commit.contains(&format!("just {candidate}")) {
+            violations.push(format!("pre-commit invokes candidate-only {candidate}"));
+        }
+    }
+    let msrv: Vec<_> = justfile
+        .split_once("\nmsrv:\n")
+        .map_or_else(Vec::new, |(_, body)| {
+            body.lines()
+                .take_while(|line| {
+                    line.starts_with(' ') || line.starts_with('#') || line.trim().is_empty()
+                })
+                .map(str::trim)
+                .collect()
+        });
+    for path in [
+        "crates/icalkit",
+        "crates/icalkit-conformance",
+        "gates/grammar-layering",
+        "gates/xml-layering",
+        "xtask",
+    ] {
+        let command = format!("cargo msrv verify --path {path}");
+        if !msrv.contains(&command.as_str()) {
+            violations.push(format!("candidate MSRV recipe is missing {path}"));
+        }
+    }
+    violations
 }
 
 /// Keep current-facing status documents separate from the historical milestone narrative.
@@ -2736,13 +3190,13 @@ icalkit = \"0.1\"
 
     #[test]
     fn an_empty_manifest_declares_nothing() {
-        assert!(declared_dependencies("").is_empty());
-        assert!(
+        assert_eq!(declared_dependencies(""), []);
+        assert_eq!(
             declared_dependencies(
                 "[dependencies]
 "
-            )
-            .is_empty()
+            ),
+            []
         );
     }
 
@@ -3351,19 +3805,21 @@ name = \"icalkit\"
             support: "GitHub Discussions; public GitHub issue; security/advisories/new; \
                       Do not include confidential data.",
             license: "MIT OR Apache-2.0; LICENSES/MIT.txt; LICENSES/Apache-2.0.txt",
-            policy: "`main`; `ci-required`; squash; draft pull request; `0.0.0`; \
+            policy: "`main`; `required`; squash; draft pull request; `0.0.0`; \
                      explicit release decision; optional non-provider pattern and validity \
                      extensions; Renovate",
             feature_request: "name: Design proposal\nlabels: [\"enhancement\"]\nSee SECURITY.md",
             issue_config: "blank_issues_enabled: false\n\
                            https://github.com/P4suta/icalkit/discussions\n\
                            security/advisories/new",
-            ci: "name: repository policy\n- run: just repository\n- repository\n\
-                 enable-cache: false",
+            ci: "mise x -- just check\nci-summary ordinary",
             codeql: "security-extended\nsecurity-events: write",
             codeowners: "/SECURITY.md @P4suta\n/docs/repository-policy.md @P4suta",
         };
-        assert!(repository_documentation_violations(&valid).is_empty());
+        assert_eq!(
+            repository_documentation_violations(&valid),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -3396,7 +3852,7 @@ name = \"icalkit\"
     }
 
     #[test]
-    fn repository_policy_rejects_uv_cache_without_dependency_metadata() {
+    fn repository_policy_requires_the_ordinary_entrypoint() {
         let documents = RepositoryDocuments {
             readme: "",
             contributing: "",
@@ -3406,7 +3862,7 @@ name = \"icalkit\"
             policy: "",
             feature_request: "",
             issue_config: "",
-            ci: "- uses: astral-sh/setup-uv@pinned\n  with:\n    version: 0.11.32",
+            ci: "unrelated CI command",
             codeql: "",
             codeowners: "",
         };
@@ -3414,7 +3870,7 @@ name = \"icalkit\"
         assert!(
             repository_documentation_violations(&documents)
                 .iter()
-                .any(|violation| violation.contains("enable-cache: false"))
+                .any(|violation| violation.contains("mise x -- just check"))
         );
     }
 
@@ -3428,11 +3884,10 @@ name = \"icalkit\"
 
     #[test]
     fn public_api_snapshots_install_the_pinned_nightly_they_run_on() {
-        let valid = "\n  public-api:\n    steps:\n      - with:\n          toolchain: nightly-2026-07-02\n\n  doc:\n";
-        assert!(public_api_workflow_violations(valid).is_empty());
+        let valid = "\njobs:\n  public-api:\n    env:\n      RUSTUP_TOOLCHAIN: nightly-2026-07-02\n    steps:\n      - run: rustup toolchain install nightly-2026-07-02 --profile minimal\n\n  msrv:\n";
+        assert_eq!(public_api_workflow_violations(valid), Vec::<String>::new());
 
-        let stable_only =
-            "\n  public-api:\n    steps:\n      - uses: rust-toolchain # stable\n\n  doc:\n";
+        let stable_only = "\njobs:\n  public-api:\n    steps:\n      - uses: rust-toolchain # stable\n\n  msrv:\n";
         assert!(
             public_api_workflow_violations(stable_only)
                 .iter()
@@ -3441,9 +3896,475 @@ name = \"icalkit\"
     }
 
     #[test]
+    fn ordinary_ci_does_not_start_candidate_qualification() {
+        let root = super::workspace_root().unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let ordinary = justfile
+            .lines()
+            .find(|line| line.starts_with("check:"))
+            .unwrap();
+        for required in [
+            "test-ci",
+            "allocation",
+            "doc",
+            "deny",
+            "architecture",
+            "repository",
+        ] {
+            assert!(
+                ordinary.split_whitespace().any(|word| word == required),
+                "missing {required}"
+            );
+        }
+        for candidate in ["feature-matrix", "no-std", "wasm", "public-api", "msrv"] {
+            assert!(
+                !ordinary.split_whitespace().any(|word| word == candidate),
+                "ordinary invokes {candidate}"
+            );
+        }
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        assert!(
+            !ci.contains("\n  push:"),
+            "ordinary CI duplicates main pushes"
+        );
+        assert!(
+            !ci.contains("\n  ci-required:"),
+            "obsolete summary duplicates required"
+        );
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let push = hooks
+            .split_once("\npre-push:")
+            .unwrap()
+            .1
+            .split_once("\nlocal-ci:")
+            .unwrap()
+            .0;
+        assert!(push.contains("run: mise exec -- just check"));
+        assert!(!push.contains("just ci"));
+        let commit = hooks
+            .split_once("\npre-commit:\n")
+            .unwrap()
+            .1
+            .split_once("\npre-push:\n")
+            .unwrap()
+            .0;
+        for candidate in [
+            "ci",
+            "public-api",
+            "feature-matrix",
+            "no-std",
+            "wasm",
+            "msrv",
+            "prove-ci",
+        ] {
+            assert!(
+                !commit.contains(&format!("just {candidate}")),
+                "pre-commit invokes {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_summary_requires_exact_successful_inventory() {
+        for phase in [super::CiPhase::Ordinary, super::CiPhase::Candidate] {
+            let name = match phase {
+                super::CiPhase::Ordinary => "ordinary",
+                super::CiPhase::Candidate => "candidate",
+            };
+            let mut arguments = vec![name.to_owned()];
+            for job in phase.jobs() {
+                arguments.extend([job.label().to_owned(), "success".to_owned()]);
+            }
+            assert_eq!(super::ci_summary(&arguments), Vec::<String>::new());
+            for job in phase.jobs() {
+                for state in ["failure", "cancelled", "skipped", "", "unknown"] {
+                    let mut broken = vec![name.to_owned()];
+                    for actual in phase.jobs() {
+                        broken.extend([
+                            actual.label().to_owned(),
+                            if actual == job { state } else { "success" }.to_owned(),
+                        ]);
+                    }
+                    assert!(
+                        !super::ci_summary(&broken).is_empty(),
+                        "accepted {}={state}",
+                        job.label()
+                    );
+                }
+            }
+            let mut extra = arguments.clone();
+            extra.extend(["extra".to_owned(), "success".to_owned()]);
+            assert_ne!(super::ci_summary(&extra), Vec::<String>::new());
+            arguments.pop();
+            assert_ne!(super::ci_summary(&arguments), Vec::<String>::new());
+            arguments.pop();
+            assert_ne!(super::ci_summary(&arguments), Vec::<String>::new());
+        }
+        assert_ne!(super::ci_summary(&[]), Vec::<String>::new());
+        assert_ne!(
+            super::ci_summary(&["unknown".to_owned()]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn candidate_revision_requires_a_complete_matching_commit() {
+        let first = "0123456789abcdef0123456789abcdef01234567";
+        let second = "0123456789abcdef0123456789abcdef01234568";
+        let revision = super::CandidateRevision::parse(first).unwrap();
+        assert!(revision.matches(revision));
+        assert!(!revision.matches(super::CandidateRevision::parse(second).unwrap()));
+        for invalid in [
+            "",
+            "main",
+            "0123456",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789abcdef0123456789abcdef012345678",
+        ] {
+            assert!(
+                super::CandidateRevision::parse(invalid).is_none(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    struct CandidateFixture(std::path::PathBuf);
+
+    fn isolate_fixture_git_environment(command: &mut std::process::Command) {
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(name);
+            }
+        }
+    }
+
+    impl CandidateFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("icalkit-candidate-{}-{serial}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            let fixture = Self(path);
+            fixture.git(&["init", "--quiet"]);
+            std::fs::write(fixture.0.join("source.txt"), b"original\n").unwrap();
+            fixture.git(&["add", "source.txt"]);
+            let tree = fixture.git(&["write-tree"]);
+            let commit = fixture.git(&[
+                "-c",
+                "user.name=CI fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit-tree",
+                &tree,
+                "-m",
+                "test: candidate fixture",
+            ]);
+            fixture.git(&["update-ref", "HEAD", &commit]);
+            fixture
+        }
+
+        fn git(&self, arguments: &[&str]) -> String {
+            let mut command = std::process::Command::new("git");
+            isolate_fixture_git_environment(&mut command);
+            let output = command
+                .args(arguments)
+                .current_dir(&self.0)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        }
+
+        fn revision(&self) -> super::CandidateRevision {
+            super::CandidateRevision::parse(&self.git(&["rev-parse", "HEAD"])).unwrap()
+        }
+    }
+
+    impl Drop for CandidateFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn candidate_checkout_rejects_modified_tracked_source() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        assert_eq!(
+            super::candidate_checkout(&fixture.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        std::fs::write(fixture.0.join("source.txt"), b"changed\n").unwrap();
+        let refused = super::candidate_checkout(&fixture.0, revision).unwrap();
+        assert!(
+            refused
+                .iter()
+                .any(|message| message.contains("tracked source")),
+            "{refused:?}"
+        );
+        fixture.git(&["add", "source.txt"]);
+        assert_ne!(
+            super::candidate_checkout(&fixture.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        std::fs::write(fixture.0.join("source.txt"), b"original\n").unwrap();
+        assert_ne!(
+            super::candidate_checkout(&fixture.0, revision).unwrap(),
+            Vec::<String>::new(),
+            "accepted staged changes when working-tree bytes equal HEAD"
+        );
+        fixture.git(&["add", "source.txt"]);
+        assert_eq!(
+            super::candidate_checkout(&fixture.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        let tree = fixture.git(&["write-tree"]);
+        let parent = fixture.git(&["rev-parse", "HEAD"]);
+        let changed = fixture.git(&[
+            "-c",
+            "user.name=CI fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            "test: changed candidate identity",
+        ]);
+        fixture.git(&["update-ref", "HEAD", &changed]);
+        let refused = super::candidate_checkout(&fixture.0, revision).unwrap();
+        assert!(
+            refused
+                .iter()
+                .any(|message| message.contains("commit differs")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_checkout_ignores_foreign_git_environment() {
+        for (variable, suffix) in [
+            ("GIT_INDEX_FILE", ".git/index"),
+            ("GIT_DIR", ".git"),
+            ("GIT_WORK_TREE", ""),
+        ] {
+            let foreign = CandidateFixture::new();
+            std::fs::write(foreign.0.join("foreign.txt"), b"foreign\n").unwrap();
+            foreign.git(&["add", "foreign.txt"]);
+            let index = std::fs::read(foreign.0.join(".git/index")).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            isolate_fixture_git_environment(&mut command);
+            let output = command
+                .args([
+                    "--exact",
+                    "tests::candidate_checkout_rejects_modified_tracked_source",
+                    "--nocapture",
+                ])
+                .env(variable, foreign.0.join(suffix))
+                .env(
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                    foreign.0.join(".git/objects"),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{variable}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert_eq!(
+                std::fs::read(foreign.0.join(".git/index")).unwrap(),
+                index,
+                "changed the caller's index through {variable}",
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_inventory_requires_both_platforms_and_every_msrv() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        for removed in ["windows-2025, ", ", macos-15"] {
+            let broken = candidate.replace(removed, "");
+            assert_ne!(
+                super::ci_source_violations(&ci, &broken, &justfile, &hooks),
+                Vec::<String>::new()
+            );
+        }
+        for path in [
+            "crates/icalkit",
+            "crates/icalkit-conformance",
+            "gates/grammar-layering",
+            "gates/xml-layering",
+            "xtask",
+        ] {
+            let broken = justfile.replace(&format!("    cargo msrv verify --path {path}\n"), "");
+            assert_ne!(
+                super::ci_source_violations(&ci, &candidate, &broken, &hooks),
+                Vec::<String>::new(),
+                "missing MSRV {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_source_checks_bracket_commands_and_acquire_the_pinned_helper() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let action = "P4suta/project-template/.github/actions/ci-policy@ee6265bd944c53097191f97dcb7a6ac678794b43";
+        let proof = super::workflow_job(&candidate, "proof").unwrap();
+        assert!(
+            proof.contains(action),
+            "missing immutable policy helper acquisition"
+        );
+        let broken = candidate.replace(
+            action,
+            "P4suta/project-template/.github/actions/ci-policy@main",
+        );
+        assert_ne!(
+            super::ci_source_violations(&ci, &broken, &justfile, &hooks),
+            Vec::<String>::new()
+        );
+        for job in super::CANDIDATE_JOBS
+            .iter()
+            .map(|job| job.label())
+            .chain(["candidate-required"])
+        {
+            let body = super::workflow_job(&candidate, job).unwrap();
+            let marker = "candidate-revision \"$CANDIDATE_REVISION\"";
+            assert_eq!(
+                body.matches(marker).count(),
+                2,
+                "missing post-check identity for {job}"
+            );
+            let last = body.rfind(marker).unwrap();
+            let mut broken_body = body.to_owned();
+            broken_body.replace_range(
+                last..last.checked_add(marker.len()).unwrap(),
+                "unrelated-command",
+            );
+            let broken = candidate.replacen(body, &broken_body, 1);
+            assert_ne!(
+                super::ci_source_violations(&ci, &broken, &justfile, &hooks),
+                Vec::<String>::new(),
+                "accepted missing post-check identity for {job}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_proofs_require_both_sources_inventories_and_counterexamples() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        for source in [
+            "xtask/src/ci.rs",
+            "crates/icalkit-conformance/src/bin/allocation_gate/arithmetic.rs",
+        ] {
+            let source_argument = format!("--source {source} ");
+            let command = justfile
+                .lines()
+                .find(|line| line.contains(&source_argument))
+                .expect("every production proof source needs its verification command");
+            let (_, inventory) = command.split_once("--require-json ").unwrap();
+            let (inventory, probe) = inventory.split_once(" --counterexample ").unwrap();
+            for missing in [
+                command.to_owned(),
+                source_argument,
+                format!("--require-json {inventory}"),
+                format!("--counterexample {probe}"),
+            ] {
+                let broken = justfile.replacen(&missing, "", 1);
+                assert_ne!(
+                    super::ci_source_violations(&ci, &candidate, &broken, &hooks),
+                    Vec::<String>::new(),
+                    "accepted missing proof contract {missing}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_ci_sources_bind_complete_phases_and_candidate_checkouts() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        assert_eq!(
+            super::ci_source_violations(&ci, &candidate, &justfile, &hooks),
+            Vec::<String>::new()
+        );
+        for broken in [
+            candidate.replace("  platform:\n", "  unexpected-platform:\n"),
+            candidate.replace("ref: ${{ inputs.revision }}", "ref: main"),
+            candidate.replace(
+                "candidate-revision \"$CANDIDATE_REVISION\"",
+                "unrelated-command",
+            ),
+            candidate.replace(
+                "needs: [ordinary, platform, features, portability, public-api, msrv, proof]",
+                "needs: [ordinary]",
+            ),
+            candidate.replace(
+                "PLATFORM_RESULT: ${{ needs.platform.result }}",
+                "PLATFORM_RESULT: success",
+            ),
+            candidate.replace(
+                "run: mise x -- just feature-matrix",
+                "run: mise x -- just test-ci",
+            ),
+        ] {
+            assert_ne!(
+                super::ci_source_violations(&ci, &broken, &justfile, &hooks),
+                Vec::<String>::new()
+            );
+        }
+        for command in ["test-ci", "allocation", "doc", "deny", "repository"] {
+            let ordinary = justfile
+                .lines()
+                .find(|line| line.starts_with("check:"))
+                .unwrap();
+            let broken =
+                justfile.replacen(ordinary, &ordinary.replace(&format!(" {command}"), ""), 1);
+            assert!(
+                !super::ci_source_violations(&ci, &candidate, &broken, &hooks).is_empty(),
+                "missing {command}"
+            );
+        }
+    }
+
+    #[test]
     fn dav_body_encoders_cannot_recreate_xml_structure_helpers() {
         let shared = "use crate::internal::dav::writer::XmlWriter;\n";
-        assert!(xml_writer_violations(shared, shared).is_empty());
+        assert_eq!(xml_writer_violations(shared, shared), Vec::<String>::new());
 
         let violations = xml_writer_violations(
             "fn write_name() {}\n",
@@ -3469,13 +4390,13 @@ name = \"icalkit\"
     #[test]
     fn current_status_rejects_historical_debt_as_live_work() {
         let current_roadmap = "## Current closure ledger — 2026-08-15\n";
-        assert!(
+        assert_eq!(
             closure_status_violations(
                 current_roadmap,
                 "private modules are connected through workflows",
                 "# Current evidence boundary"
-            )
-            .is_empty()
+            ),
+            Vec::<String>::new()
         );
 
         let violations = closure_status_violations(
@@ -3510,7 +4431,10 @@ name = \"icalkit\"
         let readme = "## Strict parsing\n## Explicit normalization\n## Transactional editing\n\
                       ## DST-aware recurrence\n## iTIP scheduling\n\
                       ## CalDAV sync and server workflows\n";
-        assert!(documentation_violations(readme, "private implementation modules").is_empty());
+        assert_eq!(
+            documentation_violations(readme, "private implementation modules"),
+            Vec::<String>::new()
+        );
 
         let stale = documentation_violations(
             "## Explicit normalization\n## Strict parsing\n",
@@ -3530,7 +4454,10 @@ name = \"icalkit\"
 
     #[test]
     fn the_basic_example_keeps_internal_vocabulary_out_of_the_golden_path() {
-        assert!(basic_example_violations("use icalkit::Calendar;").is_empty());
+        assert_eq!(
+            basic_example_violations("use icalkit::Calendar;"),
+            Vec::<String>::new()
+        );
         let violations = basic_example_violations(
             "use icalkit::Calendar; fn hidden(_: Limits, _: &mut Meter) {}",
         );

@@ -2012,7 +2012,7 @@ mod tests {
     fn an_empty_binary_value_is_a_value_and_stands_for_no_octets() {
         let value = BinaryValue::decode_value(b"").unwrap();
         assert_eq!(value.as_bytes(), b"");
-        assert!(value.decode().unwrap().is_empty());
+        assert_eq!(value.decode().unwrap().as_slice(), b"");
         assert_written(&value, b"");
     }
 

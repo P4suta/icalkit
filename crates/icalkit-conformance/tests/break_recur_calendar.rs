@@ -543,7 +543,7 @@ fn a_per_second_walk_toward_an_impossible_date_stops_at_the_budget() {
         expected: &[],
     };
     let run = run_case(case).expect("the fixture assembles");
-    assert!(run.starts.is_empty());
+    assert_eq!(run.starts.as_slice(), []);
     assert!(
         matches!(run.outcome, SearchOutcome::BudgetExhausted(_)),
         "an unsatisfiable per-second rule is refused rather than answered, got {:?}",

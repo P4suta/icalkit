@@ -501,10 +501,10 @@ mod tests {
 
     #[test]
     fn an_empty_document_writes_no_octets() {
-        assert!(Document::default().to_bytes().is_empty());
+        assert_eq!(Document::default().to_bytes().as_slice(), b"");
         let mut sink: Vec<u8> = Vec::new();
         Document::new(Vec::new()).serialize(&mut sink).unwrap();
-        assert!(sink.is_empty());
+        assert_eq!(sink.as_slice(), b"");
     }
 
     /// The octets a producer wrote, beside the tree a parser would have built from them.

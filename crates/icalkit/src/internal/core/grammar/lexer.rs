@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn an_empty_input_yields_no_tokens_at_all() {
-        assert!(lex(b"", GrammarLimits::DEFAULT).unwrap().is_empty());
+        assert_eq!(lex(b"", GrammarLimits::DEFAULT).unwrap().as_slice(), []);
     }
 
     #[test]

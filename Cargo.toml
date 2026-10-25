@@ -38,6 +38,7 @@ arithmetic_side_effects = "warn"
 missing_errors_doc = "allow"
 
 [workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 # `Token` is `#[non_exhaustive]` and its consumers now live in the crate that defines it, where
 # that attribute means nothing: an in-crate match must be exhaustive, and a wildcard arm over it
 # is a silently ignored variant rather than forward compatibility. Outside this workspace the

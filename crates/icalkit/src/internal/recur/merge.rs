@@ -752,7 +752,7 @@ mod tests {
             last.key(),
             "and neither anchor moved anything, so July keeps its own time"
         );
-        assert!(sink.is_empty());
+        assert_eq!(sink.as_slice(), []);
     }
 
     /// A stated shift overwrites an earlier stated shift and is never added to it.
