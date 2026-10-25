@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name = "icalkit"
+summary = "An unreleased Rust library for parsing, editing, and querying iCalendar data"
+install = """
+git clone https://github.com/P4suta/icalkit.git
+cd icalkit
+mise install
+"""
+usage_language = "sh"
+usage = "mise x -- cargo run --locked -p icalkit --example golden_path"
+documentation_index = true
+copyright = "2026 icalkit contributors"
+license = "MIT OR Apache-2.0"
+
+[[consent]]
+contributor = "Yasunobu"
+evidence = "https://github.com/P4suta/icalkit/commit/6520a02030322988254c58d9554e9a1af5b264c7"
+
+[[consent]]
+contributor = "dependabot[bot]"
+evidence = "https://github.com/P4suta/icalkit/commit/0bc8dce4f77e449c2c8e81628994fefd0eb2859e"

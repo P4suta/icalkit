@@ -464,6 +464,7 @@ fn print_usage() {
 /// Files that make the public repository navigable and its maintenance policy reviewable.
 const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     "README.md",
+    "docs/README.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
     "SUPPORT.md",
@@ -527,7 +528,7 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
             .unwrap_or("")
     };
     violations.extend(repository_documentation_violations(&RepositoryDocuments {
-        readme: source("README.md"),
+        readme: source("docs/README.md"),
         contributing: source("CONTRIBUTING.md"),
         security: source("SECURITY.md"),
         support: source("SUPPORT.md"),
@@ -553,15 +554,15 @@ fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> V
     let mut violations = Vec::new();
 
     require_markers(
-        "README.md",
+        "docs/README.md",
         documents.readme,
         &[
             "actions/workflows/ci.yml/badge.svg?branch=main",
             "actions/workflows/codeql.yml/badge.svg?branch=main",
-            "[Contributing](CONTRIBUTING.md)",
-            "[Support](SUPPORT.md)",
-            "[Security policy](SECURITY.md)",
-            "[repository policy](docs/repository-policy.md)",
+            "[Contributing](../CONTRIBUTING.md)",
+            "[Support](../SUPPORT.md)",
+            "[Security policy](../SECURITY.md)",
+            "[repository policy](repository-policy.md)",
         ],
         &mut violations,
     );
@@ -795,7 +796,7 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let mut violations = release_config_violations(&workspace)?;
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let facade = fs::read_to_string(workspace.join("crates/icalkit/Cargo.toml"))?;
-    let readme = fs::read_to_string(workspace.join("README.md"))?;
+    let readme = fs::read_to_string(workspace.join("docs/README.md"))?;
     let architecture = fs::read_to_string(workspace.join("ARCHITECTURE.md"))?;
     let roadmap = fs::read_to_string(workspace.join("ROADMAP.md"))?;
     let ci_workflow = fs::read_to_string(workspace.join(".github/workflows/candidate.yml"))?;
@@ -1321,13 +1322,13 @@ fn documentation_violations(readme: &str, architecture: &str) -> Vec<String> {
     for heading in GOLDEN_PATH {
         let Some(at) = readme.find(heading) else {
             violations.push(format!(
-                "README.md: missing golden-path heading `{heading}` (ADR 0014)"
+                "docs/README.md: missing golden-path heading `{heading}` (ADR 0014)"
             ));
             continue;
         };
         if previous.is_some_and(|before| at <= before) {
             violations.push(format!(
-                "README.md: `{heading}` is out of golden-path order (ADR 0014)"
+                "docs/README.md: `{heading}` is out of golden-path order (ADR 0014)"
             ));
         }
         previous = Some(at);
@@ -1335,7 +1336,7 @@ fn documentation_violations(readme: &str, architecture: &str) -> Vec<String> {
     for stale in RETIRED_PROSE {
         if architecture.contains(stale) || readme.contains(stale) {
             violations.push(format!(
-                "README.md/ARCHITECTURE.md: retired migration prose `{stale}` remains (ADR 0014)"
+                "docs/README.md/ARCHITECTURE.md: retired migration prose `{stale}` remains (ADR 0014)"
             ));
         }
     }
@@ -3797,9 +3798,9 @@ name = \"icalkit\"
         let valid = RepositoryDocuments {
             readme: "actions/workflows/ci.yml/badge.svg?branch=main\n\
                      actions/workflows/codeql.yml/badge.svg?branch=main\n\
-                     [Contributing](CONTRIBUTING.md) [Support](SUPPORT.md)\n\
-                     [Security policy](SECURITY.md)\n\
-                     [repository policy](docs/repository-policy.md)",
+                     [Contributing](../CONTRIBUTING.md) [Support](../SUPPORT.md)\n\
+                     [Security policy](../SECURITY.md)\n\
+                     [repository policy](repository-policy.md)",
             contributing: "The private kernel stays no_std and sans-I/O.",
             security: "Until the first release, main receives fixes. security/advisories/new",
             support: "GitHub Discussions; public GitHub issue; security/advisories/new; \
@@ -3820,6 +3821,26 @@ name = \"icalkit\"
             repository_documentation_violations(&valid),
             Vec::<String>::new()
         );
+
+        let root_relative = valid
+            .readme
+            .replace("../", "")
+            .replace("(repository-policy.md)", "(docs/repository-policy.md)");
+        let misplaced = RepositoryDocuments {
+            readme: &root_relative,
+            ..valid
+        };
+        let violations = repository_documentation_violations(&misplaced);
+        for link in [
+            "[Contributing](../CONTRIBUTING.md)",
+            "[Support](../SUPPORT.md)",
+            "[Security policy](../SECURITY.md)",
+            "[repository policy](repository-policy.md)",
+        ] {
+            assert!(violations.iter().any(|violation| {
+                violation.starts_with("docs/README.md:") && violation.contains(link)
+            }));
+        }
     }
 
     #[test]
@@ -3838,11 +3859,9 @@ name = \"icalkit\"
             codeowners: "",
         };
         let violations = repository_documentation_violations(&incomplete);
-        assert!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("README.md") && violation.contains("badge.svg"))
-        );
+        assert!(violations.iter().any(|violation| {
+            violation.starts_with("docs/README.md:") && violation.contains("badge.svg")
+        }));
         assert!(violations.iter().any(|violation| {
             violation.contains("CONTRIBUTING.md") && violation.contains("ical-core")
         }));
