@@ -918,7 +918,7 @@ mod tests {
         let mut empty = OrphanScan::new(&none);
         empty.observe(at(NEW_YORK_BEFORE_MARCH));
         assert_eq!(empty.finish(&mut ledger, &mut sink), 0);
-        assert!(sink.is_empty());
+        assert_eq!(sink.as_slice(), []);
 
         let identifiers = [at(NEW_YORK_BEFORE_MARCH), at(NEW_YORK_MISREAD_MARCH)];
         let refused = OrphanScan::new(&identifiers);

@@ -92,7 +92,7 @@ fn a_final_line_with_no_terminator_does_not_acquire_one() {
 fn an_empty_input_is_an_empty_document_and_writes_nothing_back() {
     let (written, diagnostics) = round_trip(b"");
     assert_eq!(written.as_deref(), Ok(&b""[..]));
-    assert!(diagnostics.is_empty());
+    assert_eq!(diagnostics.as_slice(), []);
 }
 
 #[test]

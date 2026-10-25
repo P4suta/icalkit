@@ -1,51 +1,44 @@
 ## What this changes
 
-<!-- One or two sentences. What behavior is different after this lands? -->
+<!-- Describe the changed behavior in one or two sentences. -->
 
 ## Preservation
 
-- [ ] Anything this parses, it serializes back byte-identically
-- [ ] Typed access added here is a view over preserved text, not the storage for it
-- [ ] A specification violation is a diagnostic attached to the item, not an error that
-      discards the input
+Confirm byte-identical serialization of parsed input and typed views over preserved text.
+A specification violation must remain a diagnostic attached to the item without discarding the input.
 
 <!--
-Dropping a property nobody here recognizes is how one client destroys another client's
-data. See docs/adr/0001. Delete this section if the change cannot reach the model.
+Dropping an unrecognized property destroys another client's data.
+See docs/adr/0001.
+Delete this section if the change cannot reach the model.
 -->
 
 ## Bounds and time
 
-- [ ] Recurrence work is bounded twice: by the caller's window and by a candidate budget
-      whose exhaustion is a reported outcome rather than a hang or an empty result
-- [ ] No clock is read and no zone is resolved without a caller-supplied source, and every
-      answer says which source produced it
-- [ ] Ambiguous and non-existent local times are represented rather than silently resolved
+Confirm recurrence bounds from the caller's window and candidate budget, with exhaustion reported as an outcome.
+Clock reads and zone resolution require caller-supplied sources, and every answer must identify its source.
+Represent ambiguous and nonexistent local times explicitly.
 
 ## Scheduling
 
 <!-- Delete this section if `icalkit::scheduling` is untouched. -->
 
-- [ ] The result is a described transition the caller can show a user, not a mutation
-- [ ] Authorization is decided by the semantics: an attendee cannot move a meeting by
-      replying, and a `REPLY` from an address that is not on the attendee list is rejected
+Confirm that results describe transitions the caller can show a user without mutating state.
+Authorization must reject meeting changes through attendee replies and reject a `REPLY` from an address outside the attendee list.
 
 ## Conformance
 
-- [ ] Every rule this touches has a case in `icalkit-conformance` addressed to its RFC section
-- [ ] Where implementations disagree, the case records each observed behavior and says
-      which one this project chose
-- [ ] Any real export added is reduced to the smallest form that still shows the behavior,
-      anonymized, and records the client and version it came from
+Identify a case in `icalkit-conformance` citing the RFC section for every affected rule.
+Where implementations disagree, record each observed behavior and the project's choice.
+Reduce and anonymize real exports while preserving the demonstrated behavior, and record the originating client and version.
 
 ## Checks
 
-- [ ] `just ci` passes locally
-- [ ] The sans-I/O core gained no `std`, clock, network, or time zone database dependency
-      (`just purity`, `just no-std`, `just wasm`)
-- [ ] No `allow` or `ignore` was added to make a gate pass
+Report the result of `just check` and name every unrun check.
+Use candidate qualification for affected portability or compatibility contracts.
+Confirm that the sans-I/O core gained no `std`, clock, network, or time zone database dependency through `just purity`, `just no-std`, and `just wasm`.
+Don't add `allow` or `ignore` to make a gate pass.
 
 <!--
-If a gate was changed rather than satisfied, say why here. That is sometimes right, and it
-always deserves a sentence.
+Explain every changed gate.
 -->

@@ -760,7 +760,7 @@ mod tests {
             &mut reported,
         );
         assert_eq!(literal.instants(), [key(2026, 3, 29, 0, 0)]);
-        assert!(literal.spans().is_empty());
+        assert_eq!(literal.spans(), []);
         // Which is exactly the failure: a 09:00 series has no key at midnight, so the literal
         // reading removes nothing and only the diagnostic survives to say the producer tried.
         assert!(!literal.excludes(key(2026, 3, 29, 9, 0)));
@@ -775,7 +775,7 @@ mod tests {
             &mut ledger,
             &mut reported,
         );
-        assert!(expanded.instants().is_empty());
+        assert_eq!(expanded.instants(), []);
         assert!(expanded.excludes(key(2026, 3, 29, 9, 0)));
         assert!(!expanded.excludes(key(2026, 3, 30, 9, 0)));
         assert!(!expanded.excludes(key(2026, 3, 28, 9, 0)));
@@ -1019,7 +1019,7 @@ mod tests {
             &mut reported,
         );
         assert_eq!(agreed.instants(), [key(2026, 7, 1, 0, 0)]);
-        assert!(reported.is_empty());
+        assert_eq!(reported.as_slice(), []);
     }
 
     /// `ical_recur::RecurrenceInput::new` refuses a list that is not strictly ascending, so this
@@ -1156,7 +1156,7 @@ mod tests {
             &mut reported,
         );
         assert_eq!(kept.instants(), [key(2026, 7, 1, 9, 0)]);
-        assert!(reported.is_empty());
+        assert_eq!(reported.as_slice(), []);
     }
 
     /// A fold and a gap are values on this path too: an exclusion written in another zone is

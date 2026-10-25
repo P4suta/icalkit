@@ -125,7 +125,7 @@ fn every_derived_traversal_of_a_twenty_thousand_deep_document_returns() {
     );
     assert_eq!(copy.cmp(&document), Ordering::Equal);
     assert_eq!(hashed(&copy), hashed(&document), "equal, hashed unequally");
-    assert!(!format!("{document:?}").is_empty());
+    assert_ne!(format!("{document:?}"), "");
     assert_eq!(copy.to_bytes(), octets, "P1 failed at twenty thousand deep");
 
     // And the teardown, which runs twice here and once more when `kept` goes out of scope.

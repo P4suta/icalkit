@@ -67,9 +67,12 @@ mod tests {
 
     #[test]
     fn a_mutable_reference_forwards_to_what_it_points_at() {
+        fn write_owned<W: Writer<Error = core::convert::Infallible>>(mut sink: W) {
+            Writer::write_bytes(&mut sink, b"END:VCALENDAR\r\n").unwrap();
+        }
+
         let mut out: Vec<u8> = Vec::new();
-        let borrowed = &mut out;
-        Writer::write_bytes(&mut { borrowed }, b"END:VCALENDAR\r\n").unwrap();
+        write_owned::<&mut Vec<u8>>(&mut out);
         assert_eq!(out, b"END:VCALENDAR\r\n");
     }
 }

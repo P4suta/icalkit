@@ -54,12 +54,6 @@ pre-commit:
       run: mise exec -- just architecture
       fail_text: "The single-crate release boundary or facade feature vocabulary drifted (docs/adr/0013)."
 
-    public-api:
-      tags: lint
-      glob: "{crates/icalkit/src/**/*.rs,crates/icalkit/Cargo.toml,api/*.txt,xtask/src/**/*.rs}"
-      run: mise exec -- just public-api
-      fail_text: "The icalkit public API differs from its reviewed default/no-default snapshots."
-
     reuse:
       tags: license
       glob: "{**/*.rs,**/*.toml,**/*.md,**/*.yml,Justfile,REUSE.toml,LICENSES/*}"
@@ -71,8 +65,8 @@ pre-push:
   commands:
     local-ci:
       tags: ci
-      run: mise exec -- just ci
-      fail_text: "Local CI failed; fix the reported gate before pushing."
+      run: mise exec -- just check
+      fail_text: "The ordinary gate failed; fix the reported gate before pushing."
 
 # Explicit manual entry point: `lefthook run local-ci`.
 local-ci:

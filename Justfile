@@ -61,18 +61,18 @@ doc:
 # Compile no-default, every individual feature, and representative feature pairs.
 feature-matrix:
     cargo hack check --workspace --all-targets --each-feature
-    cargo hack check {{core_crates}} --feature-powerset --depth 2
+    cargo hack check {{ core_crates }} --feature-powerset --depth 2
 
 # Prove the core stays no_std. A calendar library that needs an OS cannot run in the
 # places calendars are actually rendered (docs/adr/0004).
 no-std:
     rustup target add thumbv7em-none-eabi
-    cargo build {{core_crates}} --target thumbv7em-none-eabi --no-default-features
+    cargo build {{ core_crates }} --target thumbv7em-none-eabi --no-default-features
 
 # The same core has to work in a browser, which is where most calendar UIs live.
 wasm:
     rustup target add wasm32-unknown-unknown
-    cargo check {{core_crates}} --target wasm32-unknown-unknown --no-default-features
+    cargo check {{ core_crates }} --target wasm32-unknown-unknown --no-default-features
 
 # Five rules, one task, because it already walks this tree and already holds docs/adr/0004's
 # structural rules. First: reject std, clock, network, and bundled-tzdb dependencies in the
@@ -102,6 +102,11 @@ repository:
 # Freeze the sole production crate's canonical API with default and no default features.
 public-api:
     cargo run --quiet -p xtask -- public-api
+
+# Verify the actual CI and allocation arithmetic cores with their declared harnesses.
+prove-ci:
+    ci-policy prove-source --source xtask/src/ci.rs --require-json '["production::proofs::candidate_identity_is_complete_and_exact","production::proofs::phase_inventory_is_complete_and_ordered","production::proofs::summaries_require_every_job_to_succeed"]' --counterexample production::proofs::counterexample_skipped_candidate_is_successful
+    ci-policy prove-source --source crates/icalkit-conformance/src/bin/allocation_gate/arithmetic.rs --require-json '["production::proofs::released_count_is_saturating"]' --counterexample production::proofs::counterexample_release_underflows
 
 # Hold every diagnostic code's meaning, channel, and owing milestone to the committed
 # golden list docs/adr/0009 requires.
@@ -142,7 +147,7 @@ msrv:
     cargo msrv verify --path xtask
 
 # Fast deterministic checks used during the edit/commit loop.
-check: fmt-check toml-check typos lint purity architecture repository public-api codes shear reuse actionlint zizmor
+check: fmt-check toml-check typos lint test-ci allocation doc purity architecture repository codes deny shear reuse actionlint zizmor
     @echo "fast local checks passed"
 
 # Every practical CI gate available on a developer machine.

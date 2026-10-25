@@ -917,7 +917,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
             write_utc_date_time(&mut out, beyond),
             Err(DavError::Invalid(ValueError::TimeUnrepresentable))
         );
-        assert!(out.is_empty());
+        assert_eq!(out.as_slice(), b"");
         write_utc_date_time(&mut out, Instant::EPOCH).unwrap();
         assert_eq!(out, b"19700101T000000Z");
     }

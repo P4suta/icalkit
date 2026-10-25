@@ -32,7 +32,7 @@ fn google_calendar_gap_export_is_strict_and_needs_no_compatibility_repair()
     assert_eq!(imported.as_bytes(), GOOGLE_DST_GAP);
 
     let normalized = imported.normalize(CommonClientsV1)?;
-    assert!(normalized.changes().is_empty());
+    assert_eq!(normalized.changes(), []);
     assert_eq!(normalized.output().as_bytes(), GOOGLE_DST_GAP);
     let _validated = normalized.output().validate()?;
     Ok(())

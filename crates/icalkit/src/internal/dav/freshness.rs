@@ -892,6 +892,6 @@ mod tests {
         written.clear();
         // Nothing preferred means no header at all, rather than a header with nothing in it.
         assert!(!write_prefer_value(Prefer::Unstated, &mut written).unwrap());
-        assert!(written.is_empty());
+        assert_eq!(written.as_slice(), b"");
     }
 }

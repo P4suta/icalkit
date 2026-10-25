@@ -217,7 +217,7 @@ fn server_mkcalendar_asks_for_acl_then_validated_creation() {
 
     let response = operation.finish().unwrap();
     assert_eq!(response.status(), 201);
-    assert!(response.body().is_empty());
+    assert_eq!(response.body(), b"");
 }
 
 #[test]

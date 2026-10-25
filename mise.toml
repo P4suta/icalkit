@@ -27,6 +27,7 @@ cargo-binstall = "1.21.1"
 "cargo:cargo-nextest" = "0.9.140"
 "cargo:cargo-public-api" = "0.52.0"
 "cargo:cargo-shear" = "1.13.3"
+"cargo:kani-verifier" = { version = "0.68.0", os = ["linux", "macos"] }
 
 [settings.cargo]
 binstall = true

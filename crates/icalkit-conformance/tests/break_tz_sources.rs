@@ -459,7 +459,7 @@ fn an_empty_definition_is_not_reported_as_a_zone_nobody_supplied() {
 #[test]
 fn an_answer_from_before_a_tables_first_transition_says_so_too() {
     let (zones, codes) = zones_of(NEW_YORK_DATED).unwrap();
-    assert!(codes.is_empty());
+    assert_eq!(codes.as_slice(), []);
     let table = zones.table(NEW_YORK).unwrap();
     assert_eq!(table.coverage_end(), CivilDate::from_ymd(2029, 11, 4));
 

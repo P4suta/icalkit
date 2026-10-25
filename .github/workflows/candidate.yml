@@ -1,0 +1,212 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Candidate qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Complete commit ID to qualify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.revision }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE_REVISION: ${{ inputs.revision }}
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  MISE_AUTO_INSTALL: false
+
+jobs:
+  ordinary:
+    name: candidate ordinary Linux checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust just taplo typos uv actionlint zizmor cargo-binstall cargo:cargo-nextest cargo:cargo-deny cargo:cargo-shear
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: mise x -- just check
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  platform:
+    name: candidate tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust just cargo-binstall cargo:cargo-nextest
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: mise x -- just test-ci
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  features:
+    name: candidate feature combinations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust just cargo-binstall cargo:cargo-hack
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: mise x -- just feature-matrix
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  portability:
+    name: candidate bare-metal and WASM targets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust just
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: mise x -- just no-std wasm
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  public-api:
+    name: candidate public API snapshots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-07-02
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - run: rustup toolchain install nightly-2026-07-02 --profile minimal
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: just cargo-binstall cargo:cargo-public-api
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: mise x -- just public-api
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  msrv:
+    name: candidate declared MSRVs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust just cargo-binstall cargo:cargo-msrv
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: mise x -- just msrv
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  proof:
+    name: candidate CI and allocation arithmetic proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust just cargo-binstall cargo:kani-verifier
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - run: mise x -- cargo kani setup
+      - uses: P4suta/project-template/.github/actions/ci-policy@ee6265bd944c53097191f97dcb7a6ac678794b43
+      - run: mise x -- just prove-ci
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+
+  candidate-required:
+    name: candidate-required
+    if: always()
+    needs: [ordinary, platform, features, portability, public-api, msrv, proof]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: v2026.10.17
+          install_args: rust
+      - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
+      - name: Require the complete candidate inventory
+        env:
+          ORDINARY_RESULT: ${{ needs.ordinary.result }}
+          PLATFORM_RESULT: ${{ needs.platform.result }}
+          FEATURES_RESULT: ${{ needs.features.result }}
+          PORTABILITY_RESULT: ${{ needs.portability.result }}
+          PUBLIC_API_RESULT: ${{ needs.public-api.result }}
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          PROOF_RESULT: ${{ needs.proof.result }}
+        run: >-
+          mise x -- cargo run --quiet --locked -p xtask -- ci-summary candidate
+          ordinary "$ORDINARY_RESULT" platform "$PLATFORM_RESULT" features "$FEATURES_RESULT"
+          portability "$PORTABILITY_RESULT" public-api "$PUBLIC_API_RESULT" msrv "$MSRV_RESULT" proof "$PROOF_RESULT"
+      - name: Recheck candidate source
+        if: always()
+        run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"

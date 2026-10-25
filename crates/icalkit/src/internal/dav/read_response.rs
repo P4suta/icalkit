@@ -1344,7 +1344,7 @@ mod tests {
             second.body,
             ResponseBody::Status(Status::NOT_FOUND)
         ));
-        assert!(second.propstats().is_empty());
+        assert_eq!(second.propstats(), []);
     }
 
     /// The same exchange in the three spellings the deployed world sends it in.

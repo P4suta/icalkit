@@ -288,7 +288,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         decode_caret_into(b"", &mut out);
         encode_caret_into(b"", &mut out);
-        assert!(out.is_empty());
+        assert_eq!(out.as_slice(), b"");
     }
 
     /// Every row resolves, and an octet the table does not name keeps its caret.

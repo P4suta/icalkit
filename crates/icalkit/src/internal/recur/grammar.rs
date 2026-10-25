@@ -1345,7 +1345,7 @@ mod tests {
         let (lower, codes) = lenient(b"freq=weekly;byday=su;wkst=su;bysetpos=-1");
         let (upper, _) = lenient(b"FREQ=WEEKLY;BYDAY=SU;WKST=SU;BYSETPOS=-1");
         assert_eq!(lower.unwrap(), upper.unwrap());
-        assert!(codes.is_empty());
+        assert_eq!(codes.as_slice(), []);
     }
 
     /// A sink that keeps nothing still leaves a mark, which is what the meter is here for.
