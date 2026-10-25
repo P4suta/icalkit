@@ -7,7 +7,9 @@ The stack targets RFC 5545 for iCalendar.
 It targets RFC 5546 and RFC 6047 for scheduling.
 It targets RFC 4791, RFC 6578, and RFC 6638 for CalDAV.
 
-**Status: intentionally unreleased.** `icalkit` is the sole production crate and remains at `0.0.0`.
+The project is intentionally unreleased.
+
+`icalkit` is the sole production crate and remains at `0.0.0`.
 The project has no published release.
 Publishing requires a separate explicit decision.
 Applications still own HTTP execution, persistence, credentials, current-time input, and access control decisions.
