@@ -44,7 +44,7 @@ jobs:
           version: v2026.10.17
           install_args: rust just taplo typos uv actionlint zizmor cargo-binstall cargo:cargo-nextest cargo:cargo-deny cargo:cargo-shear
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just check
       - name: Recheck candidate source
         if: always()
@@ -68,7 +68,7 @@ jobs:
           version: v2026.10.17
           install_args: rust just cargo-binstall cargo:cargo-nextest
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just test-ci
       - name: Recheck candidate source
         if: always()
@@ -88,7 +88,7 @@ jobs:
           version: v2026.10.17
           install_args: rust just cargo-binstall cargo:cargo-hack
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just feature-matrix
       - name: Recheck candidate source
         if: always()
@@ -108,7 +108,7 @@ jobs:
           version: v2026.10.17
           install_args: rust just
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just no-std wasm
       - name: Recheck candidate source
         if: always()
@@ -131,7 +131,7 @@ jobs:
           version: v2026.10.17
           install_args: just cargo-binstall cargo:cargo-public-api
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just public-api
       - name: Recheck candidate source
         if: always()
@@ -151,7 +151,7 @@ jobs:
           version: v2026.10.17
           install_args: rust just cargo-binstall cargo:cargo-msrv
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just msrv
       - name: Recheck candidate source
         if: always()
