@@ -27,6 +27,8 @@ Keep CodeQL's pull-request analysis and default-branch baseline without its week
 Run Windows and macOS tests, feature combinations, bare-metal and WebAssembly compilation, pinned-nightly API snapshots, and five-crate MSRV verification during candidate qualification.
 Every candidate job must verify that the requested complete commit ID matches its actual checkout before and after its checks.
 Both identity checks reject changes to tracked source, including staged changes.
+Git operations clear Git's declared repository-local environment before selecting the explicit workspace.
+The [Git hook contract](https://git-scm.com/docs/githooks) defines environment isolation for commands that inspect another repository.
 The existing xtask owns revision validation and strict phase summaries.
 Summaries require the exact declared job inventory and successful results for every member.
 The proof job imports the production CI core and checks every declared identity, inventory, and summary harness with Kani 0.68.0.

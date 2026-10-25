@@ -347,9 +347,8 @@ fn candidate_revision(arguments: &[String]) -> io::Result<Vec<String>> {
 }
 
 fn candidate_checkout(workspace: &Path, requested: CandidateRevision) -> io::Result<Vec<String>> {
-    let output = Command::new("git")
+    let output = repository_git(workspace)?
         .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(workspace)
         .output()?;
     if !output.status.success() {
         return Err(io::Error::other(
@@ -375,15 +374,12 @@ fn candidate_checkout(workspace: &Path, requested: CandidateRevision) -> io::Res
 }
 
 fn tracked_difference(workspace: &Path, index: bool) -> io::Result<bool> {
-    let mut command = Command::new("git");
+    let mut command = repository_git(workspace)?;
     command.args(["diff", "--quiet", "--no-ext-diff", "--no-textconv"]);
     if index {
         command.arg("--cached");
     }
-    let status = command
-        .args(["HEAD", "--"])
-        .current_dir(workspace)
-        .status()?;
+    let status = command.args(["HEAD", "--"]).status()?;
     match status.code() {
         Some(0) => Ok(false),
         Some(1) => Ok(true),
@@ -391,6 +387,25 @@ fn tracked_difference(workspace: &Path, index: bool) -> io::Result<bool> {
             "git could not inspect tracked candidate source",
         )),
     }
+}
+
+fn repository_git(workspace: &Path) -> io::Result<Command> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--local-env-vars"])
+        .output()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(io::Error::other(
+            "git could not enumerate its repository-local environment",
+        ));
+    }
+    let variables = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut command = Command::new("git");
+    command.current_dir(workspace);
+    for variable in variables.lines() {
+        command.env_remove(variable);
+    }
+    Ok(command)
 }
 
 fn ci_summary(arguments: &[String]) -> Vec<String> {
@@ -4015,6 +4030,18 @@ name = \"icalkit\"
 
     struct CandidateFixture(std::path::PathBuf);
 
+    fn isolate_fixture_git_environment(command: &mut std::process::Command) {
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(name);
+            }
+        }
+    }
+
     impl CandidateFixture {
         fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -4044,7 +4071,9 @@ name = \"icalkit\"
         }
 
         fn git(&self, arguments: &[&str]) -> String {
-            let output = std::process::Command::new("git")
+            let mut command = std::process::Command::new("git");
+            isolate_fixture_git_environment(&mut command);
+            let output = command
                 .args(arguments)
                 .current_dir(&self.0)
                 .output()
@@ -4124,6 +4153,46 @@ name = \"icalkit\"
                 .any(|message| message.contains("commit differs")),
             "{refused:?}"
         );
+    }
+
+    #[test]
+    fn candidate_checkout_ignores_foreign_git_environment() {
+        for (variable, suffix) in [
+            ("GIT_INDEX_FILE", ".git/index"),
+            ("GIT_DIR", ".git"),
+            ("GIT_WORK_TREE", ""),
+        ] {
+            let foreign = CandidateFixture::new();
+            std::fs::write(foreign.0.join("foreign.txt"), b"foreign\n").unwrap();
+            foreign.git(&["add", "foreign.txt"]);
+            let index = std::fs::read(foreign.0.join(".git/index")).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            isolate_fixture_git_environment(&mut command);
+            let output = command
+                .args([
+                    "--exact",
+                    "tests::candidate_checkout_rejects_modified_tracked_source",
+                    "--nocapture",
+                ])
+                .env(variable, foreign.0.join(suffix))
+                .env(
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                    foreign.0.join(".git/objects"),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{variable}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert_eq!(
+                std::fs::read(foreign.0.join(".git/index")).unwrap(),
+                index,
+                "changed the caller's index through {variable}",
+            );
+        }
     }
 
     #[test]
