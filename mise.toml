@@ -17,14 +17,14 @@ actionlint = "1.7.12"
 zizmor = "1.31.1"
 
 # REUSE runs through uvx.
-uv = "0.13.5"
+uv = "0.13.6"
 
-cargo-binstall = "1.26.0"
+cargo-binstall = "1.26.1"
 
 "cargo:cargo-msrv" = "0.19.6"
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-hack" = "0.6.45"
-"cargo:cargo-nextest" = "0.9.149"
+"cargo:cargo-nextest" = "0.9.150"
 "cargo:cargo-public-api" = "0.52.0"
 "cargo:cargo-shear" = "1.14.0"
 "cargo:kani-verifier" = { version = "0.68.0", os = ["linux", "macos"] }
