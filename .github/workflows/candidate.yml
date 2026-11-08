@@ -39,9 +39,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust just taplo typos uv actionlint zizmor cargo-binstall cargo:cargo-nextest cargo:cargo-deny cargo:cargo-shear
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -63,9 +63,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust just cargo-binstall cargo:cargo-nextest
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -83,9 +83,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust just cargo-binstall cargo:cargo-hack
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -103,9 +103,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust just
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -126,9 +126,9 @@ jobs:
           ref: ${{ inputs.revision }}
           persist-credentials: false
       - run: rustup toolchain install nightly-2026-07-02 --profile minimal
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: just cargo-binstall cargo:cargo-public-api
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -146,9 +146,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust just cargo-binstall cargo:cargo-msrv
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -166,9 +166,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust just cargo-binstall cargo:kani-verifier
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - run: mise x -- cargo kani setup
@@ -189,9 +189,9 @@ jobs:
         with:
           ref: ${{ inputs.revision }}
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: v2026.10.23
+          version: v2026.11.2
           install_args: rust
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - name: Require the complete candidate inventory
