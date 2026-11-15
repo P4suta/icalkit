@@ -73,7 +73,11 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
             .lines()
             .find(|line| line.starts_with(&format!("{recipe}:")))
             .unwrap_or("");
-        if !header.split_whitespace().any(|word| word == "test-core") {
+        let dependencies = header.split_once('#').map_or(header, |(body, _)| body);
+        if !dependencies
+            .split_whitespace()
+            .any(|word| word == "test-core")
+        {
             violations.push(format!("Justfile: {recipe} requires test-core"));
         }
     }
@@ -91,6 +95,7 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
             .trim()
             .trim_start_matches('@')
             .split_whitespace()
+            .take_while(|word| *word != "--" && !word.starts_with('#'))
             .collect();
         let resolves = matches!(
             words.as_slice(),
@@ -169,6 +174,45 @@ test-core:
                 "{recipe} omitted the standalone suite"
             );
         }
+    }
+
+    #[test]
+    fn comments_do_not_satisfy_standalone_test_dependencies() {
+        for recipe in ["test", "test-ci"] {
+            let broken = TEST_RECIPES.replace(
+                &format!("{recipe}: test-core"),
+                &format!("{recipe}: # test-core"),
+            );
+            assert!(
+                !recipe_violations(&broken).is_empty(),
+                "a comment replaced {recipe}'s dependency"
+            );
+            let valid = TEST_RECIPES.replace(
+                &format!("{recipe}: test-core"),
+                &format!("{recipe}: test-core # required coverage"),
+            );
+            assert_eq!(recipe_violations(&valid), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn comments_and_test_arguments_do_not_lock_dependency_resolution() {
+        for command in [
+            "cargo check --workspace # --locked",
+            "cargo test --workspace -- --locked",
+            "cargo nextest run --workspace -- --locked",
+            "cargo clippy --workspace -- -D warnings # --locked",
+        ] {
+            let broken = format!("{TEST_RECIPES}\nprobe:\n    {command}\n");
+            assert!(
+                !recipe_violations(&broken).is_empty(),
+                "a non-Cargo argument satisfied the lockfile check: {command}"
+            );
+        }
+        let valid = format!(
+            "{TEST_RECIPES}\nprobe:\n    cargo clippy --locked --workspace -- -D warnings # checked\n"
+        );
+        assert_eq!(recipe_violations(&valid), Vec::<String>::new());
     }
 
     #[test]
