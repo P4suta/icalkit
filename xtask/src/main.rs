@@ -242,6 +242,8 @@ const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
 
 mod ci;
 mod development;
+#[cfg(test)]
+mod hook_scope;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
     CiJob, CiPhase, CiResults, JobState, ObservedJob, REJECTING_PROBE, REQUIRED_PROOFS,

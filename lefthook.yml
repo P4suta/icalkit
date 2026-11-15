@@ -44,25 +44,24 @@ pre-commit:
 
     purity:
       tags: lint
-      glob: "{**/Cargo.toml,**/*.rs}"
+      glob: "{Cargo.toml,**/Cargo.toml,**/*.rs}"
       run: mise exec -- just purity
       fail_text: "The core gained a std, clock, network, or tzdb dependency (docs/adr/0004)."
 
     architecture:
       tags: lint
-      glob: "{**/Cargo.toml,release-plz.toml,xtask/src/**/*.rs}"
+      glob: "{Cargo.toml,**/Cargo.toml,release-plz.toml,xtask/src/*.rs,xtask/src/**/*.rs}"
       run: mise exec -- just architecture
       fail_text: "The single-crate release boundary or facade feature vocabulary drifted (docs/adr/0013)."
 
     repository:
       tags: lint
-      glob: "{mise.toml,rust-toolchain.toml,Justfile,lefthook.yml,CONTRIBUTING.md,docs/repository-policy.md,.github/**/*,xtask/src/**/*.rs}"
+      glob: "{mise.toml,rust-toolchain.toml,Justfile,lefthook.yml,CONTRIBUTING.md,docs/repository-policy.md,.github/**/*,xtask/src/*.rs,xtask/src/**/*.rs}"
       run: mise exec -- just repository
       fail_text: "The repository or development configuration violates project policy."
 
     reuse:
       tags: license
-      glob: "{**/*.rs,**/*.toml,**/*.md,**/*.yml,Justfile,REUSE.toml,LICENSES/*}"
       run: mise exec -- just reuse
 
 pre-push:
