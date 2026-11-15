@@ -118,6 +118,36 @@ fn editor_rolls_back_by_default_and_commit_is_line_local() {
 }
 
 #[test]
+fn vendor_property_edits_preserve_the_original_name_case() {
+    let mut calendar = Calendar::parse(VALID).unwrap();
+    let mut edit = calendar.edit();
+    edit.set_vendor_property("one@example.test", "x-review-note", b"first")
+        .unwrap();
+    edit.commit().unwrap();
+
+    let mut edit = calendar.edit();
+    edit.set_vendor_property("one@example.test", "X-REVIEW-NOTE", b"second")
+        .unwrap();
+    edit.commit().unwrap();
+
+    let event = calendar.events().next().unwrap();
+    let property = event.property("X-REVIEW-NOTE").unwrap();
+    assert_eq!(property.name().as_str(), "x-review-note");
+    assert_eq!(property.value(), b"second");
+    assert_eq!(
+        event
+            .as_component()
+            .properties()
+            .filter(|property| property
+                .name()
+                .as_str()
+                .eq_ignore_ascii_case("X-REVIEW-NOTE"))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn editor_refuses_content_line_injection_without_touching_the_calendar() {
     let mut calendar = Calendar::parse(VALID).unwrap();
     let before = calendar.to_bytes();

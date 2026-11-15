@@ -32,7 +32,8 @@ impl Calendar {
         parse_calendar(bytes, policy, &mut meter)
     }
 
-    /// Serialize the stored CST. Unedited lines retain their original octets.
+    /// Serialize the stored CST.
+    /// Unedited lines retain their original octets.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.document.to_bytes()
@@ -56,8 +57,8 @@ impl Calendar {
 
     /// Expand one stored component's complete recurrence set over a mandatory window.
     ///
-    /// The master, `RRULE`, `RDATE`, `EXDATE`, and sibling `RECURRENCE-ID` overrides are
-    /// composed internally. Results are ordered by effective start rather than cadence key.
+    /// The master, `RRULE`, `RDATE`, `EXDATE`, and sibling `RECURRENCE-ID` overrides are composed internally.
+    /// Results are ordered by effective start rather than cadence key.
     pub fn occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,
@@ -207,7 +208,8 @@ fn known_date_times_are_valid(component: &Component) -> bool {
         .all(known_date_times_are_valid)
 }
 
-/// A transactional calendar editor. Dropping it rolls every edit back.
+/// A transactional calendar editor.
+/// Dropping it rolls every edit back.
 #[derive(Debug)]
 pub struct Editor<'a> {
     target: &'a mut Calendar,
@@ -233,14 +235,18 @@ impl Editor<'_> {
         Ok(())
     }
 
-    /// Set a vendor property on one event. The name must begin with `X-`.
+    /// Set a vendor property on one event with an ASCII case-insensitive `X-` prefix.
     pub fn set_vendor_property(
         &mut self,
         uid: &str,
         name: &str,
         value: &[u8],
     ) -> Result<(), Error> {
-        if !name.as_bytes().starts_with(b"X-") {
+        if !name
+            .as_bytes()
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"X-"))
+        {
             return Err(Error::single("icalkit.edit.vendor-name-required"));
         }
         let event = find_event_mut(&mut self.working, uid)
