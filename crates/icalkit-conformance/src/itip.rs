@@ -4,104 +4,72 @@
 
 //! The scheduling chapter of the corpus: RFC 5546 and RFC 6047, case by case.
 //!
-//! Every case here is addressed to a section of RFC 5546 and its expectation is read from that
-//! section's own text — its constraint tables, its per-method prose, and sections 2.1.4 and
-//! 2.1.5 for which of two versions wins. None of them is read off an answer this workspace
-//! gave. Where the answer this workspace gives differs from the answer the specification
-//! states, the case says so in its own note rather than being quietly relaxed to match, which
-//! is what makes a corpus evidence instead of a regression suite.
+//! Every case here is addressed to a section of RFC 5546 and its expectation is read from that section's own text — its constraint tables, its per-method prose, and sections 2.1.4 and 2.1.5 for which of two versions wins.
+//! None of them is read off an answer this workspace gave.
+//! Where the answer this workspace gives differs from the answer the specification states, the case says so in its own note rather than being quietly relaxed to match, which is what makes a corpus evidence instead of a regression suite.
 //!
 //! # The subject, and why it is written by hand
 //!
-//! `ical-itip` judges a message against *the state the caller holds*, and the trait it takes
-//! that state through — `ScheduledComponent` — exists so a server whose calendar is a database
-//! row never has to build an `icalkit_conformance::internal::core::Component` in order to answer "who may change this".
-//! The design document was candid that until a second implementation appears, the trait "earns
-//! its cost as insurance rather than as demonstrated demand". The subject below is that second
-//! implementation: it reads a committed `.ics` fixture into its own small tree and answers the
-//! seventeen questions directly, the same way `break_tz_seam` writes a zone source by hand
-//! because ADR-0003 says a zone answer is the caller's to supply. Nothing in the crate under
-//! test is bypassed by that — the messages, the identities, the revisions and the gate are all
-//! its own.
+//! `ical-itip` judges a message against *the state the caller holds*, and the trait it takes that state through — `ScheduledComponent` — exists so a server whose calendar is a database row never has to build an `icalkit_conformance::internal::core::Component` in order to answer "who may change this".
+//! The design document was candid that until a second implementation appears, the trait "earns its cost as insurance rather than as demonstrated demand".
+//! The subject below is that second implementation: it reads a committed `.ics` fixture into its own small tree and answers the seventeen questions directly, the same way `break_tz_seam` writes a zone source by hand because ADR-0003 says a zone answer is the caller's to supply.
+//! Nothing in the crate under test is bypassed by that — the messages, the identities, the revisions and the gate are all its own.
 //!
 //! # The policy every case runs under
 //!
-//! `Limits::DEFAULT`, with a `Meter` budgeted at that policy's own input bound, unless the case
-//! states otherwise in its table — the bounded cases narrow exactly one bound each and say
-//! which, because "the message was refused" is not reproducible against an unstated policy
-//! (ADR-0010). The bounded cases are also the ones that make this crate's deliberate departure
-//! from ADR-0009 visible: a scheduling message that crosses a bound is an `Err` refusing the
-//! whole message, never a truncation plus a diagnostic, because dropping the last attendee of
-//! an over-long list turns "this party may reply" into "this party is unknown" and lets whoever
-//! padded the list choose which of the two a server believes.
+//! `Limits::DEFAULT`, with a `Meter` budgeted at that policy's own input bound, unless the case states otherwise in its table — the bounded cases narrow exactly one bound each and say which, because "the message was refused" is not reproducible against an unstated policy (ADR-0010).
+//! The bounded cases are also the ones that make this crate's deliberate departure from ADR-0009 visible: a scheduling message that crosses a bound is an `Err` refusing the whole message, never a truncation plus a diagnostic, because dropping the last attendee of an over-long list turns "this party may reply" into "this party is unknown" and lets whoever padded the list choose which of the two a server believes.
 //!
 //! # Synthetic interoperability hypotheses
 //!
-//! The three shapes below came from implementation folklore, not from reduced captures committed
-//! with producer/version/date provenance. They are useful robustness cases and are deliberately
-//! labeled synthetic; they do not establish what Google Calendar, Microsoft 365, or Apple
-//! Calendar emits or accepts, and cannot justify a `CommonClientsV1` repair.
+//! The three shapes below came from implementation folklore, not from reduced captures committed with producer/version/date provenance.
+//! They are useful robustness cases and are deliberately labeled synthetic; they do not establish what Google Calendar, Microsoft 365, or Apple Calendar emits or accepts, and cannot justify a `CommonClientsV1` repair.
 //!
-//! - **An `ATTENDEE` in a `PUBLISH`.** RFC 5546 section 3.2.1's table says `0`. The synthetic
-//!   `publish_with_attendee.ics` fixture pins the strict answer: refuse the whole message.
-//! - **A `VALARM` in a `REPLY`.** Section 3.2.3's table says `0` for the subcomponent, and the
-//!   reason is not aesthetic: an alarm is a component the recipient's client will act on, and
-//!   an attendee's reply is not a place to install one. The synthetic fixture is refused.
+//! - **An `ATTENDEE` in a `PUBLISH`.** RFC 5546 section 3.2.1's table says `0`.
+//!   The synthetic `publish_with_attendee.ics` fixture pins the strict answer: refuse the whole message.
+//! - **A `VALARM` in a `REPLY`.** Section 3.2.3's table says `0` for the subcomponent, and the reason is not aesthetic: an alarm is a component the recipient's client will act on, and an attendee's reply is not a place to install one.
+//!   The synthetic fixture is refused.
 //! - **A `REPLY` with no `SEQUENCE`.** RFC 5546 section 3.2 reads an absent `SEQUENCE` as zero,
-//!   which is a revision and not an unknown. Reading absent as "unknown" and accepting it is how
-//!   a stale reply overwrites a newer state, so this project reads zero and the case pins it.
+//!   which is a revision and not an unknown.
+//!   Reading absent as "unknown" and accepting it is how a stale reply overwrites a newer state, so this project reads zero and the case pins it.
 //!
 //! # The two-turn exchange
 //!
-//! ADR-0005 requires the corpus to carry the propose-then-confirm exchange as a fixture, and
-//! both of its shapes are here. The right one carries the *message* across the boundary and
-//! calls `evaluate_message` again against state it read fresh; when the organizer moved the
-//! meeting in between, the second call refuses the message as stale and nothing is applied. The
-//! wrong one — recorded, not merely described — replays the snapshot the first turn was judged
-//! against, gets a genuine authorization over state that no longer exists, and writes over the
-//! organizer's newer version. No lifetime can see that, which is exactly what the ADR says: the
-//! flow is not safe against a racing organizer update and must not be described as if it were.
-//! `Commitment` narrows the window and is compared only to refuse; the case asserts that the
-//! confirm turn re-evaluates either way, so that a forged one buys an attacker nothing but the
-//! ability to decline to be told that the target moved.
+//! ADR-0005 requires the corpus to carry the propose-then-confirm exchange as a fixture, and both of its shapes are here.
+//! The right one carries the *message* across the boundary and calls `evaluate_message` again against state it read fresh; when the organizer moved the meeting in between, the second call refuses the message as stale and nothing is applied.
+//! The wrong one — recorded, not merely described — replays the snapshot the first turn was judged against, gets a genuine authorization over state that no longer exists, and writes over the organizer's newer version.
+//! No lifetime can see that, which is exactly what the ADR says: the flow is not safe against a racing organizer update and must not be described as if it were.
+//! `Commitment` narrows the window and is compared only to refuse; the case asserts that the confirm turn re-evaluates either way, so that a forged one buys an attacker nothing but the ability to decline to be told that the target moved.
 //!
 //! # Three cases this chapter found, and the gate now answers
 //!
 //! The three below were written the specification's way against a gate that answered otherwise,
-//! on the principle that a corpus edited to agree with the implementation it measures has
-//! stopped measuring anything. All three failed on the first green build and all three were
-//! closed in the implementation rather than here; ADR-0005 amendments 4 to 6 record what
-//! changed. They are kept named because a case whose provenance is a defect is worth more than
-//! one nobody can date.
+//! on the principle that a corpus edited to agree with the implementation it measures has stopped measuring anything.
+//! All three failed on the first green build and all three were closed in the implementation rather than here; ADR-0005 amendments 4 to 6 record what changed.
+//! They are kept named because a case whose provenance is a defect is worth more than one nobody can date.
 //!
-//! - `reply-carrying-an-alarm`. The gate counted a payload's *properties* against section 3's
-//!   table and never its components, so the `VALARM` row that reads `0` went unenforced and an
-//!   attendee's answer could install a component the recipient's client will act on. It is now
-//!   `AuthorizationDenied::MethodForbidsComponent`, a refusal of its own because a nested
-//!   component is not a property occurrence.
-//! - `request-creating-an-event-the-caller-does-not-hold`. The sending party was resolved
-//!   against the state the caller holds, and for a `PUBLISH` or a `REQUEST` about something it
-//!   does not hold yet that state names nobody — so the two methods whose whole purpose is to
-//!   arrive first were refused, and `TransitionReason::Created` was unreachable. The lookup now
-//!   falls back to the payload when the prior state is absent, and `SECURITY.md` states what
-//!   rests on the transport as a result.
-//! - `refresh-asking-for-the-latest-version`. A `REFRESH` was diffed like a restatement of the
-//!   component, so it described the removal of every property it does not echo — and the field
-//!   rule then refused the attendee for removals the diff invented. It describes nothing now,
+//! - `reply-carrying-an-alarm`.
+//!   The gate counted a payload's *properties* against section 3's table and never its components, so the `VALARM` row that reads `0` went unenforced and an attendee's answer could install a component the recipient's client will act on.
+//!   It is now `AuthorizationDenied::MethodForbidsComponent`, a refusal of its own because a nested component is not a property occurrence.
+//! - `request-creating-an-event-the-caller-does-not-hold`.
+//!   The sending party was resolved against the state the caller holds, and for a `PUBLISH` or a `REQUEST` about something it does not hold yet that state names nobody — so the two methods whose whole purpose is to arrive first were refused, and `TransitionReason::Created` was unreachable.
+//!   The lookup now falls back to the payload when the prior state is absent, and `SECURITY.md` states what rests on the transport as a result.
+//! - `refresh-asking-for-the-latest-version`.
+//!   A `REFRESH` was diffed like a restatement of the component, so it described the removal of every property it does not echo — and the field rule then refused the attendee for removals the diff invented.
+//!   It describes nothing now,
 //!   and the revision gate is skipped for any method whose own table forbids a `SEQUENCE`.
 //!
 //! # Current evidence boundary
 //!
 //! iMIP is now an unconditional facade workflow rather than a feature on this former kernel.
 //! `crates/icalkit/tests/scheduling_workflow.rs` drives RFC 6047 media-type, charset, method,
-//! aggregate-budget, and authenticated-actor boundaries through the public API. In particular,
-//! email `From` is never substituted for the `ORGANIZER` or `ATTENDEE` identity the calendar
-//! names.
+//! aggregate-budget, and authenticated-actor boundaries through the public API.
+//! In particular,
+//! email `From` is never substituted for the `ORGANIZER` or `ATTENDEE` identity the calendar names.
 //!
 //! The `scheduling-*` diagnostics are exercised on their emitting paths across this chapter,
-//! the composition/attacker suites, and the facade workflow tests. The table below additionally
-//! freezes each spelling, severity, and channel; it is a registry assertion rather than a list
-//! of unfinished emitters.
+//! the composition/attacker suites, and the facade workflow tests.
+//! The table below additionally freezes each spelling, severity, and channel; it is a registry assertion rather than a list of unfinished emitters.
 
 #[cfg(test)]
 mod tests {
@@ -118,7 +86,8 @@ mod tests {
     use icalkit_conformance::internal::recur::OverrideRange;
     use icalkit_conformance::internal::tz::{LocalResolution, Reading, nominal};
 
-    // The state a caller already holds. A held fixture carries no `METHOD`: it is a calendar,
+    // The state a caller already holds.
+    // A held fixture carries no `METHOD`: it is a calendar,
     // not a message, and the component judged against is its first child.
 
     /// A weekly series the caller holds at `SEQUENCE:2`, with two attendees.
@@ -236,10 +205,8 @@ mod tests {
 
     /// The hour `America/New_York` repeats on the first Sunday of November 2026.
     ///
-    /// Transcribed from the rule the zone publishes — `-04:00` daylight moving to `-05:00`
-    /// standard at 02:00 local on 2026-11-01 — and not read off an answer this workspace gave.
-    /// Local 01:30 that morning happens twice: at 05:30Z under the offset before the
-    /// transition and at 06:30Z under the offset after it.
+    /// Transcribed from the rule the zone publishes — `-04:00` daylight moving to `-05:00` standard at 02:00 local on 2026-11-01 — and not read off an answer this workspace gave.
+    /// Local 01:30 that morning happens twice: at 05:30Z under the offset before the transition and at 06:30Z under the offset after it.
     static NEW_YORK_FALL_BACK: Fold = Fold {
         earlier: b"20261101T053000Z",
         later: b"20261101T063000Z",
@@ -249,9 +216,8 @@ mod tests {
 
     /// One repeated wall clock, as a caller's own zone database states it.
     ///
-    /// `ical-itip` resolves no zone: a fold side is derived from the `LocalResolution` a caller
-    /// already holds, and a caller with none gets `FoldSide::Unresolved` and the conservative
-    /// answer that follows. This is the smallest thing that can play the caller's part.
+    /// `ical-itip` resolves no zone: a fold side is derived from the `LocalResolution` a caller already holds, and a caller with none gets `FoldSide::Unresolved` and the conservative answer that follows.
+    /// This is the smallest thing that can play the caller's part.
     #[derive(Debug)]
     struct Fold {
         /// The first of the two instants, under the offset in force before the transition.
@@ -293,9 +259,8 @@ mod tests {
 
     /// One content line of a fixture, unfolded and taken apart.
     ///
-    /// `content` is the whole line as the file has it, because that is the unit
-    /// `ProposedChange::Replace` takes and the unit an octet diff compares. `value` and the
-    /// parameters are *values*: the quotes are gone and RFC 6868's caret encoding is resolved,
+    /// `content` is the whole line as the file has it, because that is the unit `ProposedChange::Replace` takes and the unit an octet diff compares.
+    /// `value` and the parameters are *values*: the quotes are gone and RFC 6868's caret encoding is resolved,
     /// which is the contract `ical-itip` states from the other end.
     #[derive(Clone, Debug, Default)]
     struct Line {
@@ -312,11 +277,8 @@ mod tests {
     impl Line {
         /// The line `content` spells, or `None` when it carries no `:` at all.
         ///
-        /// The `:` is found outside quoted parameter values, because
-        /// `ORGANIZER;SENT-BY="mailto:pa@example.com":mailto:chair@example.com` carries three
-        /// of them and only the last one ends the header. The `;` between parameters is split
-        /// plainly: no fixture in this chapter puts one inside a quoted value, and a reader
-        /// that says so is more honest than one that pretends to a generality it never runs.
+        /// The `:` is found outside quoted parameter values, because `ORGANIZER;SENT-BY="mailto:pa@example.com":mailto:chair@example.com` carries three of them and only the last one ends the header.
+        /// The `;` between parameters is split plainly: no fixture in this chapter puts one inside a quoted value, and a reader that says so is more honest than one that pretends to a generality it never runs.
         fn read(content: &[u8]) -> Option<Self> {
             let mut quoted = false;
             let cut = content.iter().position(|byte| match *byte {
@@ -362,8 +324,7 @@ mod tests {
 
     /// One component of a fixture, answering the questions `ical-itip` asks of held state.
     ///
-    /// The second implementation of `ScheduledComponent` this workspace has, and the reason the
-    /// trait exists rather than a concrete type: nothing here is an `icalkit_conformance::internal::core::Component`.
+    /// The second implementation of `ScheduledComponent` this workspace has, and the reason the trait exists rather than a concrete type: nothing here is an `icalkit_conformance::internal::core::Component`.
     #[derive(Clone, Debug, Default)]
     struct Subject {
         /// What the `BEGIN` line named, `None` for a name RFC 5545 does not define.
@@ -554,9 +515,8 @@ mod tests {
                 value.push(byte);
                 continue;
             }
-            // A `^` with nothing after it escapes nothing and stands for itself. Answered
-            // before the match rather than inside it, because RFC 6868's `^^` and a trailing
-            // caret write the same octet for opposite reasons and one arm would hide that.
+            // A `^` with nothing after it escapes nothing and stands for itself.
+            // Answered before the match rather than inside it, because RFC 6868's `^^` and a trailing caret write the same octet for opposite reasons and one arm would hide that.
             let Some(escaped) = source.next() else {
                 value.push(b'^');
                 break;
@@ -631,9 +591,8 @@ mod tests {
 
     /// The instant `value` names, projected the way `icalkit_conformance::internal::tz::nominal` projects a wall clock.
     ///
-    /// A `Z`-terminated value names a real instant and the projection is the identity. A value
-    /// written without one names a wall clock, and the nominal timeline is the only thing this
-    /// corpus can place it on without a zone — which is exactly the seam M2 landed.
+    /// A `Z`-terminated value names a real instant and the projection is the identity.
+    /// A value written without one names a wall clock, and the nominal timeline is the only thing this corpus can place it on without a zone — which is exactly the seam M2 landed.
     fn instant_of(value: &[u8]) -> Option<Instant> {
         let year = u16::try_from(number(value.get(0..4)?)?).ok()?;
         let month = u8::try_from(number(value.get(4..6)?)?).ok()?;
@@ -656,9 +615,7 @@ mod tests {
     enum Outcome {
         /// The gate authorizes it, describing a change of this kind.
         ///
-        /// The count is `Some` only where the specification states the extent of the change as
-        /// well as its kind — a `REPLY` answers for one attendee and states nothing else — and
-        /// `None` where it states the kind and leaves the extent to the diff.
+        /// The count is `Some` only where the specification states the extent of the change as well as its kind — a `REPLY` answers for one attendee and states nothing else — and `None` where it states the kind and leaves the extent to the diff.
         Allowed(TransitionReason, Option<usize>),
         /// The gate refuses it, naming this reason.
         Refused(AuthorizationDenied),
@@ -685,8 +642,7 @@ mod tests {
 
     /// Judge every case, saying which specification section the expectation came from.
     ///
-    /// Every case here runs under `Limits::DEFAULT` with a ledger budgeted at that policy's own
-    /// input bound; the cases that narrow a bound have their own table and state which.
+    /// Every case here runs under `Limits::DEFAULT` with a ledger budgeted at that policy's own input bound; the cases that narrow a bound have their own table and state which.
     fn judge(table: &[Case]) {
         for case in table {
             let limits = Limits::DEFAULT;
@@ -730,12 +686,9 @@ mod tests {
         PropertyOccurrence::named(b"ATTENDEE", index)
     }
 
-    /// RFC 5546 section 3's constraint tables, in the rows that say `0` and the rows that
-    /// require a property, exercised through whole messages.
+    /// RFC 5546 section 3's constraint tables, in the rows that say `0` and the rows that require a property, exercised through whole messages.
     ///
-    /// This is the evidence the transcribed table is a table and not a switch: each case names
-    /// the subsection it is addressed to, and `judge` holds that name against the section the
-    /// implementation's own row carries, so a case and its table cannot drift apart silently.
+    /// This is the evidence the transcribed table is a table and not a switch: each case names the subsection it is addressed to, and `judge` holds that name against the section the implementation's own row carries, so a case and its table cannot drift apart silently.
     #[test]
     fn the_section_3_property_tables_refuse_what_they_say_they_refuse() {
         judge(&[
@@ -746,8 +699,8 @@ mod tests {
                 message: PUBLISH_WITH_ATTENDEE,
                 actor: CHAIR,
                 zoned: false,
-                // Section 3.2.1's table gives `ATTENDEE` the value `0`. This synthetic
-                // interoperability shape is therefore refused whole.
+                // Section 3.2.1's table gives `ATTENDEE` the value `0`.
+                // This synthetic interoperability shape is therefore refused whole.
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsField(attendee_at(0))),
             },
             Case {
@@ -757,8 +710,7 @@ mod tests {
                 message: REPLY_WITH_ALARM,
                 actor: BO,
                 zoned: false,
-                // Section 3.2.3's SUBCOMPONENTS table gives `VALARM` the value `0`: a reply is
-                // not a place to install a component the recipient's client will act on.
+                // Section 3.2.3's SUBCOMPONENTS table gives `VALARM` the value `0`: a reply is not a place to install a component the recipient's client will act on.
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsComponent(
                     ComponentKind::Alarm,
                 )),
@@ -782,8 +734,7 @@ mod tests {
                 message: REFRESH_WITH_SEQUENCE,
                 actor: BO,
                 zoned: false,
-                // Section 3.2.6's table gives `SEQUENCE` the value `0`: a refresh asks for the
-                // latest version and states no version of its own.
+                // Section 3.2.6's table gives `SEQUENCE` the value `0`: a refresh asks for the latest version and states no version of its own.
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsField(
                     PropertyOccurrence::named(b"SEQUENCE", 0),
                 )),
@@ -791,11 +742,9 @@ mod tests {
         ]);
     }
 
-    /// RFC 5546 section 3's prose about who may send a method, and what a caller must already
-    /// hold for one to mean anything.
+    /// RFC 5546 section 3's prose about who may send a method, and what a caller must already hold for one to mean anything.
     ///
-    /// No constraint table states either, which is why these rows are the likeliest place a
-    /// transcription is wrong and the reason each is a case rather than a comment.
+    /// No constraint table states either, which is why these rows are the likeliest place a transcription is wrong and the reason each is a case rather than a comment.
     #[test]
     fn a_method_is_refused_when_the_wrong_party_sends_it() {
         judge(&[
@@ -806,8 +755,8 @@ mod tests {
                 message: REQUEST_RESCHEDULES,
                 actor: BO,
                 zoned: false,
-                // Section 3.2.2: a `REQUEST` is the organizer's. An attendee sending one moves
-                // somebody else's meeting, which is the first attack `SECURITY.md` names.
+                // Section 3.2.2: a `REQUEST` is the organizer's.
+                // An attendee sending one moves somebody else's meeting, which is the first attack `SECURITY.md` names.
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsSender(
                     ActorRole::Attendee,
                 )),
@@ -819,8 +768,8 @@ mod tests {
                 message: REPLY_FROM_DELEGATE,
                 actor: STRANGER,
                 zoned: false,
-                // Section 3.2.3: a reply comes from an attendee. An address the component names
-                // nowhere is a refusal, never a silently added participant.
+                // Section 3.2.3: a reply comes from an attendee.
+                // An address the component names nowhere is a refusal, never a silently added participant.
                 outcome: Outcome::Refused(AuthorizationDenied::UnknownAttendee),
             },
             Case {
@@ -830,7 +779,8 @@ mod tests {
                 message: CANCEL_SERIES,
                 actor: CHAIR,
                 zoned: false,
-                // Section 3.2.5 cancels an existing component. There is nothing to cancel.
+                // Section 3.2.5 cancels an existing component.
+                // There is nothing to cancel.
                 outcome: Outcome::Refused(AuthorizationDenied::PriorStateForbidden(
                     PriorState::Absent,
                 )),
@@ -842,10 +792,8 @@ mod tests {
                 message: COUNTER_NEW_TIME,
                 actor: BO,
                 zoned: false,
-                // Section 3.2.7 lets an attendee counter with a different time, and this
-                // project's field rule does not: `DTSTART` is the organizer's under every
-                // method. Recorded rather than relaxed — the design document names this exact
-                // refusal as the interoperability cost it prefers to a permissive default.
+                // Section 3.2.7 lets an attendee counter with a different time, and this project's field rule does not: `DTSTART` is the organizer's under every method.
+                // Recorded rather than relaxed — the design document names this exact refusal as the interoperability cost it prefers to a permissive default.
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsField(
                     PropertyOccurrence::named(b"DTSTART", 0),
                 )),
@@ -855,8 +803,7 @@ mod tests {
 
     /// RFC 5546 sections 2.1.4 and 2.1.5: `SEQUENCE` orders versions and `DTSTAMP` breaks ties.
     ///
-    /// The whole of this protocol's replay defense, and it is weak — nothing signs either
-    /// number — so every row here is stated in the refusing direction.
+    /// The whole of this protocol's replay defense, and it is weak — nothing signs either number — so every row here is stated in the refusing direction.
     #[test]
     fn an_older_revision_never_overwrites_a_newer_one() {
         judge(&[
@@ -887,8 +834,8 @@ mod tests {
                 message: REQUEST_WITHOUT_SEQUENCE,
                 actor: CHAIR,
                 zoned: false,
-                // Section 3.2 reads an absent `SEQUENCE` as zero, which is a revision and not
-                // an unknown. Reading it as unknown is how a stale message wins.
+                // Section 3.2 reads an absent `SEQUENCE` as zero, which is a revision and not an unknown.
+                // Reading it as unknown is how a stale message wins.
                 outcome: Outcome::Refused(AuthorizationDenied::SequenceStale { have: 2 }),
             },
             Case {
@@ -908,8 +855,7 @@ mod tests {
                 message: REPLY_ACCEPTED,
                 actor: BO,
                 zoned: false,
-                // Two equal revisions supersede each other in neither direction, which is
-                // exactly the shape of a reply: it answers the invitation it was sent.
+                // Two equal revisions supersede each other in neither direction, which is exactly the shape of a reply: it answers the invitation it was sent.
                 outcome: Outcome::Allowed(TransitionReason::ParticipationChanged, Some(1)),
             },
             Case {
@@ -919,8 +865,8 @@ mod tests {
                 message: REQUEST_RESCHEDULES,
                 actor: ASSISTANT,
                 zoned: false,
-                // RFC 5545 section 3.2.18: `SENT-BY` names an agent, and an agent satisfies its
-                // principal's rule. "The assistant sent this" never becomes "the organizer is".
+                // RFC 5545 section 3.2.18: `SENT-BY` names an agent, and an agent satisfies its principal's rule.
+                // "The assistant sent this" never becomes "the organizer is".
                 outcome: Outcome::Allowed(TransitionReason::Rescheduled, None),
             },
         ]);
@@ -928,9 +874,7 @@ mod tests {
 
     /// RFC 5546 section 3.2.3: a `REPLY` states one attendee's participation and nothing else.
     ///
-    /// The occurrence written is the *recipient's* numbering, matched by `CAL-ADDRESS`, so the
-    /// sender's position in its own list buys it nothing: `bo` is second on the caller's list
-    /// and first in every reply below.
+    /// The occurrence written is the *recipient's* numbering, matched by `CAL-ADDRESS`, so the sender's position in its own list buys it nothing: `bo` is second on the caller's list and first in every reply below.
     #[test]
     fn a_reply_answers_for_one_attendee_and_moves_nothing() {
         let limits = Limits::DEFAULT;
@@ -969,11 +913,8 @@ mod tests {
 
     /// RFC 5546 section 2.1.2: a delegation writes `PARTSTAT` and `DELEGATED-TO` on one line.
     ///
-    /// The reason the change vocabulary needs a parameter *list*: a single-parameter edit type
-    /// cannot express a legal reply. The delegate's own reply is the recorded limitation on the
-    /// other side of it — until the delegator's reply has been applied, the delegate is on the
-    /// caller's list only as somebody else's `DELEGATED-TO` value, and a reply from them
-    /// describes nothing rather than inventing the participant the gate exists to refuse.
+    /// The reason the change vocabulary needs a parameter *list*: a single-parameter edit type cannot express a legal reply.
+    /// The delegate's own reply is the recorded limitation on the other side of it — until the delegator's reply has been applied, the delegate is on the caller's list only as somebody else's `DELEGATED-TO` value, and a reply from them describes nothing rather than inventing the participant the gate exists to refuse.
     #[test]
     fn a_delegation_writes_two_parameters_and_the_delegate_describes_nothing_yet() {
         let limits = Limits::DEFAULT;
@@ -1015,11 +956,9 @@ mod tests {
 
     /// Identity is `UID` plus `RECURRENCE-ID`, and both halves are attacked here.
     ///
-    /// RFC 5545 section 3.8.4.7 gives a `UID` no case folding and no whitespace stripping, so
-    /// two identifiers differing by either are two identifiers — and the direction that merges
-    /// them is how a `CANCEL` for one meeting cancels another. Section 3.2.13's `RANGE` is part
-    /// of what a reference claims. The two halves of a repeated wall clock are one cadence key
-    /// and two meetings, and an ambiguous match is not a match.
+    /// RFC 5545 section 3.8.4.7 gives a `UID` no case folding and no whitespace stripping, so two identifiers differing by either are two identifiers — and the direction that merges them is how a `CANCEL` for one meeting cancels another.
+    /// Section 3.2.13's `RANGE` is part of what a reference claims.
+    /// The two halves of a repeated wall clock are one cadence key and two meetings, and an ambiguous match is not a match.
     #[test]
     fn a_message_is_about_one_identity_and_a_guess_is_not_a_match() {
         judge(&[
@@ -1068,8 +1007,8 @@ mod tests {
                 message: REPLY_THIS_AND_FUTURE,
                 actor: BO,
                 zoned: true,
-                // Section 3.2.3 answers one instance. A reply that reaches every later one is
-                // an attendee answering for meetings nobody has invited them to yet.
+                // Section 3.2.3 answers one instance.
+                // A reply that reaches every later one is an attendee answering for meetings nobody has invited them to yet.
                 outcome: Outcome::Refused(AuthorizationDenied::RangeNotPermitted),
             },
             Case {
@@ -1079,8 +1018,8 @@ mod tests {
                 message: REPLY_FOLDED_HOUR,
                 actor: BO,
                 zoned: false,
-                // One cadence key and two real meetings. Nothing resolved which, and a guess
-                // cancels somebody else's.
+                // One cadence key and two real meetings.
+                // Nothing resolved which, and a guess cancels somebody else's.
                 outcome: Outcome::Refused(AuthorizationDenied::AmbiguousInstance),
             },
             Case {
@@ -1106,8 +1045,7 @@ mod tests {
 
     /// What each method describes once it is authorized, in RFC 5546's own terms.
     ///
-    /// A caller renders a prompt from the kind of change, not from the method, because an
-    /// update that moved the time and one that fixed a typo are two prompts and one `REQUEST`.
+    /// A caller renders a prompt from the kind of change, not from the method, because an update that moved the time and one that fixed a typo are two prompts and one `REQUEST`.
     #[test]
     fn each_method_describes_the_kind_of_change_its_section_names() {
         judge(&[
@@ -1127,10 +1065,8 @@ mod tests {
                 message: REQUEST_RESCHEDULES,
                 actor: CHAIR,
                 zoned: false,
-                // Section 3.2.2's first sentence: a `REQUEST` invites attendees to an event
-                // they do not have, and section 3.2.1 posts one to a calendar that does not
-                // have it either. Both are the whole point of those two methods, and both name
-                // their parties in the message, because the state the caller holds names none.
+                // Section 3.2.2's first sentence: a `REQUEST` invites attendees to an event they do not have, and section 3.2.1 posts one to a calendar that does not have it either.
+                // Both are the whole point of those two methods, and both name their parties in the message, because the state the caller holds names none.
                 outcome: Outcome::Allowed(TransitionReason::Created, None),
             },
             Case {
@@ -1140,9 +1076,8 @@ mod tests {
                 message: CANCEL_SERIES,
                 actor: CHAIR,
                 zoned: false,
-                // Section 3.2.5 states the kind and not the extent. What this project describes
-                // is the octet diff, which for a cancellation states a removal for every
-                // property the message does not restate, plus the explicit cancelled state:
+                // Section 3.2.5 states the kind and not the extent.
+                // What this project describes is the octet diff, which for a cancellation states a removal for every property the message does not restate, plus the explicit cancelled state:
                 // eight occurrences here.
                 outcome: Outcome::Allowed(TransitionReason::Cancelled, Some(8)),
             },
@@ -1153,9 +1088,8 @@ mod tests {
                 message: REFRESH_SERIES,
                 actor: BO,
                 zoned: false,
-                // Section 3.2.6: a refresh asks the organizer to resend and changes nothing in
-                // the recipient's copy. Describing it as a diff would have an attendee's
-                // request for information state the removal of the organizer's own properties.
+                // Section 3.2.6: a refresh asks the organizer to resend and changes nothing in the recipient's copy.
+                // Describing it as a diff would have an attendee's request for information state the removal of the organizer's own properties.
                 outcome: Outcome::Allowed(TransitionReason::RefreshRequested, Some(0)),
             },
         ]);
@@ -1163,11 +1097,9 @@ mod tests {
 
     /// ADR-0005's two-turn exchange, in the shape that is right and the shape that is wrong.
     ///
-    /// There is no session (ADR-0004), so a propose-then-confirm exchange crosses a request
-    /// boundary. What crosses it is the *message*: `Authorization` borrows both of its inputs
-    /// and has no owned form, so a caller that tries to carry one across gets a compile error
-    /// rather than a forgeable token. The confirm turn therefore reads state again and
-    /// re-evaluates — and this case records what happens when it does not.
+    /// There is no session (ADR-0004), so a propose-then-confirm exchange crosses a request boundary.
+    /// What crosses it is the *message*: `Authorization` borrows both of its inputs and has no owned form, so a caller that tries to carry one across gets a compile error rather than a forgeable token.
+    /// The confirm turn therefore reads state again and re-evaluates — and this case records what happens when it does not.
     #[test]
     fn the_confirm_turn_re_reads_and_the_recorded_wrong_shape_replays_a_snapshot() {
         let limits = Limits::DEFAULT;
@@ -1182,8 +1114,8 @@ mod tests {
         let commitment = Commitment::of(&described);
         assert!(described.honors(&commitment));
 
-        // The confirm turn. The organizer moved the meeting again in between, and the message
-        // the user approved is now the older version.
+        // The confirm turn.
+        // The organizer moved the meeting again in between, and the message the user approved is now the older version.
         let fresh = subject(HELD_MOVED, None);
         let again = ItipMessage::read(&proposal, limits, &mut meter, &mut sink).unwrap();
         match evaluate_message(&again, fresh.component(), PartyId::new(CHAIR)) {
@@ -1191,10 +1123,9 @@ mod tests {
             answer => panic!("re-reading must refuse the older version: {answer:?}"),
         }
 
-        // The wrong shape, recorded rather than described: the confirm turn replays the
-        // snapshot it was judged against. The gate answers honestly about a state that no
-        // longer exists, and the organizer's newer version is written over. No lifetime can
-        // see this, which is why ADR-0005 calls it a caller obligation and not a guarantee.
+        // The wrong shape, recorded rather than described: the confirm turn replays the snapshot it was judged against.
+        // The gate answers honestly about a state that no longer exists, and the organizer's newer version is written over.
+        // No lifetime can see this, which is why ADR-0005 calls it a caller obligation and not a guarantee.
         let replayed = evaluate_message(&again, snapshot.component(), PartyId::new(CHAIR)).unwrap();
         assert!(
             replayed.honors(&commitment),
@@ -1214,8 +1145,7 @@ mod tests {
 
     /// `Commitment` crosses bytes, carries no authority, and is compared only to refuse.
     ///
-    /// The confirm turn re-evaluates whether or not one is presented, so forging one buys an
-    /// attacker exactly one thing: the ability to decline to be told that the target moved.
+    /// The confirm turn re-evaluates whether or not one is presented, so forging one buys an attacker exactly one thing: the ability to decline to be told that the target moved.
     #[test]
     fn a_commitment_notices_that_the_target_moved_and_grants_nothing() {
         let limits = Limits::DEFAULT;
@@ -1232,9 +1162,8 @@ mod tests {
         assert_eq!(commitment.offered().sequence(), 3);
         assert_eq!(commitment.held().map(Revision::sequence), Some(2));
 
-        // Somebody edited the caller's copy without changing its revision, so nothing the
-        // replay defense can see has moved. What has moved is the description the user
-        // approved, and that is the whole of what a commitment is for.
+        // Somebody edited the caller's copy without changing its revision, so nothing the replay defense can see has moved.
+        // What has moved is the description the user approved, and that is the whole of what a commitment is for.
         let edited = subject(HELD_SUMMARY_EDITED, None);
         let confirmed =
             evaluate_message(&message, edited.component(), PartyId::new(CHAIR)).unwrap();
@@ -1248,9 +1177,8 @@ mod tests {
 
     /// A stream of components that is not a scheduling message, refused whole.
     ///
-    /// Each row states the policy it ran under. The bounded rows are where this crate departs
-    /// from ADR-0009 on purpose: a limit breach is an `Err` and never a truncation, because a
-    /// shortened attendee list is a different authorization answer rather than a degraded one.
+    /// Each row states the policy it ran under.
+    /// The bounded rows are where this crate departs from ADR-0009 on purpose: a limit breach is an `Err` and never a truncation, because a shortened attendee list is a different authorization answer rather than a degraded one.
     #[test]
     fn what_is_not_a_message_is_refused_rather_than_partly_read() {
         for (id, fixture, limits, budget, expected) in [
@@ -1324,11 +1252,9 @@ mod tests {
 
     /// A case per diagnostic code and per channel, as ADR-0009 requires.
     ///
-    /// The spelling is the frozen part: a code's meaning may not be edited without a rename, so
-    /// a case that asserts the string is the thing an assertion can outlive. The channel column
-    /// says where each one travels, and the note says which of them has an emitter today —
-    /// `evaluate_message` takes no sink, so the conditions it refuses on travel as errors until
-    /// the surfaces that will report them exist.
+    /// The spelling is the frozen part: a code's meaning may not be edited without a rename, so a case that asserts the string is the thing an assertion can outlive.
+    /// The channel column says where each one travels, and the note says which of them has an emitter today —
+    /// `evaluate_message` takes no sink, so the conditions it refuses on travel as errors until the surfaces that will report them exist.
     #[test]
     fn every_scheduling_diagnostic_code_has_a_case_and_a_channel() {
         for (code, spelling, severity, carried_by) in [
@@ -1419,8 +1345,7 @@ mod tests {
 
     /// Applying an authorized transition, and the report that says what a target took.
     ///
-    /// A partial application is reported and never hidden: this crate owns no transaction and
-    /// cannot roll one back, so a caller needing all-or-nothing asks before committing.
+    /// A partial application is reported and never hidden: this crate owns no transaction and cannot roll one back, so a caller needing all-or-nothing asks before committing.
     #[test]
     fn an_authorized_transition_is_written_once_and_reports_what_it_took() {
         let limits = Limits::DEFAULT;
@@ -1436,8 +1361,7 @@ mod tests {
                 written: Vec::new(),
                 refuses,
             };
-            // By value: a vetted transition is a single-use capability rather than something
-            // replayable against a second target once the state it was vetted against moved.
+            // By value: a vetted transition is a single-use capability rather than something replayable against a second target once the state it was vetted against moved.
             let report = apply_transition(&mut target, authorized);
             assert_eq!(report.applied(), applied);
             assert_eq!(report.is_complete(), complete);
@@ -1452,9 +1376,8 @@ mod tests {
 
     /// A denied message stays inspectable without becoming applicable.
     ///
-    /// ADR-0005 asks that a rejected reply's attempted changes stay showable. `describe_message`
-    /// is that path, and what it hands back is inert: applying anything needs an
-    /// `Authorization`, and no route leads from a `Transition` to one.
+    /// ADR-0005 asks that a rejected reply's attempted changes stay showable.
+    /// `describe_message` is that path, and what it hands back is inert: applying anything needs an `Authorization`, and no route leads from a `Transition` to one.
     #[test]
     fn a_refused_message_can_still_be_shown_to_the_person_it_was_refused_for() {
         let limits = Limits::DEFAULT;
