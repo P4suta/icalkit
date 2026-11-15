@@ -4,18 +4,13 @@
 
 //! What a message would change, worked out by comparing octets.
 //!
-//! ADR-0005 leaves octet-versus-typed comparison open and warns about the hole under it. This
-//! is the octet answer, chosen because its failure direction is the safe one: byte-identical
-//! means untouched, so no organizer-only field an attendee edited can report "unchanged". The
-//! cost lands on the other side, where a re-fold or a reordered parameter reports a change a
-//! semantic diff would not, and a caller diffing for display will see it.
+//! ADR-0005 leaves octet-versus-typed comparison open and warns about the hole under it.
+//! This is the octet answer, chosen because its failure direction is the safe one: byte-identical means untouched, so no organizer-only field an attendee edited can report "unchanged".
+//! The cost lands on the other side, where a re-fold or a reordered parameter reports a change a semantic diff would not, and a caller diffing for display will see it.
 //!
-//! A `REPLY` is the exception. It states one `ATTENDEE` and RFC 5546 section 3.2.3 says its
-//! other properties MUST NOT differ from the request's, so diffing the whole component would
-//! describe every property the replying client happened to echo. It is matched to the local
-//! attendee list by `CAL-ADDRESS` and expressed as
-//! [`ProposedChange::SetParameters`], so the
-//! recipient's own `X-` parameters on that `ATTENDEE` line survive an answer to it.
+//! A `REPLY` is the exception.
+//! It states one `ATTENDEE` and RFC 5546 section 3.2.3 says its other properties MUST NOT differ from the request's, so diffing the whole component would describe every property the replying client happened to echo.
+//! It is matched to the local attendee list by `CAL-ADDRESS` and expressed as [`ProposedChange::SetParameters`], so the recipient's own `X-` parameters on that `ATTENDEE` line survive an answer to it.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -35,8 +30,8 @@ use crate::internal::itip::transition::{Transition, TransitionReason, is_time_pr
 /// What `message` would change about `current`, described and not made.
 ///
 /// Hands a caller what a *denied* message tried to do without handing it the ability to do it,
-/// which is ADR-0005's recommendation that a rejected reply stay inspectable. The result is
-/// inert: applying it needs a [`crate::internal::itip::Authorization`], and no route leads from here to one.
+/// which is ADR-0005's recommendation that a rejected reply stay inspectable.
+/// The result is inert: applying it needs a [`crate::internal::itip::Authorization`], and no route leads from here to one.
 #[must_use]
 pub fn describe_message(message: &ItipMessage<'_>, current: &dyn ScheduledComponent) -> Transition {
     let Some(payload) = message.payload_for(current).or_else(|| message.payload(0)) else {
@@ -55,11 +50,9 @@ pub fn describe_payload(
     if method == Method::Reply {
         return describe_reply(payload, current);
     }
-    // RFC 5546 section 3.2.6: a `REFRESH` asks the organizer to resend and changes nothing in
-    // the recipient's copy. Diffing it against the whole held component would state the removal
-    // of every property the four-line request does not echo — the organizer's own `DTSTART`,
-    // `RRULE` and attendee list — and the field rule would then refuse the attendee for
-    // removals this function invented rather than for anything the attendee wrote.
+    // RFC 5546 section 3.2.6: a `REFRESH` asks the organizer to resend and changes nothing in the recipient's copy.
+    // Diffing it against the whole held component would state the removal of every property the four-line request does not echo — the organizer's own `DTSTART`,
+    // `RRULE` and attendee list — and the field rule would then refuse the attendee for removals this function invented rather than for anything the attendee wrote.
     if method == Method::Refresh {
         return Transition::new(TransitionReason::RefreshRequested);
     }
@@ -70,6 +63,10 @@ pub fn describe_payload(
     });
     let mut transition = Transition::new(reason_for(method, current, moved));
     for (at, line) in &offered {
+        // RFC 5546 section 3.2.5 uses ATTENDEE to identify cancellation recipients.
+        if method == Method::Cancel && at.name().eq_ignore_ascii_case(b"ATTENDEE") {
+            continue;
+        }
         match held.get(at) {
             Some(kept) if kept == line => {},
             Some(_) => {
@@ -83,9 +80,11 @@ pub fn describe_payload(
             },
         }
     }
-    for at in held.keys() {
-        if !offered.contains_key(at) {
-            transition.record(at.clone(), ProposedChange::Remove);
+    if method != Method::Cancel {
+        for at in held.keys() {
+            if !offered.contains_key(at) {
+                transition.record(at.clone(), ProposedChange::Remove);
+            }
         }
     }
     transition
@@ -93,11 +92,8 @@ pub fn describe_payload(
 
 /// What a `REPLY` would change: one attendee's answer, and nothing else.
 ///
-/// The reply's own `ATTENDEE` line is matched into the local list by `CAL-ADDRESS`, so the
-/// occurrence named is the recipient's own numbering rather than the sender's. A reply from an
-/// address the local copy does not carry describes nothing at all — saying so is
-/// [`crate::internal::itip::evaluate_message`]'s job, and describing an addition here would be this function
-/// inventing the participant that the gate exists to refuse.
+/// The reply's own `ATTENDEE` line is matched into the local list by `CAL-ADDRESS`, so the occurrence named is the recipient's own numbering rather than the sender's.
+/// A reply from an address the local copy does not carry describes nothing at all — saying so is [`crate::internal::itip::evaluate_message`]'s job, and describing an addition here would be this function inventing the participant that the gate exists to refuse.
 fn describe_reply(
     payload: &dyn ScheduledComponent,
     current: &dyn ScheduledComponent,
@@ -123,27 +119,21 @@ fn describe_reply(
     if let Some(delegator) = answer.delegated_from() {
         edits.push(ParameterEdit::set(b"DELEGATED-FROM", delegator.as_bytes()));
     }
-    // When the answer was written, recorded on the line it answers for. Without it the next
-    // reply from this attendee is one RFC 5546 section 2.1.5 has nothing to order, and the
-    // attendee's own earlier answer replayed afterwards silently reverts this one.
+    // When the answer was written, recorded on the line it answers for.
+    // Without it the next reply from this attendee is one RFC 5546 section 2.1.5 has nothing to order, and the attendee's own earlier answer replayed afterwards silently reverts this one.
     let stamped = payload.dtstamp().and_then(utc_text);
     match stamped.as_ref() {
         Some(written) => edits.push(ParameterEdit::set(ANSWERED_AT, written.as_bytes())),
-        // A reply whose own `DTSTAMP` did not read records no time rather than a wrong one, and
-        // the parameter already on the line is cleared: keeping an older answer's time beside a
-        // newer answer's status would order the next reply against the wrong one.
+        // A reply whose own `DTSTAMP` did not read records no time rather than a wrong one, and the parameter already on the line is cleared: keeping an older answer's time beside a newer answer's status would order the next reply against the wrong one.
         None => edits.push(ParameterEdit::remove(ANSWERED_AT)),
     }
     transition.record(at, ProposedChange::SetParameters(edits));
     transition
 }
 
-/// `instant` written as the UTC `DATE-TIME` a `DTSTAMP` is, or `None` when it is off the
-/// representable calendar.
+/// `instant` written as the UTC `DATE-TIME` a `DTSTAMP` is, or `None` when it is off the representable calendar.
 ///
-/// Through [`crate::internal::tz::wall_clock`], because that is the inverse of the projection every
-/// timestamp reaching this crate came in on: a `DTSTAMP` is read onto the nominal timeline, and
-/// writing one back through any other offset would move it.
+/// Through [`crate::internal::tz::wall_clock`], because that is the inverse of the projection every timestamp reaching this crate came in on: a `DTSTAMP` is read onto the nominal timeline, and writing one back through any other offset would move it.
 fn utc_text(instant: Instant) -> Option<RawText> {
     let mut written = ValueBuf::new();
     DateTimeValue::Utc(wall_clock(instant)?)
@@ -169,10 +159,7 @@ pub fn attendee_occurrence_of(
 
 /// Every property of `component`, keyed by the occurrence it is.
 ///
-/// Counted per normalized identity rather than per name as written, because that is the key the
-/// answer is filed under: an implementation reporting `DTSTART` on one line and `dtstart` on
-/// another would otherwise count two first occurrences and file both under one key, and the
-/// second would silently replace the first.
+/// Counted per normalized identity rather than per name as written, because that is the key the answer is filed under: an implementation reporting `DTSTART` on one line and `dtstart` on another would otherwise count two first occurrences and file both under one key, and the second would silently replace the first.
 fn lines(component: &dyn ScheduledComponent) -> BTreeMap<PropertyOccurrence, &[u8]> {
     let mut seen: BTreeMap<PropertyId, usize> = BTreeMap::new();
     let mut found = BTreeMap::new();
