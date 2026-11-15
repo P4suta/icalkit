@@ -40,6 +40,7 @@ It also verifies the actual CI decision core with Kani 0.68.0 and the declared r
 
 Start by adding the smallest test that expresses the missing behavior and confirm that it fails for the intended reason.
 Add the behavior, run the focused test until it passes, then run `just check` and the relevant portability or conformance gates.
+Keep each regression test and its implementation in one passing commit.
 Before pushing, run `just check`.
 Use candidate qualification to verify portability and compatibility.
 Candidate qualification records verification results without publishing a release.
@@ -47,6 +48,29 @@ Candidate qualification records verification results without publishing a releas
 Work on a topic branch and open a draft pull request while the change is still evolving.
 Keep generated artifacts, public API snapshots, corpus evidence, and documentation in the same pull request as the source change that requires them.
 The complete hosting and merge rules are in the [repository policy](docs/repository-policy.md).
+
+## Continuing development
+
+The [public guide](docs/README.md) describes the supported workflows.
+The [architecture](ARCHITECTURE.md) and [private kernel decision](docs/adr/0014-private-kernel-and-conformance-isolation.md) define the current crate boundaries.
+The design documents describe earlier package boundaries.
+
+Place consumer workflow regressions in `crates/icalkit/tests/`.
+Place specification and interoperability cases in `crates/icalkit-conformance/tests/`, with the relevant RFC section.
+Run focused targets before the complete gate:
+
+```sh
+mise x -- cargo nextest run --locked -p icalkit --test golden_path
+mise x -- cargo nextest run --locked -p icalkit-conformance --test write_side_grammar
+mise x -- cargo test --locked -p xtask hook_scope
+mise x -- cargo run --locked -p icalkit --example golden_path
+```
+
+The xtask tests exercise Lefthook's file selection rules.
+Keep root and nested source paths covered when changing hook responsibilities.
+
+The [roadmap](ROADMAP.md) records the remaining external observations.
+Use the [producer capture intake](crates/icalkit-conformance/CAPTURE.md) for the scenario and privacy requirements before collecting real-client evidence.
 
 ## Required boundaries
 
