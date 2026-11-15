@@ -7,7 +7,7 @@ use core::str;
 
 use crate::internal::core::{
     Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, DiagnosticCode,
-    Document, Item, Meter, Property, PropertyId, TextValue,
+    Document, Item, Meter, Property, PropertyId, TextValue, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -122,6 +122,9 @@ pub(crate) fn parse_calendar(
 fn audit_document(document: &Document, meter: &mut Meter, sink: &mut Vec<Diagnostic>) {
     let mut pending: Vec<&Component> = document.components().collect();
     while let Some(component) = pending.pop() {
+        if component.kind().is_none() {
+            continue;
+        }
         component.audit(meter, sink);
         pending.extend(component.items().iter().filter_map(Item::as_component));
     }
@@ -175,6 +178,9 @@ fn has_property(component: &Component, name: &[u8]) -> bool {
 }
 
 fn known_text_is_utf8(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
     for property in component.properties() {
         if is_text_property(property) && str::from_utf8(property.value_text().as_bytes()).is_err() {
             return false;
@@ -217,14 +223,14 @@ fn known_date_times_are_valid(component: &Component) -> bool {
         b"LAST-MODIFIED",
         b"RECURRENCE-ID",
     ];
+    if component.kind().is_none() {
+        return true;
+    }
     for property in component.properties() {
-        if DATE_TIME_NAMES.iter().any(|name| property.is_named(name)) {
-            let Ok(value) = DateTimeValue::decode_property(property) else {
-                return false;
-            };
-            if crate::time::from_core_date_time(value).is_none() {
-                return false;
-            }
+        if DATE_TIME_NAMES.iter().any(|name| property.is_named(name))
+            && !date_time_property_is_valid(component, property)
+        {
+            return false;
         }
     }
     component
@@ -232,6 +238,48 @@ fn known_date_times_are_valid(component: &Component) -> bool {
         .iter()
         .filter_map(Item::as_component)
         .all(known_date_times_are_valid)
+}
+
+fn date_time_property_is_valid(component: &Component, property: &Property) -> bool {
+    if property.parameters_named(b"VALUE").nth(1).is_some()
+        || property.parameters_named(b"TZID").nth(1).is_some()
+    {
+        return false;
+    }
+    let declared = match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        Some(Ok(value_type)) => value_type,
+        None => ValueType::DateTime,
+    };
+    let Ok(value) = DateTimeValue::decode_property(property) else {
+        return false;
+    };
+    if value.value_type() != declared || crate::time::from_core_date_time(value).is_none() {
+        return false;
+    }
+    if let Some(zone) = property.parameters_named(b"TZID").next() {
+        if zone.unquoted().is_empty()
+            || matches!(value, DateTimeValue::Date(_) | DateTimeValue::Utc(_))
+        {
+            return false;
+        }
+    }
+    let requires_utc = [
+        b"COMPLETED".as_slice(),
+        b"CREATED",
+        b"DTSTAMP",
+        b"LAST-MODIFIED",
+    ]
+    .iter()
+    .any(|name| property.is_named(name))
+        || (component.is_named(b"VFREEBUSY")
+            && (property.is_named(b"DTSTART") || property.is_named(b"DTEND")));
+    if requires_utc && !matches!(value, DateTimeValue::Utc(_)) {
+        return false;
+    }
+    let requires_local = property.is_named(b"DTSTART")
+        && (component.is_named(b"STANDARD") || component.is_named(b"DAYLIGHT"));
+    !requires_local || matches!(value, DateTimeValue::Local(_))
 }
 
 /// A transactional calendar editor.

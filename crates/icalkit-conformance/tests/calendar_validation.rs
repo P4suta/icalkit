@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Contextual validation follows [RFC 5545 sections 3.6.1 and 3.6.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.1) and [section 3.8.2.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.4).
+//! Date-time forms follow [section 3.2.19](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.19), [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20), and the property definitions in [section 3.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8).
 
 #![cfg(test)]
 
@@ -103,4 +104,172 @@ fn every_recurring_component_requires_start_even_when_method_is_present() {
             "METHOD:PUBLISH\r\n",
         ));
     }
+}
+
+#[test]
+fn component_stamps_require_utc_date_times() {
+    for kind in ["VEVENT", "VTODO", "VJOURNAL", "VFREEBUSY"] {
+        let source = calendar(kind, "DTSTART:20260814T090000Z\r\n", "");
+        assert_valid(&source);
+        for replacement in [
+            "DTSTAMP:20260813T120000",
+            "DTSTAMP;VALUE=DATE:20260813",
+            "DTSTAMP;TZID=Test/Zone:20260813T120000",
+        ] {
+            assert_rejected(
+                &source.replace("DTSTAMP:20260813T120000Z", replacement),
+                "icalkit.validation.invalid-date-time",
+            );
+        }
+    }
+}
+
+#[test]
+fn creation_modification_and_completion_times_require_utc() {
+    for (kind, name) in [
+        ("VEVENT", "CREATED"),
+        ("VTODO", "CREATED"),
+        ("VJOURNAL", "CREATED"),
+        ("VEVENT", "LAST-MODIFIED"),
+        ("VTODO", "LAST-MODIFIED"),
+        ("VJOURNAL", "LAST-MODIFIED"),
+        ("VTODO", "COMPLETED"),
+    ] {
+        assert_valid(&calendar(
+            kind,
+            &format!("DTSTART:20260814T090000Z\r\n{name}:20260813T120000Z\r\n"),
+            "",
+        ));
+        for value in [":20260813T120000", ";VALUE=DATE:20260813"] {
+            assert_rejected(
+                &calendar(
+                    kind,
+                    &format!("DTSTART:20260814T090000Z\r\n{name}{value}\r\n"),
+                    "",
+                ),
+                "icalkit.validation.invalid-date-time",
+            );
+        }
+    }
+}
+
+#[test]
+fn date_time_values_must_match_their_declared_types() {
+    for property in [
+        "DTSTART:20260814",
+        "DTSTART;VALUE=DATE:20260814T090000Z",
+        "DTSTART;VALUE=DATE-TIME:20260814",
+        "DTSTART;VALUE=TEXT:20260814T090000Z",
+    ] {
+        assert_rejected(
+            &calendar("VEVENT", &format!("{property}\r\n"), ""),
+            "icalkit.validation.invalid-date-time",
+        );
+    }
+    for property in [
+        "dtstart;value=date:20260814",
+        "DTSTART:20260814T090000Z",
+        "DTSTART;VALUE=DATE-TIME:20260814T090000",
+        "DTSTART;TZID=Test/Zone:20260814T090000",
+    ] {
+        assert_valid(&calendar("VEVENT", &format!("{property}\r\n"), ""));
+    }
+}
+
+#[test]
+fn date_and_utc_values_cannot_carry_a_time_zone_parameter() {
+    for property in [
+        "DTSTART;VALUE=DATE;TZID=Test/Zone:20260814",
+        "DTSTART;TZID=Test/Zone:20260814T090000Z",
+        "DTSTART;TZID=\"\":20260814T090000Z",
+        "DTSTART;TZID=:20260814T090000",
+    ] {
+        assert_rejected(
+            &calendar("VEVENT", &format!("{property}\r\n"), ""),
+            "icalkit.validation.invalid-date-time",
+        );
+    }
+}
+
+#[test]
+fn date_time_parameters_cannot_repeat() {
+    for property in [
+        "DTSTART;VALUE=DATE-TIME;VALUE=DATE-TIME:20260814T090000Z",
+        "DTSTART;TZID=Test/Zone;TZID=Test/Zone:20260814T090000",
+    ] {
+        assert_rejected(
+            &calendar("VEVENT", &format!("{property}\r\n"), ""),
+            "icalkit.validation.invalid-date-time",
+        );
+    }
+}
+
+#[test]
+fn freebusy_bounds_require_utc_date_times() {
+    let source = calendar(
+        "VFREEBUSY",
+        "DTSTART:20260814T090000Z\r\nDTEND:20260814T100000Z\r\n",
+        "",
+    );
+    assert_valid(&source);
+    for (original, replacement) in [
+        ("DTSTART:20260814T090000Z", "DTSTART:20260814T090000"),
+        ("DTEND:20260814T100000Z", "DTEND;VALUE=DATE:20260814"),
+    ] {
+        assert_rejected(
+            &source.replace(original, replacement),
+            "icalkit.validation.invalid-date-time",
+        );
+    }
+}
+
+#[test]
+fn observance_starts_require_unzoned_local_date_times() {
+    let source = concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit validation//EN\r\n",
+        "BEGIN:VTIMEZONE\r\nTZID:Test/Zone\r\nBEGIN:STANDARD\r\n",
+        "DTSTART:20260814T090000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\n",
+        "END:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n",
+    );
+    assert_valid(source);
+    for replacement in [
+        "DTSTART:20260814T090000Z",
+        "DTSTART;VALUE=DATE:20260814",
+        "DTSTART;TZID=Test/Zone:20260814T090000",
+    ] {
+        assert_rejected(
+            &source.replace("DTSTART:20260814T090000", replacement),
+            "icalkit.validation.invalid-date-time",
+        );
+    }
+}
+
+#[test]
+fn unknown_date_time_types_survive_without_interpretation() {
+    for value in ["20260814T090000Z", "opaque"] {
+        let source = calendar(
+            "VEVENT",
+            &format!("DTSTART;VALUE=X-PRIVATE:{value}\r\n"),
+            "",
+        );
+        let parsed = Calendar::parse(source.as_bytes()).unwrap();
+        assert_eq!(parsed.to_bytes(), source.as_bytes());
+        assert!(parsed.events().next().unwrap().dtstart().is_none());
+        assert!(
+            parsed
+                .issues()
+                .iter()
+                .any(|issue| { issue.is_note() && issue.code().as_str() == "unknown-value-type" })
+        );
+    }
+}
+
+#[test]
+fn unrecognized_components_do_not_define_standard_property_semantics() {
+    assert_valid(&calendar(
+        "VEVENT",
+        "DTSTART:20260814T090000Z\r\n",
+        "BEGIN:X-OPAQUE\r\nDTSTART:opaque\r\nBEGIN:VTODO\r\n\
+         SUMMARY:Extension payload\r\nEND:VTODO\r\nEND:X-OPAQUE\r\n",
+    ));
 }

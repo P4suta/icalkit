@@ -264,6 +264,9 @@ impl<'a> DecodeValue<'a> for DateTimeValue<'a> {
     }
 
     fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
+        if let Some(Err(code)) = property.declared_value_type() {
+            return Err(code);
+        }
         let written = Self::decode_value(property.value_text().as_bytes())?;
         // Only a floating date-time can become a zoned one.
         // A `TZID` beside a `DATE` or beside a value ending in `Z` is what section 3.2.19 forbids, and the value's own octets are the stronger statement of the two: `Z` says UTC outright, and a date has no clock for a zone to move.
