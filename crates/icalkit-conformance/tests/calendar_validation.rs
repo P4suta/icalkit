@@ -4,6 +4,7 @@
 
 //! Contextual validation follows [RFC 5545 sections 3.6.1 and 3.6.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.1) and [section 3.8.2.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.4).
 //! Date-time forms follow [section 3.2.19](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.19), [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20), and the property definitions in [section 3.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8).
+//! Endpoint relationships follow [sections 3.8.2.2 through 3.8.2.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.2) and [section 3.8.4.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.4.4).
 
 #![cfg(test)]
 
@@ -271,5 +272,144 @@ fn unrecognized_components_do_not_define_standard_property_semantics() {
         "DTSTART:20260814T090000Z\r\n",
         "BEGIN:X-OPAQUE\r\nDTSTART:opaque\r\nBEGIN:VTODO\r\n\
          SUMMARY:Extension payload\r\nEND:VTODO\r\nEND:X-OPAQUE\r\n",
+    ));
+}
+
+#[test]
+fn event_ends_and_todo_due_dates_match_the_start_type_and_floating_form() {
+    for (kind, end_name) in [("VEVENT", "DTEND"), ("VTODO", "DUE")] {
+        for (start, end) in [
+            (";VALUE=DATE:20260814", ":20260815T100000Z"),
+            (":20260814T090000Z", ";VALUE=DATE:20260815"),
+            (":20260814T090000", ":20260814T100000Z"),
+            (":20260814T090000Z", ":20260814T100000"),
+        ] {
+            assert_rejected(
+                &calendar(kind, &format!("DTSTART{start}\r\n{end_name}{end}\r\n"), ""),
+                "icalkit.validation.invalid-time-range",
+            );
+        }
+        assert_valid(&calendar(
+            kind,
+            &format!("DTSTART;VALUE=DATE:20260814\r\n{end_name};VALUE=DATE:20260815\r\n"),
+            "",
+        ));
+    }
+}
+
+#[test]
+fn comparable_endpoints_must_be_strictly_after_start() {
+    for (kind, end_name) in [
+        ("VEVENT", "DTEND"),
+        ("VTODO", "DUE"),
+        ("VFREEBUSY", "DTEND"),
+    ] {
+        for end in ["20260814T090000Z", "20260814T085959Z"] {
+            assert_rejected(
+                &calendar(
+                    kind,
+                    &format!("DTSTART:20260814T090000Z\r\n{end_name}:{end}\r\n"),
+                    "",
+                ),
+                "icalkit.validation.invalid-time-range",
+            );
+        }
+        assert_valid(&calendar(
+            kind,
+            &format!("DTSTART:20260814T090000Z\r\n{end_name}:20260814T090001Z\r\n"),
+            "",
+        ));
+    }
+    for (start, end) in [
+        (";VALUE=DATE:20260814", ";VALUE=DATE:20260814"),
+        (";VALUE=DATE:20260814", ";VALUE=DATE:20260813"),
+        (":20260814T090000", ":20260814T090000"),
+        (":20260814T090000", ":20260814T085959"),
+    ] {
+        assert_rejected(
+            &calendar("VEVENT", &format!("DTSTART{start}\r\nDTEND{end}\r\n"), ""),
+            "icalkit.validation.invalid-time-range",
+        );
+    }
+}
+
+#[test]
+fn recurrence_identifiers_match_the_start_type_without_restricting_rescheduling() {
+    for kind in ["VEVENT", "VTODO", "VJOURNAL"] {
+        for (start, recurrence_id) in [
+            (";VALUE=DATE:20260814", ":20260814T090000Z"),
+            (":20260814T090000Z", ";VALUE=DATE:20260814"),
+            (":20260814T090000", ":20260814T090000Z"),
+        ] {
+            assert_rejected(
+                &calendar(
+                    kind,
+                    &format!("DTSTART{start}\r\nRECURRENCE-ID{recurrence_id}\r\n"),
+                    "",
+                ),
+                "icalkit.validation.invalid-time-range",
+            );
+        }
+        assert_valid(&calendar(
+            kind,
+            "DTSTART:20260815T090000Z\r\nRECURRENCE-ID:20260814T090000Z\r\n",
+            "",
+        ));
+    }
+}
+
+#[test]
+fn event_and_todo_durations_must_be_positive_duration_values() {
+    for kind in ["VEVENT", "VTODO"] {
+        for duration in [
+            "DURATION:PT0S",
+            "DURATION:-P1D",
+            "DURATION:invalid",
+            "DURATION;VALUE=DATE-TIME:20260814T100000Z",
+        ] {
+            assert_rejected(
+                &calendar(
+                    kind,
+                    &format!("DTSTART:20260814T090000Z\r\n{duration}\r\n"),
+                    "",
+                ),
+                "icalkit.validation.invalid-duration",
+            );
+        }
+        assert_valid(&calendar(
+            kind,
+            "DTSTART:20260814T090000Z\r\nDURATION:PT1S\r\n",
+            "",
+        ));
+    }
+}
+
+#[test]
+fn date_durations_use_day_or_week_syntax() {
+    for duration in ["PT24H", "P1DT0S", "P1DT24H"] {
+        assert_rejected(
+            &calendar(
+                "VEVENT",
+                &format!("DTSTART;VALUE=DATE:20260814\r\nDURATION:{duration}\r\n"),
+                "",
+            ),
+            "icalkit.validation.invalid-duration",
+        );
+    }
+    for duration in ["P1D", "+P2D", "P1W"] {
+        assert_valid(&calendar(
+            "VEVENT",
+            &format!("DTSTART;VALUE=DATE:20260814\r\nDURATION:{duration}\r\n"),
+            "",
+        ));
+    }
+}
+
+#[test]
+fn unresolved_zoned_endpoints_are_not_ordered_as_wall_clocks() {
+    assert_valid(&calendar(
+        "VEVENT",
+        "DTSTART;TZID=Test/Zone:20260814T031500\r\nDTEND;TZID=Test/Zone:20260814T024500\r\n",
+        "",
     ));
 }

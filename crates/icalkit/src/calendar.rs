@@ -152,6 +152,7 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if let Some(calendar) = first {
         validate_required_starts(calendar, issues);
         validate_alarms(calendar, issues);
+        validate_time_relationships(calendar, issues);
     }
 }
 
@@ -427,6 +428,60 @@ fn trigger_is_valid(parent: &Component, alarm: &Component, trigger: &Property) -
             }
         },
         _ => false,
+    }
+}
+
+fn read_date_time<'a>(component: &'a Component, name: &[u8]) -> Option<DateTimeValue<'a>> {
+    DateTimeValue::decode_property(first_property(component, name)?).ok()
+}
+
+fn validate_time_relationships(component: &Component, issues: &mut Vec<Issue>) {
+    if component.kind().is_none() {
+        return;
+    }
+    let start = read_date_time(component, b"DTSTART");
+    if component.is_named(b"VEVENT") || component.is_named(b"VTODO") {
+        if let Some(duration) = first_property(component, b"DURATION") {
+            let uses_clock_units = matches!(start, Some(DateTimeValue::Date(_)))
+                && !matches!(duration.declared_value_type(), Some(Err(_)))
+                && duration.value_text().as_bytes().contains(&b'T');
+            if !positive_duration(duration) || uses_clock_units {
+                issues.push(Issue::error("icalkit.validation.invalid-duration"));
+            }
+        }
+    }
+    if let Some(start) = start {
+        for name in [b"DTEND".as_slice(), b"DUE"] {
+            if read_date_time(component, name).is_some_and(|end| !endpoint_follows(start, end)) {
+                issues.push(Issue::error("icalkit.validation.invalid-time-range"));
+            }
+        }
+        if read_date_time(component, b"RECURRENCE-ID")
+            .is_some_and(|id| !compatible_date_times(start, id))
+        {
+            issues.push(Issue::error("icalkit.validation.invalid-time-range"));
+        }
+    }
+    for child in component.components() {
+        validate_time_relationships(child, issues);
+    }
+}
+
+fn compatible_date_times(left: DateTimeValue<'_>, right: DateTimeValue<'_>) -> bool {
+    left.value_type() == right.value_type()
+        && matches!(left, DateTimeValue::Local(_)) == matches!(right, DateTimeValue::Local(_))
+}
+
+fn endpoint_follows(start: DateTimeValue<'_>, end: DateTimeValue<'_>) -> bool {
+    if !compatible_date_times(start, end) {
+        return false;
+    }
+    match (start, end) {
+        (DateTimeValue::Date(start), DateTimeValue::Date(end)) => end > start,
+        (DateTimeValue::Local(start), DateTimeValue::Local(end))
+        | (DateTimeValue::Utc(start), DateTimeValue::Utc(end)) => end > start,
+        // Ordering zoned values requires the caller's zone source.
+        _ => true,
     }
 }
 
