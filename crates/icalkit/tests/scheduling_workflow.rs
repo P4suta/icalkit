@@ -418,13 +418,6 @@ END:VCALENDAR\r\n";
 
 #[test]
 fn an_initial_request_can_create_the_event_the_recipient_does_not_hold() {
-    let current = Calendar::parse(
-        b"BEGIN:VCALENDAR\r\n\
-VERSION:2.0\r\n\
-PRODID:-//icalkit tests//EN\r\n\
-END:VCALENDAR\r\n",
-    )
-    .unwrap();
     let invitation = payload(
         "UID:new@example.test\r\nDTSTAMP:20260302T080000Z\r\n\
          DTSTART:20260310T140000Z\r\nSUMMARY:First invitation\r\n\
@@ -434,7 +427,7 @@ END:VCALENDAR\r\n",
     let message = Message::request(&invitation, supplied_time()).unwrap();
     let actor = Actor::new("mailto:chair@example.test").unwrap();
 
-    let review = message.review(&current, &actor).unwrap();
+    let review = message.review_creation(&actor).unwrap();
     assert!(review.change_count() > 0);
     let created = review.authorize().apply().unwrap();
     let event = created.events().next().unwrap();
@@ -447,13 +440,6 @@ END:VCALENDAR\r\n",
 
 #[test]
 fn an_initial_request_creates_every_authorized_component_atomically() {
-    let current = Calendar::parse(
-        b"BEGIN:VCALENDAR\r\n\
-VERSION:2.0\r\n\
-PRODID:-//icalkit tests//EN\r\n\
-END:VCALENDAR\r\n",
-    )
-    .unwrap();
     let request = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit tests//EN\r\n\
@@ -483,7 +469,7 @@ END:VCALENDAR\r\n";
     let actor = Actor::new("mailto:chair@example.test").unwrap();
 
     let created = message
-        .review(&current, &actor)
+        .review_creation(&actor)
         .unwrap()
         .authorize()
         .apply()
@@ -505,13 +491,6 @@ END:VCALENDAR\r\n";
 
 #[test]
 fn initial_publish_creation_is_not_limited_to_vevent() {
-    let current = Calendar::parse(
-        b"BEGIN:VCALENDAR\r\n\
-VERSION:2.0\r\n\
-PRODID:-//icalkit tests//EN\r\n\
-END:VCALENDAR\r\n",
-    )
-    .unwrap();
     let journal = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit tests//EN\r\n\
@@ -527,7 +506,7 @@ END:VCALENDAR\r\n";
     let actor = Actor::new("mailto:chair@example.test").unwrap();
 
     let created = message
-        .review(&current, &actor)
+        .review_creation(&actor)
         .unwrap()
         .authorize()
         .apply()
@@ -542,13 +521,6 @@ END:VCALENDAR\r\n";
 
 #[test]
 fn a_multi_component_creation_is_refused_whole_when_one_payload_names_another_actor() {
-    let current = Calendar::parse(
-        b"BEGIN:VCALENDAR\r\n\
-VERSION:2.0\r\n\
-PRODID:-//icalkit tests//EN\r\n\
-END:VCALENDAR\r\n",
-    )
-    .unwrap();
     let mut request =
         two_component_series(Some("REQUEST"), 1, "Authorized master", "Forged detached");
     let second_organizer = request
@@ -565,12 +537,12 @@ END:VCALENDAR\r\n",
     let message = Message::read(&request).unwrap();
     let actor = Actor::new("mailto:chair@example.test").unwrap();
 
-    let rejection = message.review(&current, &actor).unwrap_err();
+    let rejection = message.review_creation(&actor).unwrap_err();
     assert_eq!(
         rejection.code().as_str(),
         "icalkit.scheduling.authorization-denied"
     );
-    assert!(current.events().next().is_none());
+    assert_eq!(message.to_bytes(), request);
 }
 
 #[test]

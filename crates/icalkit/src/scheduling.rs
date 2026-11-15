@@ -47,10 +47,9 @@ impl Message {
 
     /// Read a decoded RFC 6047 section 2.4 `text/calendar` MIME part.
     ///
-    /// `content_type` is the unfolded field value after `Content-Type:`. `decoded_body` must
-    /// already have had its Content-Transfer-Encoding removed by the mail implementation. The
-    /// email envelope's `From` identity is deliberately not accepted here: pass the separately
-    /// authenticated envelope sender as [`Actor`] when reviewing the returned message.
+    /// `content_type` is the unfolded field value after `Content-Type:`.
+    /// `decoded_body` must already have had its Content-Transfer-Encoding removed by the mail implementation.
+    /// The email envelope's `From` identity is deliberately not accepted here: pass the separately authenticated envelope sender as [`Actor`] when reviewing the returned message.
     pub fn read_imip(content_type: &[u8], decoded_body: &[u8]) -> Result<Self, Error> {
         let engine = Engine::default();
         let mut session = engine.session();
@@ -132,8 +131,7 @@ impl Message {
 
     /// A canonical RFC 6047 `Content-Type` value for this message.
     ///
-    /// UTF-8 is stated even for an ASCII-only body, and `method` is derived from the validated
-    /// iTIP object so the emitted envelope cannot disagree with it.
+    /// UTF-8 is stated even for an ASCII-only body, and `method` is derived from the validated iTIP object so the emitted envelope cannot disagree with it.
     #[must_use]
     pub fn imip_content_type(&self) -> String {
         let mut value = String::from("text/calendar; charset=UTF-8; method=");
@@ -173,6 +171,34 @@ impl Message {
         current: &'a Calendar,
         actor: &Actor,
     ) -> Result<Review<'a>, Rejection> {
+        self.review_target_in(session, ReviewTarget::Held(current), actor)
+    }
+
+    /// Review creation for an absent destination on behalf of one actor.
+    /// The caller must enforce absence when storing the result.
+    pub fn review_creation(&self, actor: &Actor) -> Result<Review<'_>, Rejection> {
+        let engine = Engine::builder()
+            .resource_policy(self.calendar.policy)
+            .build();
+        let mut session = engine.session();
+        self.review_creation_in(&mut session, actor)
+    }
+
+    /// Review creation with the session's aggregate budget and zone database.
+    pub fn review_creation_in(
+        &self,
+        session: &mut Session<'_>,
+        actor: &Actor,
+    ) -> Result<Review<'_>, Rejection> {
+        self.review_target_in(session, ReviewTarget::Absent, actor)
+    }
+
+    fn review_target_in<'a>(
+        &'a self,
+        session: &mut Session<'_>,
+        target: ReviewTarget<'a>,
+        actor: &Actor,
+    ) -> Result<Review<'a>, Rejection> {
         let message_component = root_component(&self.calendar)
             .ok_or_else(|| Rejection::new("icalkit.scheduling.message-invalid"))?;
         let message_view = ScheduledView::of(message_component);
@@ -184,12 +210,18 @@ impl Message {
             &mut session.recurrence_diagnostics,
         )
         .map_err(|_| Rejection::new("icalkit.scheduling.message-invalid"))?;
-        let uid = message.uid().as_bytes();
-        let current_components = scheduled_components(current, uid, &message);
-        if current_components.is_empty() {
-            return self.review_creation(current, actor, &message);
+        match target {
+            ReviewTarget::Held(current) => {
+                let uid = message.uid().as_bytes();
+                let current_components = scheduled_components(current, uid, &message);
+                if current_components.is_empty() {
+                    self.review_initial(target, actor, &message)
+                } else {
+                    self.review_existing(session, current, actor, &message, &current_components)
+                }
+            },
+            ReviewTarget::Absent => self.review_initial(target, actor, &message),
         }
-        self.review_existing(session, current, actor, &message, &current_components)
     }
 
     /// Map every payload onto an exact component or one recurrence-proven master.
@@ -287,14 +319,14 @@ impl Message {
         }
         Ok(Review {
             message: self,
-            current,
+            target: ReviewTarget::Held(current),
             changes,
         })
     }
 
-    fn review_creation<'a>(
+    fn review_initial<'a>(
         &'a self,
-        current: &'a Calendar,
+        target: ReviewTarget<'a>,
         actor: &Actor,
         message: &ItipMessage<'_>,
     ) -> Result<Review<'a>, Rejection> {
@@ -321,7 +353,7 @@ impl Message {
         }
         Ok(Review {
             message: self,
-            current,
+            target,
             changes,
         })
     }
@@ -423,7 +455,7 @@ impl Actor {
 #[derive(Debug)]
 pub struct Review<'a> {
     message: &'a Message,
-    current: &'a Calendar,
+    target: ReviewTarget<'a>,
     changes: Vec<ReviewedChange>,
 }
 
@@ -447,7 +479,7 @@ impl<'a> Review<'a> {
     pub fn authorize(self) -> AuthorizedChange<'a> {
         AuthorizedChange {
             message: self.message,
-            current: self.current,
+            target: self.target,
             changes: self.changes,
         }
     }
@@ -457,7 +489,7 @@ impl<'a> Review<'a> {
 #[derive(Debug)]
 pub struct AuthorizedChange<'a> {
     message: &'a Message,
-    current: &'a Calendar,
+    target: ReviewTarget<'a>,
     changes: Vec<ReviewedChange>,
 }
 
@@ -470,12 +502,16 @@ impl AuthorizedChange<'_> {
 
     /// Apply to a private clone of the reviewed state, consuming this authorization.
     pub fn apply(mut self) -> Result<Calendar, Error> {
-        let mut updated = self.current.clone();
-        let policy = updated.policy;
+        let (mut document, policy) = match self.target {
+            ReviewTarget::Held(current) => (current.document.clone(), current.policy),
+            ReviewTarget::Absent => (
+                creation_document(&self.message.calendar)?,
+                self.message.calendar.policy,
+            ),
+        };
         self.changes.sort_by_key(|change| change.target.phase());
         {
-            let calendar = updated
-                .document
+            let calendar = document
                 .components_mut()
                 .next()
                 .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
@@ -517,15 +553,20 @@ impl AuthorizedChange<'_> {
                 }
             }
         }
-        let bytes = updated.document.to_bytes();
+        let bytes = document.to_bytes();
         let mut meter = Meter::new(policy.limits);
         let validated = parse_calendar(&bytes, policy, &mut meter)?;
         Ok(validated)
     }
 }
 
-/// Which component an authorized transition writes, including a not-yet-materialized range
-/// anchor.
+#[derive(Debug)]
+enum ReviewTarget<'a> {
+    Held(&'a Calendar),
+    Absent,
+}
+
+/// Which component an authorized transition writes, including a not-yet-materialized range anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChangeTarget {
     /// Insert the authorized payload into a calendar that did not hold its identity.
@@ -597,6 +638,21 @@ impl core::error::Error for Rejection {}
 
 fn root_component(calendar: &Calendar) -> Option<&Component> {
     calendar.document.components().next()
+}
+
+fn creation_document(message: &Calendar) -> Result<Document, Error> {
+    let mut document = message.document.clone();
+    let calendar = document
+        .components_mut()
+        .next()
+        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+    calendar.items_mut().retain(|item| {
+        !item
+            .as_property()
+            .is_some_and(|property| property.has_id(&PropertyId::METHOD))
+            && !item.as_component().is_some_and(is_scheduling_payload)
+    });
+    Ok(document)
 }
 
 fn scheduled_components<'a>(

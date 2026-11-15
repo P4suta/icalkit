@@ -126,6 +126,10 @@ Inbound messages pass through a borrowed `read`-`review`-`authorize`-`apply` flo
 `Review::authorize` binds a single-use capability to the exact message and calendar from the review.
 `AuthorizedChange::apply` consumes the capability.
 Outbound builders cover every iTIP method and require the caller to supply `DTSTAMP` rather than reading a clock.
+
+Use `Message::review_creation` when the destination is absent.
+Use `Message::review` when a stored `Calendar` exists.
+Enforce absence when storing a creation result, including races after review.
 A first `PUBLISH` or `REQUEST` can create state.
 The review checks all payload components before `apply` inserts any master or detached instance.
 A multi-component update also uses one capability.
