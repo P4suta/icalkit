@@ -20,10 +20,9 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Yasunobu Sakashita <crates.tank733@slmails.com>"]
 repository = "https://github.com/P4suta/icalkit"
-homepage = "https://github.com/P4suta/icalkit"
 
-# Inter-crate dependencies are declared as each crate's code starts needing them, so
-# `cargo shear` stays meaningful. The intended graph is in ARCHITECTURE.md.
+# Inter-crate dependencies are declared as each crate's code starts needing them, so `cargo shear` stays meaningful.
+# The intended graph is in ARCHITECTURE.md.
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -32,23 +31,19 @@ unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
 unreachable = "warn"
-# Calendar arithmetic crosses DST boundaries, leap days, and year bounds. Every site
-# must state what it does when the result does not exist.
+# Calendar arithmetic crosses DST boundaries, leap days, and year bounds.
+# Every site must state what it does when the result does not exist.
 arithmetic_side_effects = "warn"
 missing_errors_doc = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
-# `Token` is `#[non_exhaustive]` and its consumers now live in the crate that defines it, where
-# that attribute means nothing: an in-crate match must be exhaustive, and a wildcard arm over it
-# is a silently ignored variant rather than forward compatibility. Outside this workspace the
-# attribute still binds, so adding a variant stays a minor release there and a compile error here.
+# `Token` is `#[non_exhaustive]` and its consumers now live in the crate that defines it, where that attribute means nothing: an in-crate match must be exhaustive, and a wildcard arm over it is a silently ignored variant rather than forward compatibility.
+# Outside this workspace the attribute still binds, so adding a variant stays a minor release there and a compile error here.
 #
 # Denying the lint was written down as what keeps such an arm from being added back and does not:
-# it rejects a catch-all placed after every variant is already covered, while the shape that
-# loses data omits a variant and adds `_`, which is reachable and which this lint says nothing
-# about. It is kept because a dead arm is still worth refusing; the rule that holds the claim is
-# the fourth one of `xtask purity` (docs/adr/0004).
+# it rejects a catch-all placed after every variant is already covered, while the shape that loses data omits a variant and adds `_`, which is reachable and which this lint says nothing about.
+# It is kept because a dead arm is still worth refusing; the rule that holds the claim is the fourth one of `xtask purity` (docs/adr/0004).
 unreachable_patterns = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"

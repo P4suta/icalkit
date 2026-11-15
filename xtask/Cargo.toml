@@ -12,10 +12,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
-# Intentionally empty. The tool that enforces "the core has no dependencies" should not
-# itself have any; see the note on manifest scanning in src/main.rs.
+# Intentionally empty.
+# The tool that enforces "the core has no dependencies" should not itself have any; see the note on manifest scanning in src/main.rs.
 [dependencies]
 
 [lints]

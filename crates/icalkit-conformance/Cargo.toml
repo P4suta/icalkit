@@ -19,7 +19,6 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 # This target is an unpublished shared-source isolation helper for white-box tests, not a Rust API.
 # Keep doctests enabled, but do not ask workspace rustdoc to publish internal links under this second crate root.
