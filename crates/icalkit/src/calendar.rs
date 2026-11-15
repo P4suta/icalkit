@@ -7,7 +7,7 @@ use core::str;
 
 use crate::internal::core::{
     Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, DiagnosticCode,
-    Document, Item, Meter, Property, PropertyId, TextValue, ValueType,
+    Document, Duration, Item, Meter, Property, PropertyId, TextValue, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -151,6 +151,7 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     }
     if let Some(calendar) = first {
         validate_required_starts(calendar, issues);
+        validate_alarms(calendar, issues);
     }
 }
 
@@ -265,10 +266,12 @@ fn date_time_property_is_valid(component: &Component, property: &Property) -> bo
         }
     }
     let requires_utc = [
-        b"COMPLETED".as_slice(),
+        b"ACKNOWLEDGED".as_slice(),
+        b"COMPLETED",
         b"CREATED",
         b"DTSTAMP",
         b"LAST-MODIFIED",
+        b"TRIGGER",
     ]
     .iter()
     .any(|name| property.is_named(name))
@@ -280,6 +283,151 @@ fn date_time_property_is_valid(component: &Component, property: &Property) -> bo
     let requires_local = property.is_named(b"DTSTART")
         && (component.is_named(b"STANDARD") || component.is_named(b"DAYLIGHT"));
     !requires_local || matches!(value, DateTimeValue::Local(_))
+}
+
+fn first_property<'a>(component: &'a Component, name: &[u8]) -> Option<&'a Property> {
+    component
+        .properties()
+        .find(|property| property.is_named(name))
+}
+
+fn property_count(component: &Component, name: &[u8]) -> usize {
+    component
+        .properties()
+        .filter(|property| property.is_named(name))
+        .count()
+}
+
+fn validate_alarms(component: &Component, issues: &mut Vec<Issue>) {
+    if component.kind().is_none() {
+        return;
+    }
+    for child in component.components() {
+        if child.is_named(b"VALARM") && !alarm_is_valid(component, child) {
+            issues.push(Issue::error("icalkit.validation.invalid-alarm"));
+        }
+        validate_alarms(child, issues);
+    }
+}
+
+fn alarm_is_valid(parent: &Component, alarm: &Component) -> bool {
+    if property_count(alarm, b"UID") > 1 || property_count(alarm, b"ACKNOWLEDGED") > 1 {
+        return false;
+    }
+    if first_property(alarm, b"ACKNOWLEDGED")
+        .is_some_and(|property| !date_time_property_is_valid(alarm, property))
+    {
+        return false;
+    }
+    let Some(action) = first_property(alarm, b"ACTION") else {
+        return false;
+    };
+    if matches!(action.declared_value_type(), Some(Err(_))) {
+        return true;
+    }
+    let action = action.value_text().as_bytes();
+    if action.is_empty()
+        || !action
+            .iter()
+            .all(|octet| octet.is_ascii_alphanumeric() || *octet == b'-')
+    {
+        return false;
+    }
+    let valid_properties = if action.eq_ignore_ascii_case(b"AUDIO") {
+        !has_property(alarm, b"DESCRIPTION")
+            && !has_property(alarm, b"SUMMARY")
+            && !has_property(alarm, b"ATTENDEE")
+            && property_count(alarm, b"ATTACH") <= 1
+    } else if action.eq_ignore_ascii_case(b"DISPLAY") {
+        has_property(alarm, b"DESCRIPTION")
+            && !has_property(alarm, b"SUMMARY")
+            && !has_property(alarm, b"ATTENDEE")
+            && !has_property(alarm, b"ATTACH")
+    } else if action.eq_ignore_ascii_case(b"EMAIL") {
+        has_property(alarm, b"DESCRIPTION")
+            && has_property(alarm, b"SUMMARY")
+            && has_property(alarm, b"ATTENDEE")
+    } else {
+        return true;
+    };
+    if !valid_properties {
+        return false;
+    }
+    let duration = first_property(alarm, b"DURATION");
+    let repeat = first_property(alarm, b"REPEAT");
+    if duration.is_some() != repeat.is_some()
+        || duration.is_some_and(|property| !positive_duration(property))
+    {
+        return false;
+    }
+    if let Some(repeat) = repeat {
+        match repeat.declared_value_type() {
+            Some(Err(_)) => {},
+            None | Some(Ok(ValueType::Integer)) => {
+                if !i32::decode_property(repeat).is_ok_and(|count| count >= 0) {
+                    return false;
+                }
+            },
+            Some(Ok(_)) => return false,
+        }
+    }
+    first_property(alarm, b"TRIGGER")
+        .is_some_and(|trigger| trigger_is_valid(parent, alarm, trigger))
+}
+
+fn positive_duration(property: &Property) -> bool {
+    match property.declared_value_type() {
+        Some(Err(_)) => true,
+        None | Some(Ok(ValueType::Duration)) => {
+            Duration::decode_property(property).is_ok_and(|value| {
+                value.days() >= 0
+                    && value.seconds() >= 0
+                    && (value.days() > 0 || value.seconds() > 0)
+            })
+        },
+        Some(Ok(_)) => false,
+    }
+}
+
+fn trigger_is_valid(parent: &Component, alarm: &Component, trigger: &Property) -> bool {
+    if trigger.parameters_named(b"VALUE").nth(1).is_some()
+        || trigger.parameters_named(b"RELATED").nth(1).is_some()
+    {
+        return false;
+    }
+    let declared = match trigger.declared_value_type() {
+        Some(Err(_)) => return true,
+        Some(Ok(value_type)) => value_type,
+        None => ValueType::Duration,
+    };
+    if trigger.parameters_named(b"TZID").next().is_some() {
+        return false;
+    }
+    match declared {
+        ValueType::DateTime => {
+            trigger.parameters_named(b"RELATED").next().is_none()
+                && date_time_property_is_valid(alarm, trigger)
+        },
+        ValueType::Duration => {
+            if Duration::decode_property(trigger).is_err() {
+                return false;
+            }
+            let related = trigger
+                .parameters_named(b"RELATED")
+                .next()
+                .map_or(b"START".as_slice(), |parameter| parameter.unquoted());
+            if related.eq_ignore_ascii_case(b"START") {
+                has_property(parent, b"DTSTART")
+            } else if related.eq_ignore_ascii_case(b"END") {
+                (parent.is_named(b"VEVENT") && has_property(parent, b"DTEND"))
+                    || (parent.is_named(b"VTODO") && has_property(parent, b"DUE"))
+                    || (has_property(parent, b"DTSTART") && has_property(parent, b"DURATION"))
+            } else {
+                false
+            }
+        },
+        _ => false,
+    }
 }
 
 /// A transactional calendar editor.
