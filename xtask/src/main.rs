@@ -8,164 +8,107 @@
 //!
 //! # `purity`
 //!
-//! Purity here means the core runs where calendars are actually rendered: a browser, an
-//! embedded display, a server that already owns its HTTP client and its time zone
-//! database. Declarations carry that promise, and this task reads them for every core
-//! crate: the manifest links no package outside the core set and takes each one from inside
-//! this workspace, and `lib.rs` declares `#![no_std]` and `extern crate alloc;`. No clock
-//! and no network follow from having nothing to call.
+//! Purity here means the core runs where calendars are actually rendered: a browser, an embedded display, a server that already owns its HTTP client and its time zone database.
+//! Declarations carry that promise, and this task reads them for every core crate: the manifest links no package outside the core set and takes each one from inside this workspace, and `lib.rs` declares `#![no_std]` and `extern crate alloc;`.
+//! No clock and no network follow from having nothing to call.
 //!
-//! A dependency's key is a nickname its author chose; the name Cargo links is the `package`
-//! field. `ical-dav = { package = "libm", version = "0.2" }` wrote a name from
-//! [`CORE_CRATES`] and linked a third-party crate, and passed every leg of the gate for the
-//! gate's entire life. Entries are therefore read for their linked name in both spellings,
-//! the rename is a violation on its own, and a dependency that resolves from a registry
-//! rather than from `workspace = true` or a path under `crates/` is one too.
+//! A dependency's key is a nickname its author chose; the name Cargo links is the `package` field.
+//! `ical-dav = { package = "libm", version = "0.2" }` wrote a name from [`CORE_CRATES`] and linked a third-party crate, and passed every leg of the gate for the gate's entire life.
+//! Entries are therefore read for their linked name in both spellings,
+//! the rename is a violation on its own, and a dependency that resolves from a registry rather than from `workspace = true` or a path under `crates/` is one too.
 //!
-//! The rule is also only as wide as the list it is applied to, so a crate under a member root
-//! that declares `#![no_std]` without appearing in [`CORE_CRATES`] fails: the exemption
-//! `icalkit-conformance` holds is "private tool", not "not listed". The membership walk covers every
-//! root the workspace declares members under, `gates/` included, while the purity partition
-//! stays over `crates/`: a directory that is not a crate must not be able to become one by
-//! being somewhere this task does not look. The list is written twice, here and as the
-//! `Justfile`'s `core_crates`, and the two are read against each other, because a crate in one
-//! and not the other is either compiled for a bare-metal target with nothing checking what it
-//! depends on or checked here and never compiled for one.
+//! The rule is also only as wide as the list it is applied to, so a crate under a member root that declares `#![no_std]` without appearing in [`CORE_CRATES`] fails: the exemption `icalkit-conformance` holds is "private tool", not "not listed".
+//! The membership walk covers every root the workspace declares members under, `gates/` included, while the purity partition stays over `crates/`: a directory that is not a crate must not be able to become one by being somewhere this task does not look.
+//! The list is written twice, here and as the `Justfile`'s `core_crates`, and the two are read against each other, because a crate in one and not the other is either compiled for a bare-metal target with nothing checking what it depends on or checked here and never compiled for one.
 //!
 //! # `purity`, second rule: the grammar layer
 //!
-//! The private `icalkit` kernel absorbed `ical-grammar` (`docs/adr/0004`, D-0003), and inside
-//! one crate nothing stops a file of `internal/core/grammar/` from naming the model above it.
-//! `gates/grammar-layering`
-//! compiles that directory with no dependencies at all and catches every spelling that names a
-//! model item — `use crate::CivilDate;` fails there with a file and a line. What it cannot
-//! catch is `crate::X` for an `X` the crate root re-exports *from the grammar*, because that
-//! resolves in the gate too, and that is the spelling a contributor reaches for.
+//! The private `icalkit` kernel absorbed `ical-grammar` (`docs/adr/0004`, D-0003), and inside one crate nothing stops a file of `internal/core/grammar/` from naming the model above it.
+//! `gates/grammar-layering` compiles that directory with no dependencies at all and catches every spelling that names a model item — `use crate::CivilDate;` fails there with a file and a line.
+//! What it cannot catch is `crate::X` for an `X` the crate root re-exports *from the grammar*, because that resolves in the gate too, and that is the spelling a contributor reaches for.
 //!
-//! So the remaining half is held here, textually: no path under
-//! `crates/icalkit/src/internal/core/grammar/`
-//! may resolve above the grammar root — in `mod.rs` neither `crate::` nor `super::`, in the
-//! files beside it neither `crate::` nor `super::super::` — and the tree stays flat, because a
-//! subdirectory changes the depth that arithmetic is stated in and a rule that quietly stops
-//! applying is worse than no rule.
+//! So the remaining half is held here, textually: no path under `crates/icalkit/src/internal/core/grammar/` may resolve above the grammar root — in `mod.rs` neither `crate::` nor `super::`, in the files beside it neither `crate::` nor `super::super::` — and the tree stays flat, because a subdirectory changes the depth that arithmetic is stated in and a rule that quietly stops applying is worse than no rule.
 //!
-//! Four spellings were walked around before they were rules. Whitespace: `use crate ::Token;` is
-//! the same import and a substring match does not see it, so every line is read with its
-//! whitespace removed rather than being left to `cargo fmt`. The crate's own name: `extern crate
-//! self as icalkit;` gives the layer a name for the crate root that is neither `crate::` nor
-//! `super::`, so `icalkit::` is refused as a path and `extern crate` is refused outright —
+//! Four spellings were walked around before they were rules.
+//! Whitespace: `use crate ::Token;` is the same import and a substring match does not see it, so every line is read with its whitespace removed rather than being left to `cargo fmt`.
+//! The crate's own name: `extern crate self as icalkit;` gives the layer a name for the crate root that is neither `crate::` nor `super::`, so `icalkit::` is refused as a path and `extern crate` is refused outright —
 //! nothing in the layer needs one, since `alloc` is declared by each root that compiles it.
-//! `#[path]`: it maps a module of the layer onto a file this scan never opens, so the layer would
-//! hold code no rule here applies to. And the module tree: the rule reads a directory while the
-//! compiler reads `mod.rs`, so a `.rs` file the module root does not declare is invisible to
-//! `gates/grammar-layering`, and the two sets are held equal in both directions.
+//! `#[path]`: it maps a module of the layer onto a file this scan never opens, so the layer would hold code no rule here applies to.
+//! And the module tree: the rule reads a directory while the compiler reads `mod.rs`, so a `.rs` file the module root does not declare is invisible to `gates/grammar-layering`, and the two sets are held equal in both directions.
 //!
-//! It is still in the same family as the golden-list scan and is still defeated by the same
-//! things: a macro, a generated path, a spelling it was not taught.
+//! It is still in the same family as the golden-list scan and is still defeated by the same things: a macro, a generated path, a spelling it was not taught.
 //!
-//! This is hygiene about not routing a lateral import through the parent crate's public
-//! surface. It is not the layering guarantee, and nothing here should be read as saying the
-//! compiler enforces it.
+//! This is hygiene about not routing a lateral import through the parent crate's public surface.
+//! It is not the layering guarantee, and nothing here should be read as saying the compiler enforces it.
 //!
 //! # `purity`, third rule: the members that make the layers facts
 //!
 //! The compile half of a layering guarantee is a workspace member, and a member is deletable.
-//! Before this rule, a pull request that dropped `gates/grammar-layering` from the member list
-//! and moved its directory away passed every gate in this repository: a stale `--exclude` for a
-//! package that no longer exists is not an error, and the membership walk below only ever
-//! reports a directory that declares `#![no_std]`, which such a member deliberately does not. So
-//! each member is named here — the member line, the package name, `publish = false`, `[lib] doc`
-//! and `test`, and the `#[path]` that reaches the real sources — by string equality, which
-//! `docs/adr/0004` calls narrower than a name scanner and not zero.
+//! Before this rule, a pull request that dropped `gates/grammar-layering` from the member list and moved its directory away passed every gate in this repository: a stale `--exclude` for a package that no longer exists is not an error, and the membership walk below only ever reports a directory that declares `#![no_std]`, which such a member deliberately does not.
+//! So each member is named here — the member line, the package name, `publish = false`, `[lib] doc` and `test`, and the `#[path]` that reaches the real sources — by string equality, which `docs/adr/0004` calls narrower than a name scanner and not zero.
 //!
-//! There are two of them now and [`LAYERING_GATES`] is a table rather than a second pair of
-//! constants, because the second layer arrived and copying the rule would have made "what a
-//! layering gate is" a fact stated twice. The second is `gates/xml-layering` over
-//! `crates/icalkit/src/internal/dav/xml/`, which `docs/adr/0012` requires may not name a CalDAV type: that
-//! boundary is what keeps the `webdav-core` extraction that ADR declines to publish a file move
-//! plus a manifest rather than a redesign. Both the textual rule above and the member rule here
-//! are stated over the table, so a third layer is three strings.
+//! There are two of them now and [`LAYERING_GATES`] is a table rather than a second pair of constants, because the second layer arrived and copying the rule would have made "what a layering gate is" a fact stated twice.
+//! The second is `gates/xml-layering` over `crates/icalkit/src/internal/dav/xml/`, which `docs/adr/0012` requires may not name a CalDAV type: that boundary is what keeps the `webdav-core` extraction that ADR declines to publish a file move plus a manifest rather than a redesign.
+//! Both the textual rule above and the member rule here are stated over the table, so a third layer is three strings.
 //!
 //! # `purity`, fourth rule: a wildcard arm over `Token`
 //!
-//! `Token` is `#[non_exhaustive]`, which binds outside this workspace and means nothing inside
-//! it, so `unreachable_patterns = "deny"` was written down as what stops a wildcard arm from
-//! being added back. It does not: that lint fires on a catch-all after every variant is already
-//! covered, and a match that omits one variant and adds `_` is a *reachable* wildcard the lint
-//! is silent about. It is also the only shape that loses data, and the only shape a hand
-//! remembering the old cross-crate rule would write. So the arms are read here: a `match` whose
-//! arm patterns name `Token::` may not also carry a `_` arm. `SyncToken::` ends in the same
-//! seven characters and is a different type, so the name is matched at its boundary.
+//! `Token` is `#[non_exhaustive]`, which binds outside this workspace and means nothing inside it, so `unreachable_patterns = "deny"` was written down as what stops a wildcard arm from being added back.
+//! It does not: that lint fires on a catch-all after every variant is already covered, and a match that omits one variant and adds `_` is a *reachable* wildcard the lint is silent about.
+//! It is also the only shape that loses data, and the only shape a hand remembering the old cross-crate rule would write.
+//! So the arms are read here: a `match` whose arm patterns name `Token::` may not also carry a `_` arm.
+//! `SyncToken::` ends in the same seven characters and is a different type, so the name is matched at its boundary.
 //!
 //! # `purity`, fifth rule: the crate set's other copies
 //!
-//! `release-plz.toml` is the one file describing this workspace that no gate compiled, ran, or
-//! read, and it named `ical-grammar` for a full landing after the crate ceased to exist. So the
-//! published members are read out of the root manifest and held against it: one `[[package]]`
-//! block each, no block for a package the workspace does not build, and `changelog_include`
-//! naming every published member but the one that carries the changelog.
+//! `release-plz.toml` is the one file describing this workspace that no gate compiled, ran, or read, and it named `ical-grammar` for a full landing after the crate ceased to exist.
+//! So the published members are read out of the root manifest and held against it: one `[[package]]` block each, no block for a package the workspace does not build, and `changelog_include` naming every published member but the one that carries the changelog.
 //!
-//! The published list is also held against [`PUBLIC_CRATES`]. ADR 0013 makes `icalkit` the
-//! single future registry contract. The six retired implementation package names are rejected,
+//! The published list is also held against [`PUBLIC_CRATES`].
+//! ADR 0013 makes `icalkit` the single future registry contract.
+//! The six retired implementation package names are rejected,
 //! and the conformance helper must remain explicitly classified and unpublished.
 //!
 //! # `architecture`
 //!
-//! The architecture task gives that release boundary a discoverable name and also freezes the
-//! facade's Cargo feature vocabulary to `std` and `system-tz`, both enabled by default. It
-//! deliberately checks declarations rather than publishability: implementation lives in
-//! private modules, but publishing remains deferred until an explicit release decision.
+//! The architecture task gives that release boundary a discoverable name and also freezes the facade's Cargo feature vocabulary to `std` and `system-tz`, both enabled by default.
+//! It deliberately checks declarations rather than publishability: implementation lives in private modules, but publishing remains deferred until an explicit release decision.
 //!
-//! `just no-std` and `just wasm` are the compile-time half: they prove the core builds for
-//! `thumbv7em-none-eabi` and for `wasm32-unknown-unknown`. What they cannot express is the
-//! dependency rule, because a `no_std` crate from outside compiles perfectly well while
-//! still binding this core to someone else's MSRV, release cadence, and license. That rule
-//! is a decision rather than a build property, so it needs a gate that reads what the
-//! manifest declares.
+//! `just no-std` and `just wasm` are the compile-time half: they prove the core builds for `thumbv7em-none-eabi` and for `wasm32-unknown-unknown`.
+//! What they cannot express is the dependency rule, because a `no_std` crate from outside compiles perfectly well while still binding this core to someone else's MSRV, release cadence, and license.
+//! That rule is a decision rather than a build property, so it needs a gate that reads what the manifest declares.
 //!
-//! The reasoning is `docs/adr/0004` and `docs/adr/0007`, which the violations cite: the fix
-//! is usually to move the code up a layer, not to add the dependency.
+//! The reasoning is `docs/adr/0004` and `docs/adr/0007`, which the violations cite: the fix is usually to move the code up a layer, not to add the dependency.
 //!
 //! # `codes`
 //!
-//! `DiagnosticCode` is one vocabulary for the whole workspace and its meanings are frozen as
-//! hard as its names (`docs/adr/0009`), because `docs/adr/0006`'s corpus asserts "this input
-//! produces this code, on this channel" across releases. A meaning that only a doc comment
-//! records is a meaning anybody can edit inside a diff nobody reads, so it is written twice —
+//! `DiagnosticCode` is one vocabulary for the whole workspace and its meanings are frozen as hard as its names (`docs/adr/0009`), because `docs/adr/0006`'s corpus asserts "this input produces this code, on this channel" across releases.
+//! A meaning that only a doc comment records is a meaning anybody can edit inside a diff nobody reads, so it is written twice —
 //! once as the variant's first doc paragraph, once as a row of `docs/diagnostic-codes.md` —
-//! and this task fails unless the two agree. Editing a meaning then means editing both files,
-//! which is the review a frozen meaning is owed; improving the prose below a variant's first
-//! paragraph stays free, because that prose is not the meaning.
+//! and this task fails unless the two agree.
+//! Editing a meaning then means editing both files,
+//! which is the review a frozen meaning is owed; improving the prose below a variant's first paragraph stays free, because that prose is not the meaning.
 //!
 //! Exactly two committed files are read,
-//! `crates/icalkit/src/internal/core/grammar/report.rs` and the golden list, by the same kind of
-//! hand-rolled scan and for the same reason: a gate about
-//! dependencies may not have any. The task fails on a code with no row, on a row no code
-//! declares, on rows out of declaration order, on a meaning that drifted from either side, on
-//! a channel that is not a `Severity` the source declares, and on a milestone `ROADMAP.md`
-//! does not name. An addition that carries a row passes trivially, which is the one edit
-//! `docs/adr/0009` allows without ceremony.
+//! `crates/icalkit/src/internal/core/grammar/report.rs` and the golden list, by the same kind of hand-rolled scan and for the same reason: a gate about dependencies may not have any.
+//! The task fails on a code with no row, on a row no code declares, on rows out of declaration order, on a meaning that drifted from either side, on a channel that is not a `Severity` the source declares, and on a milestone `ROADMAP.md` does not name.
+//! An addition that carries a row passes trivially, which is the one edit `docs/adr/0009` allows without ceremony.
 //!
-//! The milestone column is the part that reads like bookkeeping and is not. `Severity` has a
-//! variant and `Diagnostic` a constructor that no M0 code path reaches, nothing recorded that
-//! they were waiting on M1 and M2 rather than left over from a design that moved, and both
-//! were duly rediscovered as suspected dead API. So a severity that no row carries is a
-//! violation here, and the milestone written against a code names who owes the emitter.
+//! The milestone column is the part that reads like bookkeeping and is not.
+//! `Severity` has a variant and `Diagnostic` a constructor that no M0 code path reaches, nothing recorded that they were waiting on M1 and M2 rather than left over from a design that moved, and both were duly rediscovered as suspected dead API.
+//! So a severity that no row carries is a violation here, and the milestone written against a code names who owes the emitter.
 //!
 //! # `public-api`
 //!
-//! The facade is the workspace's sole future semver contract, so its rustdoc JSON surface is
-//! committed twice: once with default features and once with no features. `cargo-public-api`
-//! generates both lists and this task compares them exactly. An addition, removal, move, or
-//! duplicate canonical path therefore needs an intentional snapshot edit in the same review.
+//! The facade is the workspace's sole future semver contract, so its rustdoc JSON surface is committed twice: once with default features and once with no features.
+//! `cargo-public-api` generates both lists and this task compares them exactly.
+//! An addition, removal, move, or duplicate canonical path therefore needs an intentional snapshot edit in the same review.
 //!
 //! # `repository`
 //!
-//! Public hosting is part of the product boundary too: a contributor must be able to find the
-//! support and security channels, the release posture, and the exact protection policy before
-//! opening a change. This task holds those repository-owned files and their essential links
-//! together. It deliberately does not call GitHub: remote enforcement is audited against
-//! `docs/repository-policy.md`, while this deterministic half remains runnable offline.
+//! Public hosting is part of the product boundary too: a contributor must be able to find the support and security channels, the release posture, and the exact protection policy before opening a change.
+//! This task holds those repository-owned files and their essential links together.
+//! It deliberately does not call GitHub: remote enforcement is audited against `docs/repository-policy.md`, while this deterministic half remains runnable offline.
 
 use std::fs;
 use std::io;
@@ -174,11 +117,8 @@ use std::process::{Command, ExitCode};
 
 /// The crates that make up the sans-I/O core.
 ///
-/// Mirrors `core_crates` in the `Justfile`, and [`recipe_violations`] reads the two against
-/// each other, so a new core crate that reaches only one of them fails here rather than
-/// quietly losing a gate. `icalkit-conformance` is deliberately absent: the conformance runner is
-/// allowed `std` and depends on every crate here, which is what makes it a consumer of the
-/// core rather than part of it.
+/// Mirrors `core_crates` in the `Justfile`, and [`recipe_violations`] reads the two against each other, so a new core crate that reaches only one of them fails here rather than quietly losing a gate.
+/// `icalkit-conformance` is deliberately absent: the conformance runner is allowed `std` and depends on every crate here, which is what makes it a consumer of the core rather than part of it.
 const CORE_CRATES: &[&str] = &["icalkit"];
 
 /// The sole crate allowed to carry a future registry release contract.
@@ -199,16 +139,14 @@ const RETIRED_IMPLEMENTATION: &[&str] = &[
 
 /// Narrow third-party boundaries required by the unified public facade.
 ///
-/// This is intentionally keyed by both owner and package. Adding an external dependency to
-/// another core crate, or adding another package to `icalkit`, remains a gate failure until
-/// the architecture records the new boundary explicitly.
+/// This is intentionally keyed by both owner and package.
+/// Adding an external dependency to another core crate, or adding another package to `icalkit`, remains a gate failure until the architecture records the new boundary explicitly.
 const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] =
     &[("icalkit", "jiff"), ("icalkit", "xmlparser")];
 
 /// Private tools isolated from the production API and release graph.
 ///
-/// Kept separate from [`PRIVATE_IMPLEMENTATION`] so an isolation helper cannot quietly become
-/// part of the production implementation graph merely because both categories are unpublished.
+/// Kept separate from [`PRIVATE_IMPLEMENTATION`] so an isolation helper cannot quietly become part of the production implementation graph merely because both categories are unpublished.
 const PRIVATE_TOOLS: &[&str] = &["icalkit-conformance"];
 
 /// The directories the root manifest declares members under.
@@ -221,21 +159,18 @@ const JUSTFILE: &str = "Justfile";
 
 /// The grammar layer's root, relative to the workspace root.
 ///
-/// Written out rather than derived, because every message below is about positions relative to
-/// this one directory: it is what `gates/grammar-layering` compiles alone.
+/// Written out rather than derived, because every message below is about positions relative to this one directory: it is what `gates/grammar-layering` compiles alone.
 const GRAMMAR_ROOT: &str = "crates/icalkit/src/internal/core/grammar";
 
 /// The crate the grammar layer sits in, spelled as a path spells it.
 ///
-/// A path may name this crate from inside the layer only by way of `extern crate self as`, which
-/// is why both that declaration and this prefix are refused there.
+/// A path may name this crate from inside the layer only by way of `extern crate self as`, which is why both that declaration and this prefix are refused there.
 const GRAMMAR_OWNER: &str = "icalkit";
 
 /// One member that compiles another crate's layer with nothing above that layer in scope.
 ///
-/// A table rather than a second pair of constants. The rule was written for exactly one member
-/// and a second one arrived; copying it would have made "what a layering gate is" a fact stated
-/// twice, and the third would have been stated three times.
+/// A table rather than a second pair of constants.
+/// The rule was written for exactly one member and a second one arrived; copying it would have made "what a layering gate is" a fact stated twice, and the third would have been stated three times.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LayeringGate {
     /// The member directory, relative to the workspace root.
@@ -250,10 +185,8 @@ struct LayeringGate {
 
 /// Every member that makes a layer a fact rather than a directory.
 ///
-/// `gates/grammar-layering` compiles `icalkit`'s private content-line grammar with no model in scope
-/// (`docs/adr/0004`, D-0003). `gates/xml-layering` compiles `icalkit`'s private WebDAV XML module with
-/// no CalDAV vocabulary in scope, which is what keeps the extraction `docs/adr/0012` deferred a
-/// file move rather than a redesign.
+/// `gates/grammar-layering` compiles `icalkit`'s private content-line grammar with no model in scope (`docs/adr/0004`, D-0003).
+/// `gates/xml-layering` compiles `icalkit`'s private WebDAV XML module with no CalDAV vocabulary in scope, which is what keeps the extraction `docs/adr/0012` deferred a file move rather than a redesign.
 const LAYERING_GATES: [LayeringGate; 2] = [
     LayeringGate {
         member: "gates/grammar-layering",
@@ -271,8 +204,7 @@ const LAYERING_GATES: [LayeringGate; 2] = [
 
 /// The WebDAV XML layer's root, relative to the workspace root.
 ///
-/// Written out for the reason [`GRAMMAR_ROOT`] is: it is what `gates/xml-layering` compiles
-/// alone, and every message about it is about a position relative to this one directory.
+/// Written out for the reason [`GRAMMAR_ROOT`] is: it is what `gates/xml-layering` compiles alone, and every message about it is about a position relative to this one directory.
 const XML_ROOT: &str = "crates/icalkit/src/internal/dav/xml";
 
 /// The crate the WebDAV XML layer sits in, spelled as a path spells it.
@@ -421,10 +353,10 @@ fn ci_summary(arguments: &[String]) -> Vec<String> {
     }
 }
 
-/// The milestones a row may name as owing the emitter. Mirrors `ROADMAP.md`.
+/// The milestones a row may name as owing the emitter.
+/// Mirrors `ROADMAP.md`.
 ///
-/// A code whose milestone has not shipped has no emitter at all, and that is the honest
-/// reading of the column rather than a defect in it.
+/// A code whose milestone has not shipped has no emitter at all, and that is the honest reading of the column rather than a defect in it.
 const MILESTONES: &[&str] = &["M0", "M1", "M2", "M3", "M4", "M5"];
 
 fn main() -> ExitCode {
@@ -483,8 +415,7 @@ const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     ".github/workflows/codeql.yml",
 ];
 
-/// The documents whose cross-file promises are held by
-/// [`repository_documentation_violations`].
+/// The documents whose cross-file promises are held by [`repository_documentation_violations`].
 struct RepositoryDocuments<'a> {
     readme: &'a str,
     contributing: &'a str,
@@ -1276,8 +1207,7 @@ fn xml_writer_violations(request: &str, response: &str) -> Vec<String> {
     violations
 }
 
-/// Keep the first consumer example at the workflow layer rather than exposing implementation
-/// machinery a normal application never needs to name.
+/// Keep the first consumer example at the workflow layer rather than exposing implementation machinery a normal application never needs to name.
 fn basic_example_violations(example: &str) -> Vec<String> {
     const INTERNAL_VOCABULARY: &[&str] = &[
         "Token",
@@ -1392,8 +1322,8 @@ fn table_keys(document: &str, table: &str) -> Vec<String> {
 
 /// Turn a task's findings into output and an exit status.
 ///
-/// Every violation is printed. A gate that stops at the first one turns a five-minute fix
-/// into five CI rounds.
+/// Every violation is printed.
+/// A gate that stops at the first one turns a five-minute fix into five CI rounds.
 fn report(task: &str, outcome: io::Result<Vec<String>>) -> ExitCode {
     match outcome {
         Err(error) => {
@@ -1417,8 +1347,7 @@ fn report(task: &str, outcome: io::Result<Vec<String>>) -> ExitCode {
     }
 }
 
-/// Check that every core crate declares no outside dependency and stays `no_std`, that the
-/// two copies of the core list agree, and that the grammar layer names nothing above itself.
+/// Check that every core crate declares no outside dependency and stays `no_std`, that the two copies of the core list agree, and that the grammar layer names nothing above itself.
 fn collect_purity_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
     let root = workspace.join("crates");
@@ -1470,13 +1399,11 @@ fn collect_purity_violations() -> io::Result<Vec<String>> {
 
 /// What the workspace says about the member that compiles the grammar alone.
 ///
-/// That member is the layering guarantee. Deleted, the grammar is a directory inside `ical-core`
-/// again and `use crate::CivilDate;` from inside it compiles; nothing else here would notice,
-/// because every other mention of it is a comment, an `--exclude` that is not an error once the
-/// package is gone, or a membership walk that reports only a directory declaring `#![no_std]`.
+/// That member is the layering guarantee.
+/// Deleted, the grammar is a directory inside `ical-core` again and `use crate::CivilDate;` from inside it compiles; nothing else here would notice,
+/// because every other mention of it is a comment, an `--exclude` that is not an error once the package is gone, or a membership walk that reports only a directory declaring `#![no_std]`.
 /// So each part the guarantee rests on is named and compared: the member line, the package name,
-/// `publish = false`, the two `[lib]` switches that keep the grammar's tests and docs from being
-/// counted twice, and the `#[path]` that reaches the real sources rather than a copy.
+/// `publish = false`, the two `[lib]` switches that keep the grammar's tests and docs from being counted twice, and the `#[path]` that reaches the real sources rather than a copy.
 fn layering_member_violations(workspace: &Path, gate: LayeringGate) -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let directory = workspace.join(gate.member);
@@ -1556,8 +1483,7 @@ fn layering_violations(
 
 /// Every wildcard arm over the guarded type, across the crates.
 ///
-/// Stated over `crates/` rather than over `ical-core` alone: the type is re-exported at that
-/// crate's root, so any crate that names it can write the arm this rule is about.
+/// Stated over `crates/` rather than over `ical-core` alone: the type is re-exported at that crate's root, so any crate that names it can write the arm this rule is about.
 fn guarded_match_violations(workspace: &Path) -> io::Result<Vec<String>> {
     let mut violations = Vec::new();
     let mut sources = Vec::new();
@@ -1604,11 +1530,8 @@ struct OpenMatch {
 
 /// The wildcard arms of every match over the guarded type in one file.
 ///
-/// Brace depth is counted over the code with comments and literals already removed, and an arm is
-/// a line that begins at the depth the block's arms sit at. What that costs is a match whose
-/// scrutinee is written across lines, because the rule finds a block by the `match` and the brace
-/// arriving together; what it buys is a rule with no parser and no dependency, which is the trade
-/// every scan in this file makes.
+/// Brace depth is counted over the code with comments and literals already removed, and an arm is a line that begins at the depth the block's arms sit at.
+/// What that costs is a match whose scrutinee is written across lines, because the rule finds a block by the `match` and the brace arriving together; what it buys is a rule with no parser and no dependency, which is the trade every scan in this file makes.
 fn match_arm_violations(label: &str, source: &str) -> Vec<String> {
     let mut violations = Vec::new();
     let mut open: Vec<OpenMatch> = Vec::new();
@@ -1729,8 +1652,7 @@ fn core_list_violations(published: &[String]) -> Vec<String> {
     violations
 }
 
-/// What the two explicit private categories and unpublished members under `crates/` disagree
-/// about.
+/// What the two explicit private categories and unpublished members under `crates/` disagree about.
 fn private_crate_violations(private: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     let expected: Vec<&str> = PRIVATE_TOOLS
@@ -1770,9 +1692,8 @@ fn private_crate_violations(private: &[String]) -> Vec<String> {
 
 /// The rule itself, over the two lists rather than the two files.
 ///
-/// The release path is the one path this repository never runs, so its configuration is the one
-/// place a deleted crate can survive a whole landing. Every published member gets one entry and
-/// one line of the changelog list; a package the workspace does not build gets neither.
+/// The release path is the one path this repository never runs, so its configuration is the one place a deleted crate can survive a whole landing.
+/// Every published member gets one entry and one line of the changelog list; a package the workspace does not build gets neither.
 fn release_violations(published: &[String], config: &str) -> Vec<String> {
     let released = release_packages(config);
     let included = quoted_values(array_value(config, "changelog_include").unwrap_or_default());
@@ -1884,9 +1805,8 @@ fn quoted_values(text: &str) -> Vec<String> {
 
 /// What the `Justfile`'s `core_crates` and [`CORE_CRATES`] disagree about.
 ///
-/// The recipe is what `just no-std`, `just wasm` and the feature powerset are run over; the
-/// constant is what the dependency rule is applied to. One decision, written twice, and neither
-/// copy failing on its own is what would let them drift.
+/// The recipe is what `just no-std`, `just wasm` and the feature powerset are run over; the constant is what the dependency rule is applied to.
+/// One decision, written twice, and neither copy failing on its own is what would let them drift.
 fn recipe_violations(justfile: &str) -> Vec<String> {
     let Some(named) = recipe_core_crates(justfile) else {
         return vec![format!(
@@ -1917,8 +1837,7 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
 
 /// The crates the `Justfile`'s `core_crates` assignment names.
 ///
-/// `None` when there is no such assignment at all, which is the difference between "the two
-/// lists agree" and "one of them could not be found".
+/// `None` when there is no such assignment at all, which is the difference between "the two lists agree" and "one of them could not be found".
 fn recipe_core_crates(justfile: &str) -> Option<Vec<String>> {
     let assignment = justfile
         .lines()
@@ -1939,8 +1858,8 @@ fn recipe_core_crates(justfile: &str) -> Option<Vec<String>> {
 
 /// Everything under the grammar layer that reaches out of it.
 ///
-/// Textual, and stated over the committed directory rather than over a syntax tree, because a
-/// gate about dependencies may not have any. What it costs is written in this file's header:
+/// Textual, and stated over the committed directory rather than over a syntax tree, because a gate about dependencies may not have any.
+/// What it costs is written in this file's header:
 /// a macro, a generated path or a spelling it was not taught goes through.
 fn layer_root_violations(gate: LayeringGate, root: &Path) -> io::Result<Vec<String>> {
     let mut entries = Vec::new();
@@ -2026,12 +1945,9 @@ fn layer_violations(gate: LayeringGate, entries: &[LayerEntry]) -> Vec<String> {
 
 /// What the module root declares against what the directory holds.
 ///
-/// Two gates read this layer and they read it differently: `gates/grammar-layering` compiles what
-/// `mod.rs` declares, and the rule above scans what the directory holds. A `.rs` file the module
-/// root never declares is therefore in exactly one of them — the textual half sees it, the
-/// compile half cannot — and a file pulled in from elsewhere by `#[path]` is in the other. Both
-/// are closed by holding the two sets equal in both directions; `#[path]` itself is refused a few
-/// lines below, because it is what lets the equality hold while the layer still gains a file.
+/// Two gates read this layer and they read it differently: `gates/grammar-layering` compiles what `mod.rs` declares, and the rule above scans what the directory holds.
+/// A `.rs` file the module root never declares is therefore in exactly one of them — the textual half sees it, the compile half cannot — and a file pulled in from elsewhere by `#[path]` is in the other.
+/// Both are closed by holding the two sets equal in both directions; `#[path]` itself is refused a few lines below, because it is what lets the equality hold while the layer still gains a file.
 fn module_tree_violations(layer: &str, root: Option<&str>, beside: &[&str]) -> Vec<String> {
     let Some(source) = root else {
         return vec![format!(
@@ -2083,17 +1999,15 @@ fn declared_modules(source: &str) -> Vec<String> {
 
 /// The paths in one file of the layer that resolve above the grammar root.
 ///
-/// `mod.rs` *is* the root, so `super::` there names the crate; beside it `super::` names the
-/// root and `super::super::` names the crate. Comments and string literals are removed first,
-/// which is what lets a doc link keep writing `crate::Token`: the rendered documentation is
-/// `ical-core`'s, and that link is how a reader reaches the item.
+/// `mod.rs` *is* the root, so `super::` there names the crate; beside it `super::` names the root and `super::super::` names the crate.
+/// Comments and string literals are removed first,
+/// which is what lets a doc link keep writing `crate::Token`: the rendered documentation is `ical-core`'s, and that link is how a reader reaches the item.
 ///
 /// Each line is then read with the whitespace around its `::` closed up, because `use crate
 /// ::Token;` is the same import as `use crate::Token;` and only `cargo fmt` stood between the two.
-/// The whitespace elsewhere on the line stays, because it is what tells `crate::` apart from the
-/// tail of `subcrate::`. Two declarations are refused outright beside the paths: `extern crate`,
-/// which is how the layer would acquire a name for the crate above it that is spelled like
-/// neither of them, and `#[path]`, which is how it would acquire a file this scan never opens.
+/// The whitespace elsewhere on the line stays, because it is what tells `crate::` apart from the tail of `subcrate::`.
+/// Two declarations are refused outright beside the paths: `extern crate`,
+/// which is how the layer would acquire a name for the crate above it that is spelled like neither of them, and `#[path]`, which is how it would acquire a file this scan never opens.
 fn file_path_violations(gate: LayeringGate, name: &str, source: &str) -> Vec<String> {
     let LayeringGate {
         root: layer, owner, ..
@@ -2138,25 +2052,23 @@ fn file_path_violations(gate: LayeringGate, name: &str, source: &str) -> Vec<Str
 
 /// One line with every run of whitespace closed up to a single space.
 ///
-/// `extern  crate` is `extern crate`, and a rule that reads the second and not the first is a
-/// rule held by `cargo fmt`.
+/// `extern  crate` is `extern crate`, and a rule that reads the second and not the first is a rule held by `cargo fmt`.
 fn spaced(code: &str) -> String {
     code.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// One spaced line with the whitespace around each `::` removed.
 ///
-/// `use crate ::Token;` compiles and means what `use crate::Token;` means. Only the space beside
-/// the separator goes: the rest is what distinguishes `use crate::x` from `use subcrate::x`, and
-/// removing all of it would make every path the tail of the word in front of it.
+/// `use crate ::Token;` compiles and means what `use crate::Token;` means.
+/// Only the space beside the separator goes: the rest is what distinguishes `use crate::x` from `use subcrate::x`, and removing all of it would make every path the tail of the word in front of it.
 fn tightened(spaced: &str) -> String {
     spaced.replace(" ::", "::").replace(":: ", "::")
 }
 
 /// Whether `needle` occurs in `code` as something other than the tail of a longer name.
 ///
-/// `SyncToken::` ends in `Token::` and is a different type. `$crate::` does not end in a name
-/// character, and is the macro spelling of the path being refused rather than a different one.
+/// `SyncToken::` ends in `Token::` and is a different type.
+/// `$crate::` does not end in a name character, and is the macro spelling of the path being refused rather than a different one.
 fn names_path(code: &str, needle: &str) -> bool {
     code.match_indices(needle).any(|(at, _)| {
         code.get(..at)
@@ -2167,10 +2079,8 @@ fn names_path(code: &str, needle: &str) -> bool {
 
 /// One source file with its comments and literals removed, numbered from one.
 ///
-/// A hand-rolled scan for the reason [`declared_dependencies`] gives about manifests. It reads
-/// line comments, nested block comments, plain and raw string and byte-string literals, and
-/// character literals — the last because `b'"'` is written in this very tree, and a scan that
-/// took it for the start of a string would read everything after it in the wrong state.
+/// A hand-rolled scan for the reason [`declared_dependencies`] gives about manifests.
+/// It reads line comments, nested block comments, plain and raw string and byte-string literals, and character literals — the last because `b'"'` is written in this very tree, and a scan that took it for the start of a string would read everything after it in the wrong state.
 fn code_lines(source: &str) -> Vec<(usize, String)> {
     let chars: Vec<char> = source.chars().collect();
     let mut lines = Vec::new();
@@ -2185,8 +2095,7 @@ fn code_lines(source: &str) -> Vec<(usize, String)> {
             literal = None;
         }
         if character == '\n' {
-            // Checked before every other state, so that a literal or a block comment spanning
-            // lines does not merge the numbers a violation would be reported against.
+            // Checked before every other state, so that a literal or a block comment spanning lines does not merge the numbers a violation would be reported against.
             lines.push((number, std::mem::take(&mut code)));
             number = number.saturating_add(1);
             at = at.saturating_add(1);
@@ -2282,9 +2191,7 @@ fn closed_by(chars: &[char], from: usize, hashes: usize) -> bool {
 /// The index just past a character literal, or `None` when the `'` opened a lifetime.
 fn character_end(chars: &[char], at: usize) -> Option<usize> {
     if chars.get(at.saturating_add(1)) == Some(&'\\') {
-        // The escape's own length varies — `'\n'` against `'\u{1F600}'` — so the quote after
-        // the escaped character is what ends it, and the escaped character is skipped first
-        // because in `'\''` it is a quote.
+        // The escape's own length varies — `'\n'` against `'\u{1F600}'` — so the quote after the escaped character is what ends it, and the escaped character is skipped first because in `'\''` it is a quote.
         let mut index = at.saturating_add(3);
         while let Some(&character) = chars.get(index) {
             index = index.saturating_add(1);
@@ -2326,14 +2233,11 @@ fn manifest_violations(crate_name: &str, manifest: &str) -> Vec<String> {
     violations
 }
 
-/// Crates under one member root that declare `#![no_std]` without being named in
-/// [`CORE_CRATES`].
+/// Crates under one member root that declare `#![no_std]` without being named in [`CORE_CRATES`].
 ///
-/// The rule is only as wide as the list it is applied to, so the list must not be able to go
-/// stale behind a crate somebody added (ADR 0004). `icalkit-conformance` is instead admitted by
-/// [`PRIVATE_TOOLS`]; it uses `std` and is not part of the production or release graph.
-/// Called for every root in [`MEMBER_ROOTS`], so that `gates/` is not a place to put one where
-/// nothing looks.
+/// The rule is only as wide as the list it is applied to, so the list must not be able to go stale behind a crate somebody added (ADR 0004).
+/// `icalkit-conformance` is instead admitted by [`PRIVATE_TOOLS`]; it uses `std` and is not part of the production or release graph.
+/// Called for every root in [`MEMBER_ROOTS`], so that `gates/` is not a place to put one where nothing looks.
 fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
     let mut violations = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -2357,8 +2261,7 @@ fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
 
 /// Whether a source file carries `declaration` as a declaration of its own.
 ///
-/// Matched as a whole line rather than as a substring, so that naming an attribute in a doc
-/// comment or a string literal does not satisfy the gate.
+/// Matched as a whole line rather than as a substring, so that naming an attribute in a doc comment or a string literal does not satisfy the gate.
 fn declares(source: &str, declaration: &str) -> bool {
     source.lines().any(|line| line.trim() == declaration)
 }
@@ -2379,10 +2282,10 @@ fn workspace_root() -> io::Result<PathBuf> {
 /// One dependency entry, as the gate has to see it rather than as it was written.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Declared {
-    /// The key to the left of `=`, or the last segment of a sub-table header. A nickname.
+    /// The key to the left of `=`, or the last segment of a sub-table header.
+    /// A nickname.
     key: String,
-    /// The package Cargo links: the `package = "..."` value when one is given, the key
-    /// otherwise.
+    /// The package Cargo links: the `package = "..."` value when one is given, the key otherwise.
     package: String,
     /// Whether the entry names a package other than its key.
     renamed: bool,
@@ -2406,17 +2309,12 @@ impl Declared {
 
 /// Collect the dependencies a manifest declares.
 ///
-/// This is a deliberate hand-rolled scan rather than a TOML parser. The tool that enforces
-/// "the core has no outside dependencies" should not itself have any, and it only ever
-/// reads manifests this repository writes in one documented style. It understands both
-/// `[dependencies]` tables and `[dependencies.name]` sub-tables, and treats `dev-` and
-/// `build-` dependencies and `[target.'cfg(..)'.dependencies]` the same way, because a core
-/// crate should not acquire those either.
+/// This is a deliberate hand-rolled scan rather than a TOML parser.
+/// The tool that enforces "the core has no outside dependencies" should not itself have any, and it only ever reads manifests this repository writes in one documented style.
+/// It understands both `[dependencies]` tables and `[dependencies.name]` sub-tables, and treats `dev-` and `build-` dependencies and `[target.'cfg(..)'.dependencies]` the same way, because a core crate should not acquire those either.
 ///
-/// A key is a nickname its author chose. `ical-dav = { package = "libm", version = "0.2" }`
-/// writes a name from `CORE_CRATES` and links `libm`, so every entry is read for the
-/// `package` field in both spellings — inside the inline table, and as a line of the
-/// sub-table, which is why a sub-table is gathered into one specification before it is read.
+/// A key is a nickname its author chose.
+/// `ical-dav = { package = "libm", version = "0.2" }` writes a name from `CORE_CRATES` and links `libm`, so every entry is read for the `package` field in both spellings — inside the inline table, and as a line of the sub-table, which is why a sub-table is gathered into one specification before it is read.
 fn declared_dependencies(manifest: &str) -> Vec<Declared> {
     let mut declared = Vec::new();
     let mut subtable: Option<(String, Vec<String>)> = None;
@@ -2524,9 +2422,7 @@ fn inline_table_is_complete(spec: &str) -> bool {
 
 /// Turn a gathered `[dependencies.name]` sub-table into one entry.
 ///
-/// The body is rewritten as an inline table so that one reader handles both spellings; a
-/// `package = "..."` line inside a sub-table is the same rename as the inline one, and
-/// reading only the header is how it used to go unseen.
+/// The body is rewritten as an inline table so that one reader handles both spellings; a `package = "..."` line inside a sub-table is the same rename as the inline one, and reading only the header is how it used to go unseen.
 fn flush_subtable(subtable: &mut Option<(String, Vec<String>)>, declared: &mut Vec<Declared>) {
     let Some((name, body)) = subtable.take() else {
         return;
@@ -2570,8 +2466,7 @@ fn collect_codes_violations() -> io::Result<Vec<String>> {
 /// Everything the declarations and the golden list disagree about.
 ///
 /// The checks are staged, because a later one is only meaningful once the earlier one holds:
-/// comparing meanings across a table whose rows and codes do not line up reports the same
-/// mistake once per row and buries the one line that says what happened.
+/// comparing meanings across a table whose rows and codes do not line up reports the same mistake once per row and buries the one line that says what happened.
 fn codes_violations(declarations: &str, golden: &str) -> Vec<String> {
     let variants = enum_variants(declarations, "DiagnosticCode");
     let arms = as_str_arms(declarations);
@@ -2600,9 +2495,7 @@ fn codes_violations(declarations: &str, golden: &str) -> Vec<String> {
 
 /// What the scan of the declarations found before the golden list is opened at all.
 ///
-/// A hand-rolled scan that stops matching reports nothing and passes, which is the failure
-/// mode a gate cannot afford: an empty result here means the source moved out from under the
-/// scan, not that the vocabulary is empty.
+/// A hand-rolled scan that stops matching reports nothing and passes, which is the failure mode a gate cannot afford: an empty result here means the source moved out from under the scan, not that the vocabulary is empty.
 fn declaration_violations(
     variants: &[(String, String)],
     arms: &[(String, String)],
@@ -2633,8 +2526,7 @@ fn declaration_violations(
 
 /// Pair each declared variant with the key its `as_str` arm gives it.
 ///
-/// Total only because [`declaration_violations`] has already established that the two lists
-/// name the same variants in the same order.
+/// Total only because [`declaration_violations`] has already established that the two lists name the same variants in the same order.
 fn join_codes(variants: &[(String, String)], arms: &[(String, String)]) -> Vec<DeclaredCode> {
     variants
         .iter()
@@ -2684,8 +2576,7 @@ fn placement_violations(codes: &[DeclaredCode], rows: &[Row]) -> Vec<String> {
 
 /// What the rows claim, checked row by row against the code they are about.
 ///
-/// Zipping is total here: [`placement_violations`] came back empty, so the rows are the codes
-/// in the codes' own order.
+/// Zipping is total here: [`placement_violations`] came back empty, so the rows are the codes in the codes' own order.
 fn content_violations(codes: &[DeclaredCode], rows: &[Row], channels: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     for (code, row) in codes.iter().zip(rows) {
@@ -2720,10 +2611,8 @@ fn content_violations(codes: &[DeclaredCode], rows: &[Row], channels: &[String])
 
 /// Severities that no code travels on.
 ///
-/// `Severity::LimitReached` spent the whole of M0 with no emitter and no row saying which
-/// milestone owed it one, which is how it came to be rediscovered as suspected dead API. A
-/// severity nothing carries is either unbuilt work with a milestone against it or a variant
-/// nobody needs, and both answers belong in the table rather than in somebody's memory.
+/// `Severity::LimitReached` spent the whole of M0 with no emitter and no row saying which milestone owed it one, which is how it came to be rediscovered as suspected dead API.
+/// A severity nothing carries is either unbuilt work with a milestone against it or a variant nobody needs, and both answers belong in the table rather than in somebody's memory.
 fn unused_channel_violations(rows: &[Row], channels: &[String]) -> Vec<String> {
     channels
         .iter()
@@ -2741,8 +2630,7 @@ fn unused_channel_violations(rows: &[Row], channels: &[String]) -> Vec<String> {
 /// One `DiagnosticCode` as the golden list has to see it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeclaredCode {
-    /// The `as_str` key, which is what the golden list is keyed on and what a conformance
-    /// case names.
+    /// The `as_str` key, which is what the golden list is keyed on and what a conformance case names.
     key: String,
     /// The first paragraph of the variant's doc comment, as one line.
     meaning: String,
@@ -2784,14 +2672,10 @@ impl Row {
 
 /// The rows of the golden list's table.
 ///
-/// A hand-rolled scan rather than a Markdown parser, for the reason [`declared_dependencies`]
-/// gives about manifests. The table is the first one in the file, and its header is checked
-/// rather than skipped: the cells are read by position, so swapping two columns would
-/// redefine every row at once and change nothing a reader would notice.
+/// A hand-rolled scan rather than a Markdown parser, for the reason [`declared_dependencies`] gives about manifests.
+/// The table is the first one in the file, and its header is checked rather than skipped: the cells are read by position, so swapping two columns would redefine every row at once and change nothing a reader would notice.
 ///
-/// Structure is the error channel and content is the diagnostic one, which is the split the
-/// crates themselves make: a table this cannot read at all is one message about the file
-/// rather than one message per row of it.
+/// Structure is the error channel and content is the diagnostic one, which is the split the crates themselves make: a table this cannot read at all is one message about the file rather than one message per row of it.
 fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     let mut header: Option<Vec<String>> = None;
@@ -2865,8 +2749,7 @@ fn is_rule_row(cells: &[String]) -> bool {
 
 /// The variants of one enum body, each with the first paragraph of its doc comment.
 ///
-/// Hand-rolled over source this repository writes in one style: the enum bodies it reads hold
-/// no braces of their own, so the first `}` closes the body.
+/// Hand-rolled over source this repository writes in one style: the enum bodies it reads hold no braces of their own, so the first `}` closes the body.
 fn enum_variants(source: &str, name: &str) -> Vec<(String, String)> {
     let header = format!("pub enum {name} {{");
     let mut variants = Vec::new();
@@ -2938,9 +2821,8 @@ struct Paragraph {
 impl Paragraph {
     /// Offer one `///` line, with the marker already stripped.
     ///
-    /// Everything after the first blank line is dropped. A variant's later paragraphs are
-    /// prose that gets improved, and freezing those would make an editorial fix a CI failure
-    /// while doing nothing for the meaning `docs/adr/0009` actually freezes.
+    /// Everything after the first blank line is dropped.
+    /// A variant's later paragraphs are prose that gets improved, and freezing those would make an editorial fix a CI failure while doing nothing for the meaning `docs/adr/0009` actually freezes.
     fn push(&mut self, line: &str) {
         if line.is_empty() {
             self.ended = !self.text.is_empty();
@@ -2988,8 +2870,7 @@ mod tests {
 
     /// The grammar layer's gate, which every layer rule below is stated over.
     ///
-    /// The rule takes the gate rather than reading a constant, so the tests name one: what they
-    /// assert is the rule, and the second gate differs from this one only in its three strings.
+    /// The rule takes the gate rather than reading a constant, so the tests name one: what they assert is the rule, and the second gate differs from this one only in its three strings.
     const GATE: LayeringGate = LAYERING_GATES[0];
 
     /// [`file_path_violations`] over the grammar gate.
@@ -3278,8 +3159,7 @@ extern crate alloc;
             "a core crate the recipe never compiles for a bare-metal target"
         );
 
-        // `ical-query` used to be the crate that did not exist here and now does, which is the
-        // drift this leg exists to catch: a name in one copy of the list and not the other.
+        // `ical-query` used to be the crate that did not exist here and now does, which is the drift this leg exists to catch: a name in one copy of the list and not the other.
         let extra = recipe.replace("core_crates := \"", "core_crates := \"-p ical-carddav ");
         assert!(
             recipe_violations(&extra)
@@ -3780,8 +3660,7 @@ name = \"icalkit\"
     #[test]
     fn the_committed_tree_passes_every_leg_of_purity() {
         // The gate's own subject, for the reason the codes task runs against its own files:
-        // the samples prove the scan reads the style they are written in, and only this proves
-        // it reads the style the workspace is.
+        // the samples prove the scan reads the style they are written in, and only this proves it reads the style the workspace is.
         assert_eq!(collect_purity_violations().unwrap(), Vec::<String>::new());
     }
 
@@ -4606,8 +4485,8 @@ Prose, and a `|` in it, above the table.
 
     #[test]
     fn the_committed_list_matches_the_committed_declarations() {
-        // The gate's own subject. Running it here rather than only in CI is what proves the
-        // scan reads the style `report.rs` is written in, not the style the samples are.
+        // The gate's own subject.
+        // Running it here rather than only in CI is what proves the scan reads the style `report.rs` is written in, not the style the samples are.
         assert_eq!(collect_codes_violations().unwrap(), Vec::<String>::new());
     }
 
