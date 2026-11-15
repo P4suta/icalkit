@@ -1,5 +1,7 @@
 # Calendar workflows with icalkit
 
+[![CI](https://github.com/P4suta/icalkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/ci.yml) [![CodeQL](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml)
+
 A pure-Rust, sans-I/O calendaring stack for iCalendar, recurrence, time zones, iTIP scheduling, and CalDAV.
 The stack targets RFC 5545 for iCalendar.
 It targets RFC 5546 and RFC 6047 for scheduling.

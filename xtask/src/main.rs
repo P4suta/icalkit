@@ -1240,9 +1240,9 @@ fn documentation_violations(readme: &str, architecture: &str) -> Vec<String> {
         "## Strict parsing",
         "## Explicit normalization",
         "## Transactional editing",
-        "## DST-aware recurrence",
+        "## Recurrence across daylight saving time",
         "## iTIP scheduling",
-        "## CalDAV sync and server workflows",
+        "## Calendar synchronization and server workflows",
     ];
     const RETIRED_PROSE: &[&str] = &[
         "one temporary path dependency",
@@ -4331,8 +4331,8 @@ name = \"icalkit\"
     #[test]
     fn public_guidance_follows_the_typestate_and_workflow_order() {
         let readme = "## Strict parsing\n## Explicit normalization\n## Transactional editing\n\
-                      ## DST-aware recurrence\n## iTIP scheduling\n\
-                      ## CalDAV sync and server workflows\n";
+                      ## Recurrence across daylight saving time\n## iTIP scheduling\n\
+                      ## Calendar synchronization and server workflows\n";
         assert_eq!(
             documentation_violations(readme, "private implementation modules"),
             Vec::<String>::new()
