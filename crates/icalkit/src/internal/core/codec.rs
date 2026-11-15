@@ -6,38 +6,26 @@
 //!
 //! Specification: RFC 5545 section 3.3.
 //!
-//! Both directions live together on purpose. `DecodeValue` and `EncodeValue` for one value
-//! type are a pair, and the parameters a written value implies are the transition table
-//! `docs/adr/0001` requires be checkable for completeness against the set of typed accessors
-//! — which it cannot be if the two halves are written in different places at different times.
+//! Both directions live together on purpose.
+//! `DecodeValue` and `EncodeValue` for one value type are a pair, and the parameters a written value implies are the transition table `docs/adr/0001` requires be checkable for completeness against the set of typed accessors — which it cannot be if the two halves are written in different places at different times.
 //!
 //! Three rules shape everything below.
 //!
-//! A decoder answers with a [`DiagnosticCode`] and never with an error, because a value this
-//! crate cannot read is still a value it must write back: the octets stay where they are and
-//! the caller is handed the reason next to them. Nothing here reaches for the property, and
-//! nothing here caches, so there is no second place for an answer to live.
+//! A decoder answers with a [`DiagnosticCode`] and never with an error, because a value this crate cannot read is still a value it must write back: the octets stay where they are and the caller is handed the reason next to them.
+//! Nothing here reaches for the property, and nothing here caches, so there is no second place for an answer to live.
 //!
-//! A decoder is exact or it refuses. Every form is accepted at its full written length and no
-//! prefix of one is taken for the whole, because a `DTSTART` read as the first eight octets of
-//! something longer is a wrong answer that looks like a right one. Where a written form
-//! carries a distinction the target type has nowhere to keep — the `Z` of a UTC `DATE-TIME`
-//! against a bare [`CivilDateTime`] — the narrow type refuses and the type that can hold the
-//! distinction, [`DateTimeValue`], is the one that reads it. That refusal is what "no lossy
-//! decode" means in practice.
+//! A decoder is exact or it refuses.
+//! Every form is accepted at its full written length and no prefix of one is taken for the whole, because a `DTSTART` read as the first eight octets of something longer is a wrong answer that looks like a right one.
+//! Where a written form carries a distinction the target type has nowhere to keep — the `Z` of a UTC `DATE-TIME` against a bare [`CivilDateTime`] — the narrow type refuses and the type that can hold the distinction, [`DateTimeValue`], is the one that reads it.
+//! That refusal is what "no lossy decode" means in practice.
 //!
-//! An encoder exists only where the value determines its own text. [`Geo`] therefore decodes
-//! and does not encode: `37.386013` is not recoverable from the nearest `f64`, so the stored
-//! text is authoritative and the pair of floats is derived from it. A bare [`f64`] is that same
-//! number arriving alone and is read the same way. [`BinaryValue`] and [`UriValue`] are the
-//! other side of the rule and are writable for the same reason: each holds the text it will
-//! write, so writing one spends nothing the producer chose. The date-time family is
-//! writable only through [`DateTimeValue`] for the same kind of reason — the form decides the
-//! `VALUE` and `TZID` parameters, and a bare [`CivilDate`] would be a second way to say
-//! something that must be said once.
+//! An encoder exists only where the value determines its own text.
+//! [`Geo`] therefore decodes and does not encode: `37.386013` is not recoverable from the nearest `f64`, so the stored text is authoritative and the pair of floats is derived from it.
+//! A bare [`f64`] is that same number arriving alone and is read the same way.
+//! [`BinaryValue`] and [`UriValue`] are the other side of the rule and are writable for the same reason: each holds the text it will write, so writing one spends nothing the producer chose.
+//! The date-time family is writable only through [`DateTimeValue`] for the same kind of reason — the form decides the `VALUE` and `TZID` parameters, and a bare [`CivilDate`] would be a second way to say something that must be said once.
 //!
-//! Arithmetic here reads attacker-supplied digits, so every accumulation is checked and a run
-//! of digits too long to fit is a malformed value rather than a wrapped one.
+//! Arithmetic here reads attacker-supplied digits, so every accumulation is checked and a run of digits too long to fit is a malformed value rather than a wrapped one.
 
 use alloc::borrow::Cow;
 use alloc::string::String;
@@ -80,11 +68,9 @@ const DAYS_PER_WEEK: u64 = 7;
 // Shared octet reading
 // ---------------------------------------------------------------------------------------
 
-/// The decimal value of `bytes`, or `None` when it is empty, holds a non-digit, or does not
-/// fit.
+/// The decimal value of `bytes`, or `None` when it is empty, holds a non-digit, or does not fit.
 ///
-/// Not fitting is a refusal rather than a saturation: a `SEQUENCE` of two hundred digits is a
-/// malformed value, and answering with the largest representable one would be an invention.
+/// Not fitting is a refusal rather than a saturation: a `SEQUENCE` of two hundred digits is a malformed value, and answering with the largest representable one would be an invention.
 fn decimal(bytes: &[u8]) -> Option<u64> {
     if bytes.is_empty() {
         return None;
@@ -94,8 +80,8 @@ fn decimal(bytes: &[u8]) -> Option<u64> {
         if !octet.is_ascii_digit() {
             return None;
         }
-        // Checked immediately above, so the difference is `0..=9` and the wrapping form
-        // cannot wrap. The checked accumulation below is what refuses a run too long to fit.
+        // Checked immediately above, so the difference is `0..=9` and the wrapping form cannot wrap.
+        // The checked accumulation below is what refuses a run too long to fit.
         let digit = u64::from(octet.wrapping_sub(b'0'));
         total = total.checked_mul(10)?.checked_add(digit)?;
     }
@@ -104,8 +90,7 @@ fn decimal(bytes: &[u8]) -> Option<u64> {
 
 /// The decimal value of the octets from `start` up to `end`, `None` when they are not there.
 ///
-/// Bounds are asked of the slice rather than asserted, so a value cut short refuses instead
-/// of reading past its end.
+/// Bounds are asked of the slice rather than asserted, so a value cut short refuses instead of reading past its end.
 fn field(bytes: &[u8], start: usize, end: usize) -> Option<u64> {
     decimal(bytes.get(start..end)?)
 }
@@ -139,13 +124,10 @@ fn split_digits(bytes: &[u8]) -> Option<(u64, &[u8])> {
     Some((decimal(digits)?, rest))
 }
 
-/// Read one `1*DIGIT` term closed by `designator`, or `None` when the next term is a
-/// different one.
+/// Read one `1*DIGIT` term closed by `designator`, or `None` when the next term is a different one.
 ///
 /// Returning `None` rather than an error is what lets an optional term be tried and skipped:
-/// section 3.3.6's terms are ordered and each is optional, so "this is not an `H` term" and
-/// "this is not a duration" have to be the same answer at this level and are separated by the
-/// caller, which knows whether anything at all was read.
+/// section 3.3.6's terms are ordered and each is optional, so "this is not an `H` term" and "this is not a duration" have to be the same answer at this level and are separated by the caller, which knows whether anything at all was read.
 fn take_term(bytes: &[u8], designator: u8) -> Option<(u64, &[u8])> {
     let (count, rest) = split_digits(bytes)?;
     Some((count, after(rest, designator)?))
@@ -153,9 +135,7 @@ fn take_term(bytes: &[u8], designator: u8) -> Option<(u64, &[u8])> {
 
 /// `total` seconds as hours, minutes and seconds.
 ///
-/// The divisors are nonzero constants, so `None` cannot happen; it is spelled anyway because
-/// unchecked division is not worth an exception in a module that reads hostile digits, and
-/// the one caller reports it as a value with no RFC 5545 form.
+/// The divisors are nonzero constants, so `None` cannot happen; it is spelled anyway because unchecked division is not worth an exception in a module that reads hostile digits, and the one caller reports it as a value with no RFC 5545 form.
 fn split_clock(total: u64) -> Option<(u64, u64, u64)> {
     let hours = total.checked_div(3_600)?;
     let minutes = total.checked_rem(3_600)?.checked_div(60)?;
@@ -165,17 +145,15 @@ fn split_clock(total: u64) -> Option<(u64, u64, u64)> {
 
 /// Whether `octet` is a control character RFC 5545 section 3.1 excludes from a value.
 ///
-/// `HTAB` is deliberately not one of them: section 3.1's `CONTROL` production is
-/// `%x00-08 / %x0A-1F / %x7F`, and a tab inside a `DESCRIPTION` is ordinary in real exports.
+/// `HTAB` is deliberately not one of them: section 3.1's `CONTROL` production is `%x00-08 / %x0A-1F / %x7F`, and a tab inside a `DESCRIPTION` is ordinary in real exports.
 const fn is_forbidden_control(octet: u8) -> bool {
     matches!(octet, 0x00..=0x08 | 0x0A..=0x1F | 0x7F)
 }
 
 /// Write formatted text into `out`.
 ///
-/// [`ValueBuf`] cannot fail to accept octets, but [`core::fmt::Write`] says it might, so the
-/// impossible arm is named rather than unwrapped. A caller sees it as a value with no RFC
-/// 5545 form, which is the honest reading of "the buffer refused the text".
+/// [`ValueBuf`] cannot fail to accept octets, but [`core::fmt::Write`] says it might, so the impossible arm is named rather than unwrapped.
+/// A caller sees it as a value with no RFC 5545 form, which is the honest reading of "the buffer refused the text".
 fn write_formatted(out: &mut ValueBuf, arguments: fmt::Arguments<'_>) -> Result<(), MutationError> {
     out.write_fmt(arguments)
         .map_err(|_error| MutationError::NotRepresentable)
@@ -198,9 +176,8 @@ fn decode_date(bytes: &[u8]) -> Option<CivilDate> {
 
 /// Read section 3.3.12's `time-hour time-minute time-second`, without the `Z`.
 ///
-/// The UTC form is refused here and read by [`DateTimeValue`] instead. A `Z` is a statement
-/// about the zone, [`CivilTime`] has nowhere to keep one, and accepting it would make the
-/// decoded value silently weaker than the text it came from.
+/// The UTC form is refused here and read by [`DateTimeValue`] instead.
+/// A `Z` is a statement about the zone, [`CivilTime`] has nowhere to keep one, and accepting it would make the decoded value silently weaker than the text it came from.
 fn decode_time(bytes: &[u8]) -> Option<CivilTime> {
     if bytes.len() != TIME_LEN {
         return None;
@@ -221,11 +198,9 @@ fn decode_date_time(bytes: &[u8]) -> Option<CivilDateTime> {
     Some(CivilDateTime::new(date, time))
 }
 
-/// Read a property value that is a date or a date-time, in whichever of the three forms it
-/// was written.
+/// Read a property value that is a date or a date-time, in whichever of the three forms it was written.
 ///
-/// The three are told apart by length before anything is parsed, so a truncated date-time is
-/// never mistaken for a date that happens to be a prefix of it.
+/// The three are told apart by length before anything is parsed, so a truncated date-time is never mistaken for a date that happens to be a prefix of it.
 fn decode_date_time_value(bytes: &[u8]) -> Option<DateTimeValue<'_>> {
     match bytes.len() {
         DATE_LEN => decode_date(bytes).map(DateTimeValue::Date),
@@ -273,13 +248,10 @@ impl DecodeValue<'_> for CivilDateTime {
 
 /// The zone a property's `TZID` parameter names, or `None` when it names none.
 ///
-/// The first occurrence, and the octets with a section 3.2 `DQUOTE` pair removed, which is the
-/// form a zone source is handed. A second `TZID` on one line is a defect this level cannot
-/// report — a decoder answers with a value or with one code — and both stay in storage and
-/// reachable through [`Property::parameters_named`].
+/// The first occurrence, and the octets with a section 3.2 `DQUOTE` pair removed, which is the form a zone source is handed.
+/// A second `TZID` on one line is a defect this level cannot report — a decoder answers with a value or with one code — and both stay in storage and reachable through [`Property::parameters_named`].
 ///
-/// An empty `TZID` names no zone, so it is not one: `TZID=:` reads as a floating date-time and
-/// the parameter is still written back exactly as it arrived.
+/// An empty `TZID` names no zone, so it is not one: `TZID=:` reads as a floating date-time and the parameter is still written back exactly as it arrived.
 fn zone_of(property: &Property) -> Option<&[u8]> {
     let named = property.parameters_named(b"TZID").next()?;
     let tzid = named.unquoted();
@@ -293,11 +265,9 @@ impl<'a> DecodeValue<'a> for DateTimeValue<'a> {
 
     fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
         let written = Self::decode_value(property.value_text().as_bytes())?;
-        // Only a floating date-time can become a zoned one. A `TZID` beside a `DATE` or beside
-        // a value ending in `Z` is what section 3.2.19 forbids, and the value's own octets are
-        // the stronger statement of the two: `Z` says UTC outright, and a date has no clock for
-        // a zone to move. The stray parameter is neither obeyed nor removed — it is still in
-        // storage, still written back, and still there for a caller to see.
+        // Only a floating date-time can become a zoned one.
+        // A `TZID` beside a `DATE` or beside a value ending in `Z` is what section 3.2.19 forbids, and the value's own octets are the stronger statement of the two: `Z` says UTC outright, and a date has no clock for a zone to move.
+        // The stray parameter is neither obeyed nor removed — it is still in storage, still written back, and still there for a caller to see.
         let Self::Local(stamp) = written else {
             return Ok(written);
         };
@@ -310,17 +280,13 @@ impl<'a> DecodeValue<'a> for DateTimeValue<'a> {
 
 impl EncodeValue for DateTimeValue<'_> {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
-        // The zone is refused here rather than where the parameter is written, so a value whose
-        // zone no line could name leaves the property exactly as it was: `set` encodes before
-        // it touches anything (`docs/adr/0001`).
+        // The zone is refused here rather than where the parameter is written, so a value whose zone no line could name leaves the property exactly as it was: `set` encodes before it touches anything (`docs/adr/0001`).
         if !names_a_writable_zone(*self) {
             return Err(MutationError::NotRepresentable);
         }
         match *self {
             Self::Date(date) => encode_date(out, date),
-            // A zoned date-time is written as the floating octets it is: section 3.3.5 gives
-            // the zone no spelling inside the value, which is why it has to be a parameter and
-            // why the two have to be written together.
+            // A zoned date-time is written as the floating octets it is: section 3.3.5 gives the zone no spelling inside the value, which is why it has to be a parameter and why the two have to be written together.
             Self::Local(stamp) | Self::Zoned { stamp, .. } => {
                 encode_date(out, stamp.date())?;
                 out.push_octet(b'T');
@@ -337,11 +303,9 @@ impl EncodeValue for DateTimeValue<'_> {
     }
 
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>) {
-        // `VALUE` and `TZID` are a function of which of the four shapes this is, and of nothing
-        // the caller wrote before. A date carries no time and therefore no zone; a UTC
-        // date-time carries its zone in the `Z`; a floating one asserts the absence of one; a
-        // zoned one names it. Only the date needs a `VALUE` at all, `DATE-TIME` being the
-        // default for every property that takes one.
+        // `VALUE` and `TZID` are a function of which of the four shapes this is, and of nothing the caller wrote before.
+        // A date carries no time and therefore no zone; a UTC date-time carries its zone in the `Z`; a floating one asserts the absence of one; a zoned one names it.
+        // Only the date needs a `VALUE` at all, `DATE-TIME` being the default for every property that takes one.
         match *self {
             Self::Date(_) => {
                 out.push(ParameterEdit::set(b"VALUE", ValueType::Date.as_bytes()));
@@ -365,9 +329,7 @@ impl EncodeValue for DateTimeValue<'_> {
 
 /// Read section 3.3.6's `dur-time`: an ordered `H`, `M`, `S` run with at least one term.
 ///
-/// The terms are tried in the order the grammar writes them and each one consumes only what
-/// it matched, so `PT1S1H` fails at the leftover rather than being reordered into something
-/// the producer did not write.
+/// The terms are tried in the order the grammar writes them and each one consumes only what it matched, so `PT1S1H` fails at the leftover rather than being reordered into something the producer did not write.
 fn duration_time(bytes: &[u8]) -> Option<u64> {
     let mut rest = bytes;
     let mut seconds: u64 = 0;
@@ -387,9 +349,7 @@ fn duration_time(bytes: &[u8]) -> Option<u64> {
 
 /// Read what follows the `P` of section 3.3.6, as whole days and seconds beyond them.
 ///
-/// A week is folded into days because [`Duration`] has no week field; the two fields it does
-/// have are kept apart, so a producer that wrote `P1D` and one that wrote `PT24H` each get
-/// their own spelling back when the value is written again.
+/// A week is folded into days because [`Duration`] has no week field; the two fields it does have are kept apart, so a producer that wrote `P1D` and one that wrote `PT24H` each get their own spelling back when the value is written again.
 fn duration_body(bytes: &[u8]) -> Option<(u64, u64)> {
     if let Some((weeks, rest)) = take_term(bytes, b'W') {
         if !rest.is_empty() {
@@ -403,8 +363,7 @@ fn duration_body(bytes: &[u8]) -> Option<(u64, u64)> {
     };
     match after(rest, b'T') {
         Some(time) => Some((days, duration_time(time)?)),
-        // A `P` with no term at all is not a duration, so the day term has to have been read
-        // for an empty remainder to mean anything.
+        // A `P` with no term at all is not a duration, so the day term has to have been read for an empty remainder to mean anything.
         None if dated && rest.is_empty() => Some((days, 0)),
         None => None,
     }
@@ -417,8 +376,7 @@ fn decode_duration(bytes: &[u8]) -> Option<Duration> {
     let days = i64::try_from(days).ok()?;
     let seconds = i64::try_from(seconds).ok()?;
     if negative {
-        // A magnitude that has no negative counterpart is a value this type cannot hold, and
-        // refusing it is the only answer that does not invent a different span.
+        // A magnitude that has no negative counterpart is a value this type cannot hold, and refusing it is the only answer that does not invent a different span.
         return Some(Duration::new(days.checked_neg()?, seconds.checked_neg()?));
     }
     Some(Duration::new(days, seconds))
@@ -426,10 +384,8 @@ fn decode_duration(bytes: &[u8]) -> Option<Duration> {
 
 /// The same span with both fields agreeing in sign.
 ///
-/// Section 3.3.6 writes one sign for the whole value and has nowhere to put a second, so a
-/// span of one day less thirty seconds has to be reconciled before it can be written. `None`
-/// when combining the two overflows, which a caller sees as a value with no RFC 5545 form
-/// rather than as a wrapped one.
+/// Section 3.3.6 writes one sign for the whole value and has nowhere to put a second, so a span of one day less thirty seconds has to be reconciled before it can be written.
+/// `None` when combining the two overflows, which a caller sees as a value with no RFC 5545 form rather than as a wrapped one.
 fn single_signed(value: Duration) -> Option<(i64, i64)> {
     let days = value.days();
     let seconds = value.seconds();
@@ -445,8 +401,7 @@ fn single_signed(value: Duration) -> Option<(i64, i64)> {
 
 /// Write section 3.3.6's `dur-time` for `total` seconds, always as all three terms.
 ///
-/// One shape rather than the shortest one, because every branch that could be omitted is a
-/// branch that could be wrong, and `T0H0M0S` is as legal as `T0S`.
+/// One shape rather than the shortest one, because every branch that could be omitted is a branch that could be wrong, and `T0H0M0S` is as legal as `T0S`.
 fn encode_duration_time(out: &mut ValueBuf, total: u64) -> Result<(), MutationError> {
     let (hours, minutes, seconds) = split_clock(total).ok_or(MutationError::NotRepresentable)?;
     write_formatted(out, format_args!("T{hours}H{minutes}M{seconds}S"))
@@ -461,12 +416,9 @@ impl DecodeValue<'_> for Duration {
 impl EncodeValue for Duration {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
         let (days, seconds) = single_signed(*self).ok_or(MutationError::NotRepresentable)?;
-        // A magnitude with no positive counterpart is a span section 3.3.6 cannot write: the
-        // grammar carries the sign outside the number, so the text would state a count this
-        // crate's own reader refuses at the `i64` it reads terms into. `single_signed` makes
-        // the same refusal one branch earlier for a span whose two halves cannot be reconciled,
-        // and this is the other end of it — an encoder exists only where the value determines
-        // its own text, and no text determines this one.
+        // A magnitude with no positive counterpart is a span section 3.3.6 cannot write: the grammar carries the sign outside the number, so the text would state a count this crate's own reader refuses at the `i64` it reads terms into.
+        // `single_signed` makes the same refusal one branch earlier for a span whose two halves cannot be reconciled,
+        // and this is the other end of it — an encoder exists only where the value determines its own text, and no text determines this one.
         if days == i64::MIN || seconds == i64::MIN {
             return Err(MutationError::NotRepresentable);
         }
@@ -485,8 +437,7 @@ impl EncodeValue for Duration {
     }
 
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>) {
-        // `DURATION` is the default value type of every property that accepts one, `TRIGGER`
-        // included — and `TRIGGER` is the property that can also be written as a date-time,
+        // `DURATION` is the default value type of every property that accepts one, `TRIGGER` included — and `TRIGGER` is the property that can also be written as a date-time,
         // so a stale `VALUE=DATE-TIME` beside a duration is a real pairing to undo.
         out.push(ParameterEdit::remove(b"VALUE"));
     }
@@ -498,29 +449,25 @@ impl EncodeValue for Duration {
 
 /// Read one bound of section 3.3.9's `period`, which is a `DATE-TIME` and never a `DATE`.
 ///
-/// A bound comes out of the octets floating or in UTC and never zoned, because section 3.3.9
-/// gives the value no place to spell a zone. The only thing that can supply one is the
-/// property, in [`DecodeValue::decode_property`] below.
+/// A bound comes out of the octets floating or in UTC and never zoned, because section 3.3.9 gives the value no place to spell a zone.
+/// The only thing that can supply one is the property, in [`DecodeValue::decode_property`] below.
 fn decode_period_bound(bytes: &[u8]) -> Option<DateTimeValue<'static>> {
     match decode_date_time_value(bytes)? {
         DateTimeValue::Local(stamp) => Some(DateTimeValue::Local(stamp)),
         DateTimeValue::Utc(stamp) => Some(DateTimeValue::Utc(stamp)),
-        // Section 3.3.9's ABNF has a `date-time` at each end and no `date`, so a bound with no
-        // clock is refused rather than read as the midnight nobody wrote. A zoned bound is
-        // refused because no run of octets is one.
+        // Section 3.3.9's ABNF has a `date-time` at each end and no `date`, so a bound with no clock is refused rather than read as the midnight nobody wrote.
+        // A zoned bound is refused because no run of octets is one.
         DateTimeValue::Date(_) | DateTimeValue::Zoned { .. } => None,
     }
 }
 
 /// Whether `span` is the positive duration section 3.3.9 requires of a `period-start`.
 ///
-/// Reconciled first, because a span whose two fields disagree in sign is positive or negative
-/// as a whole rather than field by field.
+/// Reconciled first, because a span whose two fields disagree in sign is positive or negative as a whole rather than field by field.
 fn is_positive(span: Duration) -> bool {
     match single_signed(span) {
         Some((days, seconds)) => days > 0 || seconds > 0,
-        // A span too large to reconcile has no single sign, and section 3.3.6 writes one sign
-        // for the whole value.
+        // A span too large to reconcile has no single sign, and section 3.3.6 writes one sign for the whole value.
         None => false,
     }
 }
@@ -532,12 +479,9 @@ const fn is_period_bound(bound: DateTimeValue<'_>) -> bool {
 
 /// Whether the zone this value states is one a `TZID` parameter could name it by.
 ///
-/// The read side has already ruled on the empty one: `zone_of` says "an empty `TZID` names no
-/// zone, so it is not one: `TZID=:` reads as a floating date-time". A write that emitted
-/// `TZID=` for a zoned value would therefore state a zone the very next read answers `Local`
-/// to — the zone the caller named, gone, with nothing returned and nothing reported. The two
-/// sides get one rule, so what the reader will not read back as a zone is not a zone this
-/// crate writes.
+/// The read side has already ruled on the empty one: `zone_of` says "an empty `TZID` names no zone, so it is not one: `TZID=:` reads as a floating date-time".
+/// A write that emitted `TZID=` for a zoned value would therefore state a zone the very next read answers `Local` to — the zone the caller named, gone, with nothing returned and nothing reported.
+/// The two sides get one rule, so what the reader will not read back as a zone is not a zone this crate writes.
 const fn names_a_writable_zone(value: DateTimeValue<'_>) -> bool {
     match value {
         DateTimeValue::Zoned { tzid, .. } => !tzid.is_empty(),
@@ -547,8 +491,7 @@ const fn names_a_writable_zone(value: DateTimeValue<'_>) -> bool {
 
 /// Whether the two bounds of an explicit period name two different zones.
 ///
-/// A bound naming none contradicts nothing: a UTC end beside a zoned start is what a producer
-/// writes when only one of the two is a wall clock, and it is written back as it arrived.
+/// A bound naming none contradicts nothing: a UTC end beside a zoned start is what a producer writes when only one of the two is a wall clock, and it is written back as it arrived.
 fn zones_disagree(start: DateTimeValue<'_>, end: DateTimeValue<'_>) -> bool {
     match (start.tzid(), end.tzid()) {
         (Some(first), Some(second)) => first != second,
@@ -558,13 +501,11 @@ fn zones_disagree(start: DateTimeValue<'_>, end: DateTimeValue<'_>) -> bool {
 
 /// Read section 3.3.9's `period-explicit / period-start`.
 ///
-/// What follows the `/` is tried as a date-time and then as a duration, and the two cannot be
-/// confused: a `dur-value` begins with a sign or a `P` and a `date-time` begins with a digit,
+/// What follows the `/` is tried as a date-time and then as a duration, and the two cannot be confused: a `dur-value` begins with a sign or a `P` and a `date-time` begins with a digit,
 /// so at most one of them can match and neither half is read twice.
 ///
-/// Whether the end precedes the start is not checked. That is a claim about time rather than
-/// about the grammar — comparing a floating bound against a UTC one needs a zone this crate
-/// does not resolve (`docs/adr/0003`) — and the text is written back either way.
+/// Whether the end precedes the start is not checked.
+/// That is a claim about time rather than about the grammar — comparing a floating bound against a UTC one needs a zone this crate does not resolve (`docs/adr/0003`) — and the text is written back either way.
 fn decode_period(bytes: &[u8]) -> Option<Period<'static>> {
     let separator = bytes.iter().position(|&octet| octet == b'/')?;
     let start = decode_period_bound(bytes.get(..separator)?)?;
@@ -574,9 +515,8 @@ fn decode_period(bytes: &[u8]) -> Option<Period<'static>> {
     }
     let duration = decode_duration(rest)?;
     if !is_positive(duration) {
-        // Section 3.3.9 writes `period-start` as a start and a *positive* duration. A span
-        // that runs backwards names a period whose end precedes its start, and one of no
-        // length names a period that is not one.
+        // Section 3.3.9 writes `period-start` as a start and a *positive* duration.
+        // A span that runs backwards names a period whose end precedes its start, and one of no length names a period that is not one.
         return None;
     }
     Some(Period::Starting { start, duration })
@@ -584,10 +524,8 @@ fn decode_period(bytes: &[u8]) -> Option<Period<'static>> {
 
 /// The same bound read under the zone `tzid` names, where it is a bound that can carry one.
 ///
-/// Only a floating bound becomes a zoned one, exactly as for a bare date-time: a bound written
-/// with a `Z` says UTC outright and section 3.2.19 forbids the `TZID` beside it. The value's
-/// own octets are the stronger of the two statements, and the stray parameter is neither
-/// obeyed nor removed.
+/// Only a floating bound becomes a zoned one, exactly as for a bare date-time: a bound written with a `Z` says UTC outright and section 3.2.19 forbids the `TZID` beside it.
+/// The value's own octets are the stronger of the two statements, and the stray parameter is neither obeyed nor removed.
 const fn under_zone<'a>(bound: DateTimeValue<'a>, tzid: &'a [u8]) -> DateTimeValue<'a> {
     match bound {
         DateTimeValue::Local(stamp) => DateTimeValue::Zoned { stamp, tzid },
@@ -605,10 +543,8 @@ impl<'a> DecodeValue<'a> for Period<'a> {
         let Some(tzid) = zone_of(property) else {
             return Ok(written);
         };
-        // One line carries one `TZID`, and it is a statement about the value rather than about
-        // the octets on one side of the `/`. So it reaches both bounds: a period that took the
-        // zone at the start and left the end floating would be two halves in two zones, which
-        // is not something a content line can say.
+        // One line carries one `TZID`, and it is a statement about the value rather than about the octets on one side of the `/`.
+        // So it reaches both bounds: a period that took the zone at the start and left the end floating would be two halves in two zones, which is not something a content line can say.
         Ok(match written {
             Self::Explicit { start, end } => Self::Explicit {
                 start: under_zone(start, tzid),
@@ -623,21 +559,16 @@ impl<'a> DecodeValue<'a> for Period<'a> {
 }
 
 impl EncodeValue for Period<'_> {
-    /// Write back the form the value holds: an explicit period as `start/end`, a starting one
-    /// as `start/duration`.
+    /// Write back the form the value holds: an explicit period as `start/end`, a starting one as `start/duration`.
     ///
-    /// Which of the two it is belongs to the value and not to this encoder, because section
-    /// 3.3.9's two productions say different things — one names an end and the other names a
-    /// length — and a producer that wrote one gets it back rather than the other.
+    /// Which of the two it is belongs to the value and not to this encoder, because section 3.3.9's two productions say different things — one names an end and the other names a length — and a producer that wrote one gets it back rather than the other.
     ///
-    /// Every refusal is made before an octet is written, so a value with no RFC 5545 form
-    /// leaves the buffer as empty as it found it.
+    /// Every refusal is made before an octet is written, so a value with no RFC 5545 form leaves the buffer as empty as it found it.
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
         match *self {
             Self::Explicit { start, end } => {
                 // Two bounds naming two zones have one line and one `TZID` to be written on,
-                // so writing them would keep one zone and drop the other silently — which is
-                // the loss this crate is arranged against, arriving through a write.
+                // so writing them would keep one zone and drop the other silently — which is the loss this crate is arranged against, arriving through a write.
                 if !is_period_bound(start) || !is_period_bound(end) || zones_disagree(start, end) {
                     return Err(MutationError::NotRepresentable);
                 }
@@ -657,14 +588,11 @@ impl EncodeValue for Period<'_> {
     }
 
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>) {
-        // `PERIOD` is stated outright rather than removed. It is the default value type of
-        // `FREEBUSY` and not of `RDATE`, which takes three, so a period that said nothing
-        // about `VALUE` would read back as a date-time on the property where it matters. Which
-        // property this is is not a question a value type may ask, so the parameter that makes
-        // the answer the same everywhere is the one to write.
+        // `PERIOD` is stated outright rather than removed.
+        // It is the default value type of `FREEBUSY` and not of `RDATE`, which takes three, so a period that said nothing about `VALUE` would read back as a date-time on the property where it matters.
+        // Which property this is is not a question a value type may ask, so the parameter that makes the answer the same everywhere is the one to write.
         out.push(ParameterEdit::set(b"VALUE", ValueType::Period.as_bytes()));
-        // The zone is whichever bound names one; the encoder has already refused the value
-        // where the two name different ones, so there is at most one answer here.
+        // The zone is whichever bound names one; the encoder has already refused the value where the two name different ones, so there is at most one answer here.
         let zone = match *self {
             Self::Explicit { start, end } => match start.tzid() {
                 Some(tzid) => Some(tzid),
@@ -685,9 +613,7 @@ impl EncodeValue for Period<'_> {
 
 /// Read section 3.3.14's `("+" / "-") time-hour time-minute [time-second]`.
 ///
-/// The sign is mandatory, unlike section 3.3.8's, and `-0000` is the one spelling the section
-/// names as forbidden: it would say "unknown offset", which is a claim RFC 5545 reserves and
-/// [`UtcOffset`] cannot make.
+/// The sign is mandatory, unlike section 3.3.8's, and `-0000` is the one spelling the section names as forbidden: it would say "unknown offset", which is a claim RFC 5545 reserves and [`UtcOffset`] cannot make.
 fn decode_utc_offset(bytes: &[u8]) -> Option<UtcOffset> {
     let (negative, rest) = match bytes.split_first() {
         Some((&b'-', tail)) => (true, tail),
@@ -732,9 +658,9 @@ impl EncodeValue for UtcOffset {
         out.push_octet(if total < 0 { b'-' } else { b'+' });
         let (hours, minutes, seconds) =
             split_clock(u64::from(total.unsigned_abs())).ok_or(MutationError::NotRepresentable)?;
-        // The seconds term is written only when there is one. It is optional in the grammar,
-        // every real producer omits it, and a zero written where none was expected is the
-        // kind of difference that shows up as a spurious diff in a caller's version control.
+        // The seconds term is written only when there is one.
+        // It is optional in the grammar,
+        // every real producer omits it, and a zero written where none was expected is the kind of difference that shows up as a spurious diff in a caller's version control.
         if seconds == 0 {
             return write_formatted(out, format_args!("{hours:02}{minutes:02}"));
         }
@@ -742,8 +668,8 @@ impl EncodeValue for UtcOffset {
     }
 
     fn coupled_parameters(&self, _out: &mut Vec<ParameterEdit>) {
-        // Nothing. An offset has one written form, so no parameter is a function of its
-        // shape, and `UTC-OFFSET` is the default value type of both properties that take one.
+        // Nothing.
+        // An offset has one written form, so no parameter is a function of its shape, and `UTC-OFFSET` is the default value type of both properties that take one.
     }
 }
 
@@ -753,9 +679,7 @@ impl EncodeValue for UtcOffset {
 
 /// Whether `bytes` is section 3.3.7's `FLOAT` exactly.
 ///
-/// Checked before anything parses it, because the standard library's float reader accepts
-/// spellings this format does not have — `1e5`, `.5`, `inf`, `NaN` — and accepting them would
-/// mean a value RFC 5545 calls malformed arriving as a number.
+/// Checked before anything parses it, because the standard library's float reader accepts spellings this format does not have — `1e5`, `.5`, `inf`, `NaN` — and accepting them would mean a value RFC 5545 calls malformed arriving as a number.
 fn is_float_text(bytes: &[u8]) -> bool {
     let (_, unsigned) = split_sign(bytes);
     let Some(dot) = unsigned.iter().position(|&octet| octet == b'.') else {
@@ -772,18 +696,14 @@ fn all_digits(bytes: &[u8]) -> bool {
 
 /// Read one section 3.3.7 `FLOAT`.
 ///
-/// The syntax check is not the whole of the refusal. `1` followed by three hundred and nine
-/// zeros is section 3.3.7's `FLOAT` exactly — every octet a digit — and the nearest `f64` to it
-/// is infinity, so a guard written to keep `inf` out by refusing the spellings that name it
-/// lets `inf` in through a spelling that names a number. A magnitude the target type cannot
-/// hold is a malformed value and not the largest representable one, which is the answer
-/// [`decimal`] already gives a `SEQUENCE` of two hundred digits rather than saturating it.
+/// The syntax check is not the whole of the refusal.
+/// `1` followed by three hundred and nine zeros is section 3.3.7's `FLOAT` exactly — every octet a digit — and the nearest `f64` to it is infinity, so a guard written to keep `inf` out by refusing the spellings that name it lets `inf` in through a spelling that names a number.
+/// A magnitude the target type cannot hold is a malformed value and not the largest representable one, which is the answer [`decimal`] already gives a `SEQUENCE` of two hundred digits rather than saturating it.
 fn decode_float(bytes: &[u8]) -> Option<f64> {
     if !is_float_text(bytes) {
         return None;
     }
-    // Every octet was checked to be a sign, a digit or a dot, so the text conversion cannot
-    // fail; it is asked rather than assumed because this module has no unchecked step.
+    // Every octet was checked to be a sign, a digit or a dot, so the text conversion cannot fail; it is asked rather than assumed because this module has no unchecked step.
     let value = str::from_utf8(bytes).ok()?.parse::<f64>().ok()?;
     value.is_finite().then_some(value)
 }
@@ -794,19 +714,15 @@ impl DecodeValue<'_> for f64 {
     }
 }
 
-// There is deliberately no `EncodeValue for f64`, for the reason there is none for `Geo`
-// below: this is that value arriving alone rather than in a pair, and `37.386013` is no more
-// recoverable from the nearest `f64` for being the only number on the line.
+// There is deliberately no `EncodeValue for f64`, for the reason there is none for `Geo` below: this is that value arriving alone rather than in a pair, and `37.386013` is no more recoverable from the nearest `f64` for being the only number on the line.
 
 /// Read section 3.8.1.6's `FLOAT ";" FLOAT`.
 ///
-/// The range of the pair is not checked. A latitude past the pole is a claim about the world
-/// rather than about the grammar, the diagnostic this decoder reports is about the grammar,
-/// and the text is written back either way. A magnitude past what an `f64` holds is the other
-/// thing, and it is reported as the code the half that failed earns:
-/// [`DiagnosticCode::MalformedFloat`] where both halves are section 3.3.7's syntax and one of
-/// them names no number this crate can hold, and [`DiagnosticCode::MalformedGeo`] where the
-/// pair is not a pair at all.
+/// The range of the pair is not checked.
+/// A latitude past the pole is a claim about the world rather than about the grammar, the diagnostic this decoder reports is about the grammar,
+/// and the text is written back either way.
+/// A magnitude past what an `f64` holds is the other thing, and it is reported as the code the half that failed earns:
+/// [`DiagnosticCode::MalformedFloat`] where both halves are section 3.3.7's syntax and one of them names no number this crate can hold, and [`DiagnosticCode::MalformedGeo`] where the pair is not a pair at all.
 fn decode_geo(bytes: &[u8]) -> Result<Geo, DiagnosticCode> {
     let separator = bytes
         .iter()
@@ -834,9 +750,9 @@ impl DecodeValue<'_> for Geo {
     }
 }
 
-// There is deliberately no `EncodeValue for Geo`. The shortest round-trip formatting of the
-// nearest `f64` to `37.386013` is not necessarily `37.386013`, so writing through this type
-// would rewrite text nobody asked to change. Readable and not writable is the honest shape.
+// There is deliberately no `EncodeValue for Geo`.
+// The shortest round-trip formatting of the nearest `f64` to `37.386013` is not necessarily `37.386013`, so writing through this type would rewrite text nobody asked to change.
+// Readable and not writable is the honest shape.
 
 // ---------------------------------------------------------------------------------------
 // Integers and booleans, section 3.3.8 and section 3.3.2
@@ -847,8 +763,7 @@ fn decode_integer(bytes: &[u8]) -> Option<i32> {
     let (negative, unsigned) = split_sign(bytes);
     let magnitude = decimal(unsigned)?;
     if negative {
-        // The most negative integer has no positive counterpart, so the negation happens in
-        // the wider type and the range check is the conversion back.
+        // The most negative integer has no positive counterpart, so the negation happens in the wider type and the range check is the conversion back.
         let signed = i64::try_from(magnitude).ok()?.checked_neg()?;
         return i32::try_from(signed).ok();
     }
@@ -867,8 +782,7 @@ impl EncodeValue for i32 {
     }
 
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>) {
-        // `INTEGER` is the default value type of every property that takes one, so what a
-        // written integer implies is the absence of a `VALUE`, not a particular one.
+        // `INTEGER` is the default value type of every property that takes one, so what a written integer implies is the absence of a `VALUE`, not a particular one.
         out.push(ParameterEdit::remove(b"VALUE"));
     }
 }
@@ -915,18 +829,15 @@ fn push_escaped(out: &mut String, character: char) {
         out.push(char::from(octet));
         return;
     }
-    // Section 3.3.11 gives no meaning to any other escape. Both octets are kept rather than
-    // the backslash dropped, because a decode is the one place a caller stops looking at the
-    // storage, and it must not be the place a byte the storage still holds disappears.
+    // Section 3.3.11 gives no meaning to any other escape.
+    // Both octets are kept rather than the backslash dropped, because a decode is the one place a caller stops looking at the storage, and it must not be the place a byte the storage still holds disappears.
     out.push('\\');
     out.push(character);
 }
 
 /// Resolve section 3.3.11's escapes, borrowing when there is nothing to resolve.
 ///
-/// The scan for a backslash is what keeps the common case free of allocation: a `SUMMARY`
-/// with no escape in it hands back the same octets the property is holding, and nothing is
-/// copied on the way.
+/// The scan for a backslash is what keeps the common case free of allocation: a `SUMMARY` with no escape in it hands back the same octets the property is holding, and nothing is copied on the way.
 fn unescape(text: &str) -> Cow<'_, str> {
     if !text.as_bytes().contains(&b'\\') {
         return Cow::Borrowed(text);
@@ -944,8 +855,8 @@ fn unescape(text: &str) -> Cow<'_, str> {
         }
     }
     if pending {
-        // A value ending in a lone backslash escapes nothing. Section 3.3.11 defines no such
-        // value; the octet is written back rather than swallowed, for the reason above.
+        // A value ending in a lone backslash escapes nothing.
+        // Section 3.3.11 defines no such value; the octet is written back rather than swallowed, for the reason above.
         out.push('\\');
     }
     Cow::Owned(out)
@@ -954,16 +865,13 @@ fn unescape(text: &str) -> Cow<'_, str> {
 impl<'a> TextValue<'a> {
     /// Resolve section 3.3.11's escapes, after asking whether the octets are text at all.
     ///
-    /// Validation comes first and unescaping second, and the order is the whole defense
-    /// against a multi-byte lead octet whose trail was eaten by an escape. Every substitution
-    /// the section defines is ASCII, so none can satisfy a UTF-8 continuation requirement:
-    /// an orphaned lead octet fails here deterministically instead of being completed by
-    /// accident into a codepoint nobody wrote. Reversing the two would make the attack work.
+    /// Validation comes first and unescaping second, and the order is the whole defense against a multi-byte lead octet whose trail was eaten by an escape.
+    /// Every substitution the section defines is ASCII, so none can satisfy a UTF-8 continuation requirement:
+    /// an orphaned lead octet fails here deterministically instead of being completed by accident into a codepoint nobody wrote.
+    /// Reversing the two would make the attack work.
     ///
-    /// The result borrows when there was no escape to resolve, so the ordinary value costs
-    /// nothing, and the escaped one allocates exactly once. Neither touches the storage: a
-    /// failure leaves the octets where they are, still written back, and the caller is told
-    /// where they stopped being text.
+    /// The result borrows when there was no escape to resolve, so the ordinary value costs nothing, and the escaped one allocates exactly once.
+    /// Neither touches the storage: a failure leaves the octets where they are, still written back, and the caller is told where they stopped being text.
     pub fn decode(self) -> Result<Cow<'a, str>, TextError> {
         let text = str::from_utf8(self.as_bytes()).map_err(TextError::from)?;
         Ok(unescape(text))
@@ -972,9 +880,8 @@ impl<'a> TextValue<'a> {
 
 impl<'a> DecodeValue<'a> for TextValue<'a> {
     fn decode_value(bytes: &'a [u8]) -> Result<Self, DiagnosticCode> {
-        // Infallible on purpose. A `TEXT` value is whatever octets arrived, and the two
-        // questions that can fail — is it UTF-8, what do its escapes stand for — are asked by
-        // `decode`, where a caller has said it wants text rather than a view.
+        // Infallible on purpose.
+        // A `TEXT` value is whatever octets arrived, and the two questions that can fail — is it UTF-8, what do its escapes stand for — are asked by `decode`, where a caller has said it wants text rather than a view.
         Ok(Self::from_bytes(bytes))
     }
 }
@@ -983,11 +890,10 @@ impl EncodeValue for TextValue<'_> {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
         let bytes = self.as_bytes();
         // A `TextValue` holds the value's octets as they will be written, escapes included,
-        // so the write is a copy. What it is not allowed to be is an injection: a value
-        // carrying a terminator would smuggle a whole second content line into the component,
-        // and a `SUMMARY` taken from a web form becoming a second `ATTENDEE` is a real
-        // attack. Refused rather than escaped, because escaping here would silently change
-        // what the caller asked to store.
+        // so the write is a copy.
+        // What it is not allowed to be is an injection: a value carrying a terminator would smuggle a whole second content line into the component,
+        // and a `SUMMARY` taken from a web form becoming a second `ATTENDEE` is a real attack.
+        // Refused rather than escaped, because escaping here would silently change what the caller asked to store.
         if bytes.iter().copied().any(is_forbidden_control) {
             return Err(MutationError::IllegalControlCharacter);
         }
@@ -1010,9 +916,7 @@ const QUANTUM_LEN: usize = 4;
 
 /// The sextet `octet` stands for, or `None` when section 3.3.1's `b-char` does not include it.
 const fn sextet(octet: u8) -> Option<u8> {
-    // Each arm has established its own range before subtracting, so none of the wrapping forms
-    // below can wrap; they are spelled that way because a bare `-` is an unchecked operation
-    // and this module has none.
+    // Each arm has established its own range before subtracting, so none of the wrapping forms below can wrap; they are spelled that way because a bare `-` is an unchecked operation and this module has none.
     match octet {
         b'A'..=b'Z' => Some(octet.wrapping_sub(b'A')),
         b'a'..=b'z' => Some(octet.wrapping_sub(b'a').wrapping_add(26)),
@@ -1023,8 +927,7 @@ const fn sextet(octet: u8) -> Option<u8> {
     }
 }
 
-/// Whether `quantum` is the last four characters of a `binary`: four characters of the
-/// alphabet, or section 3.3.1's `b-end` — two or three of them and the `=` that pads them out.
+/// Whether `quantum` is the last four characters of a `binary`: four characters of the alphabet, or section 3.3.1's `b-end` — two or three of them and the `=` that pads them out.
 fn is_end_quantum(quantum: &[u8]) -> bool {
     let padding = quantum
         .iter()
@@ -1040,26 +943,20 @@ fn is_end_quantum(quantum: &[u8]) -> bool {
         .is_some_and(|held| held.iter().all(|&octet| sextet(octet).is_some()))
 }
 
-/// Whether `bytes` is section 3.3.1's `binary` exactly: whole quanta, padded on the last one
-/// and nowhere else.
+/// Whether `bytes` is section 3.3.1's `binary` exactly: whole quanta, padded on the last one and nowhere else.
 ///
-/// The padding is where a base 64 reader that accepts what it is given goes wrong. Section
-/// 3.3.1 writes `*(4b-char) [b-end]`, so a length that is not a multiple of four is a value
-/// that lost characters somewhere, and taking it for a shorter one would hand a caller octets
-/// no producer wrote.
+/// The padding is where a base 64 reader that accepts what it is given goes wrong.
+/// Section 3.3.1 writes `*(4b-char) [b-end]`, so a length that is not a multiple of four is a value that lost characters somewhere, and taking it for a shorter one would hand a caller octets no producer wrote.
 fn is_base64_text(bytes: &[u8]) -> bool {
     let Some(end) = bytes.len().checked_sub(QUANTUM_LEN) else {
-        // `*(4b-char)` matches nothing at all, so a value with no characters in it is an empty
-        // binary; anything shorter than one quantum is a quantum that did not arrive whole.
+        // `*(4b-char)` matches nothing at all, so a value with no characters in it is an empty binary; anything shorter than one quantum is a quantum that did not arrive whole.
         return bytes.is_empty();
     };
     let Some((body, last)) = bytes.split_at_checked(end) else {
-        // `end` is a length this slice has, so this cannot happen; it is spelled rather than
-        // unwrapped because a malformed value is the honest reading of an impossible split.
+        // `end` is a length this slice has, so this cannot happen; it is spelled rather than unwrapped because a malformed value is the honest reading of an impossible split.
         return false;
     };
-    // The divisor is a nonzero constant, so the remainder is always there; it is asked for
-    // rather than taken because this module has no unchecked arithmetic.
+    // The divisor is a nonzero constant, so the remainder is always there; it is asked for rather than taken because this module has no unchecked arithmetic.
     body.len().checked_rem(QUANTUM_LEN) == Some(0)
         && body.iter().all(|&octet| sextet(octet).is_some())
         && is_end_quantum(last)
@@ -1067,10 +964,8 @@ fn is_base64_text(bytes: &[u8]) -> bool {
 
 /// The three octets one quantum stands for, and how many of them its padding leaves.
 ///
-/// The padding contributes six zero bits per `=` and stands for no octet of its own, which is
-/// what the count is for: four characters stand for three octets, three for two, and two for
-/// one. Where the padding may appear is [`is_base64_text`]'s question and is settled before
-/// this runs.
+/// The padding contributes six zero bits per `=` and stands for no octet of its own, which is what the count is for: four characters stand for three octets, three for two, and two for one.
+/// Where the padding may appear is [`is_base64_text`]'s question and is settled before this runs.
 fn quantum_octets(quantum: &[u8]) -> Option<([u8; 3], usize)> {
     let mut packed: u32 = 0;
     let mut filled = 0_usize;
@@ -1081,9 +976,7 @@ fn quantum_octets(quantum: &[u8]) -> Option<([u8; 3], usize)> {
             filled = filled.checked_add(1)?;
         }
     }
-    // Divided rather than shifted, for the reason the accumulation above is checked: the
-    // quantum is under three octets wide, so each of the three is in range by construction and
-    // the conversion is asked anyway.
+    // Divided rather than shifted, for the reason the accumulation above is checked: the quantum is under three octets wide, so each of the three is in range by construction and the conversion is asked anyway.
     let stands_for = [
         u8::try_from(packed.checked_div(65_536)?).ok()?,
         u8::try_from(packed.checked_div(256)?.checked_rem(256)?).ok()?,
@@ -1094,11 +987,9 @@ fn quantum_octets(quantum: &[u8]) -> Option<([u8; 3], usize)> {
 
 /// How many octets a base 64 text of `written` characters can stand for.
 const fn decoded_len(written: usize) -> usize {
-    // Three per quantum, which is exact except for a padded final one — where it is one or two
-    // too many and never too few, so the reservation is made once and never grown into.
+    // Three per quantum, which is exact except for a padded final one — where it is one or two too many and never too few, so the reservation is made once and never grown into.
     match written.checked_div(QUANTUM_LEN) {
-        // A text long enough to overflow this cannot be resident, and asking for no room up
-        // front is the harmless answer: the vector grows on its own.
+        // A text long enough to overflow this cannot be resident, and asking for no room up front is the harmless answer: the vector grows on its own.
         Some(groups) => match groups.checked_mul(3) {
             Some(room) => room,
             None => 0,
@@ -1110,16 +1001,11 @@ const fn decoded_len(written: usize) -> usize {
 impl BinaryValue<'_> {
     /// Read the octets this base 64 text stands for.
     ///
-    /// A step a caller asks for and never one storage takes, exactly as [`TextValue::decode`]
-    /// is. The text is checked again here rather than assumed, because a view can be built
-    /// over any octets and this is the one place where the answer would be wrong rather than
-    /// absent.
+    /// A step a caller asks for and never one storage takes, exactly as [`TextValue::decode`] is.
+    /// The text is checked again here rather than assumed, because a view can be built over any octets and this is the one place where the answer would be wrong rather than absent.
     ///
-    /// Section 3.3.1 fixes the alphabet and says nothing about what a producer left in the
-    /// bits past the last full octet of a padded quantum. Those bits are dropped rather than
-    /// refused — RFC 4648 leaves them to the reader — and the text that carried them is
-    /// written back untouched, which is why two texts can decode alike and still each come
-    /// back as itself.
+    /// Section 3.3.1 fixes the alphabet and says nothing about what a producer left in the bits past the last full octet of a padded quantum.
+    /// Those bits are dropped rather than refused — RFC 4648 leaves them to the reader — and the text that carried them is written back untouched, which is why two texts can decode alike and still each come back as itself.
     pub fn decode(self) -> Result<Vec<u8>, DiagnosticCode> {
         let text = self.as_bytes();
         if !is_base64_text(text) {
@@ -1151,14 +1037,10 @@ impl<'a> DecodeValue<'a> for BinaryValue<'a> {
 impl EncodeValue for BinaryValue<'_> {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
         let bytes = self.as_bytes();
-        // The text is what is written, and never a re-encoding of what it decodes to: the bits
-        // past the last full octet of a padded quantum are not read, so two texts stand for
-        // the same octets and writing through the decoded form would rewrite one of them into
-        // the other. That is `Geo`'s rule; this type can still be written because what it
-        // holds is already the text.
+        // The text is what is written, and never a re-encoding of what it decodes to: the bits past the last full octet of a padded quantum are not read, so two texts stand for the same octets and writing through the decoded form would rewrite one of them into the other.
+        // That is `Geo`'s rule; this type can still be written because what it holds is already the text.
         //
-        // What is refused is text that is not section 3.3.1's, which is also why no control
-        // character check is needed here: the alphabet has no octet a content line ends on.
+        // What is refused is text that is not section 3.3.1's, which is also why no control character check is needed here: the alphabet has no octet a content line ends on.
         if !is_base64_text(bytes) {
             return Err(MutationError::NotRepresentable);
         }
@@ -1167,10 +1049,8 @@ impl EncodeValue for BinaryValue<'_> {
     }
 
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>) {
-        // Section 3.3.1 requires both, and requires them together: inline octets are
-        // unreadable without the encoding that says how to read them. `ATTACH` is the property
-        // that takes either this or a URI, so these two are exactly the pairing a URI written
-        // over a binary value has to undo — which is what `UriValue` states below.
+        // Section 3.3.1 requires both, and requires them together: inline octets are unreadable without the encoding that says how to read them.
+        // `ATTACH` is the property that takes either this or a URI, so these two are exactly the pairing a URI written over a binary value has to undo — which is what `UriValue` states below.
         out.push(ParameterEdit::set(b"VALUE", ValueType::Binary.as_bytes()));
         out.push(ParameterEdit::set(b"ENCODING", b"BASE64"));
     }
@@ -1183,9 +1063,7 @@ impl EncodeValue for BinaryValue<'_> {
 /// Whether `octet` is one RFC 3986 section 2 gives a URI a place for.
 ///
 /// The union of `unreserved`, `gen-delims`, `sub-delims` and the `%` that opens an escape.
-/// Everything else is excluded, a space and every octet past ASCII included: RFC 5545 section
-/// 3.3.13 says a value of this type is a URI, and a URI carrying either is one that was meant
-/// to be percent-encoded and was not.
+/// Everything else is excluded, a space and every octet past ASCII included: RFC 5545 section 3.3.13 says a value of this type is a URI, and a URI carrying either is one that was meant to be percent-encoded and was not.
 const fn is_uri_octet(octet: u8) -> bool {
     matches!(
         octet,
@@ -1252,12 +1130,8 @@ fn percents_are_escapes(bytes: &[u8]) -> bool {
 
 /// Whether `bytes` is a URI RFC 3986 section 3 defines, which is what section 3.3.13 writes.
 ///
-/// A scheme is what makes it one, and it is checked rather than assumed: a `CAL-ADDRESS` with
-/// a bare mail address where a `mailto:` belongs is the most common malformed `ATTENDEE` in
-/// the corpus, and reading it as a URI would let a scheduling reply match nothing at all.
-/// Nothing here is normalized — the scheme's case, the percent-encoding and the path's case
-/// are all a caller's to compare — because rewriting one is how a `mailto:` stops matching the
-/// `ATTENDEE` it was written for.
+/// A scheme is what makes it one, and it is checked rather than assumed: a `CAL-ADDRESS` with a bare mail address where a `mailto:` belongs is the most common malformed `ATTENDEE` in the corpus, and reading it as a URI would let a scheduling reply match nothing at all.
+/// Nothing here is normalized — the scheme's case, the percent-encoding and the path's case are all a caller's to compare — because rewriting one is how a `mailto:` stops matching the `ATTENDEE` it was written for.
 fn is_uri_text(bytes: &[u8]) -> bool {
     scheme_of(bytes).is_some_and(is_scheme)
         && bytes.iter().copied().all(is_uri_octet)
@@ -1276,10 +1150,8 @@ impl<'a> DecodeValue<'a> for UriValue<'a> {
 impl EncodeValue for UriValue<'_> {
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError> {
         let bytes = self.as_bytes();
-        // Written as it stands, for `BinaryValue`'s reason: this type holds the text, so
-        // there is nothing here to reproduce and nothing to spend. A value that is not a URI
-        // is refused rather than written, and the syntax excludes every octet a content line
-        // ends on, so this write has no injection to check for either.
+        // Written as it stands, for `BinaryValue`'s reason: this type holds the text, so there is nothing here to reproduce and nothing to spend.
+        // A value that is not a URI is refused rather than written, and the syntax excludes every octet a content line ends on, so this write has no injection to check for either.
         if !is_uri_text(bytes) {
             return Err(MutationError::NotRepresentable);
         }
@@ -1288,11 +1160,8 @@ impl EncodeValue for UriValue<'_> {
     }
 
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>) {
-        // `URI` is the default value type of every property that takes one, and so is section
-        // 3.3.3's `CAL-ADDRESS` on the two properties that take that — so what a written URI
-        // implies is the absence of a `VALUE` rather than a particular one. The `ENCODING`
-        // goes with it: `ATTACH` is the property that takes either this or inline octets, and
-        // a `BASE64` left beside a URI says the address is a value it is not.
+        // `URI` is the default value type of every property that takes one, and so is section 3.3.3's `CAL-ADDRESS` on the two properties that take that — so what a written URI implies is the absence of a `VALUE` rather than a particular one.
+        // The `ENCODING` goes with it: `ATTACH` is the property that takes either this or inline octets, and a `BASE64` left beside a URI says the address is a value it is not.
         out.push(ParameterEdit::remove(b"VALUE"));
         out.push(ParameterEdit::remove(b"ENCODING"));
     }
@@ -1375,7 +1244,8 @@ mod tests {
         )
     }
 
-    /// A view holds the octets as written. Resolving the escapes is a step a caller asks for,
+    /// A view holds the octets as written.
+    /// Resolving the escapes is a step a caller asks for,
     /// and the storage is unaffected by whether anyone ever does.
     #[test]
     fn a_text_view_keeps_its_escapes_until_something_resolves_them() {
@@ -1384,8 +1254,7 @@ mod tests {
         assert_eq!(value.as_bytes(), b"a\\nb");
     }
 
-    /// Every substitution is ASCII, which is what lets validation run before unescaping and
-    /// makes an orphaned lead octet fail deterministically instead of being completed.
+    /// Every substitution is ASCII, which is what lets validation run before unescaping and makes an orphaned lead octet fail deterministically instead of being completed.
     #[test]
     fn no_escape_substitution_can_complete_a_multi_byte_sequence() {
         for (written_as, stands_for) in TEXT_ESCAPES {
@@ -1398,9 +1267,8 @@ mod tests {
         }
     }
 
-    /// Empty input. Every decoder has to answer with its own code rather than with a default
-    /// value, because a property that arrived with no value at all is exactly the shape a
-    /// colonless content line degrades to.
+    /// Empty input.
+    /// Every decoder has to answer with its own code rather than with a default value, because a property that arrived with no value at all is exactly the shape a colonless content line degrades to.
     #[test]
     fn an_empty_value_is_malformed_in_every_codec_that_can_say_so() {
         assert_eq!(
@@ -1453,8 +1321,7 @@ mod tests {
         );
     }
 
-    /// An empty `TEXT` is a value and not a failure: a `DESCRIPTION:` with nothing after the
-    /// colon is legal, common, and must not decode to an error.
+    /// An empty `TEXT` is a value and not a failure: a `DESCRIPTION:` with nothing after the colon is legal, common, and must not decode to an error.
     #[test]
     fn an_empty_text_value_is_a_value() {
         let value = TextValue::decode_value(b"").unwrap();
@@ -1462,7 +1329,8 @@ mod tests {
         assert!(matches!(value.decode().unwrap(), Cow::Borrowed("")));
     }
 
-    /// Input that stops before its terminator. Each of these is a prefix of something legal,
+    /// Input that stops before its terminator.
+    /// Each of these is a prefix of something legal,
     /// which is the case a decoder that reads greedily gets wrong by answering.
     #[test]
     fn a_value_cut_short_is_refused_rather_than_half_read() {
@@ -1504,8 +1372,7 @@ mod tests {
         );
     }
 
-    /// The three forms of a date-time value are told apart before anything is parsed, and the
-    /// `Z` is read only by the type that can hold what it says.
+    /// The three forms of a date-time value are told apart before anything is parsed, and the `Z` is read only by the type that can hold what it says.
     #[test]
     fn the_three_date_time_forms_map_to_the_three_variants() {
         let cases: [(&[u8], Option<DateTimeValue>); 6] = [
@@ -1556,8 +1423,7 @@ mod tests {
         }
     }
 
-    /// The two fields stay apart, so a span of one day and the equivalent span of hours each
-    /// keep the spelling they were built with rather than collapsing into one canonical form.
+    /// The two fields stay apart, so a span of one day and the equivalent span of hours each keep the spelling they were built with rather than collapsing into one canonical form.
     #[test]
     fn a_duration_keeps_the_split_it_was_built_with() {
         assert_written(&Duration::new(1, 0), b"P1D");
@@ -1565,13 +1431,11 @@ mod tests {
         assert_written(&Duration::ZERO, b"PT0H0M0S");
         assert_written(&Duration::new(-1, -30), b"-P1DT0H0M30S");
         assert_written(&Duration::new(15, 18_020), b"P15DT5H0M20S");
-        // Two fields that disagree in sign have no two-signed form to be written as, so they
-        // are reconciled into the one sign the section allows.
+        // Two fields that disagree in sign have no two-signed form to be written as, so they are reconciled into the one sign the section allows.
         assert_written(&Duration::new(1, -30), b"PT23H59M30S");
     }
 
-    /// Writing then reading is the identity on this type, which is the fixed point every
-    /// mutation round trip through a duration rests on.
+    /// Writing then reading is the identity on this type, which is the fixed point every mutation round trip through a duration rests on.
     #[test]
     fn a_written_duration_reads_back_as_the_same_span() {
         for span in [
@@ -1605,8 +1469,7 @@ mod tests {
         }
     }
 
-    /// The seconds term is written back only where there is one, so an offset that arrived as
-    /// four digits does not come back as six.
+    /// The seconds term is written back only where there is one, so an offset that arrived as four digits does not come back as six.
     #[test]
     fn an_offset_writes_the_seconds_term_only_when_it_has_one() {
         assert_written(&UtcOffset::from_seconds(32_400).unwrap(), b"+0900");
@@ -1614,13 +1477,11 @@ mod tests {
         assert_written(&UtcOffset::from_seconds(19_800).unwrap(), b"+0530");
         assert_written(&UtcOffset::from_seconds(19_845).unwrap(), b"+053045");
         assert_written(&UtcOffset::UTC, b"+0000");
-        // The one spelling that may not be produced, and cannot be: a negative sign is only
-        // written for a magnitude that is not zero.
+        // The one spelling that may not be produced, and cannot be: a negative sign is only written for a magnitude that is not zero.
         assert_written(&UtcOffset::from_seconds(0).unwrap(), b"+0000");
     }
 
-    /// The float grammar is narrower than the standard library's reader, and the difference
-    /// is exactly the set of spellings RFC 5545 does not have.
+    /// The float grammar is narrower than the standard library's reader, and the difference is exactly the set of spellings RFC 5545 does not have.
     #[test]
     fn a_geographic_pair_takes_the_float_grammar_and_not_the_language_one() {
         assert_eq!(
@@ -1630,8 +1491,7 @@ mod tests {
         assert_eq!(decode_geo(b"37;-122"), Ok(Geo::new(37.0, -122.0)));
         assert_eq!(decode_geo(b"+0.0;-0.5"), Ok(Geo::new(0.0, -0.5)));
 
-        // Every spelling below parses as a number in this language and is not one in this
-        // format, which is the whole reason the grammar is checked before anything reads it.
+        // Every spelling below parses as a number in this language and is not one in this format, which is the whole reason the grammar is checked before anything reads it.
         let rejected: [&[u8]; 7] = [
             b"1e5;-122.0",
             b".5;-122.0",
@@ -1649,8 +1509,8 @@ mod tests {
             );
         }
 
-        // Section 3.3.7's syntax exactly, and no `f64` holds it. The pair is well formed and
-        // the number is not, so the code names the half that failed.
+        // Section 3.3.7's syntax exactly, and no `f64` holds it.
+        // The pair is well formed and the number is not, so the code names the half that failed.
         let mut past_the_range = b"1".to_vec();
         past_the_range.extend(core::iter::repeat_n(b'0', 309));
         past_the_range.extend_from_slice(b";-122.0");
@@ -1660,9 +1520,8 @@ mod tests {
         );
     }
 
-    /// The text a `GEO` arrived as is the text that is written back, which is why this type
-    /// decodes and does not encode. The pair below is the evidence: the shortest formatting
-    /// of the nearest `f64` is not the spelling the producer used.
+    /// The text a `GEO` arrived as is the text that is written back, which is why this type decodes and does not encode.
+    /// The pair below is the evidence: the shortest formatting of the nearest `f64` is not the spelling the producer used.
     #[test]
     fn a_geographic_pair_is_readable_and_not_writable() {
         let stored = RawText::from_bytes(b"37.3860130;-122.0829320");
@@ -1692,8 +1551,7 @@ mod tests {
         assert_eq!(i32::decode_value(&written(&i32::MIN)).unwrap(), i32::MIN);
     }
 
-    /// Section 3.3.2 names two values and says nothing about their casing, and real producers
-    /// have written both spellings.
+    /// Section 3.3.2 names two values and says nothing about their casing, and real producers have written both spellings.
     #[test]
     fn a_boolean_is_two_words_in_any_casing() {
         assert!(bool::decode_value(b"TRUE").unwrap());
@@ -1707,8 +1565,7 @@ mod tests {
         assert_written(&false, b"FALSE");
     }
 
-    /// Nothing to unescape means nothing to allocate, which is the common case for every
-    /// `UID`, `SUMMARY` and `LOCATION` a calendar carries.
+    /// Nothing to unescape means nothing to allocate, which is the common case for every `UID`, `SUMMARY` and `LOCATION` a calendar carries.
     #[test]
     fn text_with_no_escape_borrows_rather_than_copying() {
         let value = TextValue::from_bytes(b"standup");
@@ -1733,9 +1590,8 @@ mod tests {
         }
     }
 
-    /// The attack validate-then-unescape exists to stop. The lead octet of a two-octet
-    /// sequence is followed by an escape whose substitution is ASCII; unescaping first would
-    /// hand the lead octet a neighbor and manufacture a codepoint nobody wrote.
+    /// The attack validate-then-unescape exists to stop.
+    /// The lead octet of a two-octet sequence is followed by an escape whose substitution is ASCII; unescaping first would hand the lead octet a neighbor and manufacture a codepoint nobody wrote.
     #[test]
     fn text_is_validated_before_it_is_unescaped() {
         let attack = TextValue::from_bytes(b"\xc3\\n");
@@ -1748,8 +1604,7 @@ mod tests {
         assert_eq!(legacy.as_bytes(), b"\xe9t\xe9", "the octets are untouched");
     }
 
-    /// A failure to read is a diagnostic code and not an error: the value is still there, and
-    /// the caller is handed the reason next to the octets that produced it.
+    /// A failure to read is a diagnostic code and not an error: the value is still there, and the caller is handed the reason next to the octets that produced it.
     #[test]
     fn a_value_that_cannot_be_read_is_a_diagnostic_and_not_a_lost_property() {
         let stored = RawText::from_bytes(b"20261301T990000");
@@ -1762,9 +1617,7 @@ mod tests {
         );
     }
 
-    /// A date-time read beside a `TZID` is a zoned value and not a floating one, which is the
-    /// whole reason the shape exists: read as floating, written back through the same type, it
-    /// would have carried `ParameterEdit::remove(b"TZID")` and dropped the zone it came with.
+    /// A date-time read beside a `TZID` is a zoned value and not a floating one, which is the whole reason the shape exists: read as floating, written back through the same type, it would have carried `ParameterEdit::remove(b"TZID")` and dropped the zone it came with.
     #[test]
     fn a_date_time_read_beside_a_zone_carries_it() {
         let zoned = decorated(&[(b"TZID", b"\"Europe/Paris\"")], b"20260815T090000");
@@ -1783,8 +1636,7 @@ mod tests {
             Ok(DateTimeValue::Local(stamp(2026, 8, 15, 9, 0, 0)))
         );
 
-        // A zone with no name names nothing, so the value stays what its own octets say and the
-        // parameter is still written back exactly as it arrived.
+        // A zone with no name names nothing, so the value stays what its own octets say and the parameter is still written back exactly as it arrived.
         let nameless = decorated(&[(b"TZID", b"")], b"20260815T090000");
         assert_eq!(
             DateTimeValue::decode_property(&nameless),
@@ -1792,9 +1644,8 @@ mod tests {
         );
     }
 
-    /// Section 3.2.19 forbids a `TZID` beside a UTC value or a date, and the value's own octets
-    /// are the stronger of the two statements. The stray parameter is neither obeyed nor
-    /// removed.
+    /// Section 3.2.19 forbids a `TZID` beside a UTC value or a date, and the value's own octets are the stronger of the two statements.
+    /// The stray parameter is neither obeyed nor removed.
     #[test]
     fn a_zone_beside_a_value_that_cannot_have_one_does_not_change_the_value() {
         let utc = decorated(&[(b"TZID", b"Europe/Paris")], b"20260815T090000Z");
@@ -1815,8 +1666,7 @@ mod tests {
         );
     }
 
-    /// The transition table `docs/adr/0001` requires: what a written date-time says about the
-    /// two parameters its shape decides, for every shape it has.
+    /// The transition table `docs/adr/0001` requires: what a written date-time says about the two parameters its shape decides, for every shape it has.
     #[test]
     fn a_written_zoned_date_time_states_the_zone_it_names() {
         let value = DateTimeValue::Zoned {
@@ -1833,14 +1683,10 @@ mod tests {
         );
     }
 
-    /// Moving a zoned date-time keeps the zone it named, which is the cycle the shape exists
-    /// for: read the value, change the clock, write it back, and the `TZID` is still there.
+    /// Moving a zoned date-time keeps the zone it named, which is the cycle the shape exists for: read the value, change the clock, write it back, and the `TZID` is still there.
     ///
-    /// The zone is copied out before the guard is taken, and the compiler is what says so: the
-    /// value borrows the property's parameter octets and the guard borrows the property, so a
-    /// caller writing a zone back into the property it came from has to say where those octets
-    /// live. That is the same borrow `docs/adr/0001` spends on the guard, arriving one step
-    /// earlier.
+    /// The zone is copied out before the guard is taken, and the compiler is what says so: the value borrows the property's parameter octets and the guard borrows the property, so a caller writing a zone back into the property it came from has to say where those octets live.
+    /// That is the same borrow `docs/adr/0001` spends on the guard, arriving one step earlier.
     #[test]
     fn a_zoned_date_time_is_moved_without_losing_the_zone_it_named() {
         let mut property = decorated(&[(b"TZID", b"Europe/Paris")], b"20260815T090000");
@@ -1868,8 +1714,7 @@ mod tests {
         );
     }
 
-    /// Converting a zoned date-time to a date has to say `VALUE=DATE` and drop the stale
-    /// `TZID`, or it leaves behind the invalid pairing a value-only write would produce.
+    /// Converting a zoned date-time to a date has to say `VALUE=DATE` and drop the stale `TZID`, or it leaves behind the invalid pairing a value-only write would produce.
     #[test]
     fn a_written_date_time_states_the_parameters_its_shape_implies() {
         assert_eq!(
@@ -1894,8 +1739,7 @@ mod tests {
         }
     }
 
-    /// Every writable type states something about `VALUE`, so no type added later can be the
-    /// one that silently says nothing.
+    /// Every writable type states something about `VALUE`, so no type added later can be the one that silently says nothing.
     #[test]
     fn every_writable_type_states_what_it_implies_about_the_value_parameter() {
         assert_eq!(coupled(&Duration::ZERO), [ParameterEdit::remove(b"VALUE")]);
@@ -1911,8 +1755,7 @@ mod tests {
         );
     }
 
-    /// What every date-time writes is what it reads back, which is the fixed point the
-    /// mutation round trip rests on.
+    /// What every date-time writes is what it reads back, which is the fixed point the mutation round trip rests on.
     #[test]
     fn a_written_date_time_reads_back_as_the_same_value() {
         for value in [
@@ -1930,8 +1773,8 @@ mod tests {
         }
     }
 
-    /// The injection a write has to refuse rather than escape. A terminator inside a value
-    /// would be a whole second content line once the property is serialized.
+    /// The injection a write has to refuse rather than escape.
+    /// A terminator inside a value would be a whole second content line once the property is serialized.
     #[test]
     fn a_text_write_refuses_the_control_characters_a_content_line_would_end_on() {
         let attack = TextValue::from_bytes(b"hi\r\nATTENDEE:mailto:eve@example.test");
@@ -1942,19 +1785,15 @@ mod tests {
         );
         assert!(buffer.is_empty(), "a refused write leaves nothing behind");
 
-        // A tab is not one of them: section 3.1's CONTROL production excludes HTAB, and a
-        // tab inside a DESCRIPTION is ordinary in real exports.
+        // A tab is not one of them: section 3.1's CONTROL production excludes HTAB, and a tab inside a DESCRIPTION is ordinary in real exports.
         assert_written(&TextValue::from_bytes(b"a\tb"), b"a\tb");
-        // The escapes go through untouched: a text view holds what will be written, and an
-        // encoder that unescaped here would be undoing the read half's work.
+        // The escapes go through untouched: a text view holds what will be written, and an encoder that unescaped here would be undoing the read half's work.
         assert_written(&TextValue::from_bytes(b"a\\,b\\nc"), b"a\\,b\\nc");
     }
 
-    /// Section 3.3.7's grammar at the type that is one number rather than a pair, and the same
-    /// distance from the standard library's reader that `GEO` is checked against.
+    /// Section 3.3.7's grammar at the type that is one number rather than a pair, and the same distance from the standard library's reader that `GEO` is checked against.
     ///
-    /// Compared as bit patterns, because the claim is that the exact double the text names
-    /// came back and not one near it.
+    /// Compared as bit patterns, because the claim is that the exact double the text names came back and not one near it.
     #[test]
     fn a_float_reads_the_spellings_the_section_has_and_no_others() {
         let cases: [(&[u8], Option<u64>); 9] = [
@@ -1977,8 +1816,8 @@ mod tests {
         }
     }
 
-    /// The alphabet section 3.3.1 fixes, the padding it defines, and the shapes it has no
-    /// production for. The second column is the octets the text stands for.
+    /// The alphabet section 3.3.1 fixes, the padding it defines, and the shapes it has no production for.
+    /// The second column is the octets the text stands for.
     #[test]
     fn a_binary_value_reads_the_quanta_the_section_defines() {
         let cases: [(&[u8], Option<&[u8]>); 11] = [
@@ -2005,9 +1844,7 @@ mod tests {
         }
     }
 
-    /// An empty `BINARY` is a value, for the reason an empty `TEXT` is: section 3.3.1's
-    /// `*(4b-char)` matches nothing at all, and an `ATTACH` with nothing after its colon is a
-    /// property that must come back the way it arrived.
+    /// An empty `BINARY` is a value, for the reason an empty `TEXT` is: section 3.3.1's `*(4b-char)` matches nothing at all, and an `ATTACH` with nothing after its colon is a property that must come back the way it arrived.
     #[test]
     fn an_empty_binary_value_is_a_value_and_stands_for_no_octets() {
         let value = BinaryValue::decode_value(b"").unwrap();
@@ -2016,10 +1853,8 @@ mod tests {
         assert_written(&value, b"");
     }
 
-    /// Two texts that stand for the same octets, each written back as itself. The bits past
-    /// the last full octet of a padded quantum are not read, so a value written through its
-    /// decoded form would rewrite one of these into the other — which is `GEO`'s rule, at a
-    /// type that can still be written because what it holds is already the text.
+    /// Two texts that stand for the same octets, each written back as itself.
+    /// The bits past the last full octet of a padded quantum are not read, so a value written through its decoded form would rewrite one of these into the other — which is `GEO`'s rule, at a type that can still be written because what it holds is already the text.
     #[test]
     fn a_binary_value_is_written_as_the_text_it_holds_and_never_as_a_re_encoding() {
         let padded = BinaryValue::decode_value(b"QQ==").unwrap();
@@ -2028,8 +1863,7 @@ mod tests {
         assert_written(&padded, b"QQ==");
         assert_written(&spare, b"QR==");
 
-        // Octets that are not section 3.3.1's are refused rather than stored as a value they
-        // are not, and the refusal comes before anything is written.
+        // Octets that are not section 3.3.1's are refused rather than stored as a value they are not, and the refusal comes before anything is written.
         let mut buffer = ValueBuf::new();
         assert_eq!(
             BinaryValue::from_bytes(b"not base 64!").encode_value(&mut buffer),
@@ -2038,9 +1872,7 @@ mod tests {
         assert!(buffer.is_empty());
     }
 
-    /// A URI is read as written and written as read: the scheme's case, the percent-encoding
-    /// and the path's case are all things a normalizer would rewrite, and rewriting one is how
-    /// a `mailto:` stops matching the `ATTENDEE` a scheduling reply names.
+    /// A URI is read as written and written as read: the scheme's case, the percent-encoding and the path's case are all things a normalizer would rewrite, and rewriting one is how a `mailto:` stops matching the `ATTENDEE` a scheduling reply names.
     #[test]
     fn a_uri_needs_a_scheme_and_octets_the_syntax_has_a_place_for() {
         let cases: [(&[u8], bool); 13] = [
@@ -2090,8 +1922,7 @@ mod tests {
             ),
             // A `DATE` at either end is a form the section's ABNF does not have.
             (b"20260815/20260816", None),
-            // A span that runs backwards, and one of no length: section 3.3.9 writes a start
-            // and a positive duration.
+            // A span that runs backwards, and one of no length: section 3.3.9 writes a start and a positive duration.
             (b"19970101T180000Z/-PT1H", None),
             (b"19970101T180000Z/PT0S", None),
             (b"19970101T180000Z", None),
@@ -2104,10 +1935,8 @@ mod tests {
         }
     }
 
-    /// One `TZID` on the line is a statement about the value and not about the octets on one
-    /// side of the `/`, so it reaches both bounds. A period that took the zone at the start
-    /// and left the end floating would be two halves in two zones, which is not something one
-    /// content line can say.
+    /// One `TZID` on the line is a statement about the value and not about the octets on one side of the `/`, so it reaches both bounds.
+    /// A period that took the zone at the start and left the end floating would be two halves in two zones, which is not something one content line can say.
     #[test]
     fn a_period_read_beside_a_zone_carries_it_at_both_ends() {
         let zoned = decorated(
@@ -2137,9 +1966,7 @@ mod tests {
             })
         );
 
-        // A bound written with a `Z` says UTC outright, and section 3.2.19 forbids the `TZID`
-        // beside it: the octets are the stronger statement, and the parameter is neither
-        // obeyed nor removed.
+        // A bound written with a `Z` says UTC outright, and section 3.2.19 forbids the `TZID` beside it: the octets are the stronger statement, and the parameter is neither obeyed nor removed.
         let mixed = decorated(
             &[(b"TZID", b"Europe/Paris")],
             b"20260815T090000/20260815T100000Z",
@@ -2161,9 +1988,8 @@ mod tests {
         );
     }
 
-    /// Text this crate did not author, written back through the value it was read as. A period
-    /// keeps the form it arrived in — an end stays an end and a length stays a length — and
-    /// every form whose text its value determines comes back octet for octet.
+    /// Text this crate did not author, written back through the value it was read as.
+    /// A period keeps the form it arrived in — an end stays an end and a length stays a length — and every form whose text its value determines comes back octet for octet.
     ///
     /// A duration is the one part that does not: `PT5H30M` and `PT5H30M0S` are the same span,
     /// and which spelling comes back is `Duration`'s answer rather than this type's.
@@ -2188,15 +2014,14 @@ mod tests {
             assert_written(&value, expected);
         }
 
-        // A zoned period writes the floating octets it is, which are the octets it was read
-        // from: section 3.3.9 gives the zone no spelling inside the value.
+        // A zoned period writes the floating octets it is, which are the octets it was read from: section 3.3.9 gives the zone no spelling inside the value.
         let zoned = decorated(&[(b"TZID", b"Europe/Paris")], b"20260815T090000/PT1H0M0S");
         let value = Period::decode_property(&zoned).unwrap();
         assert_written(&value, b"20260815T090000/PT1H0M0S");
     }
 
-    /// What a period cannot be written as. Each is refused before an octet is written, so a
-    /// value with no RFC 5545 form leaves the buffer as empty as it found it.
+    /// What a period cannot be written as.
+    /// Each is refused before an octet is written, so a value with no RFC 5545 form leaves the buffer as empty as it found it.
     #[test]
     fn a_period_with_no_form_to_be_written_in_is_refused_rather_than_written_wrong() {
         let midday = DateTimeValue::Local(stamp(2026, 8, 15, 12, 0, 0));
@@ -2237,10 +2062,8 @@ mod tests {
         }
     }
 
-    /// The transition table for the three value types this unit writes. A binary value states
-    /// the encoding that makes it readable; a URI undoes exactly that pairing, because `ATTACH`
-    /// is the property that takes either; a period names its own value type, because `RDATE`
-    /// takes three and a value may not ask which property it is being written to.
+    /// The transition table for the three value types this unit writes.
+    /// A binary value states the encoding that makes it readable; a URI undoes exactly that pairing, because `ATTACH` is the property that takes either; a period names its own value type, because `RDATE` takes three and a value may not ask which property it is being written to.
     #[test]
     fn a_written_value_states_the_pairing_its_own_shape_implies() {
         assert_eq!(
@@ -2279,9 +2102,7 @@ mod tests {
         );
     }
 
-    /// The completeness half of `docs/adr/0001`'s transition table: every value type this file
-    /// can write appears below with the statement its shape makes about `VALUE`, so a type
-    /// added without one is a row missing rather than a judgment nobody wrote down.
+    /// The completeness half of `docs/adr/0001`'s transition table: every value type this file can write appears below with the statement its shape makes about `VALUE`, so a type added without one is a row missing rather than a judgment nobody wrote down.
     #[test]
     fn the_transition_table_is_complete_across_every_type_this_file_writes() {
         let period = Period::decode_value(b"20260815T090000/PT1H").unwrap();
@@ -2303,11 +2124,8 @@ mod tests {
                 value_statement(&UriValue::from_bytes(b"mailto:j@example.test")),
             ),
             ("Period", value_statement(&period)),
-            // The one type that states nothing, in the table rather than left out of it: an
-            // offset has one written form and `UTC-OFFSET` is the default value type of both
-            // properties that take one, so no parameter is a function of its shape. What this
-            // check asserts is that every implementor was considered, not that every one
-            // speaks.
+            // The one type that states nothing, in the table rather than left out of it: an offset has one written form and `UTC-OFFSET` is the default value type of both properties that take one, so no parameter is a function of its shape.
+            // What this check asserts is that every implementor was considered, not that every one speaks.
             ("UtcOffset", value_statement(&UtcOffset::UTC)),
         ];
         for (named, statement) in stated {
@@ -2315,9 +2133,8 @@ mod tests {
         }
     }
 
-    /// A value type never asks what the property is called: the two accessor levels are named
-    /// on different axes, and section 3.3 asks what a value is and never what it is named. The
-    /// parameters are the half a decoder may read, which is what the zoned readings above do.
+    /// A value type never asks what the property is called: the two accessor levels are named on different axes, and section 3.3 asks what a value is and never what it is named.
+    /// The parameters are the half a decoder may read, which is what the zoned readings above do.
     #[test]
     fn a_decoder_reads_the_parameters_and_never_the_property_name() {
         let property = decorated(&[(b"ENCODING", b"BASE64"), (b"VALUE", b"BINARY")], b"QUJD");
@@ -2331,8 +2148,7 @@ mod tests {
         );
     }
 
-    /// A value this unit cannot read is a diagnostic beside the octets and never an error that
-    /// costs the property: the text is still there, still reachable, and still written back.
+    /// A value this unit cannot read is a diagnostic beside the octets and never an error that costs the property: the text is still there, still reachable, and still written back.
     #[test]
     fn a_value_this_unit_cannot_read_is_a_diagnostic_and_not_a_lost_property() {
         let inline = decorated(&[], b"not base 64!");
