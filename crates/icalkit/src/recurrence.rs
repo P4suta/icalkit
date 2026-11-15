@@ -11,8 +11,8 @@ use crate::internal::core::{Component, Diagnostic, Instant, Item, Meter};
 use crate::internal::dav::TimeRange;
 use crate::internal::query::{Budget, QueryError, Undecided, Zones, expand_component};
 use crate::internal::recur::{
-    OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, SearchCursor, SearchStep,
-    ValueKind,
+    OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, RuleLimit, SearchCursor,
+    SearchStep, UntilClock, ValueKind,
 };
 
 use crate::failure::Issue;
@@ -87,6 +87,15 @@ impl Rule {
     ) -> Result<Occurrences<'a>, Error> {
         let start = instant(dtstart)
             .ok_or_else(|| Error::single("icalkit.recurrence.fractional-dtstart"))?;
+        let valid_until = match self.inner.limit() {
+            RuleLimit::Until {
+                value_kind, clock, ..
+            } => value_kind == ValueKind::DateTime && clock == UntilClock::Utc,
+            RuleLimit::Infinite | RuleLimit::Count(_) => true,
+        };
+        if !valid_until {
+            return Err(Error::single("icalkit.recurrence.invalid-input"));
+        }
         let input = RecurrenceInput::new(
             start,
             ValueKind::DateTime,
@@ -200,7 +209,8 @@ enum OccurrenceSource<'a> {
 }
 
 impl Occurrences<'_> {
-    /// Pull one occurrence. Budget exhaustion is an error and never an end marker.
+    /// Pull one occurrence.
+    /// Budget exhaustion is an error and never an end marker.
     pub fn try_next(&mut self) -> Result<Option<Occurrence>, Error> {
         match &mut self.source {
             OccurrenceSource::Rule(search) => match search.next() {

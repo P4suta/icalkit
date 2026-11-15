@@ -13,6 +13,9 @@ use crate::internal::core::{
 use crate::ResourcePolicy;
 use crate::Session;
 use crate::failure::{Error, Issue};
+use crate::internal::recur::{
+    RecurrenceRule, RuleLimit, RulePart, UntilClock, ValueKind, parse_recur,
+};
 use crate::model::EventRef;
 use crate::recurrence::{Cursor, Occurrences, Window};
 
@@ -100,11 +103,12 @@ pub(crate) fn parse_calendar(
     let mut reader = ContentLineReader::new(bytes, policy.limits.grammar());
     let document = Document::from_tokens(&mut reader, meter, &mut diagnostics)
         .map_err(|_| Error::single("icalkit.parse.resource-limit"))?;
-    audit_document(&document, meter, &mut diagnostics);
+    let recurrence_issues = audit_document(&document, meter, &mut diagnostics);
     let mut issues: Vec<Issue> = diagnostics
         .into_iter()
         .map(Issue::from_diagnostic)
         .collect();
+    issues.extend(recurrence_issues);
     validate_document_shape(&document, &mut issues);
     if issues
         .iter()
@@ -119,14 +123,85 @@ pub(crate) fn parse_calendar(
     })
 }
 
-fn audit_document(document: &Document, meter: &mut Meter, sink: &mut Vec<Diagnostic>) {
+fn audit_document(
+    document: &Document,
+    meter: &mut Meter,
+    sink: &mut Vec<Diagnostic>,
+) -> Vec<Issue> {
+    let mut issues = Vec::new();
     let mut pending: Vec<&Component> = document.components().collect();
     while let Some(component) = pending.pop() {
         if component.kind().is_none() {
             continue;
         }
         component.audit(meter, sink);
+        if !recurrence_rules_are_valid(component, meter, sink) {
+            issues.push(Issue::error("icalkit.validation.invalid-recurrence"));
+        }
         pending.extend(component.items().iter().filter_map(Item::as_component));
+    }
+    issues
+}
+
+fn recurrence_rules_are_valid(
+    component: &Component,
+    meter: &mut Meter,
+    sink: &mut Vec<Diagnostic>,
+) -> bool {
+    let mut valid = true;
+    for property in component
+        .properties()
+        .filter(|property| property.is_named(b"RRULE"))
+    {
+        match property.declared_value_type() {
+            Some(Err(_)) => continue,
+            None | Some(Ok(ValueType::Recur)) => {},
+            Some(Ok(_)) => {
+                valid = false;
+                continue;
+            },
+        }
+        let before = sink.len();
+        let parsed = parse_recur(property.value_text().as_bytes(), meter, sink);
+        if sink.iter().skip(before).any(|diagnostic| {
+            !matches!(diagnostic.severity(), crate::internal::core::Severity::Note)
+        }) {
+            valid = false;
+        }
+        match parsed {
+            Ok(rule) => valid &= recurrence_matches_start(component, &rule),
+            Err(_) => valid = false,
+        }
+    }
+    valid
+}
+
+fn recurrence_matches_start(component: &Component, rule: &RecurrenceRule) -> bool {
+    let Some(start) = read_date_time(component, b"DTSTART") else {
+        return true;
+    };
+    if matches!(start, DateTimeValue::Date(_))
+        && [RulePart::Hour, RulePart::Minute, RulePart::Second]
+            .into_iter()
+            .any(|part| rule.has_part(part))
+    {
+        return false;
+    }
+    let RuleLimit::Until {
+        value_kind, clock, ..
+    } = rule.limit()
+    else {
+        return true;
+    };
+    let observance = component.is_named(b"STANDARD") || component.is_named(b"DAYLIGHT");
+    match start {
+        DateTimeValue::Date(_) => value_kind == ValueKind::Date,
+        DateTimeValue::Local(_) if !observance => {
+            value_kind == ValueKind::DateTime && clock == UntilClock::Floating
+        },
+        DateTimeValue::Local(_) | DateTimeValue::Utc(_) | DateTimeValue::Zoned { .. } => {
+            value_kind == ValueKind::DateTime && clock == UntilClock::Utc
+        },
     }
 }
 
