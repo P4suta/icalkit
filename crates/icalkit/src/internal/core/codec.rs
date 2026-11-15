@@ -542,6 +542,9 @@ impl<'a> DecodeValue<'a> for Period<'a> {
     }
 
     fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
+        if let Some(Err(code)) = property.declared_value_type() {
+            return Err(code);
+        }
         let written = Self::decode_value(property.value_text().as_bytes())?;
         let Some(tzid) = zone_of(property) else {
             return Ok(written);

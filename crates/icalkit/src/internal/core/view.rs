@@ -106,6 +106,9 @@ pub trait DecodeValue<'a>: Sized {
     /// The default is the value's own octets and nothing else, so adding this changed no existing codec.
     /// What an implementation may read is this property's parameters and its value; the property's *name* is not a question a value type is allowed to ask, because the two accessor levels are named on different axes and a decoder that looked at the name would be a property accessor wearing a value type's clothes.
     fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
+        if let Some(Err(code)) = property.declared_value_type() {
+            return Err(code);
+        }
         Self::decode_value(property.value_text().as_bytes())
     }
 }

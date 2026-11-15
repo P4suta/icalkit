@@ -33,7 +33,12 @@ use crate::internal::core::view::{DecodeValue, Geo, TextValue, View};
 /// A [`Property`] owns fresh unfolded octets and not the offsets they were read from, so any span produced here would address a buffer the caller never handed in.
 /// A plausible-looking offset into the wrong buffer is worse than admitting there is none, and the caller holds the property itself in both non-absent arms of a [`View`] anyway.
 fn about_this_property(code: DiagnosticCode) -> Diagnostic {
-    Diagnostic::new(code, Severity::Violation, Location::NOWHERE)
+    let severity = if code == DiagnosticCode::UnknownValueType {
+        Severity::Note
+    } else {
+        Severity::Violation
+    };
+    Diagnostic::new(code, severity, Location::NOWHERE)
 }
 
 impl Property {
