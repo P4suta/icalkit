@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::internal::core::{
-    Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, DiagnosticCode,
-    Document, Duration, Item, Meter, Property, PropertyId, TextValue, ValueType,
+    Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
+    DiagnosticCode, Document, Duration, Item, Meter, Property, PropertyId, TextValue, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -150,9 +150,68 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time"));
     }
     if let Some(calendar) = first {
+        validate_component_structure(calendar, issues);
         validate_required_starts(calendar, issues);
         validate_alarms(calendar, issues);
         validate_time_relationships(calendar, issues);
+    }
+}
+
+fn validate_component_structure(component: &Component, issues: &mut Vec<Issue>) {
+    let Some(kind) = component.kind() else {
+        return;
+    };
+    let missing_child = match kind {
+        ComponentKind::Calendar => component.components().next().is_none(),
+        ComponentKind::TimeZone => !component.components().any(|child| {
+            matches!(
+                child.kind(),
+                Some(ComponentKind::Standard | ComponentKind::Daylight)
+            )
+        }),
+        ComponentKind::Event
+        | ComponentKind::Todo
+        | ComponentKind::Journal
+        | ComponentKind::FreeBusy
+        | ComponentKind::Standard
+        | ComponentKind::Daylight
+        | ComponentKind::Alarm => false,
+    };
+    if missing_child {
+        issues.push(Issue::error(
+            "icalkit.validation.invalid-component-structure",
+        ));
+    }
+    for child in component.components() {
+        let Some(child_kind) = child.kind() else {
+            continue;
+        };
+        let allowed = match kind {
+            ComponentKind::Calendar => matches!(
+                child_kind,
+                ComponentKind::Event
+                    | ComponentKind::Todo
+                    | ComponentKind::Journal
+                    | ComponentKind::FreeBusy
+                    | ComponentKind::TimeZone
+            ),
+            ComponentKind::Event | ComponentKind::Todo => child_kind == ComponentKind::Alarm,
+            ComponentKind::TimeZone => matches!(
+                child_kind,
+                ComponentKind::Standard | ComponentKind::Daylight
+            ),
+            ComponentKind::Journal
+            | ComponentKind::FreeBusy
+            | ComponentKind::Standard
+            | ComponentKind::Daylight
+            | ComponentKind::Alarm => false,
+        };
+        if !allowed {
+            issues.push(Issue::error(
+                "icalkit.validation.invalid-component-structure",
+            ));
+        }
+        validate_component_structure(child, issues);
     }
 }
 

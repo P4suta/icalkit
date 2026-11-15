@@ -35,7 +35,7 @@
 //! ```
 //! use icalkit::interop::{Import, RfcRepairV1};
 //!
-//! let input = b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//example//EN\nEND:VCALENDAR\n";
+//! let input = b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//example//EN\nBEGIN:VTODO\nUID:one@example.test\nDTSTAMP:20260814T000000Z\nEND:VTODO\nEND:VCALENDAR\n";
 //! let imported = Import::read(input)?;
 //! let normalized = imported.normalize(RfcRepairV1)?;
 //! assert_eq!(imported.as_bytes(), input);

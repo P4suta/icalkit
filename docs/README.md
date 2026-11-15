@@ -63,7 +63,7 @@ The original import never changes.
 ```rust
 use icalkit::interop::{Import, RfcRepairV1};
 
-let input = b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//example//EN\nEND:VCALENDAR\n";
+let input = b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//example//EN\nBEGIN:VTODO\nUID:one@example.test\nDTSTAMP:20260814T000000Z\nEND:VTODO\nEND:VCALENDAR\n";
 let imported = Import::read(input)?;
 let normalization = imported.normalize(RfcRepairV1)?;
 
