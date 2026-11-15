@@ -1130,9 +1130,9 @@ fn candidate_recipe_violations(justfile: &str, hooks: &str) -> Vec<String> {
     violations
 }
 
-/// Keep current-facing status documents separate from the historical milestone narrative.
+/// Keep implementation status separate from historical milestone labels.
 fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) -> Vec<String> {
-    const LEDGER: &str = "## Current closure ledger — 2026-08-15";
+    const STATUS_HEADER: &str = "## Maintained implementation";
     const RETIRED_ROADMAP_PROSE: &[&str] = &[
         "still owed: a hostile input of 200,000",
         "which it currently is not",
@@ -1142,9 +1142,9 @@ fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) ->
     ];
 
     let mut violations = Vec::new();
-    if !roadmap.contains(LEDGER) {
+    if !roadmap.contains(STATUS_HEADER) {
         violations.push(format!(
-            "ROADMAP.md: missing current closure marker `{LEDGER}`"
+            "ROADMAP.md: missing maintained implementation marker `{STATUS_HEADER}`"
         ));
     }
     for stale in RETIRED_ROADMAP_PROSE {
@@ -4291,7 +4291,7 @@ name = \"icalkit\"
 
     #[test]
     fn current_status_rejects_historical_debt_as_live_work() {
-        let current_roadmap = "## Current closure ledger — 2026-08-15\n";
+        let current_roadmap = "## Maintained implementation\n";
         assert_eq!(
             closure_status_violations(
                 current_roadmap,
@@ -4309,7 +4309,7 @@ name = \"icalkit\"
         assert!(
             violations
                 .iter()
-                .any(|violation| violation.contains("missing current closure marker"))
+                .any(|violation| violation.contains("missing maintained implementation marker"))
         );
         assert!(
             violations
