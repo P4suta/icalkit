@@ -17,6 +17,7 @@ PRODID:-//icalkit protocol tests//EN\r\n\
 BEGIN:VEVENT\r\n\
 UID:one@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
+DTSTART:20260814T090000Z\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
 

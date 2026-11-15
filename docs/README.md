@@ -1,6 +1,4 @@
-# icalkit
-
-[![CI](https://github.com/P4suta/icalkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/ci.yml) [![CodeQL](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml) ![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-blue) [![MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../LICENSE)
+# Calendar workflows with icalkit
 
 A pure-Rust, sans-I/O calendaring stack for iCalendar, recurrence, time zones, iTIP scheduling, and CalDAV.
 The stack targets RFC 5545 for iCalendar.
@@ -38,6 +36,7 @@ PRODID:-//example//EN\r\n\
 BEGIN:VEVENT\r\n\
 UID:planning@example.test\r\n\
 DTSTAMP:20260814T000000Z\r\n\
+DTSTART:20260815T090000Z\r\n\
 SUMMARY:Planning\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
@@ -83,7 +82,7 @@ Dropping the editor rolls back.
 Untouched content lines keep their original octets.
 
 ```rust
-# let bytes = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:planning@example.test\r\nDTSTAMP:20260814T000000Z\r\nSUMMARY:Planning\r\nX-COLOR:plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+# let bytes = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:planning@example.test\r\nDTSTAMP:20260814T000000Z\r\nDTSTART:20260815T090000Z\r\nSUMMARY:Planning\r\nX-COLOR:plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 let mut calendar = icalkit::Calendar::parse(bytes)?;
 let mut edit = calendar.edit();
 edit.set_summary("planning@example.test", "Revised planning")?;
@@ -92,7 +91,7 @@ assert!(calendar.to_bytes().windows(12).any(|part| part == b"X-COLOR:plum"));
 # Ok::<(), icalkit::Error>(())
 ```
 
-## DST-aware recurrence
+## Recurrence across daylight saving time
 
 Jiff's `Date`, `DateTime`, `Time`, `Weekday`, `Timestamp`, and `SignedDuration` are the public time vocabulary.
 `IcalDateTime` adds the iCalendar-only `DATE`/floating/UTC/zoned distinctions and leap-second evidence.
@@ -148,7 +147,7 @@ It doesn't trust email `From` as a calendar identity.
 Authenticate the envelope sender independently of the email `From` field.
 Pass only the authenticated envelope sender as `Actor` when reviewing the message.
 
-## CalDAV sync and server workflows
+## Calendar synchronization and server workflows
 
 CalDAV is a state machine, not an HTTP client.
 A client `Operation<T>` yields an owned `WireRequest`, accepts a `WireResponse`, and finishes as a typed result.
@@ -214,5 +213,6 @@ Contributors must reduce and anonymize real-client captures before adding them t
 
 ## License
 
-Dual-licensed under the [MIT License](../LICENSES/MIT.txt) or the [Apache License, Version 2.0](../LICENSES/Apache-2.0.txt), at your option.
-The repository is [REUSE](https://reuse.software/)-compliant.
+The license expression is `MIT OR Apache-2.0`.
+The [license texts](../LICENSES/) describe both choices.
+The repository also checks [copyright and licensing information](https://reuse.software/spec/).

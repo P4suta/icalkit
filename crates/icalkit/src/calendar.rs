@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::internal::core::{
-    Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, Document, Item,
-    Meter, Property, PropertyId, TextValue,
+    Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic, DiagnosticCode,
+    Document, Item, Meter, Property, PropertyId, TextValue,
 };
 
 use crate::ResourcePolicy;
@@ -146,6 +146,32 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_date_times_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time"));
     }
+    if let Some(calendar) = first {
+        validate_required_starts(calendar, issues);
+    }
+}
+
+fn validate_required_starts(calendar: &Component, issues: &mut Vec<Issue>) {
+    let has_method = has_property(calendar, b"METHOD");
+    for component in calendar.components() {
+        let is_event = component.is_named(b"VEVENT");
+        let is_todo = component.is_named(b"VTODO");
+        let is_recurring_kind = is_event || is_todo || component.is_named(b"VJOURNAL");
+        let requires_start = (is_event && !has_method)
+            || (is_todo && has_property(component, b"DURATION"))
+            || (is_recurring_kind && has_property(component, b"RRULE"));
+        if requires_start && !has_property(component, b"DTSTART") {
+            issues.push(Issue::error(
+                DiagnosticCode::MissingRequiredProperty.as_str(),
+            ));
+        }
+    }
+}
+
+fn has_property(component: &Component, name: &[u8]) -> bool {
+    component
+        .properties()
+        .any(|property| property.is_named(name))
 }
 
 fn known_text_is_utf8(component: &Component) -> bool {

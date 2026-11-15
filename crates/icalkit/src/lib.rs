@@ -11,16 +11,17 @@
 //!       -> recurrence / scheduling / CalDAV
 //! ```
 //!
-//! Compatibility repair never runs implicitly. Use an [`Engine`] session when several
-//! operations must share one aggregate resource budget or a caller-supplied time-zone database.
+//! Compatibility repair never runs implicitly.
+//! Use an [`Engine`] session when several operations must share one aggregate resource budget or a caller-supplied time-zone database.
 //!
 //! # Strict parsing
 //!
-//! [`Calendar::parse`] is the secure-default shorthand. Standards errors prevent promotion;
-//! notes and valid unknown extensions survive.
+//! [`Calendar::parse`] is the secure-default shorthand.
+//! Standards errors prevent promotion.
+//! Notes and valid unknown extensions survive.
 //!
 //! ```
-//! # const BYTES: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20260814T000000Z\r\nSUMMARY:Planning\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+//! # const BYTES: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20260814T000000Z\r\nDTSTART:20260815T090000Z\r\nSUMMARY:Planning\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 //! let calendar = icalkit::Calendar::parse(BYTES)?;
 //! assert_eq!(calendar.events().next().unwrap().uid(), "one@example.test");
 //! # Ok::<(), icalkit::Error>(())
@@ -28,8 +29,8 @@
 //!
 //! # Explicit normalization
 //!
-//! [`interop::Import`] retains the admitted input unchanged. A versioned profile produces a
-//! separate output and reports every repair.
+//! [`interop::Import`] retains the admitted input unchanged.
+//! A versioned profile produces a separate output and reports every repair.
 //!
 //! ```
 //! use icalkit::interop::{Import, RfcRepairV1};
@@ -45,11 +46,11 @@
 //!
 //! # Transactional editing
 //!
-//! [`Calendar::edit`] changes a private copy. Drop rolls back; [`Editor::commit`] validates
-//! before atomically replacing the calendar.
+//! [`Calendar::edit`] changes a private copy.
+//! Drop rolls back; [`Editor::commit`] validates before atomically replacing the calendar.
 //!
 //! ```
-//! # const BYTES: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20260814T000000Z\r\nSUMMARY:Planning\r\nX-COLOR:plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+//! # const BYTES: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20260814T000000Z\r\nDTSTART:20260815T090000Z\r\nSUMMARY:Planning\r\nX-COLOR:plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 //! let mut calendar = icalkit::Calendar::parse(BYTES)?;
 //! let mut edit = calendar.edit();
 //! edit.set_summary("one@example.test", "Revised")?;
@@ -60,9 +61,8 @@
 //!
 //! # DST-aware recurrence
 //!
-//! Calendar-aware workflows resolve `TZID` through [`time::ZoneDatabase`], preserving
-//! gap/fold, provenance, and coverage. The standalone recurrence API is a lazy absolute-time
-//! stream with a mandatory half-open window and a fallible pull.
+//! Calendar-aware workflows resolve `TZID` through [`time::ZoneDatabase`], preserving gap/fold, provenance, and coverage.
+//! The standalone recurrence API is a lazy absolute-time stream with a mandatory half-open window and a fallible pull.
 //!
 //! ```
 //! use icalkit::recurrence::{Rule, Window};
@@ -83,8 +83,8 @@
 //!
 //! # iTIP scheduling
 //!
-//! Inbound scheduling uses a borrowed read-review-authorize-apply capability. Outbound builders
-//! require the caller's timestamp and never read a clock.
+//! Inbound scheduling uses a borrowed read-review-authorize-apply capability.
+//! Outbound builders require the caller's timestamp and never read a clock.
 //!
 //! ```
 //! use icalkit::scheduling::Message;
@@ -98,8 +98,8 @@
 //!
 //! # CalDAV sync and server workflows
 //!
-//! CalDAV is sans-I/O. Client operations follow `next_request -> accept -> finish`; server
-//! operations mirror them with `next_need -> supply -> finish`.
+//! CalDAV is sans-I/O.
+//! Client operations follow `next_request -> accept -> finish`; server operations mirror them with `next_need -> supply -> finish`.
 //!
 //! ```
 //! use icalkit::caldav::{Client, SyncToken};
@@ -116,9 +116,8 @@
 
 extern crate alloc;
 
-// Root-local dependency adapter for the XML layer, whose source is also compiled by the
-// standalone layering gate and the private conformance helper. Keeping this spelling stable
-// lets that layer name only its metering dependency and never its protocol parent.
+// Root-local dependency adapter for the XML layer, whose source is also compiled by the standalone layering gate and the private conformance helper.
+// Keeping this spelling stable lets that layer name only its metering dependency and never its protocol parent.
 extern crate self as ical_core;
 #[allow(unused_imports)]
 pub(crate) use crate::internal::core::{LimitExceeded, Limits, Meter};
