@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The inner-loop toolchain (mirrors what CI installs). CI jobs that pin a different
-# channel (the msrv job, a beta run) override this with RUSTUP_TOOLCHAIN, which takes
-# precedence over this file. The no_std calendar core is cross-built for
-# `thumbv7em-none-eabi`; add that target with `rustup target add` (CI does).
+# Development and CI use the same exact toolchain as mise.toml.
+# Candidate API snapshots and MSRV checks select their own toolchains.
+# Target checks install thumbv7em-none-eabi and wasm32-unknown-unknown on demand.
 
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

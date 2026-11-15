@@ -22,6 +22,13 @@ Development is test-driven: add or identify a failing test, make the smallest co
 Conventional Commits describe the final change.
 Review generated files, public API snapshots, and conformance evidence with the source that changes them.
 
+The development Rust version is an exact pin shared by `mise.toml` and `rust-toolchain.toml`.
+The declared MSRV remains a separate compatibility promise.
+Dependency-resolving verification recipes use `--locked` and reject changes to the committed dependency resolution.
+The ordinary test commands run the standalone core without default features before testing the workspace.
+`just repository` enforces the toolchain pins, standalone test inventory, and lockfile flags in the maintained recipes.
+The development configuration pre-commit hook runs the same repository gate as ordinary CI.
+
 The repository uses squash merging so one reviewed pull request becomes one linear commit.
 Repository settings prohibit merge commits and rebase merges and delete merged branches automatically.
 A branch must be current with `main` before it can merge.

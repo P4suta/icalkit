@@ -3,20 +3,34 @@
 ## Setup
 
 ```sh
-mise install        # toolchain and gate tooling
-mise run hooks      # install the git hooks
-just                # list the available commands
+mise trust
+mise install
+mise run hooks
+mise x -- just
 ```
+
+`mise.toml` and `rust-toolchain.toml` select the same exact development toolchain.
+`mise trust` approves the project configuration before installing tools or running tasks.
+Inspect configuration changes before trusting them.
+The [mise Rust documentation](https://mise.jdx.dev/lang/rust.html) explains how mise selects the toolchain through `RUSTUP_TOOLCHAIN`.
+The declared MSRV remains separate from the development toolchain.
 
 ## The loop
 
 ```sh
-just check          # fast deterministic gates
-just ci             # full compatibility checks available on this host
+mise x -- just check
+mise x -- just ci
 ```
 
 The pre-push hook runs `just check`, matching the ordinary Linux CI inventory.
 The ordinary gate includes workspace tests and doctests, allocation and documentation checks, strict linting, dependency policy, and repository checks.
+`just test-core` also runs the standalone library tests and doctests without default features.
+Both `just test` and `just test-ci` include `test-core`, so workspace feature unification can't hide a dependency on the default adapters.
+Clippy checks the standalone library without default features in its own invocation.
+Build, lint, test, and documentation recipes use [Cargo's `--locked` option](https://doc.rust-lang.org/cargo/commands/cargo-test.html#manifest-options) to reject a missing or stale `Cargo.lock`.
+Review dependency updates and their lockfile diff together.
+`just repository` rejects moving or mismatched Rust versions, missing standalone test coverage, and unlocked dependency-resolving recipes.
+The pre-commit hook runs that gate when development configuration changes.
 `just ci` also runs feature combinations, target builds, nightly API snapshots, and MSRV verification.
 The candidate qualification workflow runs those checks and the Windows and macOS tests on one complete commit ID.
 It also verifies the actual CI decision core with Kani 0.68.0 and the declared rejecting probe.

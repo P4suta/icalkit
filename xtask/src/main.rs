@@ -241,6 +241,7 @@ const CI_POLICY_ACTION: &str =
 const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
 
 mod ci;
+mod development;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
     CiJob, CiPhase, CiResults, JobState, ObservedJob, REJECTING_PROBE, REQUIRED_PROOFS,
@@ -477,6 +478,7 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
         &fs::read_to_string(workspace.join(JUSTFILE))?,
         &fs::read_to_string(workspace.join("lefthook.yml"))?,
     ));
+    violations.extend(development::collect(&workspace)?);
     Ok(violations)
 }
 
