@@ -9,6 +9,12 @@ A calendar requires a component, and a time zone requires a standard or daylight
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
 Unrecognized components keep their content without applying known component semantics inside them.
 
+The URI codec checks the [generic component grammar](https://www.rfc-editor.org/rfc/rfc3986.html#section-3) for reading and writing.
+Authority checks cover user information, registered hosts, address literals, and decimal ports.
+Paths, queries, and fragments use their defined character sets.
+Address literals use the URI syntax restored by [RFC 9844](https://www.rfc-editor.org/rfc/rfc9844.html#section-3).
+Valid spellings keep their bytes, and lossless storage preserves malformed URI text without granting a typed URI view.
+
 Known text properties follow the [text grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) after content-line unfolding.
 Strict promotion rejects undefined escapes, dangling backslashes, unescaped delimiters, invalid UTF-8, and incompatible or repeated `VALUE` declarations.
 `CATEGORIES` and `RESOURCES` accept comma separators under their property definitions.

@@ -31,6 +31,7 @@ use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Write as _};
+use core::net::Ipv6Addr;
 use core::str;
 
 use crate::internal::core::{DiagnosticCode, TEXT_ESCAPES};
@@ -1066,40 +1067,19 @@ impl EncodeValue for BinaryValue<'_> {
 // Identifiers and addresses, section 3.3.13 and section 3.3.3
 // ---------------------------------------------------------------------------------------
 
-/// Whether `octet` is one RFC 3986 section 2 gives a URI a place for.
-///
-/// The union of `unreserved`, `gen-delims`, `sub-delims` and the `%` that opens an escape.
-/// Everything else is excluded, a space and every octet past ASCII included: RFC 5545 section 3.3.13 says a value of this type is a URI, and a URI carrying either is one that was meant to be percent-encoded and was not.
-const fn is_uri_octet(octet: u8) -> bool {
+const fn is_uri_unreserved(octet: u8) -> bool {
+    octet.is_ascii_alphanumeric() || matches!(octet, b'-' | b'.' | b'_' | b'~')
+}
+
+const fn is_uri_sub_delimiter(octet: u8) -> bool {
     matches!(
         octet,
-        b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'.'
-            | b'_'
-            | b'~'
-            | b':'
-            | b'/'
-            | b'?'
-            | b'#'
-            | b'['
-            | b']'
-            | b'@'
-            | b'!'
-            | b'$'
-            | b'&'
-            | b'\''
-            | b'('
-            | b')'
-            | b'*'
-            | b'+'
-            | b','
-            | b';'
-            | b'='
-            | b'%'
+        b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
     )
+}
+
+const fn is_uri_pchar(octet: u8) -> bool {
+    is_uri_unreserved(octet) || is_uri_sub_delimiter(octet) || matches!(octet, b'%' | b':' | b'@')
 }
 
 /// Whether `bytes` is RFC 3986 section 3.1's `scheme`.
@@ -1113,10 +1093,12 @@ fn is_scheme(bytes: &[u8]) -> bool {
             .all(|&octet| octet.is_ascii_alphanumeric() || matches!(octet, b'+' | b'-' | b'.'))
 }
 
-/// The octets before the first `:`, or `None` when there is none.
-fn scheme_of(bytes: &[u8]) -> Option<&[u8]> {
-    let separator = bytes.iter().position(|&octet| octet == b':')?;
-    bytes.get(..separator)
+fn split_uri_at(bytes: &[u8], delimiter: u8) -> (&[u8], Option<&[u8]>) {
+    let Some(at) = bytes.iter().position(|octet| *octet == delimiter) else {
+        return (bytes, None);
+    };
+    let (before, after) = bytes.split_at(at);
+    (before, after.get(1..))
 }
 
 /// Whether every `%` in `bytes` opens RFC 3986 section 2.1's `pct-encoded`.
@@ -1139,9 +1121,85 @@ fn percents_are_escapes(bytes: &[u8]) -> bool {
 /// A scheme is what makes it one, and it is checked rather than assumed: a `CAL-ADDRESS` with a bare mail address where a `mailto:` belongs is the most common malformed `ATTENDEE` in the corpus, and reading it as a URI would let a scheduling reply match nothing at all.
 /// Nothing here is normalized — the scheme's case, the percent-encoding and the path's case are all a caller's to compare — because rewriting one is how a `mailto:` stops matching the `ATTENDEE` it was written for.
 fn is_uri_text(bytes: &[u8]) -> bool {
-    scheme_of(bytes).is_some_and(is_scheme)
-        && bytes.iter().copied().all(is_uri_octet)
-        && percents_are_escapes(bytes)
+    if !percents_are_escapes(bytes) {
+        return false;
+    }
+    let (scheme, body) = split_uri_at(bytes, b':');
+    let Some(body) = body.filter(|_| is_scheme(scheme)) else {
+        return false;
+    };
+    let (before_fragment, fragment) = split_uri_at(body, b'#');
+    let (hierarchy, query) = split_uri_at(before_fragment, b'?');
+    let valid_tail = |tail: &[u8]| {
+        tail.iter()
+            .copied()
+            .all(|octet| is_uri_pchar(octet) || matches!(octet, b'/' | b'?'))
+    };
+    fragment.is_none_or(valid_tail) && query.is_none_or(valid_tail) && is_uri_hierarchy(hierarchy)
+}
+
+fn is_uri_hierarchy(bytes: &[u8]) -> bool {
+    let valid_path = |path: &[u8]| {
+        path.iter()
+            .copied()
+            .all(|octet| is_uri_pchar(octet) || octet == b'/')
+    };
+    if let Some(authority_and_path) = bytes.strip_prefix(b"//") {
+        let (authority, path) = split_uri_at(authority_and_path, b'/');
+        is_uri_authority(authority) && path.is_none_or(valid_path)
+    } else {
+        valid_path(bytes)
+    }
+}
+
+fn is_uri_authority(bytes: &[u8]) -> bool {
+    let (userinfo, host_and_port) = split_uri_at(bytes, b'@');
+    let host_and_port = if let Some(host_and_port) = host_and_port {
+        if !userinfo.iter().copied().all(|octet| {
+            is_uri_unreserved(octet) || is_uri_sub_delimiter(octet) || matches!(octet, b'%' | b':')
+        }) {
+            return false;
+        }
+        host_and_port
+    } else {
+        bytes
+    };
+    if let Some(bracketed) = host_and_port.strip_prefix(b"[") {
+        let (literal, suffix) = split_uri_at(bracketed, b']');
+        let Some(suffix) = suffix else {
+            return false;
+        };
+        is_uri_ip_literal(literal)
+            && (suffix.is_empty()
+                || suffix
+                    .strip_prefix(b":")
+                    .is_some_and(|port| port.iter().all(u8::is_ascii_digit)))
+    } else {
+        let (host, port) = split_uri_at(host_and_port, b':');
+        host.iter()
+            .copied()
+            .all(|octet| is_uri_unreserved(octet) || is_uri_sub_delimiter(octet) || octet == b'%')
+            && port.is_none_or(|port| port.iter().all(u8::is_ascii_digit))
+    }
+}
+
+fn is_uri_ip_literal(bytes: &[u8]) -> bool {
+    if let Some(future) = bytes
+        .strip_prefix(b"v")
+        .or_else(|| bytes.strip_prefix(b"V"))
+    {
+        let (version, address) = split_uri_at(future, b'.');
+        !version.is_empty()
+            && version.iter().all(u8::is_ascii_hexdigit)
+            && address.is_some_and(|address| {
+                !address.is_empty()
+                    && address.iter().copied().all(|octet| {
+                        is_uri_unreserved(octet) || is_uri_sub_delimiter(octet) || octet == b':'
+                    })
+            })
+    } else {
+        str::from_utf8(bytes).is_ok_and(|address| address.parse::<Ipv6Addr>().is_ok())
+    }
 }
 
 impl<'a> DecodeValue<'a> for UriValue<'a> {
