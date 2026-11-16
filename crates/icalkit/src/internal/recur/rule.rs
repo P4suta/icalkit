@@ -4,21 +4,15 @@
 
 //! The `RECUR` value type of RFC 5545 section 3.3.10, as a type rather than as text.
 //!
-//! Every invariant this file can establish is established once, at construction, and never
-//! revisited by anything downstream. `INTERVAL` is non-zero because [`NonZeroU32`] is the
-//! type. A `BYDAY` ordinal is within ±53 and never zero, because [`WeekdayNum::new`] refuses
-//! the first and [`NonZeroI8`] forbids the second. `BYSETPOS` is empty unless another `BYxxx`
-//! part is present, because [`RecurrenceRuleBuilder::build`] refuses the pair. An expansion
-//! engine that had to re-check any of those would be a second opinion about the same
-//! question, and the two would eventually disagree.
+//! Every invariant this file can establish is established once, at construction, and never revisited by anything downstream.
+//! `INTERVAL` is non-zero because [`NonZeroU32`] is the type.
+//! A `BYDAY` ordinal is within ±53 and never zero, because [`WeekdayNum::new`] refuses the first and [`NonZeroI8`] forbids the second.
+//! `BYSETPOS` is empty unless another `BYxxx` part is present, because [`RecurrenceRuleBuilder::build`] refuses the pair.
+//! An expansion engine that had to re-check any of those would be a second opinion about the same question, and the two would eventually disagree.
 //!
-//! What is *not* established here is anything a period would answer. `BYMONTHDAY=31` is a
-//! legal rule that names no day of February, and RFC 5545 section 3.3.10 says such an
-//! instance is ignored rather than moved; that is the expansion's answer per candidate, not a
-//! construction error, and `docs/adr/0011` makes the distinction binding. Values that are out
-//! of range outright — `BYMONTHDAY=32`, which names no day of any month — are dropped by the
-//! decoder with a diagnostic and never reach a builder at all, because `docs/adr/0001` forbids
-//! discarding a component over one bad part.
+//! What is *not* established here is anything a period would answer.
+//! `BYMONTHDAY=31` is a legal rule that names no day of February, and RFC 5545 section 3.3.10 says such an instance is ignored rather than moved; that is the expansion's answer per candidate, not a construction error, and `docs/adr/0011` makes the distinction binding.
+//! Values that are out of range outright — `BYMONTHDAY=32`, which names no day of any month — are dropped by the decoder with a diagnostic and never reach a builder at all, because `docs/adr/0001` forbids discarding a component over one bad part.
 
 use alloc::vec::Vec;
 use core::error::Error;
@@ -31,8 +25,7 @@ use crate::internal::recur::table::PartsPresent;
 
 /// How often the base cadence repeats, from RFC 5545 section 3.3.10's `freq` production.
 ///
-/// Not `#[non_exhaustive]`: section 3.3.10 closes the set at seven, and marking it open would
-/// tax every downstream `match` forever for a variant that cannot arrive.
+/// Not `#[non_exhaustive]`: section 3.3.10 closes the set at seven, and marking it open would tax every downstream `match` forever for a variant that cannot arrive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Freq {
     /// `SECONDLY`.
@@ -97,10 +90,8 @@ impl Freq {
 
 /// One `BYxxx` rule part, named so the expand/limit table can be indexed by it.
 ///
-/// `BYSETPOS` is a row of that table and is nonetheless not a `BYxxx` part in the sense the
-/// other eight are: it selects from the candidate set the others produced, after every one of
-/// them has run. It is listed here because the RFC lists it, and the engine that applies the
-/// other eight must not apply this one in the same pass.
+/// `BYSETPOS` is a row of that table and is nonetheless not a `BYxxx` part in the sense the other eight are: it selects from the candidate set the others produced, after every one of them has run.
+/// It is listed here because the RFC lists it, and the engine that applies the other eight must not apply this one in the same pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RulePart {
     /// `BYMONTH`.
@@ -158,9 +149,7 @@ impl RulePart {
 
     /// This part's bit in a [`PartsPresent`] set.
     ///
-    /// Written as literals rather than as `1 << index()`: a shift is arithmetic, this
-    /// workspace denies arithmetic that can overflow, and a checked shift in a `const fn`
-    /// buys nothing a nine-arm match does not already give.
+    /// Written as literals rather than as `1 << index()`: a shift is arithmetic, this workspace denies arithmetic that can overflow, and a checked shift in a `const fn` buys nothing a nine-arm match does not already give.
     #[must_use]
     pub const fn bit(self) -> u16 {
         match self {
@@ -195,10 +184,8 @@ impl RulePart {
 
 /// Whether an instant is written as a `DATE` or as a `DATE-TIME`.
 ///
-/// Deliberately narrower than `crate::internal::core::ValueType`, which has fourteen variants. Only these
-/// two can be the value type of a `DTSTART` or an `UNTIL`, and a two-variant enum makes the
-/// other twelve unrepresentable at the one place RFC 5545 section 3.3.10 requires the two to
-/// agree.
+/// Deliberately narrower than `crate::internal::core::ValueType`, which has fourteen variants.
+/// Only these two can be the value type of a `DTSTART` or an `UNTIL`, and a two-variant enum makes the other twelve unrepresentable at the one place RFC 5545 section 3.3.10 requires the two to agree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ValueKind {
     /// RFC 5545 section 3.3.4, a date with no clock.
@@ -209,9 +196,8 @@ pub enum ValueKind {
 
 /// One entry of `BYDAY`: a weekday, optionally counted from one end of a scope.
 ///
-/// `-1MO` is the last Monday, `2MO` is the second. Which scope it counts within is not a
-/// property of this value — RFC 5545 section 3.3.10's Note 1 and Note 2 decide that from the
-/// frequency and from which other parts are present, and `crate::internal::recur::table` resolves it.
+/// `-1MO` is the last Monday, `2MO` is the second.
+/// Which scope it counts within is not a property of this value — RFC 5545 section 3.3.10's Note 1 and Note 2 decide that from the frequency and from which other parts are present, and `crate::internal::recur::table` resolves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WeekdayNum {
     /// The ordinal, within ±53 and never zero.
@@ -223,9 +209,7 @@ pub struct WeekdayNum {
 impl WeekdayNum {
     /// The largest ordinal RFC 5545 section 3.3.10 admits, in either direction.
     ///
-    /// A year has at most 53 occurrences of a weekday, so 53 is the ceiling the widest scope
-    /// can justify; the narrower scopes justify less and are checked per candidate rather than
-    /// here, because the scope is not known at construction.
+    /// A year has at most 53 occurrences of a weekday, so 53 is the ceiling the widest scope can justify; the narrower scopes justify less and are checked per candidate rather than here, because the scope is not known at construction.
     pub const MAX_ORDINAL: i8 = 53;
 
     /// A `BYDAY` entry, or `None` when the ordinal is outside ±53.
@@ -254,19 +238,16 @@ impl WeekdayNum {
 
 /// The values one `BYxxx` part carries, in the order the file wrote them.
 ///
-/// Order is preserved rather than sorted. RFC 5545 section 3.3.10 does not require a sorted
-/// list and `docs/adr/0001` requires the original text to survive a round trip, so sorting
-/// here would be an opinion this crate is not entitled to have; the expansion sorts the
-/// candidates it produces, which is a different question.
+/// Order is preserved rather than sorted.
+/// RFC 5545 section 3.3.10 does not require a sorted list and `docs/adr/0001` requires the original text to survive a round trip, so sorting here would be an opinion this crate is not entitled to have; the expansion sorts the candidates it produces, which is a different question.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByList<T>(Vec<T>);
 
 impl<T> ByList<T> {
     /// An empty list, which is what "the part is absent" means everywhere in this crate.
     ///
-    /// Absent and empty are deliberately the same state. RFC 5545 section 3.3.10's grammar
-    /// gives no way to write a present-but-empty part, so a second state would be one nothing
-    /// can produce and everything would have to match on.
+    /// Absent and empty are deliberately the same state.
+    /// RFC 5545 section 3.3.10's grammar gives no way to write a present-but-empty part, so a second state would be one nothing can produce and everything would have to match on.
     #[must_use]
     pub const fn empty() -> Self {
         Self(Vec::new())
@@ -307,30 +288,21 @@ impl<T> From<Vec<T>> for ByList<T> {
 
 /// Which clock an `UNTIL` was written on, and therefore which clock it compares in.
 ///
-/// RFC 5545 section 3.3.10 requires `UNTIL` to be a UTC date-time whenever `DTSTART` is a
-/// date-time with a `TZID`, and a date whenever `DTSTART` is a date. Real files violate that
-/// constantly — Google has emitted a floating `UNTIL` against a zoned `DTSTART` — so the
-/// violation cannot be refused and the comparison still has to happen somewhere.
+/// RFC 5545 section 3.3.10 requires `UNTIL` to be a UTC date-time whenever `DTSTART` is a date-time with a `TZID`, and a date whenever `DTSTART` is a date.
+/// Real files violate that constantly — Google has emitted a floating `UNTIL` against a zoned `DTSTART` — so the violation cannot be refused and the comparison still has to happen somewhere.
 ///
-/// This field is what stops that comparison from happening in an unnamed clock, which is where
-/// every off-by-one-day bug in this area lives. [`UntilClock::Utc`] means the file wrote a
-/// trailing `Z` and the instant beside it is that UTC instant. [`UntilClock::Floating`] means
-/// it did not, and the instant beside it is the wall-clock reading *interpreted at UTC* —
-/// correct only if the caller resolved `DTSTART` the same way, which is exactly the
-/// normalization `docs/adr/0003` makes the caller's step.
+/// This field is what stops that comparison from happening in an unnamed clock, which is where every off-by-one-day bug in this area lives.
+/// [`UntilClock::Utc`] means the file wrote a trailing `Z` and the instant beside it is that UTC instant.
+/// [`UntilClock::Floating`] means it did not, and the instant beside it is the wall-clock reading *interpreted at UTC* —
+/// correct only if the caller resolved `DTSTART` the same way, which is exactly the normalization `docs/adr/0003` makes the caller's step.
 ///
 /// M2 settled what that normalization is, and one sentence above is narrower than the answer.
-/// The timeline this crate walks for a **zoned** series is the series' own wall clock projected
-/// onto UTC, not the UTC timeline: `ical-tz` projects `DTSTART`, `UNTIL`, every `RDATE`,
-/// `EXDATE` and `RECURRENCE-ID` onto it before the search, and reads each cadence key back
-/// through the zone afterwards, which is what keeps a daily 09:00 series at 09:00 across a
-/// daylight saving transition. For a floating series and for a UTC series that projection is
-/// the identity and [`UntilClock::Utc`]'s reading above holds verbatim. For a zoned one it is
-/// not: the instant beside the variant is the projection, and the variant records that the
-/// *file* wrote `Z`. A `Z`-terminated `UNTIL` handed over unprojected cuts a zoned series off
-/// an hour early or late for half the year. `crate::internal::tz::seam` states the contract in full, and a
-/// floating `UNTIL` against a zoned `DTSTART` now travels on
-/// `DiagnosticCode::RecurrenceUntilNotUtc` rather than only being named by this type.
+/// The timeline this crate walks for a **zoned** series is the series' own wall clock projected onto UTC, not the UTC timeline: `ical-tz` projects `DTSTART`, `UNTIL`, every `RDATE`,
+/// `EXDATE` and `RECURRENCE-ID` onto it before the search, and reads each cadence key back through the zone afterwards, which is what keeps a daily 09:00 series at 09:00 across a daylight saving transition.
+/// For a floating series and for a UTC series that projection is the identity and [`UntilClock::Utc`]'s reading above holds verbatim.
+/// For a zoned one it is not: the instant beside the variant is the projection, and the variant records that the *file* wrote `Z`.
+/// A `Z`-terminated `UNTIL` handed over unprojected cuts a zoned series off an hour early or late for half the year.
+/// `crate::internal::tz::seam` states the contract in full, and a floating `UNTIL` against a zoned `DTSTART` now travels on `DiagnosticCode::RecurrenceUntilNotUtc` rather than only being named by this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UntilClock {
     /// The value carried a trailing `Z`, so it names a UTC instant outright.
@@ -341,9 +313,7 @@ pub enum UntilClock {
 
 /// Where the series stops, from RFC 5545 section 3.3.10's `COUNT` and `UNTIL`.
 ///
-/// Three states rather than two `Option`s, because `COUNT` and `UNTIL` are mutually exclusive
-/// in the grammar and a pair of options would make the illegal fourth combination
-/// representable.
+/// Three states rather than two `Option`s, because `COUNT` and `UNTIL` are mutually exclusive in the grammar and a pair of options would make the illegal fourth combination representable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuleLimit {
     /// Neither `COUNT` nor `UNTIL`: the series has no end.
@@ -356,8 +326,7 @@ pub enum RuleLimit {
         at: Instant,
         /// Whether the file wrote it as a `DATE` or as a `DATE-TIME`.
         ///
-        /// Kept beside the instant because RFC 5545 section 3.3.10 requires it to agree with
-        /// `DTSTART`'s and real files disagree constantly.
+        /// Kept beside the instant because RFC 5545 section 3.3.10 requires it to agree with `DTSTART`'s and real files disagree constantly.
         value_kind: ValueKind,
         /// Which clock `at` was read on.
         clock: UntilClock,
@@ -366,10 +335,8 @@ pub enum RuleLimit {
 
 /// Why no rule could be built at all.
 ///
-/// This is the error channel of `docs/adr/0009`, and it is narrow on purpose: it names only
-/// the conditions under which no rule exists. Everything survivable — a part out of range, a
-/// part repeated, a part nothing defines — is a diagnostic on the property and the component
-/// still parses.
+/// This is the error channel of `docs/adr/0009`, and it is narrow on purpose: it names only the conditions under which no rule exists.
+/// Everything survivable — a part out of range, a part repeated, a part nothing defines — is a diagnostic on the property and the component still parses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum RuleError {
@@ -516,15 +483,10 @@ impl RecurrenceRule {
     /// The same rule, ending where `limit` says instead of where this one does.
     ///
     /// The one edit a parsed rule needs and the one the seam with `ical-tz` cannot do without.
-    /// `parse_recur` reads `UNTIL=20260310T120000Z` as the real UTC instant the file wrote, and
-    /// a zoned series is walked on the timeline `crate::internal::tz::seam` describes, so the bound has to
-    /// be projected onto that timeline before it is compared against a cadence key. Until this
-    /// existed the only way to substitute the projection was to rebuild the rule through
-    /// [`RecurrenceRuleBuilder`] and copy every `BYxxx` list across by hand, which is a
-    /// correction no caller performs by accident and several perform wrongly.
+    /// `parse_recur` reads `UNTIL=20260310T120000Z` as the real UTC instant the file wrote, and a zoned series is walked on the timeline `crate::internal::tz::seam` describes, so the bound has to be projected onto that timeline before it is compared against a cadence key.
+    /// Until this existed the only way to substitute the projection was to rebuild the rule through [`RecurrenceRuleBuilder`] and copy every `BYxxx` list across by hand, which is a correction no caller performs by accident and several perform wrongly.
     ///
-    /// Clones the lists rather than mutating in place, because a `RecurrenceRule` read from a
-    /// file is what the file said and a caller may want to keep both readings.
+    /// Clones the lists rather than mutating in place, because a `RecurrenceRule` read from a file is what the file said and a caller may want to keep both readings.
     #[must_use]
     pub fn with_limit(&self, limit: RuleLimit) -> Self {
         Self {
@@ -560,8 +522,7 @@ impl RecurrenceRule {
 
     /// Whether any `BYxxx` part other than `BYSETPOS` carries a value.
     ///
-    /// The predicate `BYSETPOS` is legal under, and the reason it is stated once here rather
-    /// than open-coded: "another part is present" is a claim about eight rows of the table,
+    /// The predicate `BYSETPOS` is legal under, and the reason it is stated once here rather than open-coded: "another part is present" is a claim about eight rows of the table,
     /// and eight is enough for a hand-written condition to lose one.
     #[must_use]
     pub fn has_selectable_part(&self) -> bool {
@@ -574,9 +535,7 @@ impl RecurrenceRule {
 
 /// Assembles a [`RecurrenceRule`], defaulting everything RFC 5545 section 3.3.10 defaults.
 ///
-/// A builder rather than a constructor because a rule has thirteen fields of which twelve have
-/// a specified default, and a twelve-argument constructor would exceed this workspace's own
-/// argument bound while telling a reader nothing.
+/// A builder rather than a constructor because a rule has thirteen fields of which twelve have a specified default, and a twelve-argument constructor would exceed this workspace's own argument bound while telling a reader nothing.
 #[derive(Clone, Debug)]
 pub struct RecurrenceRuleBuilder {
     /// The rule as assembled so far, complete at every point except for its checks.
@@ -692,9 +651,7 @@ impl RecurrenceRuleBuilder {
 
     /// Check what a whole rule can be checked for, and hand back the rule.
     ///
-    /// One condition, because one is all that is not already a type invariant: RFC 5545
-    /// section 3.3.10 forbids `BYSETPOS` unless another `BYxxx` part is present, and no field
-    /// type can express a relation between two fields.
+    /// One condition, because one is all that is not already a type invariant: RFC 5545 section 3.3.10 forbids `BYSETPOS` unless another `BYxxx` part is present, and no field type can express a relation between two fields.
     pub fn build(self) -> Result<RecurrenceRule, RuleError> {
         if !self.rule.by_set_pos.is_empty() && !self.rule.has_selectable_part() {
             return Err(RuleError::BySetPosWithoutByRule);
