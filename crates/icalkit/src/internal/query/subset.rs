@@ -66,13 +66,14 @@ use core::{mem, slice};
 use crate::internal::core::{
     CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration,
     EncodeValue, Instant, Item, LimitExceeded, Limits, Meter, Parameter, Period, Property,
-    PropertyId, RawText, UtcOffset, ValueBuf,
+    PropertyId, RawText, UtcOffset, ValueBuf, ValueType, View,
 };
 use crate::internal::dav::{CompSelection, TimeRange};
 
+pub(crate) use crate::internal::query::expand::is_override_of;
 use crate::internal::query::expand::{
-    EndKind, InstanceShape, component_start, expand_component, override_impacts,
-    override_recurrence_id,
+    EndKind, InstanceShape, component_overlaps, component_start, expand_component, has_recurrence,
+    occupancy_of, override_impacts, override_recurrence_id, placed_value,
 };
 use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
@@ -80,9 +81,6 @@ use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Un
 ///
 /// `Component::properties_named` ties the identity's lifetime to the iterator it returns, so a reference to the associated constant would be a temporary whose lifetime is too short for the value borrowed from the matching property.
 static TZID: PropertyId = PropertyId::TZID;
-
-/// The identity [`component_uid`] looks up.
-static UID: PropertyId = PropertyId::UID;
 
 /// What calendar-data sub-selection is reviewed against, one row per passage.
 ///
@@ -313,6 +311,12 @@ pub fn expand_calendar(
             Item::Component(component) => items.push(Item::Component(component.clone())),
         }
     }
+    let items = map_properties(
+        items,
+        budget.limits,
+        budget.meter,
+        &mut |_, property, meter| normalize_expanded_property(property, zones, meter),
+    )?;
     let calendar = Document::new(items);
     budget
         .meter
@@ -342,6 +346,9 @@ fn expand_calendar_component(
             items.push(entry.clone());
             continue;
         };
+        if master.is_named(b"VTIMEZONE") {
+            continue;
+        }
         if is_override(master) {
             if components
                 .iter()
@@ -350,7 +357,9 @@ fn expand_calendar_component(
             {
                 continue;
             }
-            items.push(entry.clone());
+            if let Some(instance) = single_in_window(master, siblings, window, zones, budget)? {
+                items.push(Item::Component(instance));
+            }
             continue;
         }
         let related: Vec<&Component> = components
@@ -358,11 +367,11 @@ fn expand_calendar_component(
             .copied()
             .filter(|candidate| is_override_of(candidate, master))
             .collect();
-        let recurring = master.properties_named(&PropertyId::RRULE).next().is_some()
-            || master.properties_named(&PropertyId::RDATE).next().is_some()
-            || !related.is_empty();
+        let recurring = has_recurrence(master) || !related.is_empty();
         if !recurring {
-            items.push(entry.clone());
+            if let Some(instance) = single_in_window(master, siblings, window, zones, budget)? {
+                items.push(Item::Component(instance));
+            }
             continue;
         }
 
@@ -383,6 +392,98 @@ fn expand_calendar_component(
         items,
         calendar.end().cloned(),
     ))
+}
+
+fn single_in_window(
+    component: &Component,
+    siblings: &[Item],
+    window: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Option<Component>, QueryError> {
+    match component_overlaps(component, siblings, window, zones, budget, &mut Vec::new())? {
+        Match::Matched => Ok(Some(single_template(component, zones, budget.meter)?)),
+        Match::Unmatched => Ok(None),
+        Match::Undecided(_) => Err(QueryError::Unrepresentable),
+    }
+}
+
+fn single_template(
+    component: &Component,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<Component, QueryError> {
+    let mut built = component.clone();
+    let requires_elapsed_duration = matches!(
+        component.dtstart(),
+        View::Valid {
+            value: DateTimeValue::Zoned { .. },
+            ..
+        }
+    );
+    let duration = built.items_mut().iter_mut().find_map(|item| match item {
+        Item::Property(property) if property.is_named(b"DURATION") => Some(property),
+        _ => None,
+    });
+    if let Some(duration) = duration.filter(|_| requires_elapsed_duration) {
+        let held = occupancy_of(component, zones, &[]).map_err(|_| QueryError::Unrepresentable)?;
+        let seconds = held
+            .start
+            .zip(held.duration_end)
+            .and_then(|(start, end)| start.checked_seconds_until(end))
+            .filter(|seconds| *seconds > 0)
+            .ok_or(QueryError::Unrepresentable)?;
+        charge_line(duration, meter)?;
+        let mut value = ValueBuf::new();
+        Duration::new(0, seconds)
+            .encode_value(&mut value)
+            .map_err(|_| QueryError::Unrepresentable)?;
+        duration.set_value_text(RawText::from_bytes(value.as_bytes()));
+    }
+    Ok(built)
+}
+
+fn normalize_expanded_property(
+    mut property: Property,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<Option<Property>, QueryError> {
+    if is_recurrence_property(&property) {
+        return Ok(None);
+    }
+    if property.parameters_named(b"TZID").next().is_none() {
+        return Ok(Some(property));
+    }
+    match property.declared_value_type() {
+        Some(Ok(ValueType::DateTime)) => {},
+        None if [
+            &PropertyId::DTSTART,
+            &PropertyId::DTEND,
+            &PropertyId::from_static(b"DUE"),
+            &PropertyId::RECURRENCE_ID,
+        ]
+        .iter()
+        .any(|id| property.has_id(id)) => {},
+        Some(_) | None => return Err(QueryError::Unrepresentable),
+    }
+    let value =
+        DateTimeValue::decode_property(&property).map_err(|_| QueryError::Unrepresentable)?;
+    if !matches!(value, DateTimeValue::Zoned { .. }) {
+        return Err(QueryError::Unrepresentable);
+    }
+    let instant = placed_value(value, zones).map_err(|_| QueryError::Unrepresentable)?;
+    let stamp =
+        CivilDateTime::from_instant(instant, UtcOffset::UTC).ok_or(QueryError::Unrepresentable)?;
+    charge_line(&property, meter)?;
+    let mut value = ValueBuf::new();
+    DateTimeValue::Utc(stamp)
+        .encode_value(&mut value)
+        .map_err(|_| QueryError::Unrepresentable)?;
+    property.set_value_text(RawText::from_bytes(value.as_bytes()));
+    property
+        .edit_parameters()
+        .retain(|parameter| !parameter.is_named(b"TZID"));
+    Ok(Some(property))
 }
 
 /// Use the exact component when present, or compose the range anchors in force.
@@ -446,18 +547,22 @@ fn overlay_properties(target: &mut Component, overlay: &Component) {
 
 /// Properties rebuilt from an [`Instance`](crate::internal::query::Instance), never copied as an override diff.
 fn is_expansion_control(property: &Property) -> bool {
-    [
-        &PropertyId::RRULE,
-        &PropertyId::RDATE,
-        &PropertyId::EXDATE,
-        &PropertyId::RECURRENCE_ID,
-        &PropertyId::DTSTART,
-        &PropertyId::DTEND,
-        &PropertyId::from_static(b"DUE"),
-        &PropertyId::DURATION,
-    ]
-    .iter()
-    .any(|id| property.has_id(id))
+    is_recurrence_property(property)
+        || [
+            &PropertyId::RECURRENCE_ID,
+            &PropertyId::DTSTART,
+            &PropertyId::DTEND,
+            &PropertyId::from_static(b"DUE"),
+            &PropertyId::DURATION,
+        ]
+        .iter()
+        .any(|id| property.has_id(id))
+}
+
+fn is_recurrence_property(property: &Property) -> bool {
+    [b"RRULE".as_slice(), b"RDATE", b"EXDATE", b"EXRULE"]
+        .iter()
+        .any(|name| property.is_named(name))
 }
 
 /// Whether this override is a `RANGE=THISANDFUTURE` anchor.
@@ -944,22 +1049,6 @@ pub(crate) fn is_override(component: &Component) -> bool {
         .properties_named(&PropertyId::RECURRENCE_ID)
         .next()
         .is_some()
-}
-
-/// Whether `candidate` is an override belonging to `master`.
-pub(crate) fn is_override_of(candidate: &Component, master: &Component) -> bool {
-    if candidate.kind() != master.kind() || is_override(master) {
-        return false;
-    }
-    component_uid(candidate).is_some() && component_uid(candidate) == component_uid(master)
-}
-
-/// The UID octets identifying a recurrence set.
-fn component_uid(component: &Component) -> Option<&[u8]> {
-    component
-        .properties_named(&UID)
-        .next()
-        .map(|property| property.value_text().as_bytes())
 }
 
 /// One component being rebuilt, while the component it came from is taken apart.

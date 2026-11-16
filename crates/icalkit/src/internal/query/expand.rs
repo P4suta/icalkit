@@ -671,8 +671,7 @@ where
         .filter_map(Item::as_component)
         .filter(|candidate| is_override_of(candidate, component))
         .collect();
-    let recurring =
-        carries(component, &ids::RRULE) || carries(component, &ids::RDATE) || !related.is_empty();
+    let recurring = has_recurrence(component) || !related.is_empty();
     if !recurring {
         let periods = if matches!(kind, ComponentKind::FreeBusy) {
             freebusy_periods(component)?
@@ -1204,7 +1203,7 @@ fn carries(component: &Component, id: &'static PropertyId) -> bool {
 }
 
 /// Whether `candidate` is an override belonging to `master`.
-fn is_override_of(candidate: &Component, master: &Component) -> bool {
+pub(crate) fn is_override_of(candidate: &Component, master: &Component) -> bool {
     if candidate.kind() != master.kind()
         || !carries(candidate, &ids::RECURRENCE_ID)
         || carries(master, &ids::RECURRENCE_ID)
@@ -1220,6 +1219,12 @@ fn is_override_of(candidate: &Component, master: &Component) -> bool {
         .next()
         .map(|property| property.value_text().as_bytes());
     master_uid.is_some() && master_uid == candidate_uid
+}
+
+pub(super) fn has_recurrence(component: &Component) -> bool {
+    [&ids::RRULE, &ids::RDATE, &ids::EXDATE]
+        .iter()
+        .any(|id| carries(component, id))
 }
 
 /// Turn a singular typed view into an optional value without flattening malformed into absent.
@@ -1288,7 +1293,10 @@ fn nominal_instant(
 }
 
 /// Place a stored date or date-time on the UTC timeline.
-fn placed_value(value: DateTimeValue<'_>, zones: Zones<'_>) -> Result<Instant, Undecided> {
+pub(super) fn placed_value(
+    value: DateTimeValue<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
     match value {
         DateTimeValue::Utc(stamp) => stamp
             .at_offset(UtcOffset::UTC)
@@ -1563,7 +1571,7 @@ fn duration_span(duration: Duration) -> Result<InstanceSpan, Undecided> {
 }
 
 /// Read the values section 9.9's non-recurring overlap table names.
-fn occupancy_of<'a>(
+pub(super) fn occupancy_of<'a>(
     component: &Component,
     zones: Zones<'_>,
     periods: &'a [BusyPeriod],
