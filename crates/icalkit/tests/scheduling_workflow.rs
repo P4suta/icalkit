@@ -431,7 +431,7 @@ fn an_initial_request_can_create_the_event_the_recipient_does_not_hold() {
     assert!(review.change_count() > 0);
     let created = review.authorize().apply().unwrap();
     let event = created.events().next().unwrap();
-    assert_eq!(event.uid(), "new@example.test");
+    assert_eq!(event.uid().as_deref(), Some("new@example.test"));
     assert_eq!(
         event.property("SUMMARY").unwrap().value(),
         b"First invitation"

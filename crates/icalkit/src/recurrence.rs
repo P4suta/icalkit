@@ -7,7 +7,10 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::internal::core::{Component, Diagnostic, Instant, Item, Meter};
+use crate::internal::core::codec::decode_single_scalar_text;
+use crate::internal::core::{
+    Component, ComponentKind, Diagnostic, Instant, Item, Meter, PropertyId,
+};
 use crate::internal::dav::TimeRange;
 use crate::internal::query::{Budget, QueryError, Undecided, Zones, expand_component};
 use crate::internal::recur::{
@@ -344,25 +347,31 @@ fn recurrence_master<'a>(
         .components()
         .next()
         .ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
-    let mut masters = root
-        .items()
-        .iter()
-        .filter_map(Item::as_component)
-        .filter(|component| {
-            component
-                .properties()
-                .find(|property| property.is_named(b"UID"))
-                .is_some_and(|property| property.value_text().as_bytes() == uid)
-                && !component
-                    .properties()
-                    .any(|property| property.is_named(b"RECURRENCE-ID"))
-        });
-    let master = masters
-        .next()
-        .ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
-    if masters.next().is_some() {
+    let mut selected = None;
+    let mut ambiguous = false;
+    for component in root.components().filter(|component| {
+        matches!(
+            component.kind(),
+            Some(
+                ComponentKind::Event
+                    | ComponentKind::Todo
+                    | ComponentKind::Journal
+                    | ComponentKind::FreeBusy
+            )
+        ) && !component
+            .properties()
+            .any(|property| property.is_named(b"RECURRENCE-ID"))
+    }) {
+        let known_uid = decode_single_scalar_text(component, &PropertyId::UID)
+            .ok_or_else(|| Error::single("icalkit.recurrence.identity-unreadable"))?;
+        if known_uid.as_bytes() == uid && selected.replace(component).is_some() {
+            ambiguous = true;
+        }
+    }
+    if ambiguous {
         return Err(Error::single("icalkit.recurrence.component-ambiguous"));
     }
+    let master = selected.ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
     Ok((master, root.items()))
 }
 

@@ -29,7 +29,10 @@ fn creating_the_first_object_requires_review_and_preserves_the_message() {
         SOURCE.replace("METHOD:REQUEST\r\n", "").as_bytes()
     );
     assert_eq!(message.to_bytes(), SOURCE.as_bytes());
-    assert_eq!(created.events().next().unwrap().uid(), "one@example.test");
+    assert_eq!(
+        created.events().next().unwrap().uid().as_deref(),
+        Some("one@example.test")
+    );
 }
 
 #[test]

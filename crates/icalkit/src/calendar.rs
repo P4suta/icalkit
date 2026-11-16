@@ -5,7 +5,9 @@
 use alloc::vec::Vec;
 use core::str;
 
-use crate::internal::core::codec::{RequestStatus, TextSyntax, is_text_value};
+use crate::internal::core::codec::{
+    RequestStatus, TextSyntax, decode_single_scalar_text, is_text_value,
+};
 use crate::internal::core::mailto::is_mailto_uri;
 use crate::internal::core::{
     BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
@@ -65,6 +67,7 @@ impl Calendar {
     ///
     /// The master, `RRULE`, `RDATE`, `EXDATE`, and sibling `RECURRENCE-ID` overrides are composed internally.
     /// Results are ordered by effective start rather than cadence key.
+    /// The identifier is decoded `UID` text.
     pub fn occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,
@@ -75,6 +78,7 @@ impl Calendar {
     }
 
     /// Resume a stored recurrence set after an opaque cursor.
+    /// The identifier is decoded `UID` text.
     pub fn resume_occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,
@@ -1172,11 +1176,13 @@ pub struct Editor<'a> {
 }
 
 impl Editor<'_> {
-    /// Replace one event's SUMMARY with a safely encoded TEXT value.
+    /// Replace one event's `SUMMARY` with a safely encoded `TEXT` value.
+    ///
+    /// The decoded `UID` must identify exactly one event.
+    /// Unreadable event identities prevent selection.
     pub fn set_summary(&mut self, uid: &str, summary: &str) -> Result<(), Error> {
         let encoded = encode_text(summary)?;
-        let event = find_event_mut(&mut self.working, uid)
-            .ok_or_else(|| Error::single("icalkit.edit.event-not-found"))?;
+        let event = find_event_mut(&mut self.working, uid)?;
         if let Some(mut property) = event.get_mut::<TextValue<'_>>(&PropertyId::SUMMARY) {
             property
                 .set(&TextValue::from_bytes(&encoded))
@@ -1190,6 +1196,9 @@ impl Editor<'_> {
     }
 
     /// Set a vendor property on one event with an ASCII case-insensitive `X-` prefix.
+    ///
+    /// The decoded `UID` must identify exactly one event.
+    /// Unreadable event identities prevent selection.
     pub fn set_vendor_property(
         &mut self,
         uid: &str,
@@ -1203,8 +1212,7 @@ impl Editor<'_> {
         {
             return Err(Error::single("icalkit.edit.vendor-name-required"));
         }
-        let event = find_event_mut(&mut self.working, uid)
-            .ok_or_else(|| Error::single("icalkit.edit.event-not-found"))?;
+        let event = find_event_mut(&mut self.working, uid)?;
         if crate::model::Name::new(name).is_none() {
             return Err(Error::single("icalkit.edit.name-not-representable"));
         }
@@ -1234,25 +1242,35 @@ impl Editor<'_> {
 pub(crate) fn find_event_mut<'a>(
     document: &'a mut Document,
     wanted: &str,
-) -> Option<&'a mut Component> {
-    for calendar in document.components_mut() {
-        for item in calendar.items_mut() {
-            let Some(component) = item.as_component_mut() else {
+) -> Result<&'a mut Component, Error> {
+    let mut selected = None;
+    let mut ambiguous = false;
+    for (calendar_index, calendar) in document.components().enumerate() {
+        for (item_index, item) in calendar.items().iter().enumerate() {
+            let Some(component) = item.as_component() else {
                 continue;
             };
-            if component.is_named(b"VEVENT") && event_uid(component) == Some(wanted.as_bytes()) {
-                return Some(component);
+            if !component.is_named(b"VEVENT") {
+                continue;
+            }
+            let known_uid = decode_single_scalar_text(component, &PropertyId::UID)
+                .ok_or_else(|| Error::single("icalkit.edit.identity-unreadable"))?;
+            if known_uid == wanted && selected.replace((calendar_index, item_index)).is_some() {
+                ambiguous = true;
             }
         }
     }
-    None
-}
-
-fn event_uid(component: &Component) -> Option<&[u8]> {
-    component
-        .properties()
-        .find(|property| property.is_named(b"UID"))
-        .map(|property| property.value_text().as_bytes())
+    if ambiguous {
+        return Err(Error::single("icalkit.edit.event-ambiguous"));
+    }
+    let (calendar_index, item_index) =
+        selected.ok_or_else(|| Error::single("icalkit.edit.event-not-found"))?;
+    document
+        .components_mut()
+        .nth(calendar_index)
+        .and_then(|calendar| calendar.items_mut().get_mut(item_index))
+        .and_then(Item::as_component_mut)
+        .ok_or_else(|| Error::single("icalkit.edit.event-not-found"))
 }
 
 fn insert_property(component: &mut Component, property: Property) {

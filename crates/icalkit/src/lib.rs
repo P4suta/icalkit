@@ -23,7 +23,7 @@
 //! ```
 //! # const BYTES: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20260814T000000Z\r\nDTSTART:20260815T090000Z\r\nSUMMARY:Planning\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 //! let calendar = icalkit::Calendar::parse(BYTES)?;
-//! assert_eq!(calendar.events().next().unwrap().uid(), "one@example.test");
+//! assert_eq!(calendar.events().next().unwrap().uid().as_deref(), Some("one@example.test"));
 //! # Ok::<(), icalkit::Error>(())
 //! ```
 //!

@@ -28,7 +28,10 @@ fn root_types_are_the_only_setup_a_normal_consumer_needs() {
     let calendar = session.parse(VALID).unwrap();
 
     assert_eq!(calendar.to_bytes(), VALID);
-    assert_eq!(calendar.events().next().unwrap().uid(), "one@example.test");
+    assert_eq!(
+        calendar.events().next().unwrap().uid().as_deref(),
+        Some("one@example.test")
+    );
     assert_eq!(calendar.issues(), []);
 
     let _: Option<Error> = None;

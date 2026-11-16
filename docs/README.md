@@ -44,13 +44,17 @@ END:VEVENT\r\n\
 END:VCALENDAR\r\n";
 
 let calendar = icalkit::Calendar::parse(bytes)?;
-assert_eq!(calendar.events().next().unwrap().uid(), "planning@example.test");
+assert_eq!(calendar.events().next().unwrap().uid().as_deref(), Some("planning@example.test"));
 # Ok::<(), icalkit::Error>(())
 ```
 
 The complete minimal consumer is runnable with `cargo run -p icalkit --example golden_path`.
 The consumer compiles as an external crate using only the public API.
 It supports builds with and without the default features.
+
+Event identifiers use decoded `TEXT` values.
+The accessor returns `None` for an unknown declared value type.
+Raw property values remain available through `EventRef::property`.
 
 Use `Engine::session()` when two or more operations must share one combined resource budget or a caller-supplied time-zone database.
 

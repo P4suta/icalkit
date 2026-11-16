@@ -20,7 +20,7 @@ use crate::internal::itip::{
 
 use crate::calendar::parse_calendar;
 use crate::failure::{Issue, IssueCode};
-use crate::internal::core::codec::decode_scalar_text_property;
+use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::query::{Budget, Match as KernelMatch, Zones, recurrence_set_contains};
 use crate::time::{Timestamp, ZoneAdapter};
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
@@ -669,10 +669,7 @@ fn scheduled_components<'a>(
         .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
         .filter(|(_, component)| is_scheduling_payload(component))
     {
-        let known_uid = component
-            .properties()
-            .find(|property| property.is_named(b"UID"))
-            .and_then(decode_scalar_text_property)
+        let known_uid = decode_single_scalar_text(component, &PropertyId::UID)
             .ok_or_else(|| Rejection::new("icalkit.scheduling.current-identity-unreadable"))?;
         if known_uid.as_bytes() == uid {
             if component.kind() != Some(message.kind()) {

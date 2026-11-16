@@ -172,7 +172,7 @@ pub const fn icalkit::model::EventRef<'a>::as_component(self) -> icalkit::model:
 pub fn icalkit::model::EventRef<'a>::components(self) -> impl core::iter::traits::iterator::Iterator<Item = icalkit::model::ComponentRef<'a>>
 pub fn icalkit::model::EventRef<'a>::dtstart(self) -> core::option::Option<icalkit::time::IcalDateTime>
 pub fn icalkit::model::EventRef<'a>::property(self, &str) -> core::option::Option<icalkit::model::PropertyRef<'a>>
-pub fn icalkit::model::EventRef<'a>::uid(self) -> &'a str
+pub fn icalkit::model::EventRef<'a>::uid(self) -> core::option::Option<alloc::borrow::Cow<'a, str>>
 pub struct icalkit::model::Name<'a>(_)
 impl<'a> icalkit::model::Name<'a>
 pub const fn icalkit::model::Name<'a>::as_str(self) -> &'a str

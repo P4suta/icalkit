@@ -178,6 +178,13 @@ Review refuses held scheduling components with an unreadable `UID`, following th
 Review refuses a known `UID` associated with a different component kind.
 Calendars and imports keep opaque property values under [RFC 5545 section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
 
+`EventRef::uid` returns decoded scalar text, or `None` for an unreadable identity.
+Ordinary identifiers borrow source storage.
+Editing and stored recurrence selection use the same decoded value.
+Editing refuses more than one matching event or unreadable event identities before changing the working copy.
+Stored recurrence selection refuses unreadable master identities and preserves its ambiguity check.
+The [identifier decision](adr/decoded-optional-calendar-identifiers.md) records the return type change before publication.
+
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.
 The caller must enforce absence when storing the authorized result.
 The [creation decision](adr/scheduling-creation-from-absence.md) records the API choice and its storage boundary.

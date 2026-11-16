@@ -34,14 +34,14 @@ use core::fmt::{self, Write as _};
 use core::net::Ipv6Addr;
 use core::str;
 
-use crate::internal::core::{DiagnosticCode, TEXT_ESCAPES};
+use crate::internal::core::{DiagnosticCode, PropertyId, TEXT_ESCAPES};
 
 use crate::internal::core::change::ParameterEdit;
 use crate::internal::core::gregorian::{
     CivilDate, CivilDateTime, CivilTime, DateTimeValue, Duration, UtcOffset,
 };
 use crate::internal::core::octets::TextError;
-use crate::internal::core::tree::Property;
+use crate::internal::core::tree::{Component, Property};
 use crate::internal::core::view::{
     BinaryValue, DecodeValue, EncodeValue, Geo, MutationError, Period, TextValue, UriValue,
     ValueBuf, ValueType,
@@ -950,6 +950,21 @@ fn unescape(text: &str) -> Cow<'_, str> {
         out.push('\\');
     }
     Cow::Owned(out)
+}
+
+#[must_use]
+pub(crate) fn decode_single_scalar_text<'a>(
+    component: &'a Component,
+    id: &PropertyId,
+) -> Option<Cow<'a, str>> {
+    let mut properties = component
+        .properties()
+        .filter(|property| property.has_id(id));
+    let property = properties.next()?;
+    if properties.next().is_some() {
+        return None;
+    }
+    decode_scalar_text_property(property)
 }
 
 #[must_use]

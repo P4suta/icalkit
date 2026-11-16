@@ -57,7 +57,7 @@
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
-use crate::internal::core::codec::decode_scalar_text_property;
+use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
@@ -1242,12 +1242,7 @@ fn is_override_of(candidate: &Component, master: &Component) -> Result<bool, Und
 }
 
 fn series_uid(component: &Component) -> Result<Cow<'_, str>, Undecided> {
-    let mut properties = component.properties_named(&ids::UID);
-    let property = properties.next().ok_or(Undecided::ValueUnreadable)?;
-    if properties.next().is_some() {
-        return Err(Undecided::ValueUnreadable);
-    }
-    decode_scalar_text_property(property).ok_or(Undecided::ValueUnreadable)
+    decode_single_scalar_text(component, &ids::UID).ok_or(Undecided::ValueUnreadable)
 }
 
 pub(crate) fn override_master<'a>(
