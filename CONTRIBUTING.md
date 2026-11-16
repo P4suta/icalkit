@@ -36,6 +36,9 @@ The candidate qualification workflow runs those checks and the Windows and macOS
 It also verifies the actual CI decision core with Kani 0.68.0 and the declared rejecting probe.
 `just prove-ci` runs that source-bound proof inventory on Linux or macOS with the pinned verifier and the shared `ci-policy` helper.
 
+The candidate source check compares working files through a private Git index built from the observed commit.
+Index flags and cached stat data can't hide tracked changes, and the caller's staged index stays unchanged.
+
 ## Test-driven changes
 
 Start by adding the smallest test that expresses the missing behavior and confirm that it fails for the intended reason.

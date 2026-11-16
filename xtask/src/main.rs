@@ -240,6 +240,7 @@ const CI_POLICY_ACTION: &str =
 /// The golden list's columns, in the order its cells are read.
 const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
 
+mod candidate;
 mod ci;
 mod development;
 #[cfg(test)]
@@ -247,7 +248,6 @@ mod hook_scope;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
     CiJob, CiPhase, CiResults, JobState, ObservedJob, REJECTING_PROBE, REQUIRED_PROOFS,
-    TrackedSource,
 };
 
 fn ci_results(phase: CiPhase, arguments: &[String]) -> Option<CiResults> {
@@ -282,65 +282,7 @@ fn candidate_revision(arguments: &[String]) -> io::Result<Vec<String>> {
 }
 
 fn candidate_checkout(workspace: &Path, requested: CandidateRevision) -> io::Result<Vec<String>> {
-    let output = repository_git(workspace)?
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(
-            "git could not identify the candidate checkout",
-        ));
-    }
-    let actual = String::from_utf8(output.stdout)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let actual = CandidateRevision::parse(actual.trim())
-        .ok_or_else(|| io::Error::other("git reported an invalid candidate commit"))?;
-    let source = TrackedSource::from_differences(
-        tracked_difference(workspace, false)?,
-        tracked_difference(workspace, true)?,
-    );
-    if requested.qualifies(actual, source) {
-        return Ok(Vec::new());
-    }
-    Ok(vec![if requested.matches(actual) {
-        "candidate tracked source differs from the requested commit".to_owned()
-    } else {
-        "candidate commit differs from the actual checkout".to_owned()
-    }])
-}
-
-fn tracked_difference(workspace: &Path, index: bool) -> io::Result<bool> {
-    let mut command = repository_git(workspace)?;
-    command.args(["diff", "--quiet", "--no-ext-diff", "--no-textconv"]);
-    if index {
-        command.arg("--cached");
-    }
-    let status = command.args(["HEAD", "--"]).status()?;
-    match status.code() {
-        Some(0) => Ok(false),
-        Some(1) => Ok(true),
-        _ => Err(io::Error::other(
-            "git could not inspect tracked candidate source",
-        )),
-    }
-}
-
-fn repository_git(workspace: &Path) -> io::Result<Command> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--local-env-vars"])
-        .output()?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return Err(io::Error::other(
-            "git could not enumerate its repository-local environment",
-        ));
-    }
-    let variables = String::from_utf8(output.stdout)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let mut command = Command::new("git");
-    command.current_dir(workspace);
-    for variable in variables.lines() {
-        command.env_remove(variable);
-    }
-    Ok(command)
+    candidate::inspect(workspace, requested, &std::env::temp_dir())
 }
 
 fn ci_summary(arguments: &[String]) -> Vec<String> {
@@ -3967,9 +3909,17 @@ name = \"icalkit\"
 
     impl CandidateFixture {
         fn new() -> Self {
+            Self::with_files(&[("source.txt", b"original\n")])
+        }
+
+        fn with_files(files: &[(&str, &[u8])]) -> Self {
             let fixture = Self::init("");
-            std::fs::write(fixture.0.join("source.txt"), b"original\n").unwrap();
-            fixture.git(&["add", "source.txt"]);
+            for (name, contents) in files {
+                let path = fixture.0.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, contents).unwrap();
+            }
+            fixture.git(&["add", "--all"]);
             let tree = fixture.git(&["write-tree"]);
             let commit = fixture.git(&[
                 "-c",
@@ -4098,6 +4048,195 @@ name = \"icalkit\"
                 .any(|message| message.contains("commit differs")),
             "{refused:?}"
         );
+    }
+
+    fn candidate_flag_preserves_working_file_checks(flag: &str) {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        fixture.git(&["update-index", flag, "source.txt"]);
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        let cases: [Option<&[u8]>; 5] = [
+            Some(b"original\n"),
+            Some(b"changed\n"),
+            Some(b""),
+            None,
+            Some(b"original\n"),
+        ];
+        for contents in cases {
+            let path = fixture.0.join("source.txt");
+            if let Some(contents) = contents {
+                std::fs::write(path, contents).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
+            let result = super::candidate_checkout(&fixture.0, revision).unwrap();
+            assert_eq!(
+                result.is_empty(),
+                contents == Some(b"original\n".as_slice()),
+                "{flag}, {contents:?}: {result:?}"
+            );
+            assert_eq!(
+                std::fs::read(fixture.0.join(".git/index")).unwrap(),
+                index,
+                "changed the caller's index for {flag}",
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_checkout_reads_assumed_unchanged_files() {
+        candidate_flag_preserves_working_file_checks("--assume-unchanged");
+    }
+
+    #[test]
+    fn candidate_checkout_reads_skip_worktree_files() {
+        candidate_flag_preserves_working_file_checks("--skip-worktree");
+    }
+
+    #[test]
+    fn candidate_checkout_reads_content_despite_matching_cached_metadata() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        fixture.git(&["config", "core.trustctime", "false"]);
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        let set_modified = || {
+            std::fs::File::options()
+                .write(true)
+                .open(fixture.0.join("source.txt"))
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        };
+        set_modified();
+        fixture.git(&["add", "source.txt"]);
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        std::fs::write(fixture.0.join("source.txt"), b"modified\n").unwrap();
+        set_modified();
+        let result = super::candidate_checkout(&fixture.0, revision).unwrap();
+        assert!(
+            !result.is_empty(),
+            "accepted content hidden by cached metadata"
+        );
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_handles_flagged_paths_with_spaces_and_unicode() {
+        let names = [
+            "folder/with spaces.txt",
+            "folder/\u{65e5}\u{672c}.txt",
+            #[cfg(unix)]
+            "folder/line\nbreak.txt",
+            #[cfg(unix)]
+            "folder/quote\"name.txt",
+        ];
+        let files: Vec<_> = names
+            .iter()
+            .map(|name| (*name, b"original\n".as_slice()))
+            .collect();
+        let fixture = CandidateFixture::with_files(&files);
+        let revision = fixture.revision();
+        for name in names {
+            fixture.git(&["update-index", "--assume-unchanged", "--", name]);
+            let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+            std::fs::write(fixture.0.join(name), b"changed\n").unwrap();
+            let result = super::candidate_checkout(&fixture.0, revision).unwrap();
+            assert!(!result.is_empty(), "accepted changed path {name:?}");
+            assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+            std::fs::write(fixture.0.join(name), b"original\n").unwrap();
+            assert_eq!(
+                super::candidate_checkout(&fixture.0, revision).unwrap(),
+                Vec::<String>::new()
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_checkout_preserves_linked_worktree_support() {
+        let fixture = CandidateFixture::new();
+        let linked = CandidateFixture(fixture.0.join("linked"));
+        fixture.git(&[
+            "worktree",
+            "add",
+            "--detach",
+            "--quiet",
+            linked.0.to_str().unwrap(),
+        ]);
+        let revision = linked.revision();
+        assert_eq!(
+            super::candidate_checkout(&linked.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        std::fs::write(linked.0.join("source.txt"), b"changed\n").unwrap();
+        assert_ne!(
+            super::candidate_checkout(&linked.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            super::candidate_checkout(&fixture.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn candidate_checkout_cleans_scratch_storage_after_success_and_git_failure() {
+        let fixture = CandidateFixture::with_files(&[
+            ("source.txt", b"original\n"),
+            (".gitattributes", b"source.txt filter=broken\n"),
+        ]);
+        let revision = fixture.revision();
+        let scratch = fixture.0.join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        assert_eq!(
+            super::candidate::inspect(&fixture.0, revision, &scratch).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+
+        fixture.git(&["config", "filter.broken.required", "true"]);
+        fixture.git(&[
+            "config",
+            "filter.broken.clean",
+            "git rev-parse --verify refs/icalkit-filter-failure",
+        ]);
+        std::fs::write(fixture.0.join("source.txt"), b"changed\n").unwrap();
+        assert!(super::candidate::inspect(&fixture.0, revision, &scratch).is_err());
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_refuses_unavailable_scratch_storage() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        let scratch = fixture.0.join("scratch");
+        std::fs::write(&scratch, b"not a directory\n").unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        assert!(super::candidate::inspect(&fixture.0, revision, &scratch).is_err());
+        assert_eq!(std::fs::read(&scratch).unwrap(), b"not a directory\n");
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_cleans_scratch_storage_when_the_tree_cannot_be_read() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        let scratch = fixture.0.join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        let tree = fixture.git(&["rev-parse", "HEAD^{tree}"]);
+        let (prefix, suffix) = tree.split_at(2);
+        std::fs::rename(
+            fixture.0.join(".git/objects").join(prefix).join(suffix),
+            fixture.0.join("hidden-tree"),
+        )
+        .unwrap();
+        let error = super::candidate::inspect(&fixture.0, revision, &scratch).unwrap_err();
+        assert_eq!(error.to_string(), "git could not read the candidate tree");
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
     }
 
     #[test]

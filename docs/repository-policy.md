@@ -50,6 +50,9 @@ The candidate qualification workflow verifies that a complete commit ID matches 
 It adds Windows and macOS tests, feature combinations, bare-metal and WebAssembly compilation, pinned-nightly API snapshots, and every workspace crate's MSRV verification.
 Its summary rejects incomplete or unsuccessful results.
 The repository has no publication workflow, so successful candidate qualification is verification evidence rather than an enforced publication boundary.
+
+The [worktree decision](adr/candidate-worktree-validation.md) defines the private index used to compare tracked files without trusting the caller's cached flags or stat data.
+The check preserves the original index, detects missing tracked content, and removes scratch storage on success and failure.
 A future publication workflow must require successful qualification of the exact commit it publishes.
 
 ## Automation and permissions
