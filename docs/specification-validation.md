@@ -22,6 +22,11 @@ The nonnegative `SEQUENCE` domain follows the [counter initialized at zero](http
 Known numeric values reject incompatible or repeated `VALUE` declarations.
 Unknown value types stay opaque, and successful validation preserves the original bytes.
 
+Geographic positions follow the [coordinate bounds and decimal pair syntax](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.6).
+Strict promotion uses the original decimal text to check latitude and longitude bounds.
+The checks preserve decimal precision and unknown parameters.
+Unknown value types stay opaque, and incompatible or repeated `VALUE` declarations fail promotion.
+
 Observance offsets follow the [UTC offset grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.14).
 Strict promotion validates both `TZOFFSETFROM` and `TZOFFSETTO`.
 The shared decoder rejects negative zero and seconds fields of 60.

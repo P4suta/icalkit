@@ -7,8 +7,8 @@ use core::str;
 
 use crate::internal::core::{
     Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
-    DiagnosticCode, Document, Duration, Item, Meter, Period, Property, PropertyId, TEXT_ESCAPES,
-    TextValue, UtcOffset, ValueType,
+    DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
+    TEXT_ESCAPES, TextValue, UtcOffset, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -225,6 +225,11 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-integer"));
     }
+    if first.is_some_and(|calendar| !known_geographic_properties_are_valid(calendar)) {
+        issues.push(Issue::error(
+            "icalkit.validation.invalid-geographic-position",
+        ));
+    }
     if first.is_some_and(|calendar| !known_utc_offsets_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-utc-offset"));
     }
@@ -418,6 +423,61 @@ fn known_utc_offsets_are_valid(component: &Component) -> bool {
             Some(Ok(_)) => false,
         }
     }) && component.components().all(known_utc_offsets_are_valid)
+}
+
+fn known_geographic_properties_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component
+        .properties()
+        .all(|property| !property.is_named(b"GEO") || geographic_property_is_valid(property))
+        && component
+            .components()
+            .all(known_geographic_properties_are_valid)
+}
+
+fn geographic_property_is_valid(property: &Property) -> bool {
+    if property.parameters_named(b"VALUE").nth(1).is_some() {
+        return false;
+    }
+    match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        None | Some(Ok(ValueType::Float)) => {},
+        Some(Ok(_)) => return false,
+    }
+    if Geo::decode_property(property).is_err() {
+        return false;
+    }
+    let mut coordinates = property
+        .value_text()
+        .as_bytes()
+        .split(|octet| *octet == b';');
+    coordinates
+        .next()
+        .is_some_and(|latitude| coordinate_is_within(latitude, 90))
+        && coordinates
+            .next()
+            .is_some_and(|longitude| coordinate_is_within(longitude, 180))
+}
+
+fn coordinate_is_within(bytes: &[u8], bound: u16) -> bool {
+    let unsigned = bytes
+        .strip_prefix(b"+")
+        .or_else(|| bytes.strip_prefix(b"-"))
+        .unwrap_or(bytes);
+    let mut fields = unsigned.split(|octet| *octet == b'.');
+    let Some(degrees) = fields
+        .next()
+        .and_then(|whole| str::from_utf8(whole).ok()?.parse::<u16>().ok())
+    else {
+        return false;
+    };
+    degrees < bound
+        || (degrees == bound
+            && fields
+                .next()
+                .is_none_or(|fraction| fraction.iter().all(|octet| *octet == b'0')))
 }
 
 fn is_text_property(property: &Property) -> bool {
