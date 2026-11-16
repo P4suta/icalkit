@@ -6,41 +6,27 @@
 //!
 //! # Why the item type is not a `Result`
 //!
-//! `docs/adr/0002` requires budget exhaustion to be a *reported outcome*, never a hang and
-//! never a silent empty result. An item type of `Result<Occurrence, BudgetExhausted>` does not
-//! deliver that, and the reason is mechanical rather than stylistic: std ships
-//! `impl<T, E> IntoIterator for Result<T, E>`, so `search.flatten()` compiles against that
-//! exact item type and discards every terminal marker; `Result::ok` and `Result::is_ok` make
-//! `.filter_map(Result::ok)` and `.take_while(Result::is_ok)` do the same. Each is a
-//! one-line, reviewed-without-comment idiom that turns budget exhaustion back into a
-//! truncated-but-plausible answer.
+//! `docs/adr/0002` requires budget exhaustion to be a *reported outcome*, never a hang and never a silent empty result.
+//! An item type of `Result<Occurrence, BudgetExhausted>` does not deliver that, and the reason is mechanical rather than stylistic: std ships `impl<T, E> IntoIterator for Result<T, E>`, so `search.flatten()` compiles against that exact item type and discards every terminal marker; `Result::ok` and `Result::is_ok` make `.filter_map(Result::ok)` and `.take_while(Result::is_ok)` do the same.
+//! Each is a one-line, reviewed-without-comment idiom that turns budget exhaustion back into a truncated-but-plausible answer.
 //!
-//! [`SearchStep`] is a crate-owned enum, so none of those three compiles: `SearchStep` is not
-//! an iterator, and neither `Result::ok` nor `Result::is_ok` accepts one. The claim is
-//! visibility rather than impossibility, and only that. A hand-written
-//! `filter_map(|step| match step { SearchStep::Occurrence(o) => Some(o), _ => None })`
-//! discards the terminal step just as thoroughly — but it is a visible line in a diff instead
-//! of an idiom. [`Iterator::count`] is the honest remainder: it counts *steps*, so an
-//! exhausted search returns a number inflated by one. That is a documented hazard with a test,
-//! not a wrong number a type can remove.
+//! [`SearchStep`] is a crate-owned enum, so none of those three compiles: `SearchStep` is not an iterator, and neither `Result::ok` nor `Result::is_ok` accepts one.
+//! The claim is visibility rather than impossibility, and only that.
+//! A hand-written `filter_map(|step| match step { SearchStep::Occurrence(o) => Some(o), _ => None })` discards the terminal step just as thoroughly — but it is a visible line in a diff instead of an idiom.
+//! [`Iterator::count`] is the honest remainder: it counts *steps*, so an exhausted search returns a number inflated by one.
+//! The tests document the counting hazard.
 //!
 //! # Why `key` and `start` are not interchangeable
 //!
-//! This is the crate's sharpest invariant. [`Occurrence::key`] is the base cadence instant:
-//! what a `RECURRENCE-ID` addresses, what the merge sorts on, what `COUNT` counts, and what
-//! generation walks. [`Occurrence::start`] is when the occurrence actually happens. They differ
-//! exactly when an override moved it, which is what a `RANGE=THISANDFUTURE` time shift means.
+//! This is the crate's sharpest invariant.
+//! [`Occurrence::key`] is the base cadence instant addressed by `RECURRENCE-ID`, used for sorting, counting, and generation.
+//! [`Occurrence::start`] is when the occurrence actually happens.
+//! They differ exactly when an override moved it, which is what a `RANGE=THISANDFUTURE` time shift means.
 //!
-//! A [`Window`] therefore admits on *either*: a search emits an occurrence whose key falls in
-//! the window the caller asked about **or** whose effective start does. `docs/adr/0002` fixes
-//! the second half — the caller's question is about starts — and the first half is what keeps a
-//! cadence the caller can address from vanishing because something moved it. Both halves are
-//! the library's own work: generation runs over the asked window widened by the largest
-//! absolute shift the override set implies, and the filtering back down happens inside the
-//! search, so [`Window::widened`] is a tool a caller may reach for and never an obligation it
-//! has to discover. An occurrence admitted by its key whose start lies outside is emitted and
-//! reported on `DiagnosticCode::OverrideLeftWindow`, and [`Occurrence::starts_within`] is how a
-//! caller asks the second question for itself.
+//! A [`Window`] therefore admits on *either*: a search emits an occurrence whose key falls in the window the caller asked about **or** whose effective start does.
+//! `docs/adr/0002` fixes the second half — the caller's question is about starts — and the first half is what keeps a cadence the caller can address from vanishing because something moved it.
+//! Both halves are the library's own work: generation runs over the asked window widened by the largest absolute shift the override set implies, and the filtering back down happens inside the search, so [`Window::widened`] is a tool a caller may reach for and never an obligation it has to discover.
+//! An occurrence admitted by its key whose start lies outside is emitted and reported on `DiagnosticCode::OverrideLeftWindow`, and [`Occurrence::starts_within`] is how a caller asks the second question for itself.
 
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
@@ -51,9 +37,7 @@ use crate::internal::recur::input::{AppliedDiffs, Override, OverrideSet, Propert
 
 /// The half-open range of cadence keys a search covers.
 ///
-/// Half-open — `start` included, `end` excluded — because adjacent windows have to tile
-/// without overlapping, and a month view asking for the first of the next month is how a
-/// caller writes "the whole of this month" without knowing how long it is.
+/// Half-open — `start` included, `end` excluded — because adjacent windows have to tile without overlapping, and a month view asking for the first of the next month is how a caller writes "the whole of this month" without knowing how long it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Window {
     /// The first instant in the window.
@@ -65,8 +49,7 @@ pub struct Window {
 impl Window {
     /// A window from `start` up to but not including `end`, or `None` when `end` is not later.
     ///
-    /// An empty window is refused rather than admitted, because an empty search and a search
-    /// the caller asked nothing of return the same thing and only one of them is a mistake.
+    /// An empty window is refused rather than admitted, because an empty search and a search the caller asked nothing of return the same thing and only one of them is a mistake.
     #[must_use]
     pub fn new(start: Instant, end: Instant) -> Option<Self> {
         (start < end).then_some(Self { start, end })
@@ -92,13 +75,10 @@ impl Window {
 
     /// The same window reaching `before` seconds earlier and `after` seconds later.
     ///
-    /// The remedy for the key-versus-start gap: a renderer that wants every occurrence whose
-    /// *start* lands in a month searches a widened window and filters on
-    /// [`Occurrence::starts_within`]. How far to widen is the largest absolute shift the
-    /// override set implies, which is a number this crate does not compute for the caller.
+    /// The remedy for the key-versus-start gap: a renderer that wants every occurrence whose *start* lands in a month searches a widened window and filters on [`Occurrence::starts_within`].
+    /// How far to widen is the largest absolute shift the override set implies, which is a number this crate does not compute for the caller.
     ///
-    /// `None` when either edge leaves the representable timeline, rather than a silently
-    /// clamped window that would answer a question nobody asked.
+    /// `None` when either edge leaves the representable timeline, rather than a silently clamped window that would answer a question nobody asked.
     #[must_use]
     pub fn widened(self, before: i64, after: i64) -> Option<Self> {
         let start = self.start.checked_add_seconds(before.checked_neg()?)?;
@@ -109,11 +89,9 @@ impl Window {
 
 /// Which mechanism produced an occurrence that is not a plain rule instance.
 ///
-/// One tag where three facts sometimes apply, and the precedence is stated so implementations
-/// agree rather than because it is the only defensible order:
-/// `ExactMatch > ThisAndFuture > AddedByRdate`. An `RDATE`-added instant that an exact-match
-/// override also modifies reports `ExactMatch`, and its `RDATE` origin is recoverable only by
-/// the caller checking the `RDATE` slice.
+/// One tag where three facts sometimes apply, and the precedence is stated so implementations agree rather than because it is the only defensible order:
+/// `ExactMatch > ThisAndFuture > AddedByRdate`.
+/// An `RDATE`-added instant that an exact-match override also modifies reports `ExactMatch`, and its `RDATE` origin is recoverable only by the caller checking the `RDATE` slice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum OverrideProvenance {
@@ -123,7 +101,8 @@ pub enum OverrideProvenance {
     ThisAndFuture {
         /// The nearest such anchor's `RECURRENCE-ID`, for reporting.
         ///
-        /// The nearest one only. Application composes *every* anchor at or before the key —
+        /// The nearest one only.
+        /// Application composes *every* anchor at or before the key —
         /// see [`Occurrence::applied_anchors`] — and one tag cannot name a set.
         anchor: Instant,
     },
@@ -131,13 +110,10 @@ pub enum OverrideProvenance {
     AddedByRdate,
 }
 
-/// One occurrence of a series, with everything in force on it reachable and nothing
-/// materialized.
+/// One occurrence of a series, with everything in force on it reachable and nothing materialized.
 ///
-/// `Copy`, borrowing the override table, so [`Occurrence::applied_anchors`] and
-/// [`Occurrence::effective_change`] recompose on demand. A search over a year of a daily rule
-/// therefore allocates nothing per occurrence, which is what makes `docs/adr/0007`'s
-/// "every allocated byte is charged" a claim with nothing to charge here.
+/// `Copy`, borrowing the override table, so [`Occurrence::applied_anchors`] and [`Occurrence::effective_change`] recompose on demand.
+/// A search over a year of a daily rule therefore allocates nothing per occurrence, which is what makes `docs/adr/0007`'s "every allocated byte is charged" a claim with nothing to charge here.
 #[derive(Clone, Copy, Debug)]
 pub struct Occurrence<'a> {
     /// The cadence key: what a `RECURRENCE-ID` addresses and what `COUNT` counts.
@@ -211,10 +187,14 @@ impl<'a> Occurrence<'a> {
         window.contains(self.start)
     }
 
-    /// Every `RANGE=THISANDFUTURE` anchor in force here, oldest first.
+    /// Inherited range anchors, oldest first, absent for an exact component.
     #[must_use]
     pub const fn applied_anchors(self) -> AppliedDiffs<'a> {
-        self.overrides.anchors_before(self.key)
+        if self.exact.is_some() {
+            OverrideSet::empty().anchors_before(self.key)
+        } else {
+            self.overrides.anchors_before(self.key)
+        }
     }
 
     /// The override naming this exact cadence key, if there is one.
@@ -223,12 +203,7 @@ impl<'a> Occurrence<'a> {
         self.exact
     }
 
-    /// What is in force on `id` here, composing every anchor and then the exact match.
-    ///
-    /// Oldest anchor to newest, then the exact override last: a `LOCATION` set by a March
-    /// anchor survives a June anchor that changed only `SUMMARY`, because omission means no
-    /// opinion and never revert-to-base. RFC 5545 offers no syntax for reverting a property
-    /// to its base value, so that loss is documented rather than eliminated.
+    /// The exact component's change, or the composed range changes for another member.
     #[must_use]
     pub fn effective_change(self, id: &PropertyId) -> Option<PropertyChange<'a>> {
         let mut winner = None;
@@ -246,9 +221,7 @@ impl<'a> Occurrence<'a> {
 
 /// A search stopped because it ran out of candidate budget.
 ///
-/// Carries how far it got and what it spent, because "cut short at the limit" and "the rule
-/// ended at `UNTIL`" must be different answers to the caller — and because a caller deciding
-/// whether to retry with a larger budget needs to know it was close rather than nowhere.
+/// Carries how far it got and what it spent, because "cut short at the limit" and "the rule ended at `UNTIL`" must be different answers to the caller — and because a caller deciding whether to retry with a larger budget needs to know it was close rather than nowhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BudgetExhausted {
     /// The last cadence key the search reached.
@@ -296,27 +269,23 @@ impl Error for BudgetExhausted {}
 
 /// One step of a search: an occurrence, or the terminal state.
 ///
-/// **Not** `Result<Occurrence, BudgetExhausted>`, and the module documentation says why at
-/// length. `#[must_use]` so that a step produced and dropped without being looked at is a
-/// warning at the call site, and `#[non_exhaustive]` so a future terminal state — a window
-/// that ended for a reason budget exhaustion does not cover — can be added without a major
-/// version.
+/// **Not** `Result<Occurrence, BudgetExhausted>`, and the module documentation says why at length.
+/// `#[must_use]` so that a step produced and dropped without being looked at is a warning at the call site, and `#[non_exhaustive]` so a future terminal state — a window that ended for a reason budget exhaustion does not cover — can be added without a major version.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 #[must_use]
 pub enum SearchStep<'a> {
     /// An occurrence the caller asked for.
     Occurrence(Occurrence<'a>),
-    /// The search stopped at the candidate budget. Nothing follows it.
+    /// The search stopped at the candidate budget.
+    /// Nothing follows it.
     BudgetExhausted(BudgetExhausted),
 }
 
 impl<'a> SearchStep<'a> {
     /// The occurrence, if this step is one.
     ///
-    /// Deliberately not named `ok`: this is the discard the module documentation calls
-    /// visible-but-possible, and a name borrowed from `Result` would make
-    /// `.filter_map(SearchStep::occurrence)` read like the idiom it is a re-creation of.
+    /// Deliberately not named `ok`: this is the discard the module documentation calls visible-but-possible, and a name borrowed from `Result` would make `.filter_map(SearchStep::occurrence)` read like the idiom it is a re-creation of.
     #[must_use]
     pub const fn occurrence(self) -> Option<Occurrence<'a>> {
         match self {
@@ -334,10 +303,8 @@ impl<'a> SearchStep<'a> {
 
 /// Why a search is not producing more occurrences, or that it still is.
 ///
-/// The third and weakest of the three reports of one fact, available only to a caller that
-/// still holds the search by name. The other two are the terminal [`SearchStep`] and the
-/// caller's own `Meter`, whose exhaustion flag latches and which outlives every combinator
-/// applied to the iterator.
+/// The third and weakest of the three reports of one fact, available only to a caller that still holds the search by name.
+/// The other two are the terminal [`SearchStep`] and the caller's own `Meter`, whose exhaustion flag latches and which outlives every combinator applied to the iterator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum SearchOutcome {
@@ -345,26 +312,24 @@ pub enum SearchOutcome {
     Pending,
     /// The rule reached its `COUNT` or its `UNTIL`.
     RuleEnded,
-    /// The window ended. The rule may well continue past it.
+    /// The window ended.
+    /// The rule may well continue past it.
     WindowEnded,
     /// The calendar ended: the rule would continue, and RFC 5545 cannot write where.
     ///
-    /// Section 3.3.4 writes a four-digit year, so the recurrence set of a rule with no `COUNT`
-    /// and no `UNTIL` stops at 9999-12-31T23:59:59 whatever the window asked for. Complete, and
-    /// deliberately not [`SearchOutcome::RuleEnded`]: every instance the calendar can express
-    /// was produced, and the rule nonetheless reached neither its `COUNT` nor its `UNTIL`, so a
-    /// caller told "the rule ended" would be told something false about the rule.
+    /// Section 3.3.4 writes a four-digit year, so the recurrence set of a rule with no `COUNT` and no `UNTIL` stops at 9999-12-31T23:59:59 whatever the window asked for.
+    /// Complete, and deliberately not [`SearchOutcome::RuleEnded`]: every instance the calendar can express was produced, and the rule nonetheless reached neither its `COUNT` nor its `UNTIL`, so a caller told "the rule ended" would be told something false about the rule.
     CalendarEnded,
-    /// The candidate budget ran out. This is the only outcome that means "incomplete".
+    /// The candidate budget ran out.
+    /// This is the only outcome that means "incomplete".
     BudgetExhausted(BudgetExhausted),
 }
 
 impl SearchOutcome {
     /// Whether the answer is complete for the window that was asked about.
     ///
-    /// [`SearchOutcome::CalendarEnded`] is complete: what stopped the search is the end of the
-    /// timeline RFC 5545 can name, so nothing a second search could find is missing from the
-    /// answer. What it is not is a fact about the rule, which is why it is its own variant.
+    /// [`SearchOutcome::CalendarEnded`] is complete: what stopped the search is the end of the timeline RFC 5545 can name, so nothing a second search could find is missing from the answer.
+    /// What it is not is a fact about the rule, which is why it is its own variant.
     #[must_use]
     pub const fn is_complete(self) -> bool {
         matches!(
@@ -426,8 +391,8 @@ mod tests {
 
     /// The hazard the type cannot remove, asserted so it stays a known one.
     ///
-    /// `count()` counts steps. An exhausted search returns a number one larger than the
-    /// occurrences it produced, and no item type this crate can write changes that.
+    /// `count()` counts steps.
+    /// An exhausted search returns a number one larger than the occurrences it produced, and no item type this crate can write changes that.
     #[test]
     fn count_counts_steps_and_an_exhausted_search_inflates_it_by_one() {
         let steps: Vec<SearchStep<'_>> = alloc::vec![
@@ -456,8 +421,7 @@ mod tests {
 
     /// The end of the calendar and the end of the rule are different answers.
     ///
-    /// Both are complete and only one of them is a claim about the rule, so a caller asking
-    /// "did this rule finish?" has to be able to tell them apart.
+    /// Both outcomes are complete, but only `RuleEnded` describes the recurrence rule.
     #[test]
     fn the_calendar_ending_is_not_the_rule_ending() {
         assert_ne!(SearchOutcome::CalendarEnded, SearchOutcome::RuleEnded);

@@ -385,13 +385,20 @@ fn expand_calendar_component(
     ))
 }
 
-/// Compose every range anchor in force and then the exact override, if one exists.
+/// Use the exact component when present, or compose the range anchors in force.
 pub(crate) fn effective_template(
     master: &Component,
     related: &[&Component],
     instance: crate::internal::query::Instance,
     zones: Zones<'_>,
 ) -> Result<Component, QueryError> {
+    let mut built = master.clone();
+    if let Some(exact) = related.iter().copied().find(|candidate| {
+        override_recurrence_id(master, candidate, zones).ok() == Some(instance.recurrence_id())
+    }) {
+        overlay_properties(&mut built, exact);
+        return Ok(built);
+    }
     let mut anchors: Vec<(Instant, &Component)> = related
         .iter()
         .copied()
@@ -404,17 +411,11 @@ pub(crate) fn effective_template(
         .collect::<Result<_, _>>()?;
     anchors.sort_by_key(|(recurrence_id, _)| *recurrence_id);
 
-    let mut built = master.clone();
     for (_, anchor) in anchors
         .into_iter()
         .filter(|(recurrence_id, _)| *recurrence_id <= instance.recurrence_id())
     {
         overlay_properties(&mut built, anchor);
-    }
-    if let Some(exact) = related.iter().copied().find(|candidate| {
-        override_recurrence_id(master, candidate, zones).ok() == Some(instance.recurrence_id())
-    }) {
-        overlay_properties(&mut built, exact);
     }
     Ok(built)
 }
