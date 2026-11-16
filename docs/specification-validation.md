@@ -57,6 +57,8 @@ Zoned local values become UTC throughout nested components.
 Durations of single instances become elapsed time before their zoned starts become UTC.
 Expansion removes time zone components and recurrence properties, including `EXRULE`.
 Conversion preserves unknown parameters and rejects values whose type doesn't identify a supported date-time.
+Reconstructed temporal properties keep the extension parameters stated by the applicable master or exception.
+Expanded recurrence identifiers omit `RANGE`, because each returned component describes one instance.
 Non-standard properties default to text under [RFC 5545 section 3.8.8.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.8.2).
 An exclusion can remove `DTSTART` without a recurrence rule.
 

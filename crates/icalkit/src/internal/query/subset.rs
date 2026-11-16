@@ -525,7 +525,7 @@ pub(crate) fn effective_template(
 fn overlay_properties(target: &mut Component, overlay: &Component) {
     let mut names: Vec<&[u8]> = Vec::new();
     for property in overlay.properties() {
-        if is_expansion_control(property) || names.iter().any(|name| property.is_named(name)) {
+        if is_recurrence_property(property) || names.iter().any(|name| property.is_named(name)) {
             continue;
         }
         names.push(property.name().as_bytes());
@@ -593,17 +593,23 @@ fn materialize_instance(
         dates: Some((key, start)),
     } = instance.shape()
     {
-        insert_property(&mut built, date_property(b"DTSTART", start)?);
+        insert_property(&mut built, date_property(template, b"DTSTART", start)?);
         if instance.recurrence_id() != initial {
-            insert_property(&mut built, date_property(b"RECURRENCE-ID", key)?);
+            insert_property(&mut built, date_property(template, b"RECURRENCE-ID", key)?);
         }
         return Ok(built);
     }
-    insert_property(&mut built, utc_property(b"DTSTART", instance.start())?);
+    insert_property(
+        &mut built,
+        utc_property(template, b"DTSTART", instance.start())?,
+    );
     match instance.shape() {
         InstanceShape::Event { end, .. } => {
             if instance.end() > instance.start() {
-                insert_property(&mut built, utc_property(b"DTEND", instance.end())?);
+                insert_property(
+                    &mut built,
+                    utc_property(template, b"DTEND", instance.end())?,
+                );
             } else if end != EndKind::Implied {
                 return Err(QueryError::Unrepresentable);
             }
@@ -620,8 +626,7 @@ fn materialize_instance(
             Duration::new(0, seconds)
                 .encode_value(&mut value)
                 .map_err(|_| QueryError::Unrepresentable)?;
-            let property = Property::create(b"DURATION", Vec::new(), value.as_bytes())
-                .map_err(|_| QueryError::Unrepresentable)?;
+            let property = replacement_property(template, b"DURATION", value.as_bytes())?;
             insert_property(&mut built, property);
         },
         InstanceShape::Todo {
@@ -630,7 +635,7 @@ fn materialize_instance(
             if instance.end() <= instance.start() {
                 return Err(QueryError::Unrepresentable);
             }
-            insert_property(&mut built, utc_property(b"DUE", instance.end())?);
+            insert_property(&mut built, utc_property(template, b"DUE", instance.end())?);
         },
         InstanceShape::Todo {
             end: EndKind::Implied,
@@ -640,33 +645,78 @@ fn materialize_instance(
     if instance.recurrence_id() != initial {
         insert_property(
             &mut built,
-            utc_property(b"RECURRENCE-ID", instance.recurrence_id())?,
+            utc_property(template, b"RECURRENCE-ID", instance.recurrence_id())?,
         );
     }
     Ok(built)
 }
 
-fn date_property(name: &[u8], date: CivilDate) -> Result<Property, QueryError> {
+fn date_property(
+    template: &Component,
+    name: &[u8],
+    date: CivilDate,
+) -> Result<Property, QueryError> {
     let mut value = ValueBuf::new();
     DateTimeValue::Date(date)
         .encode_value(&mut value)
         .map_err(|_| QueryError::Unrepresentable)?;
-    let parameters = alloc::vec![Parameter::new(
-        RawText::from_bytes(b"VALUE"),
-        RawText::from_bytes(b"DATE")
-    )];
-    Property::create(name, parameters, value.as_bytes()).map_err(|_| QueryError::Unrepresentable)
+    let mut property = replacement_property(template, name, value.as_bytes())?;
+    keep_temporal_parameters(&mut property, name, b"DATE");
+    if property.parameters_named(b"VALUE").next().is_none() {
+        property.edit_parameters().push(Parameter::new(
+            RawText::from_bytes(b"VALUE"),
+            RawText::from_bytes(b"DATE"),
+        ));
+    }
+    Ok(property)
 }
 
 /// One canonical UTC date-time property.
-fn utc_property(name: &[u8], instant: Instant) -> Result<Property, QueryError> {
+fn utc_property(
+    template: &Component,
+    name: &[u8],
+    instant: Instant,
+) -> Result<Property, QueryError> {
     let stamp =
         CivilDateTime::from_instant(instant, UtcOffset::UTC).ok_or(QueryError::Unrepresentable)?;
     let mut value = ValueBuf::new();
     DateTimeValue::Utc(stamp)
         .encode_value(&mut value)
         .map_err(|_| QueryError::Unrepresentable)?;
-    Property::create(name, Vec::new(), value.as_bytes()).map_err(|_| QueryError::Unrepresentable)
+    let mut property = replacement_property(template, name, value.as_bytes())?;
+    keep_temporal_parameters(&mut property, name, b"DATE-TIME");
+    Ok(property)
+}
+
+fn keep_temporal_parameters(property: &mut Property, name: &[u8], value_type: &[u8]) {
+    property.edit_parameters().retain(|parameter| {
+        if parameter.is_named(b"TZID") {
+            false
+        } else if parameter.is_named(b"RANGE") {
+            !name.eq_ignore_ascii_case(b"RECURRENCE-ID")
+        } else if parameter.is_named(b"VALUE") {
+            parameter.unquoted().eq_ignore_ascii_case(value_type)
+        } else {
+            true
+        }
+    });
+}
+
+fn replacement_property(
+    template: &Component,
+    name: &[u8],
+    value: &[u8],
+) -> Result<Property, QueryError> {
+    if let Some(original) = template
+        .properties()
+        .find(|property| property.is_named(name))
+    {
+        let mut property = original.clone();
+        property.set_value_text(RawText::from_bytes(value));
+        Ok(property)
+    } else {
+        Property::create(name, Vec::new(), value).map_err(|_| QueryError::Unrepresentable)
+    }
 }
 
 /// Insert a property before any nested component.

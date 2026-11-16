@@ -711,3 +711,40 @@ fn date_journals_keep_their_date_values_after_expansion() {
         Some("20240310")
     );
 }
+
+#[test]
+fn date_journals_keep_extension_parameters_after_expansion() {
+    let source = calendar(&component(
+        "VJOURNAL",
+        "DTSTART;VALUE=DATE;X-META=kept:20240309\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    ));
+    let projected = project_with_timezone(
+        &source,
+        "20240309T000000Z",
+        "20240311T000000Z",
+        Some(DAYLIGHT_TIMEZONE),
+    )
+    .unwrap();
+    let document = checked_projection(&projected);
+    let root = document.components().next().unwrap();
+    assert_eq!(root.components().count(), 2);
+    for journal in root.components() {
+        let start = journal
+            .properties()
+            .find(|property| property.is_named(b"DTSTART"))
+            .unwrap();
+        assert_eq!(
+            start
+                .parameters_named(b"X-META")
+                .next()
+                .unwrap()
+                .value()
+                .as_bytes(),
+            b"kept"
+        );
+        assert_eq!(
+            start.parameters_named(b"VALUE").next().unwrap().unquoted(),
+            b"DATE"
+        );
+    }
+}

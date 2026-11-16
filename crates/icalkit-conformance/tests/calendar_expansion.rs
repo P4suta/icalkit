@@ -104,6 +104,21 @@ fn text<'a>(component: &'a Component, name: &[u8]) -> Option<&'a str> {
     std::str::from_utf8(property.value_text().as_bytes()).ok()
 }
 
+fn parameter_text<'a>(
+    component: &'a Component,
+    property_name: &[u8],
+    name: &[u8],
+) -> Option<&'a str> {
+    let property = component
+        .properties()
+        .find(|property| property.is_named(property_name))?;
+    let parameter = property
+        .parameters()
+        .iter()
+        .find(|parameter| parameter.is_named(name))?;
+    std::str::from_utf8(parameter.value().as_bytes()).ok()
+}
+
 #[test]
 fn single_events_outside_the_expansion_window_are_omitted() {
     let source = calendar(&component("VEVENT", "DTSTART:20240101T090000Z\r\n"));
@@ -378,5 +393,94 @@ fn single_zoned_durations_keep_their_placed_end_across_a_clock_change() {
             query.matches(&mut session, &projected).unwrap(),
             Match::Unmatched
         );
+    }
+}
+
+#[test]
+fn recurring_date_time_properties_keep_extension_parameters() {
+    let source = calendar(&format!(
+        "{TIMEZONE}{}",
+        component(
+            "VEVENT",
+            concat!(
+                "dtstart;tzid=Test/TwoHours;X-META=start:20240101T090000\r\n",
+                "DTEND;TZID=Test/TwoHours;X-META=end:20240101T100000\r\n",
+                "RRULE:FREQ=DAILY;COUNT=2\r\n",
+            )
+        ),
+    ));
+    let bytes = project(&source, "20240101T000000Z", "20240103T000000Z").unwrap();
+    let document = document(&bytes);
+    let root = document.components().next().unwrap();
+    assert_eq!(root.components().count(), 2);
+    for event in root.components() {
+        assert_eq!(parameter_text(event, b"DTSTART", b"X-META"), Some("start"));
+        assert_eq!(parameter_text(event, b"DTEND", b"X-META"), Some("end"));
+        assert!(parameter_text(event, b"DTSTART", b"TZID").is_none());
+        assert!(parameter_text(event, b"DTEND", b"TZID").is_none());
+    }
+}
+
+#[test]
+fn range_and_exact_templates_keep_their_own_temporal_parameters() {
+    let source = calendar(&format!(
+        "{}{}{}",
+        component(
+            "VEVENT",
+            concat!(
+                "DTSTART;X-META=base:20240101T090000Z\r\n",
+                "DTEND;X-META=base:20240101T100000Z\r\nRRULE:FREQ=DAILY;COUNT=4\r\n",
+            )
+        ),
+        component(
+            "VEVENT",
+            concat!(
+                "RECURRENCE-ID;RANGE=THISANDFUTURE;X-META=range:20240102T090000Z\r\n",
+                "DTSTART;X-META=range:20240102T110000Z\r\n",
+                "DTEND;X-META=range:20240102T120000Z\r\n",
+            )
+        ),
+        component(
+            "VEVENT",
+            concat!(
+                "RECURRENCE-ID;X-META=exact:20240103T090000Z\r\n",
+                "DTSTART;X-META=exact:20240103T150000Z\r\n",
+                "DTEND;X-META=exact:20240103T160000Z\r\n",
+            )
+        ),
+    ));
+    let bytes = project(&source, "20240101T000000Z", "20240105T000000Z").unwrap();
+    let document = document(&bytes);
+    let root = document.components().next().unwrap();
+    let expected = ["base", "range", "exact", "range"];
+    assert_eq!(root.components().count(), expected.len());
+    for (event, expected) in root.components().zip(expected) {
+        assert_eq!(parameter_text(event, b"DTSTART", b"X-META"), Some(expected));
+        assert_eq!(parameter_text(event, b"DTEND", b"X-META"), Some(expected));
+        if text(event, b"RECURRENCE-ID").is_some() {
+            assert_eq!(
+                parameter_text(event, b"RECURRENCE-ID", b"X-META"),
+                Some(expected)
+            );
+            assert!(parameter_text(event, b"RECURRENCE-ID", b"RANGE").is_none());
+        }
+    }
+}
+
+#[test]
+fn recurring_task_durations_keep_extension_parameters() {
+    let source = calendar(&component(
+        "VTODO",
+        concat!(
+            "DTSTART:20240101T090000Z\r\nDURATION;X-META=kept:PT1H\r\n",
+            "RRULE:FREQ=DAILY;COUNT=2\r\n",
+        ),
+    ));
+    let bytes = project(&source, "20240101T000000Z", "20240103T000000Z").unwrap();
+    let document = document(&bytes);
+    let root = document.components().next().unwrap();
+    assert_eq!(root.components().count(), 2);
+    for task in root.components() {
+        assert_eq!(parameter_text(task, b"DURATION", b"X-META"), Some("kept"));
     }
 }
