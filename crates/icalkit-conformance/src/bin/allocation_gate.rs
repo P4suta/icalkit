@@ -4,10 +4,8 @@
 
 //! Isolated peak-allocation acceptance gate.
 //!
-//! A global allocator can only measure one process coherently, so this is a dedicated binary
-//! rather than a test sharing a runner with unrelated allocations. The production crate remains
-//! `#![forbid(unsafe_code)]`; the unsafe implementation is confined to this unpublished
-//! measurement helper and delegates every operation directly to `System`.
+//! A global allocator can only measure one process coherently, so this is a dedicated binary rather than a test sharing a runner with unrelated allocations.
+//! The production crate remains `#![forbid(unsafe_code)]`; the unsafe implementation is confined to this unpublished measurement helper and delegates every operation directly to `System`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -25,8 +23,8 @@ const RESPONSES: usize = 20_000;
 const XML_ELEMENTS: usize = 1 + RESPONSES * 3;
 const COMMENT_BYTES: usize = 8 * 1024 * 1024;
 
-// These are intentionally expressed per retained unit as well as relative to the input. A single
-// peak/input multiple cannot calibrate `max_items` or `max_xml_elements`.
+// These are intentionally expressed per retained unit as well as relative to the input.
+// A single peak/input multiple cannot calibrate `max_items` or `max_xml_elements`.
 const MAX_RETAINED_BYTES_PER_PROPERTY: u64 = 384;
 const MAX_PEAK_BYTES_PER_PROPERTY: u64 = 768;
 const MAX_RETAINED_BYTES_PER_XML_ELEMENT: u64 = 192;
@@ -73,9 +71,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn realloc(&self, pointer: *mut u8, old: Layout, new_size: usize) -> *mut u8 {
         let measured = ENABLED.load(Ordering::Relaxed);
         if measured {
-            // A realloc implementation may hold the old region until the new one exists. Count
-            // that conservative transient peak before delegating; it can overestimate but never
-            // hides a peak the gate is intended to cap.
+            // A realloc implementation may hold the old region until the new one exists.
+            // Count that conservative transient peak before delegating; it can overestimate but never hides a peak the gate is intended to cap.
             note_peak(
                 &PEAK,
                 CURRENT
