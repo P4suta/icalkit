@@ -125,13 +125,10 @@ fn split_digits(bytes: &[u8]) -> Option<(u64, &[u8])> {
     Some((decimal(digits)?, rest))
 }
 
-/// Read one `1*DIGIT` term closed by `designator`, or `None` when the next term is a different one.
-///
-/// Returning `None` rather than an error is what lets an optional term be tried and skipped:
-/// section 3.3.6's terms are ordered and each is optional, so "this is not an `H` term" and "this is not a duration" have to be the same answer at this level and are separated by the caller, which knows whether anything at all was read.
-fn take_term(bytes: &[u8], designator: u8) -> Option<(u64, &[u8])> {
+/// Read a duration term without consuming a different designator.
+fn take_term(bytes: &[u8], designator: u8, syntax: DurationSyntax) -> Option<(u64, &[u8])> {
     let (count, rest) = split_digits(bytes)?;
-    Some((count, after(rest, designator)?))
+    Some((count, syntax.after(rest, designator)?))
 }
 
 /// `total` seconds as hours, minutes and seconds.
@@ -331,18 +328,35 @@ impl EncodeValue for DateTimeValue<'_> {
 // Durations, section 3.3.6
 // ---------------------------------------------------------------------------------------
 
-/// Read section 3.3.6's `dur-time`: an ordered `H`, `M`, `S` run with at least one term.
-///
-/// The terms are tried in the order the grammar writes them and each one consumes only what it matched, so `PT1S1H` fails at the leftover rather than being reordered into something the producer did not write.
-fn duration_time(bytes: &[u8]) -> Option<u64> {
+#[derive(Clone, Copy)]
+enum DurationSyntax {
+    Property,
+    Parameter,
+}
+
+impl DurationSyntax {
+    fn after(self, bytes: &[u8], designator: u8) -> Option<&[u8]> {
+        let (&first, tail) = bytes.split_first()?;
+        let matches = match self {
+            Self::Property => first == designator,
+            Self::Parameter => first.eq_ignore_ascii_case(&designator),
+        };
+        matches.then_some(tail)
+    }
+}
+
+/// Read section 3.3.6's contiguous `H`, `M`, `S` terms, starting at any unit.
+fn duration_time(bytes: &[u8], syntax: DurationSyntax) -> Option<u64> {
     let mut rest = bytes;
     let mut seconds: u64 = 0;
     let mut saw_term = false;
     for (designator, scale) in [(b'H', 3_600_u64), (b'M', 60), (b'S', 1)] {
-        if let Some((count, tail)) = take_term(rest, designator) {
+        if let Some((count, tail)) = take_term(rest, designator, syntax) {
             seconds = seconds.checked_add(count.checked_mul(scale)?)?;
             rest = tail;
             saw_term = true;
+        } else if saw_term {
+            break;
         }
     }
     if !saw_term || !rest.is_empty() {
@@ -354,19 +368,19 @@ fn duration_time(bytes: &[u8]) -> Option<u64> {
 /// Read what follows the `P` of section 3.3.6, as whole days and seconds beyond them.
 ///
 /// A week is folded into days because [`Duration`] has no week field; the two fields it does have are kept apart, so a producer that wrote `P1D` and one that wrote `PT24H` each get their own spelling back when the value is written again.
-fn duration_body(bytes: &[u8]) -> Option<(u64, u64)> {
-    if let Some((weeks, rest)) = take_term(bytes, b'W') {
+fn duration_body(bytes: &[u8], syntax: DurationSyntax) -> Option<(u64, u64)> {
+    if let Some((weeks, rest)) = take_term(bytes, b'W', syntax) {
         if !rest.is_empty() {
             return None;
         }
         return Some((weeks.checked_mul(DAYS_PER_WEEK)?, 0));
     }
-    let (days, rest, dated) = match take_term(bytes, b'D') {
+    let (days, rest, dated) = match take_term(bytes, b'D', syntax) {
         Some((days, rest)) => (days, rest, true),
         None => (0, bytes, false),
     };
-    match after(rest, b'T') {
-        Some(time) => Some((days, duration_time(time)?)),
+    match syntax.after(rest, b'T') {
+        Some(time) => Some((days, duration_time(time, syntax)?)),
         // A `P` with no term at all is not a duration, so the day term has to have been read for an empty remainder to mean anything.
         None if dated && rest.is_empty() => Some((days, 0)),
         None => None,
@@ -375,8 +389,16 @@ fn duration_body(bytes: &[u8]) -> Option<(u64, u64)> {
 
 /// Read section 3.3.6's `dur-value`.
 fn decode_duration(bytes: &[u8]) -> Option<Duration> {
+    decode_duration_in(bytes, DurationSyntax::Property)
+}
+
+pub(crate) fn decode_duration_parameter(bytes: &[u8]) -> Option<Duration> {
+    decode_duration_in(bytes, DurationSyntax::Parameter)
+}
+
+fn decode_duration_in(bytes: &[u8], syntax: DurationSyntax) -> Option<Duration> {
     let (negative, unsigned) = split_sign(bytes);
-    let (days, seconds) = duration_body(after(unsigned, b'P')?)?;
+    let (days, seconds) = duration_body(syntax.after(unsigned, b'P')?, syntax)?;
     let days = i64::try_from(days).ok()?;
     let seconds = i64::try_from(seconds).ok()?;
     if negative {

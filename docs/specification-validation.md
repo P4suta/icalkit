@@ -14,6 +14,13 @@ Strict promotion checks names throughout unknown component subtrees.
 Valid extension names keep their spelling, including folded names.
 Lossless imports preserve malformed names without granting validated model views.
 
+Relationship references follow [RFC 9253 section 9.1](https://www.rfc-editor.org/rfc/rfc9253.html#section-9.1) across known components.
+Strict promotion checks scalar text identifiers, URI references, relationship tokens, and signed duration gaps.
+Hierarchical, default, unknown, and snooze relationships reference identifiers.
+The [relationship decision](adr/relationship-reference-validation.md) records the interpretation of legacy text forms and the bounded duration codec.
+Parameters compare without ASCII case changes to stored bytes, and unknown value types keep opaque semantics.
+Callers maintain reference targets and relationship effects.
+
 [Value type declarations](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20) name one nonempty token formed from ASCII letters, digits, and hyphens.
 Repeated or malformed declarations produce a violation during strict promotion.
 Valid unknown tokens remain opaque and produce notes.
@@ -115,6 +122,7 @@ Related endpoints and recurrence identifiers must agree with the start's value t
 The parse boundary checks endpoint order for dates, floating values, and UTC values.
 Zoned values keep their identifiers for workflows that use the caller's `ZoneDatabase`.
 Event and task durations must be positive, and date durations use day or week syntax.
+An hour and second pair requires a minute term, including zero minutes.
 
 The `VALARM` checks follow [RFC 5545 section 3.6.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.6) and [RFC 9074](https://www.rfc-editor.org/rfc/rfc9074.html).
 They enforce the properties required by each action, paired repeat intervals and counts, trigger anchors, identifiers, and acknowledgement timestamps.

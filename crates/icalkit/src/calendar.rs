@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::internal::core::codec::{
-    RequestStatus, TextSyntax, decode_single_scalar_text, is_text_value,
+    RequestStatus, TextSyntax, decode_duration_parameter, decode_single_scalar_text, is_text_value,
 };
 use crate::internal::core::language::is_language_tag;
 use crate::internal::core::mailto::is_mailto_uri;
@@ -238,6 +238,9 @@ fn validate_document_shape(
     }
     if first.is_some_and(|calendar| !known_text_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
+    }
+    if first.is_some_and(|calendar| !known_relationships_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-relationship"));
     }
     if first.is_some_and(|calendar| !known_alternate_representations_are_valid(calendar)) {
         issues.push(Issue::error(
@@ -484,6 +487,8 @@ fn text_property_is_valid(property: &Property) -> bool {
     match property.declared_value_type() {
         Some(Err(_)) => return true,
         None | Some(Ok(ValueType::Text)) => {},
+        Some(Ok(ValueType::Uid)) if property.is_named(b"RELATED-TO") => {},
+        Some(Ok(ValueType::Uri)) if property.is_named(b"RELATED-TO") => return true,
         Some(Ok(_)) => return false,
     }
     let bytes = property.value_text().as_bytes();
@@ -497,6 +502,56 @@ fn text_property_is_valid(property: &Property) -> bool {
         TextSyntax::Scalar
     };
     is_text_value(bytes, syntax)
+}
+
+fn known_relationships_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component
+        .properties()
+        .filter(|property| property.is_named(b"RELATED-TO"))
+        .all(relationship_is_valid)
+        && component.components().all(known_relationships_are_valid)
+}
+
+fn relationship_is_valid(property: &Property) -> bool {
+    const URI_RELATIONSHIPS: &[&[u8]] = &[
+        b"FINISHTOSTART",
+        b"FINISHTOFINISH",
+        b"STARTTOFINISH",
+        b"STARTTOSTART",
+        b"FIRST",
+        b"NEXT",
+        b"DEPENDS-ON",
+        b"REFID",
+        b"CONCEPT",
+    ];
+    let uri = match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        None | Some(Ok(ValueType::Text | ValueType::Uid)) => false,
+        Some(Ok(ValueType::Uri)) => true,
+        Some(Ok(_)) => return false,
+    };
+    let mut types = property.parameters_named(b"RELTYPE");
+    let relation = types.next().map(|parameter| parameter.value().as_bytes());
+    if types.next().is_some() || relation.is_some_and(|value| !is_iana_token(value)) {
+        return false;
+    }
+    let mut gaps = property.parameters_named(b"GAP");
+    if let Some(gap) = gaps.next() {
+        if gaps.next().is_some() || decode_duration_parameter(gap.value().as_bytes()).is_none() {
+            return false;
+        }
+    }
+    if !uri {
+        return true;
+    }
+    relation.is_some_and(|value| {
+        URI_RELATIONSHIPS
+            .iter()
+            .any(|candidate| value.eq_ignore_ascii_case(candidate))
+    }) && UriValue::decode_property(property).is_ok()
 }
 
 #[derive(Clone, Copy)]

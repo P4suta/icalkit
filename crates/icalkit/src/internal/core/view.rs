@@ -260,7 +260,7 @@ impl Display for MutationError {
 
 impl Error for MutationError {}
 
-/// The value types RFC 5545 section 3.2.20's `VALUE` parameter can name.
+/// Registered value types for RFC 5545 section 3.2.20's `VALUE` parameter.
 ///
 /// `#[non_exhaustive]` because a later RFC may add one, and a `VALUE` this crate does not know is a diagnostic rather than a refusal: the property keeps its octets either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -291,6 +291,8 @@ pub enum ValueType {
     Text,
     /// Section 3.3.12.
     Time,
+    /// RFC 9253 section 7.
+    Uid,
     /// Section 3.3.13.
     Uri,
     /// Section 3.3.14.
@@ -299,7 +301,7 @@ pub enum ValueType {
 
 impl ValueType {
     /// Every value type this crate knows, paired with the name a `VALUE` parameter spells.
-    const SPELLINGS: [(Self, &'static [u8]); 14] = [
+    const SPELLINGS: [(Self, &'static [u8]); 15] = [
         (Self::Binary, b"BINARY"),
         (Self::Boolean, b"BOOLEAN"),
         (Self::CalAddress, b"CAL-ADDRESS"),
@@ -312,6 +314,7 @@ impl ValueType {
         (Self::Recur, b"RECUR"),
         (Self::Text, b"TEXT"),
         (Self::Time, b"TIME"),
+        (Self::Uid, b"UID"),
         (Self::Uri, b"URI"),
         (Self::UtcOffset, b"UTC-OFFSET"),
     ];
@@ -332,6 +335,7 @@ impl ValueType {
             Self::Recur => b"RECUR",
             Self::Text => b"TEXT",
             Self::Time => b"TIME",
+            Self::Uid => b"UID",
             Self::Uri => b"URI",
             Self::UtcOffset => b"UTC-OFFSET",
         }

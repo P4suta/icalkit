@@ -204,14 +204,13 @@ struct ComponentSchema {
 const CALENDAR_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"PRODID", b"VERSION"],
     optional_once: &[b"CALSCALE", b"METHOD"],
-    // Section 3.4 defines no repeatable calendar property, and these five are not its.
-    // They are RFC 7986's, which puts names section 3.8 defines for a component onto the calendar itself — so a reader that knew only section 3.4 would report a `UID` beside `PRODID` as a violation of a document RFC 7986 says is well formed, which is exactly the report the code for it forbids.
-    // They are classified as repeatable rather than at-most-once because that RFC admits a second `DESCRIPTION` under a second `LANGUAGE`, and because a count is a claim this table has no reason to make about names it carries in order to stay silent about them.
-    // None of them is a new name, so none of them widens what this crate treats as known: that set is still exactly section 3.7's and section 3.8's.
+    // RFC 7986 adds calendar properties, including descriptions in distinct languages.
+    // RFC 9253 section 9.1 permits `RELATED-TO` in every component.
     repeatable: &[
         b"CATEGORIES",
         b"DESCRIPTION",
         b"LAST-MODIFIED",
+        b"RELATED-TO",
         b"UID",
         b"URL",
     ],
@@ -337,7 +336,13 @@ const FREE_BUSY_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"DTSTAMP", b"UID"],
     // `CONTACT` is at most once here and repeatable in an event, and section 3.6.4 is where that difference is stated.
     optional_once: &[b"CONTACT", b"DTSTART", b"DTEND", b"ORGANIZER", b"URL"],
-    repeatable: &[b"ATTENDEE", b"COMMENT", b"FREEBUSY", b"REQUEST-STATUS"],
+    repeatable: &[
+        b"ATTENDEE",
+        b"COMMENT",
+        b"FREEBUSY",
+        b"RELATED-TO",
+        b"REQUEST-STATUS",
+    ],
 };
 
 /// RFC 5545 section 3.6.5: what a `VTIMEZONE` carries.
@@ -347,14 +352,14 @@ const FREE_BUSY_SCHEMA: ComponentSchema = ComponentSchema {
 const TIME_ZONE_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"TZID"],
     optional_once: &[b"LAST-MODIFIED", b"TZURL"],
-    repeatable: &[],
+    repeatable: &[b"RELATED-TO"],
 };
 
 /// RFC 5545 section 3.6.5: what a `STANDARD` or a `DAYLIGHT` observance carries.
 const OBSERVANCE_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"DTSTART", b"TZOFFSETTO", b"TZOFFSETFROM"],
     optional_once: &[b"RRULE"],
-    repeatable: &[b"COMMENT", b"RDATE", b"TZNAME"],
+    repeatable: &[b"COMMENT", b"RDATE", b"RELATED-TO", b"TZNAME"],
 };
 
 /// RFC 5545 section 3.6.6: what a `VALARM` carries.
