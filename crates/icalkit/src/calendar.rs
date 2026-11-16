@@ -232,6 +232,11 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_linked_values_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-uri-or-binary"));
     }
+    if first.is_some_and(|calendar| !known_attendee_parameters_are_valid(calendar)) {
+        issues.push(Issue::error(
+            "icalkit.validation.invalid-attendee-parameter",
+        ));
+    }
     if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-integer"));
     }
@@ -441,6 +446,66 @@ enum LinkedProperty {
     Uri,
     CalendarAddress,
     Attachment,
+}
+
+fn known_attendee_parameters_are_valid(component: &Component) -> bool {
+    let Some(kind) = component.kind() else {
+        return true;
+    };
+    component
+        .properties()
+        .filter(|property| property.is_named(b"ATTENDEE"))
+        .all(|property| attendee_parameters_are_valid(property, kind))
+        && component
+            .components()
+            .all(known_attendee_parameters_are_valid)
+}
+
+fn attendee_parameters_are_valid(property: &Property, kind: ComponentKind) -> bool {
+    const CONTROLS: &[&[u8]] = &[b"CUTYPE", b"PARTSTAT", b"ROLE", b"RSVP"];
+    if !matches!(
+        property.declared_value_type(),
+        None | Some(Ok(ValueType::CalAddress))
+    ) {
+        return true;
+    }
+    CONTROLS.iter().all(|name| {
+        let mut parameters = property.parameters_named(name);
+        let Some(parameter) = parameters.next() else {
+            return true;
+        };
+        let value = parameter.value().as_bytes();
+        if parameters.next().is_some()
+            || !matches!(
+                kind,
+                ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
+            )
+            || !is_iana_token(value)
+        {
+            return false;
+        }
+        if parameter.is_named(b"RSVP") {
+            value.eq_ignore_ascii_case(b"TRUE") || value.eq_ignore_ascii_case(b"FALSE")
+        } else {
+            !parameter.is_named(b"PARTSTAT") || participation_status_is_valid(value, kind)
+        }
+    })
+}
+
+fn participation_status_is_valid(value: &[u8], kind: ComponentKind) -> bool {
+    if [b"COMPLETED".as_slice(), b"IN-PROCESS", b"FAILED"]
+        .iter()
+        .any(|status| value.eq_ignore_ascii_case(status))
+    {
+        return kind == ComponentKind::Todo;
+    }
+    if [b"TENTATIVE".as_slice(), b"DELEGATED"]
+        .iter()
+        .any(|status| value.eq_ignore_ascii_case(status))
+    {
+        return kind != ComponentKind::Journal;
+    }
+    true
 }
 
 fn known_linked_values_are_valid(component: &Component) -> bool {

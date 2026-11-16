@@ -32,6 +32,13 @@ Attachment checks reject repeated `VALUE`, `ENCODING`, and `FMTTYPE` parameters.
 Media types remain optional, and unknown parameters keep their bytes.
 Unknown value types stay opaque during promotion.
 
+Scalar `ATTENDEE` controls follow the [parameter grammars](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2).
+`RSVP` accepts `TRUE` or `FALSE`.
+`CUTYPE`, `ROLE`, and `PARTSTAT` use unquoted ASCII tokens.
+The [attendee definition](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.4.1) permits each control at most once on `VEVENT`, `VTODO`, and `VJOURNAL`.
+Registered participation statuses follow their component domains, including task `FAILED` from [RFC 10051 section 9.1](https://www.rfc-editor.org/rfc/rfc10051.html#section-9.1).
+Valid extension tokens, unknown parameters, unknown value types, and unknown components keep their bytes.
+
 Known text properties follow the [text grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) after content-line unfolding.
 Strict promotion rejects undefined escapes, dangling backslashes, unescaped delimiters, invalid UTF-8, and incompatible or repeated `VALUE` declarations.
 `CATEGORIES` and `RESOURCES` accept comma separators under their property definitions.
