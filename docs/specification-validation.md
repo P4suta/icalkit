@@ -34,6 +34,12 @@ Period checks validate the bounds and positive lengths that [section 3.3.9](http
 List decoding keeps the property's parameters and refuses to interpret unknown value types during recurrence expansion.
 Free/busy aggregation reports unknown value types as unreadable, and projection keeps their original content.
 
+Recurrence lengths follow [RFC 5545 section 3.8.5.3](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5.3).
+Period inclusions replace rule lengths when their start times coincide, following [section 5](https://www.rfc-editor.org/rfc/rfc5545.html#section-5).
+Search bounds account for long instances that begin before the requested range.
+Conflicting period lengths fail explicitly.
+The [duration decision](adr/occurrence-duration-semantics.md) records the distinction between calendar days and elapsed time.
+
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.
 The caller must enforce absence when storing the authorized result.
 The [creation decision](adr/scheduling-creation-from-absence.md) records the API choice and its storage boundary.
@@ -44,7 +50,7 @@ The creation workflows live in `crates/icalkit/tests/scheduling_creation.rs`.
 Use the [contribution workflow](../CONTRIBUTING.md) to reproduce a failure before changing behavior and run the applicable checks after the fix.
 
 ```sh
-mise x -- cargo nextest run --locked -p icalkit-conformance --test calendar_validation --test alarm_validation --test component_structure --test opaque_value_types --test recurrence_validation --test temporal_list_validation
+mise x -- cargo nextest run --locked -p icalkit-conformance --test calendar_validation --test alarm_validation --test component_structure --test opaque_value_types --test recurrence_validation --test temporal_list_validation --test occurrence_durations
 mise x -- cargo nextest run --locked -p icalkit --test scheduling_creation
 mise x -- just ci
 ```

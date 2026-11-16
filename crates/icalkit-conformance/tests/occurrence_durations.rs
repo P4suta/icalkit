@@ -7,7 +7,7 @@
 
 #![cfg(test)]
 
-use icalkit::caldav::{Match, Query};
+use icalkit::caldav::{Match, ProjectedCalendar, Query};
 use icalkit::time::{DateTime, OffsetResolution, Timestamp, ZoneDatabase, ZoneResolution};
 use icalkit::{Calendar, Engine};
 use icalkit_conformance::internal::core::{
@@ -80,6 +80,7 @@ impl ZoneDatabase for DaylightZone {
 }
 
 fn event(properties: &str) -> String {
+    let properties = properties.replace(',', ",\r\n ");
     format!(
         "BEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20240101T000000Z\r\n\
          {properties}END:VEVENT\r\n"
@@ -93,7 +94,7 @@ fn calendar(components: &str) -> String {
     )
 }
 
-fn expanded_times(source: &str, start: &str, end: &str) -> Vec<(String, String)> {
+fn project(source: &str, start: &str, end: &str) -> Result<ProjectedCalendar, icalkit::Error> {
     let query = Query::parse(
         format!(
             r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -107,9 +108,27 @@ fn expanded_times(source: &str, start: &str, end: &str) -> Vec<(String, String)>
     let source = Calendar::parse(source.as_bytes()).unwrap();
     let engine = Engine::builder().zone_database(DaylightZone).build();
     let mut session = engine.session();
-    let projected = query.project(&mut session, &source).unwrap();
-    Calendar::parse(projected.as_bytes()).unwrap();
+    query.project(&mut session, &source)
+}
+
+fn projected_document(source: &str, start: &str, end: &str) -> Document {
+    let projected = project(source, start, end).unwrap();
     let document = Document::parse(projected.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
+    if document
+        .components()
+        .next()
+        .unwrap()
+        .components()
+        .next()
+        .is_some()
+    {
+        Calendar::parse(projected.as_bytes()).unwrap();
+    }
+    document
+}
+
+fn expanded_times(source: &str, start: &str, end: &str) -> Vec<(String, String)> {
+    let document = projected_document(source, start, end);
     let root = document.components().next().unwrap();
     root.components()
         .filter(|component| component.is_named(b"VEVENT"))
@@ -253,5 +272,189 @@ fn non_recurring_duration_filters_use_the_same_ordered_arithmetic() {
     assert_eq!(
         query.matches(&mut session, &calendar).unwrap(),
         Match::Matched
+    );
+}
+
+#[test]
+fn period_inclusions_keep_their_own_lengths_without_a_rule() {
+    let source = calendar(&event(
+        "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\n\
+         RDATE;VALUE=PERIOD:20240102T090000Z/PT3H,20240103T090000Z/20240103T140000Z\r\n",
+    ));
+    assert_times(
+        &source,
+        "20240101T000000Z",
+        "20240104T000000Z",
+        &[
+            ("20240101T090000Z", "20240101T100000Z"),
+            ("20240102T090000Z", "20240102T120000Z"),
+            ("20240103T090000Z", "20240103T140000Z"),
+        ],
+    );
+}
+
+#[test]
+fn period_lengths_replace_rule_lengths_without_duplicating_instances() {
+    let source = calendar(&event(
+        "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=3\r\n\
+         RDATE;VALUE=PERIOD:20240102T090000Z/PT3H\r\n",
+    ));
+    assert_times(
+        &source,
+        "20240101T000000Z",
+        "20240104T000000Z",
+        &[
+            ("20240101T090000Z", "20240101T100000Z"),
+            ("20240102T090000Z", "20240102T120000Z"),
+            ("20240103T090000Z", "20240103T100000Z"),
+        ],
+    );
+}
+
+#[test]
+fn exclusions_still_remove_period_inclusions() {
+    let source = calendar(&event(
+        "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\n\
+         RDATE;VALUE=PERIOD:20240102T090000Z/PT3H\r\nEXDATE:20240102T090000Z\r\n",
+    ));
+    assert_times(&source, "20240102T000000Z", "20240103T000000Z", &[]);
+}
+
+#[test]
+fn long_periods_are_found_when_their_starts_precede_the_window() {
+    let source = calendar(&event(
+        "DTSTART:20240101T090000Z\r\n\
+         RDATE;VALUE=PERIOD:20240102T090000Z/PT10H\r\n",
+    ));
+    assert_times(
+        &source,
+        "20240102T170000Z",
+        "20240102T180000Z",
+        &[("20240102T090000Z", "20240102T190000Z")],
+    );
+}
+
+#[test]
+fn detached_exceptions_keep_their_stated_lengths() {
+    let master = event("DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=3\r\n");
+    let exception = event(
+        "RECURRENCE-ID:20240102T090000Z\r\nDTSTART:20240102T110000Z\r\nDTEND:20240102T140000Z\r\n",
+    );
+    assert_times(
+        &calendar(&format!("{master}{exception}")),
+        "20240101T000000Z",
+        "20240104T000000Z",
+        &[
+            ("20240101T090000Z", "20240101T100000Z"),
+            ("20240102T110000Z", "20240102T140000Z"),
+            ("20240103T090000Z", "20240103T100000Z"),
+        ],
+    );
+}
+
+#[test]
+fn future_length_changes_leave_separate_exceptions_unchanged() {
+    let master = event("DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=4\r\n");
+    let anchor = event(
+        "RECURRENCE-ID;RANGE=THISANDFUTURE:20240102T090000Z\r\n\
+         DTSTART:20240102T090000Z\r\nDURATION:PT3H\r\n",
+    );
+    let exception = event("RECURRENCE-ID:20240104T090000Z\r\nDTSTART:20240104T090000Z\r\n");
+    assert_times(
+        &calendar(&format!("{master}{anchor}{exception}")),
+        "20240101T000000Z",
+        "20240105T000000Z",
+        &[
+            ("20240101T090000Z", "20240101T100000Z"),
+            ("20240102T090000Z", "20240102T120000Z"),
+            ("20240103T090000Z", "20240103T120000Z"),
+            ("20240104T090000Z", "20240104T100000Z"),
+        ],
+    );
+}
+
+#[test]
+fn later_stated_lengths_win_in_recurrence_order() {
+    let master = event("DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=4\r\n");
+    let early = event(
+        "RECURRENCE-ID;RANGE=THISANDFUTURE:20240102T090000Z\r\nDTSTART:20240102T090000Z\r\nDURATION:PT3H\r\n",
+    );
+    let later = event(
+        "RECURRENCE-ID;RANGE=THISANDFUTURE:20240103T090000Z\r\nDTSTART:20240103T090000Z\r\nDURATION:PT2H\r\n",
+    );
+    let exact =
+        event("RECURRENCE-ID:20240104T090000Z\r\nDTSTART:20240104T090000Z\r\nDURATION:PT4H\r\n");
+    assert_times(
+        &calendar(&format!("{master}{exact}{later}{early}")),
+        "20240101T000000Z",
+        "20240105T000000Z",
+        &[
+            ("20240101T090000Z", "20240101T100000Z"),
+            ("20240102T090000Z", "20240102T120000Z"),
+            ("20240103T090000Z", "20240103T110000Z"),
+            ("20240104T090000Z", "20240104T130000Z"),
+        ],
+    );
+}
+
+#[test]
+fn conflicting_period_lengths_remain_explicit_failures() {
+    let source = calendar(&event(
+        "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\n\
+         RDATE;VALUE=PERIOD:20240102T090000Z/PT2H,20240102T090000Z/PT3H\r\n",
+    ));
+    Calendar::parse(source.as_bytes()).unwrap();
+    assert!(project(&source, "20240101T000000Z", "20240104T000000Z").is_err());
+}
+
+#[test]
+fn period_inclusions_keep_their_own_zone() {
+    let source = calendar(&event(
+        "DTSTART:20240309T090000Z\r\nDURATION:PT1H\r\n\
+         RDATE;VALUE=PERIOD;TZID=Test/Daylight:20240310T090000/PT2H\r\n",
+    ));
+    assert_times(
+        &source,
+        "20240309T000000Z",
+        "20240312T000000Z",
+        &[
+            ("20240309T090000Z", "20240309T100000Z"),
+            ("20240310T130000Z", "20240310T150000Z"),
+        ],
+    );
+}
+
+#[test]
+fn exclusions_use_their_stated_zone() {
+    let source = calendar(&event(
+        "DTSTART:20240309T130000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=3\r\n\
+         EXDATE;TZID=Test/Daylight:20240310T090000\r\n",
+    ));
+    assert_times(
+        &source,
+        "20240309T000000Z",
+        "20240312T000000Z",
+        &[
+            ("20240309T130000Z", "20240309T140000Z"),
+            ("20240311T130000Z", "20240311T140000Z"),
+        ],
+    );
+}
+
+#[test]
+fn detached_exceptions_keep_their_own_duration_clock() {
+    let master = event("DTSTART:20240309T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=3\r\n");
+    let exception = event(
+        "RECURRENCE-ID:20240309T090000Z\r\nDTSTART;TZID=Test/Daylight:20240309T090000\r\nDURATION:P1D\r\n",
+    );
+    assert_times(
+        &calendar(&format!("{master}{exception}")),
+        "20240309T000000Z",
+        "20240312T000000Z",
+        &[
+            ("20240309T140000Z", "20240310T130000Z"),
+            ("20240310T090000Z", "20240310T100000Z"),
+            ("20240311T090000Z", "20240311T100000Z"),
+        ],
     );
 }

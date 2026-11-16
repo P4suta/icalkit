@@ -59,7 +59,7 @@ use alloc::vec::Vec;
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
-    PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
+    PropertyId, Severity, Subject, UtcOffset, ValueType, View, report_diagnostic,
 };
 use crate::internal::dav::TimeRange;
 use crate::internal::recur::{
@@ -286,6 +286,7 @@ pub struct Series<'a> {
     pub clock: SeriesClock<'a>,
     /// How long one instance occupies, from RFC 4791 section 9.9's table.
     pub occupies: InstanceSpan,
+    durations: InstanceDurations<'a>,
     /// The `RRULE`, absent for a component that carries none.
     pub rule: Option<&'a RecurrenceRule>,
     /// The `RDATE` instants, nominal and ascending.
@@ -294,6 +295,104 @@ pub struct Series<'a> {
     pub exdates: &'a [Instant],
     /// The `RECURRENCE-ID` overrides, nominal.
     pub overrides: OverrideSet<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContextSpan<'a> {
+    span: InstanceSpan,
+    clock: SeriesClock<'a>,
+}
+
+impl<'a> ContextSpan<'a> {
+    fn finish(
+        self,
+        nominal_start: Instant,
+        start: Instant,
+        series_clock: SeriesClock<'a>,
+        zones: Zones<'a>,
+    ) -> Result<Instant, Undecided> {
+        if self.span.nominal_days == 0 || self.clock == series_clock {
+            self.span.finish(nominal_start, start, series_clock, zones)
+        } else {
+            let opening = nominal_instant(start, self.clock, zones)?;
+            self.span.finish(opening, start, self.clock, zones)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PeriodSpan {
+    key: Instant,
+    span: InstanceSpan,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ComponentSpan<'a> {
+    key: Instant,
+    range: OverrideRange,
+    stated: Option<ContextSpan<'a>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InstanceDurations<'a> {
+    periods: &'a [PeriodSpan],
+    components: &'a [ComponentSpan<'a>],
+}
+
+impl<'a> InstanceDurations<'a> {
+    const EMPTY: Self = Self {
+        periods: &[],
+        components: &[],
+    };
+
+    fn at(self, key: Instant, base: InstanceSpan, clock: SeriesClock<'a>) -> ContextSpan<'a> {
+        let base = ContextSpan {
+            span: self
+                .periods
+                .binary_search_by_key(&key, |period| period.key)
+                .ok()
+                .and_then(|at| self.periods.get(at))
+                .map_or(base, |period| period.span),
+            clock,
+        };
+        if let Some(exact) = self
+            .components
+            .iter()
+            .find(|component| component.key == key)
+        {
+            if exact.range == OverrideRange::ThisOnly {
+                return exact.stated.unwrap_or(base);
+            }
+        }
+        self.components
+            .iter()
+            .rev()
+            .filter(|component| {
+                component.key <= key && component.range == OverrideRange::ThisAndFuture
+            })
+            .find_map(|component| component.stated)
+            .unwrap_or(base)
+    }
+
+    fn maximum(self, base: InstanceSpan, clock: SeriesClock<'a>) -> InstanceSpan {
+        let periods = self.periods.iter().map(|period| period.span.seconds());
+        let components = self
+            .components
+            .iter()
+            .filter_map(|component| component.stated)
+            .map(|context| {
+                let extra = if context.span.nominal_days > 0 && context.clock != clock {
+                    ZONE_SLACK_SECONDS.saturating_mul(2)
+                } else {
+                    0
+                };
+                context.span.seconds().saturating_add(extra)
+            });
+        InstanceSpan {
+            seconds: periods.chain(components).fold(base.seconds(), i64::max),
+            nominal_days: 0,
+        }
+    }
 }
 
 /// One expanded recurrence instance, on the UTC timeline RFC 4791 section 9.6.5 requires.
@@ -369,7 +468,8 @@ impl SearchBounds {
     ///
     /// `None` is a fact rather than a refusal: an open bound is closed against the years RFC 5545 section 3.3.4 can write, so a range lying entirely outside them holds no instant any calendar can express and no instance can overlap it.
     pub fn compose(series: Series<'_>, range: TimeRange) -> Result<Option<Self>, QueryError> {
-        let Some(window) = start_window(range, series.occupies, series.clock)? else {
+        let span = series.durations.maximum(series.occupies, series.clock);
+        let Some(window) = start_window(range, span, series.clock)? else {
             return Ok(None);
         };
         let widening = max_absolute_shift(series.overrides);
@@ -528,10 +628,10 @@ pub(crate) fn override_impacts(
         let key = nominal_value(addressed, clock, zones)?;
         let start = clock.place(key, zones)?;
         let end = occupies.finish(key, start, clock, zones)?;
-        Ok::<_, Undecided>((Instance::new(start, start, end), occupies))
+        Ok::<_, Undecided>(Instance::new(start, start, end))
     })();
     let original = match original {
-        Ok((instance, occupies)) => Match::of(overlaps_range(instance, range, occupies)),
+        Ok(instance) => Match::of(overlaps_range(instance, range)),
         Err(reason) => Match::Undecided(reason),
     };
     let direct = current.or(original);
@@ -574,6 +674,7 @@ fn this_and_future_impacts(
     if let Some(parsed) = rule.as_mut() {
         decided!(project_rule_limit(parsed, clock, zones));
     }
+    let periods = period_spans(master, clock, zones, budget.meter)?;
     let mut rdates = instant_list(master, &ids::RDATE, clock, zones)?;
     let mut exdates = instant_list(master, &ids::EXDATE, clock, zones)?;
     rdates.sort_unstable();
@@ -595,6 +696,7 @@ fn this_and_future_impacts(
         moved_to,
         PropertyDiff::empty(),
     )];
+    let durations = [component_span(candidate, addressed, anchor, zones)?];
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
     let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
     let expanded = expand(
@@ -603,6 +705,10 @@ fn this_and_future_impacts(
             dtstart_kind,
             clock,
             occupies,
+            durations: InstanceDurations {
+                periods: &periods,
+                components: &durations,
+            },
             rule: rule.as_ref(),
             rdates: &rdates,
             exdates: &exdates,
@@ -683,6 +789,7 @@ pub(crate) fn expand_component(
     if let Some(parsed) = rule.as_mut() {
         decided!(project_rule_limit(parsed, clock, zones));
     }
+    let periods = period_spans(component, clock, zones, budget.meter)?;
     let mut rdates = instant_list(component, &ids::RDATE, clock, zones)?;
     let mut exdates = instant_list(component, &ids::EXDATE, clock, zones)?;
     rdates.sort_unstable();
@@ -691,6 +798,7 @@ pub(crate) fn expand_component(
     exdates.dedup();
 
     let mut entries = Vec::new();
+    let mut durations = Vec::new();
     entries
         .try_reserve(related.len())
         .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
@@ -699,6 +807,11 @@ pub(crate) fn expand_component(
             candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
         ));
         let recurrence_id = decided!(nominal_value(addressed, clock, zones));
+        retain(
+            &mut durations,
+            component_span(candidate, addressed, recurrence_id, zones)?,
+            budget.meter,
+        )?;
         let moved_to = match decided!(optional(candidate.dtstart())) {
             Some(value) => Some(decided!(nominal_value(value, clock, zones))),
             None => None,
@@ -715,6 +828,8 @@ pub(crate) fn expand_component(
         ));
     }
     entries.sort_by_key(|entry| entry.recurrence_id());
+    durations.sort_by_key(|entry| entry.key);
+    durations.dedup_by_key(|entry| entry.key);
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
     let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
     expand(
@@ -723,6 +838,10 @@ pub(crate) fn expand_component(
             dtstart_kind,
             clock,
             occupies,
+            durations: InstanceDurations {
+                periods: &periods,
+                components: &durations,
+            },
             rule: rule.as_ref(),
             rdates: &rdates,
             exdates: &exdates,
@@ -805,6 +924,7 @@ where
         dtstart_kind,
         clock,
         occupies: InstanceSpan::INSTANT,
+        durations: InstanceDurations::EMPTY,
         rule: rule.as_ref(),
         rdates: &rdates,
         exdates: &exdates,
@@ -880,6 +1000,7 @@ where
     if let Some(parsed) = rule.as_mut() {
         decided!(project_rule_limit(parsed, clock, zones));
     }
+    let periods = period_spans(component, clock, zones, budget.meter)?;
     let mut rdates = instant_list(component, &ids::RDATE, clock, zones)?;
     let mut exdates = instant_list(component, &ids::EXDATE, clock, zones)?;
     rdates.sort_unstable();
@@ -888,6 +1009,7 @@ where
     exdates.dedup();
 
     let mut entries = Vec::new();
+    let mut durations = Vec::new();
     entries
         .try_reserve(related.len())
         .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
@@ -896,6 +1018,11 @@ where
             candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
         ));
         let recurrence_id = decided!(nominal_value(addressed, clock, zones));
+        retain(
+            &mut durations,
+            component_span(candidate, addressed, recurrence_id, zones)?,
+            budget.meter,
+        )?;
         let moved_to = match decided!(optional(candidate.dtstart())) {
             Some(value) => Some(decided!(nominal_value(value, clock, zones))),
             None => None,
@@ -920,6 +1047,8 @@ where
         ));
     }
     entries.sort_by_key(|entry| entry.recurrence_id());
+    durations.sort_by_key(|entry| entry.key);
+    durations.dedup_by_key(|entry| entry.key);
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
     overlaps(
         Series {
@@ -927,6 +1056,10 @@ where
             dtstart_kind,
             clock,
             occupies,
+            durations: InstanceDurations {
+                periods: &periods,
+                components: &durations,
+            },
             rule: rule.as_ref(),
             rdates: &rdates,
             exdates: &exdates,
@@ -1001,20 +1134,35 @@ fn nominal_value(
 ) -> Result<Instant, Undecided> {
     let local = match value {
         DateTimeValue::Date(date) => CivilDateTime::new(date, CivilTime::MIDNIGHT),
-        DateTimeValue::Local(stamp) | DateTimeValue::Zoned { stamp, .. } => stamp,
-        DateTimeValue::Utc(stamp) if matches!(clock, SeriesClock::Utc) => {
-            return stamp
-                .at_offset(UtcOffset::UTC)
-                .ok_or(Undecided::ValueUnreadable);
+        DateTimeValue::Local(stamp) => stamp,
+        DateTimeValue::Zoned { stamp, tzid }
+            if clock.tzid().is_some_and(|zone| zone.as_bytes() == tzid) =>
+        {
+            stamp
+        },
+        DateTimeValue::Zoned { .. } => {
+            return nominal_instant(placed_value(value, zones)?, clock, zones);
         },
         DateTimeValue::Utc(stamp) => {
             let real = stamp
                 .at_offset(UtcOffset::UTC)
                 .ok_or(Undecided::ValueUnreadable)?;
-            let answer = zones.offset_at(clock.tzid(), real)?;
-            CivilDateTime::from_instant(real, answer.offset).ok_or(Undecided::ValueUnreadable)?
+            return nominal_instant(real, clock, zones);
         },
     };
+    nominal(local).ok_or(Undecided::ValueUnreadable)
+}
+
+fn nominal_instant(
+    at: Instant,
+    clock: SeriesClock<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
+    if matches!(clock, SeriesClock::Utc) {
+        return Ok(at);
+    }
+    let offset = zones.offset_at(clock.tzid(), at)?.offset;
+    let local = CivilDateTime::from_instant(at, offset).ok_or(Undecided::ValueUnreadable)?;
     nominal(local).ok_or(Undecided::ValueUnreadable)
 }
 
@@ -1095,7 +1243,15 @@ fn instant_list(
             .as_bytes()
             .split(|octet| *octet == b',')
         {
-            let value = list_value(property, field).map_err(|_| QueryError::Unrepresentable)?;
+            let value = if property.is_named(b"RDATE")
+                && property.declared_value_type() == Some(Ok(ValueType::Period))
+            {
+                Period::decode_property_field(property, field)
+                    .map_err(|_| QueryError::Unrepresentable)?
+                    .start()
+            } else {
+                list_value(property, field).map_err(|_| QueryError::Unrepresentable)?
+            };
             values
                 .try_reserve(1)
                 .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
@@ -1109,6 +1265,109 @@ fn instant_list(
 /// Decode one field of a list property, retaining the property's `TZID` parameter.
 fn list_value<'a>(property: &'a Property, field: &'a [u8]) -> Result<DateTimeValue<'a>, Undecided> {
     DateTimeValue::decode_property_field(property, field).map_err(|_| Undecided::ValueUnreadable)
+}
+
+fn retain<T>(values: &mut Vec<T>, value: T, meter: &mut Meter) -> Result<(), QueryError> {
+    let bytes = u64::try_from(core::mem::size_of::<T>())
+        .map_err(|_| QueryError::Limit(LimitExceeded::Budget))?;
+    meter.try_charge_bytes(bytes).map_err(QueryError::Limit)?;
+    values
+        .try_reserve(1)
+        .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
+    values.push(value);
+    Ok(())
+}
+
+fn period_spans(
+    component: &Component,
+    clock: SeriesClock<'_>,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<Vec<PeriodSpan>, QueryError> {
+    let mut spans = Vec::new();
+    for property in component
+        .properties_named(&ids::RDATE)
+        .filter(|property| property.declared_value_type() == Some(Ok(ValueType::Period)))
+    {
+        for field in property
+            .value_text()
+            .as_bytes()
+            .split(|octet| *octet == b',')
+        {
+            let period = Period::decode_property_field(property, field)
+                .map_err(|_| QueryError::Unrepresentable)?;
+            let opening = period.start();
+            let start = placed_value(opening, zones).map_err(|_| QueryError::Unrepresentable)?;
+            let end = match period {
+                Period::Explicit { end, .. } => placed_value(end, zones),
+                Period::Starting { duration, .. } => {
+                    let own_clock = clock_of(opening).map_err(|_| QueryError::Unrepresentable)?;
+                    let nominal = nominal_value(opening, own_clock, zones)
+                        .map_err(|_| QueryError::Unrepresentable)?;
+                    duration_span(duration)
+                        .and_then(|span| span.finish(nominal, start, own_clock, zones))
+                },
+            }
+            .map_err(|_| QueryError::Unrepresentable)?;
+            if end <= start {
+                return Err(QueryError::Unrepresentable);
+            }
+            let length = start
+                .checked_seconds_until(end)
+                .ok_or(QueryError::Unrepresentable)?;
+            let span = InstanceSpan::of_seconds(length).ok_or(QueryError::Unrepresentable)?;
+            let key =
+                nominal_value(opening, clock, zones).map_err(|_| QueryError::Unrepresentable)?;
+            retain(&mut spans, PeriodSpan { key, span }, meter)?;
+        }
+    }
+    spans.sort_by_key(|period| period.key);
+    if spans
+        .windows(2)
+        .any(|pair| pair[0].key == pair[1].key && pair[0].span != pair[1].span)
+    {
+        return Err(QueryError::Unrepresentable);
+    }
+    spans.dedup_by_key(|period| period.key);
+    Ok(spans)
+}
+
+fn component_span<'a>(
+    component: &'a Component,
+    addressed: DateTimeValue<'a>,
+    key: Instant,
+    zones: Zones<'a>,
+) -> Result<ComponentSpan<'a>, QueryError> {
+    let states_length = [b"DTEND".as_slice(), b"DUE", b"DURATION"]
+        .iter()
+        .any(|name| {
+            component
+                .properties()
+                .any(|property| property.is_named(name))
+        });
+    let stated = if states_length {
+        let opening = optional(component.dtstart())
+            .map_err(|_| QueryError::Unrepresentable)?
+            .unwrap_or(addressed);
+        let clock = clock_of(opening).map_err(|_| QueryError::Unrepresentable)?;
+        let kind = component.kind().ok_or(QueryError::Unrepresentable)?;
+        Some(ContextSpan {
+            span: instance_span(component, kind, opening, clock, zones)
+                .map_err(|_| QueryError::Unrepresentable)?,
+            clock,
+        })
+    } else {
+        None
+    };
+    Ok(ComponentSpan {
+        key,
+        range: if is_this_and_future(component) {
+            OverrideRange::ThisAndFuture
+        } else {
+            OverrideRange::ThisOnly
+        },
+        stated,
+    })
 }
 
 /// The wall-clock length of one recurring component instance.
@@ -1289,11 +1548,11 @@ where
         return Ok(Match::Unmatched);
     };
     let mut answer = lone_instance(series).map_or(Match::Unmatched, |(key, start)| {
-        decide(placed(series, key, start, zones), range, series.occupies)
+        decide(placed(series, key, start, zones), range)
     });
     if !answer.is_matched() {
         let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
-            answer = answer.or(decide(found, range, series.occupies));
+            answer = answer.or(decide(found, range));
             !answer.is_matched()
         })?;
         if let Some(reason) = incomplete {
@@ -1329,14 +1588,14 @@ where
         if let Some((key, start)) = lone_instance(series) {
             let found = placed(series, key, start, zones);
             if let Ok(established) = found {
-                collected.offer(found, range, series.occupies);
+                collected.offer(found, range);
                 collected.lone = Some(established.recurrence_id());
             } else {
-                collected.offer(found, range, series.occupies);
+                collected.offer(found, range);
             }
         }
         let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
-            collected.offer(found, range, series.occupies)
+            collected.offer(found, range)
         })?;
         collected.undecided = collected.undecided.or(incomplete);
         if let Some(refusal) = collected.refused {
@@ -1385,24 +1644,19 @@ impl Collector {
     /// Offer one instance, answering whether the walk should carry on.
     ///
     /// An instance the zone could not place keeps the walk going and is recorded: the rest of the range is still expandable, and one occurrence in an hour a zone never showed does not make the others unknown.
-    fn offer(
-        &mut self,
-        found: Result<Instance, Undecided>,
-        range: TimeRange,
-        span: InstanceSpan,
-    ) -> bool {
+    fn offer(&mut self, found: Result<Instance, Undecided>, range: TimeRange) -> bool {
         match found {
             Err(reason) => {
                 self.undecided = self.undecided.or(Some(reason));
                 true
             },
-            Ok(instance) => self.keep(instance, range, span),
+            Ok(instance) => self.keep(instance, range),
         }
     }
 
     /// Keep one placed instance if it overlaps, answering whether the walk should carry on.
-    fn keep(&mut self, instance: Instance, range: TimeRange, span: InstanceSpan) -> bool {
-        if !overlaps_range(instance, range, span) {
+    fn keep(&mut self, instance: Instance, range: TimeRange) -> bool {
+        if !overlaps_range(instance, range) {
             return true;
         }
         if self.lone == Some(instance.recurrence_id()) {
@@ -1477,11 +1731,11 @@ fn start_window(
 /// Whether `instance` overlaps `range`, RFC 4791 section 9.9's condition for its own row.
 ///
 /// Two comparisons, each of which an absent bound satisfies: section 9.9 reads a missing `start` as minus infinity and a missing `end` as plus infinity, and a range with neither is one `crate::internal::dav::TimeRange` refuses to hold.
-fn overlaps_range(instance: Instance, range: TimeRange, span: InstanceSpan) -> bool {
+fn overlaps_range(instance: Instance, range: TimeRange) -> bool {
     let reaches_start = match range.start() {
         None => true,
         // `(start <= DTSTART)`, the rows for a component that occupies no time.
-        Some(from) if span.is_instantaneous() => from <= instance.start(),
+        Some(from) if instance.end() == instance.start() => from <= instance.start(),
         // `(start < DTEND)` and `(start < DTSTART+DURATION)`, which are one condition once the effective end has been computed.
         Some(from) => from < instance.end(),
     };
@@ -1490,9 +1744,9 @@ fn overlaps_range(instance: Instance, range: TimeRange, span: InstanceSpan) -> b
 }
 
 /// The answer one instance gives: a fact where the zone placed it, and not where it did not.
-fn decide(found: Result<Instance, Undecided>, range: TimeRange, span: InstanceSpan) -> Match {
+fn decide(found: Result<Instance, Undecided>, range: TimeRange) -> Match {
     match found {
-        Ok(instance) => Match::of(overlaps_range(instance, range, span)),
+        Ok(instance) => Match::of(overlaps_range(instance, range)),
         Err(reason) => Match::Undecided(reason),
     }
 }
@@ -1514,7 +1768,8 @@ fn placed<'a>(
     } else {
         clock.place(key, zones)?
     };
-    let finishes_at = series.occupies.finish(start, happens_at, clock, zones)?;
+    let span = series.durations.at(key, series.occupies, clock);
+    let finishes_at = span.finish(start, happens_at, clock, zones)?;
     Ok(Instance::new(addressed, happens_at, finishes_at))
 }
 
@@ -1811,6 +2066,7 @@ mod tests {
             dtstart_kind: ValueKind::DateTime,
             clock: SeriesClock::Zoned(EASTERN),
             occupies: InstanceSpan::of_seconds(ONE_HOUR).unwrap(),
+            durations: super::InstanceDurations::EMPTY,
             rule,
             rdates: &[],
             exdates: &[],
@@ -1874,64 +2130,54 @@ mod tests {
     #[test]
     fn the_overlap_condition_is_the_one_section_9_9_writes_for_each_row() {
         let window = spanning(at(10_000), at(20_000));
-        let point = InstanceSpan::INSTANT;
-        let hour = InstanceSpan::of_seconds(ONE_HOUR).unwrap();
-        let cases: [(&str, Instance, InstanceSpan, bool); 8] = [
+        let cases: [(&str, Instance, bool); 8] = [
             // `(start <= DTSTART)`: the first instant of the range is inside it.
             (
                 "no length, at the range start",
                 instance(10_000, 10_000, 10_000),
-                point,
                 true,
             ),
             (
                 "no length, a second before it",
                 instance(9_999, 9_999, 9_999),
-                point,
                 false,
             ),
             // `(end > DTSTART)`: the range's own end is not inside it.
             (
                 "no length, at the range end",
                 instance(20_000, 20_000, 20_000),
-                point,
                 false,
             ),
             (
                 "no length, a second before that",
                 instance(19_999, 19_999, 19_999),
-                point,
                 true,
             ),
             // `(start < DTSTART+DURATION)`: an hour ending where the range opens is outside.
             (
                 "an hour ending at the range start",
                 instance(6_400, 6_400, 10_000),
-                hour,
                 false,
             ),
             (
                 "an hour ending a second later",
                 instance(6_401, 6_401, 10_001),
-                hour,
                 true,
             ),
             // `(end > DTSTART)`: an hour starting where the range closes is outside.
             (
                 "an hour starting at the range end",
                 instance(20_000, 20_000, 23_600),
-                hour,
                 false,
             ),
             (
                 "an hour starting a second earlier",
                 instance(19_999, 19_999, 23_599),
-                hour,
                 true,
             ),
         ];
-        for (shape, found, span, expected) in cases {
-            assert_eq!(overlaps_range(found, window, span), expected, "{shape}");
+        for (shape, found, expected) in cases {
+            assert_eq!(overlaps_range(found, window), expected, "{shape}");
         }
     }
 
