@@ -13,6 +13,7 @@ use core::fmt::{self, Debug, Formatter};
 
 use core::str;
 
+use crate::internal::core::codec::RequestStatus;
 use crate::internal::core::{
     CivilDateTime, Component, Diagnostic, DiagnosticCode, Instant, Meter, Severity, ValueType,
 };
@@ -508,14 +509,15 @@ pub struct ScheduleDelivery {
 }
 
 impl ScheduleDelivery {
-    /// Construct one recipient outcome with a syntactically valid iTIP status code.
+    /// Construct one recipient outcome with a valid iTIP `REQUEST-STATUS` value.
     pub fn new(
         recipient: impl Into<String>,
         request_status: impl Into<String>,
     ) -> Result<Self, Error> {
         let recipient = recipient.into();
         let request_status = request_status.into();
-        if !is_cal_address(&recipient) || !is_request_status(&request_status) {
+        if !is_cal_address(&recipient) || RequestStatus::parse(request_status.as_bytes()).is_none()
+        {
             return Err(Error::single("icalkit.caldav.schedule-delivery-invalid"));
         }
         Ok(Self {
@@ -530,16 +532,16 @@ impl ScheduleDelivery {
         &self.recipient
     }
 
-    /// The iTIP request-status value returned by the server.
+    /// The iTIP `REQUEST-STATUS` value returned by the server.
     #[must_use]
     pub fn request_status(&self) -> &str {
         &self.request_status
     }
 
-    /// Whether the request-status belongs to the successful 2.x class.
+    /// Whether the `REQUEST-STATUS` value has numeric class 2.
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.request_status.starts_with("2.")
+        RequestStatus::parse(self.request_status.as_bytes()).is_some_and(RequestStatus::is_success)
     }
 }
 
@@ -625,20 +627,6 @@ fn is_cal_address(value: &str) -> bool {
         && !value
             .bytes()
             .any(|octet| octet.is_ascii_control() || octet.is_ascii_whitespace())
-}
-
-fn is_request_status(value: &str) -> bool {
-    if value.is_empty() || value.bytes().any(|octet| octet.is_ascii_control()) {
-        return false;
-    }
-    let code = value.split(';').next().unwrap_or("");
-    let Some((class, detail)) = code.split_once('.') else {
-        return false;
-    };
-    !class.is_empty()
-        && !detail.is_empty()
-        && class.bytes().all(|octet| octet.is_ascii_digit())
-        && detail.bytes().all(|octet| octet.is_ascii_digit())
 }
 
 fn canonical_entity_tag(value: &str) -> Result<String, Error> {
@@ -1190,10 +1178,11 @@ impl ScheduleParser {
             if self.stage != ScheduleStage::Response || self.fields != 3 {
                 return Err(Error::single("icalkit.caldav.schedule-invalid"));
             }
-            self.deliveries.push(ScheduleDelivery {
-                recipient: trimmed_utf8(&self.recipient)?.to_string(),
-                request_status: trimmed_utf8(&self.request_status)?.to_string(),
-            });
+            let request_status = str::from_utf8(&self.request_status)
+                .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))?;
+            let delivery = ScheduleDelivery::new(trimmed_utf8(&self.recipient)?, request_status)
+                .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))?;
+            self.deliveries.push(delivery);
             self.stage = ScheduleStage::Root;
         } else if depth == 1 && is_name(name, Namespace::CalDav, b"schedule-response") {
             if self.stage != ScheduleStage::Root {

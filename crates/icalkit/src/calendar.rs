@@ -5,10 +5,11 @@
 use alloc::vec::Vec;
 use core::str;
 
+use crate::internal::core::codec::{RequestStatus, TextSyntax, is_text_value};
 use crate::internal::core::{
     BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
     Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
-    TEXT_ESCAPES, TextValue, UriValue, UtcOffset, ValueType, is_iana_token,
+    TextValue, UriValue, UtcOffset, ValueType, is_iana_token,
 };
 
 use crate::ResourcePolicy;
@@ -423,27 +424,16 @@ fn text_property_is_valid(property: &Property) -> bool {
         Some(Ok(_)) => return false,
     }
     let bytes = property.value_text().as_bytes();
-    if str::from_utf8(bytes).is_err() {
-        return false;
+    if property.is_named(b"REQUEST-STATUS") {
+        return property.parameters_named(b"LANGUAGE").nth(1).is_none()
+            && RequestStatus::parse(bytes).is_some();
     }
-    let list = property.is_named(b"CATEGORIES") || property.is_named(b"RESOURCES");
-    let mut octets = bytes.iter().copied();
-    while let Some(octet) = octets.next() {
-        match octet {
-            b'\\' => {
-                if !octets.next().is_some_and(|spelling| {
-                    TEXT_ESCAPES.iter().any(|(written, _)| *written == spelling)
-                }) {
-                    return false;
-                }
-            },
-            b';' => return false,
-            b',' if !list => return false,
-            _ if octet.is_ascii_control() && octet != b'\t' => return false,
-            _ => {},
-        }
-    }
-    true
+    let syntax = if property.is_named(b"CATEGORIES") || property.is_named(b"RESOURCES") {
+        TextSyntax::CommaList
+    } else {
+        TextSyntax::Scalar
+    };
+    is_text_value(bytes, syntax)
 }
 
 #[derive(Clone, Copy)]
@@ -623,6 +613,7 @@ fn is_text_property(property: &Property) -> bool {
         b"METHOD",
         b"PRODID",
         b"RELATED-TO",
+        b"REQUEST-STATUS",
         b"RESOURCES",
         b"STATUS",
         b"SUMMARY",

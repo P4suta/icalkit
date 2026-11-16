@@ -38,6 +38,15 @@ Strict promotion rejects undefined escapes, dangling backslashes, unescaped deli
 Calendar metadata and time zone text use the same checks.
 Unknown value types stay opaque, and the lossless text view keeps its existing behavior.
 
+Structured `REQUEST-STATUS` values follow [RFC 5545 section 3.8.8.3](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.8.3).
+Codes contain two or three numeric parts without a machine integer width limit.
+Descriptions and optional exception fields use scalar `TEXT` syntax.
+The calendar boundary enforces the text value type and at most one `LANGUAGE` parameter.
+[CalDAV request status values](https://www.rfc-editor.org/rfc/rfc6638.html#section-10.4) use the same private parser during construction and XML reading.
+Delivery success follows numeric class 2, including spellings with leading zeros.
+Descriptions keep trailing whitespace through XML responses.
+Unknown value types and unknown component semantics stay opaque during calendar promotion.
+
 Enumerated text uses the vocabulary defined for each property and component.
 Task statuses include `PENDING` and `FAILED` from [RFC 10051](https://www.rfc-editor.org/rfc/rfc10051.html#section-11.2).
 The [status registry](https://www.iana.org/assignments/icalendar/icalendar.xhtml#status-values) records the supported additions.

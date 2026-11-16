@@ -4,6 +4,8 @@
 
 //! CalDAV server workflows with ACL and storage kept outside the crate.
 
+#![cfg(test)]
+
 use icalkit::Calendar;
 use icalkit::caldav::{
     Client, Discovery, Header, Revision, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer,
@@ -255,6 +257,15 @@ fn server_rejects_malformed_mkcalendar_before_asking_for_acl() {
 
 #[test]
 fn server_outbox_post_round_trips_typed_delivery_results() {
+    assert_server_outbox_round_trip("3.7;Invalid <calendar> & user", "2.0;Success");
+}
+
+#[test]
+fn server_outbox_post_round_trips_structured_delivery_statuses() {
+    assert_server_outbox_round_trip("3.7.1;Invalid\\;user\\,value;detail", "02.0.1;Success \t");
+}
+
+fn assert_server_outbox_round_trip(failure: &str, success: &str) {
     let (mut client_operation, request) = schedule_operation().unwrap();
     let mut server_operation = Server::new().handle(request).unwrap();
 
@@ -279,9 +290,8 @@ fn server_outbox_post_round_trips_typed_delivery_results() {
     );
 
     let outcomes = ScheduleResponse::new(vec![
-        ScheduleDelivery::new("mailto:carol@example.test", "3.7;Invalid <calendar> & user")
-            .unwrap(),
-        ScheduleDelivery::new("mailto:bob@example.test", "2.0;Success").unwrap(),
+        ScheduleDelivery::new("mailto:carol@example.test", failure).unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", success).unwrap(),
     ])
     .unwrap();
     server_operation
@@ -297,11 +307,10 @@ fn server_outbox_post_round_trips_typed_delivery_results() {
         decoded.deliveries()[0].recipient(),
         "mailto:carol@example.test"
     );
-    assert_eq!(
-        decoded.deliveries()[0].request_status(),
-        "3.7;Invalid <calendar> & user"
-    );
-    assert_eq!(decoded.deliveries()[1].request_status(), "2.0;Success");
+    assert_eq!(decoded.deliveries()[0].request_status(), failure);
+    assert!(!decoded.deliveries()[0].is_success());
+    assert_eq!(decoded.deliveries()[1].request_status(), success);
+    assert!(decoded.deliveries()[1].is_success());
 }
 
 #[test]

@@ -822,6 +822,89 @@ impl EncodeValue for bool {
 // Text, section 3.3.11
 // ---------------------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TextSyntax {
+    Scalar,
+    CommaList,
+}
+
+#[must_use]
+pub(crate) fn is_text_value(bytes: &[u8], syntax: TextSyntax) -> bool {
+    if str::from_utf8(bytes).is_err() {
+        return false;
+    }
+    let mut octets = bytes.iter().copied();
+    while let Some(octet) = octets.next() {
+        match octet {
+            b'\\' => {
+                if octets
+                    .next()
+                    .is_none_or(|spelling| substitution_for(spelling).is_none())
+                {
+                    return false;
+                }
+            },
+            b';' => return false,
+            b',' => match syntax {
+                TextSyntax::Scalar => return false,
+                TextSyntax::CommaList => {},
+            },
+            _ if octet.is_ascii_control() && octet != b'\t' => return false,
+            _ => {},
+        }
+    }
+    true
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RequestStatus<'a> {
+    class: &'a str,
+}
+
+impl<'a> RequestStatus<'a> {
+    #[must_use]
+    pub(crate) fn parse(bytes: &'a [u8]) -> Option<Self> {
+        let text = str::from_utf8(bytes).ok()?;
+        let (code, fields) = text.split_once(';')?;
+        let mut parts = code.split('.');
+        let class = parts.next()?;
+        let detail = parts.next()?;
+        let numeric =
+            |value: &str| !value.is_empty() && value.bytes().all(|octet| octet.is_ascii_digit());
+        if !numeric(class)
+            || !numeric(detail)
+            || !parts.next().is_none_or(numeric)
+            || parts.next().is_some()
+        {
+            return None;
+        }
+        let fields = fields.as_bytes();
+        let mut octets = fields.iter().copied().enumerate();
+        while let Some((position, octet)) = octets.next() {
+            match octet {
+                b'\\' => {
+                    let _ = octets.next();
+                },
+                b';' => {
+                    let (description, exception) = fields.split_at(position);
+                    return (is_text_value(description, TextSyntax::Scalar)
+                        && exception
+                            .get(1..)
+                            .is_some_and(|value| is_text_value(value, TextSyntax::Scalar)))
+                    .then_some(Self { class });
+                },
+                _ => {},
+            }
+        }
+        is_text_value(fields, TextSyntax::Scalar).then_some(Self { class })
+    }
+
+    #[must_use]
+    pub(crate) fn is_success(self) -> bool {
+        self.class.trim_start_matches('0') == "2"
+    }
+}
+
 /// What one escape spelling stands for, or `None` when section 3.3.11 gives it no meaning.
 fn substitution_for(spelling: u8) -> Option<u8> {
     TEXT_ESCAPES

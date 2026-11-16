@@ -4,6 +4,8 @@
 
 //! Stateful CalDAV client workflows through the public sans-I/O API.
 
+#![cfg(test)]
+
 use icalkit::Calendar;
 use icalkit::caldav::{Client, Header, Revision, SyncToken, WireResponse};
 use icalkit::scheduling::Message;
@@ -204,8 +206,7 @@ fn mkcalendar_escapes_properties_and_accepts_only_a_creation_response() {
     operation.finish().unwrap();
 }
 
-#[test]
-fn outbox_post_returns_one_typed_delivery_per_recipient() {
+fn scheduling_message() -> Message {
     let payload = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit client tests//EN\r\n\
@@ -219,7 +220,12 @@ ATTENDEE:mailto:bob@example.test\r\n\
 SEQUENCE:1\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
-    let message = Message::request(payload, Timestamp::constant(0, 0)).unwrap();
+    Message::request(payload, Timestamp::constant(0, 0)).unwrap()
+}
+
+#[test]
+fn outbox_post_returns_one_typed_delivery_per_recipient() {
+    let message = scheduling_message();
     let client = Client::new();
     let mut operation = client
         .schedule(
@@ -269,4 +275,39 @@ END:VCALENDAR\r\n";
     );
     assert_eq!(response.deliveries()[0].request_status(), "2.0;Success");
     assert!(response.deliveries()[0].is_success());
+}
+
+#[test]
+fn outbox_post_rejects_malformed_delivery_status_values() {
+    let message = scheduling_message();
+    for value in [
+        "2.0",
+        "not-a-status",
+        " 2.0;Success",
+        "2.0.1.2;Invalid depth",
+        "2.0;bad\\q",
+        "2.0;bad,comma",
+        "2.0;one;two;three",
+    ] {
+        let client = Client::new();
+        let mut operation = client
+            .schedule(
+                "/outbox/alice/",
+                "mailto:alice@example.test",
+                &["mailto:bob@example.test"],
+                &message,
+            )
+            .unwrap();
+        operation.next_request().unwrap();
+        let body = format!(
+            "<C:schedule-response xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+             <C:response><C:recipient><D:href>mailto:bob@example.test</D:href></C:recipient>\
+             <C:request-status>{value}</C:request-status></C:response></C:schedule-response>"
+        );
+        let response = WireResponse::new(200, Vec::new(), body.into_bytes());
+        let Err(error) = operation.accept(response).and_then(|()| operation.finish()) else {
+            panic!("accepted malformed scheduling response: {value:?}");
+        };
+        assert_eq!(error.code().as_str(), "icalkit.caldav.schedule-invalid");
+    }
 }
