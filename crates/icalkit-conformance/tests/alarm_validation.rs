@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Alarm constraints follow [RFC 5545 section 3.6.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.6) and [section 3.8.6.3](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.6.3).
+//! Trigger controls follow [section 3.2.14](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.14).
 //! Alarm identifiers and acknowledgements follow [RFC 9074 sections 4 and 6](https://www.rfc-editor.org/rfc/rfc9074.html#section-4).
 
 #![cfg(test)]
@@ -171,6 +172,90 @@ fn trigger_parameters_must_be_unambiguous() {
             &DISPLAY.replace("TRIGGER:-PT15M", trigger),
         ));
     }
+}
+
+#[test]
+fn trigger_relationships_use_unquoted_start_or_end_tokens() {
+    for kind in ["VEVENT", "VTODO"] {
+        for action in [
+            "ACTION:AUDIO\r\n",
+            "ACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\n",
+            "ACTION:EMAIL\r\nDESCRIPTION:Body\r\nSUMMARY:Subject\r\n\
+             ATTENDEE:mailto:one@example.test\r\n",
+        ] {
+            for related in [
+                "\"START\"",
+                "\"END\"",
+                "\"start\"",
+                "\"\r\n START\"",
+                "",
+                "START,END",
+                "START END",
+                "X-FUTURE",
+                "START^n",
+                "\u{ff33}TART",
+            ] {
+                assert_rejected(&calendar(
+                    kind,
+                    &format!("{START}DURATION:PT1H\r\n"),
+                    &format!("{action}TRIGGER;RELATED={related}:-PT15M\r\n"),
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn trigger_relationships_keep_case_folding_and_extension_parameters() {
+    for kind in ["VEVENT", "VTODO"] {
+        for trigger in [
+            "TRIGGER:-PT15M",
+            "TRIGGER;RELATED=Start:-PT15M",
+            "TRIGGER;RELATED=End:-PT15M",
+            "trigger;value=\"DURATION\";related=START:-PT15M",
+            "TRIGGER;RELATED\r\n =END:-PT15M",
+            "TRIGGER;X-SOURCE=one;RELATED=END;X-SOURCE=two:-PT15M",
+        ] {
+            assert_valid(&calendar(
+                kind,
+                &format!("{START}DURATION:PT1H\r\n"),
+                &DISPLAY.replace("TRIGGER:-PT15M", trigger),
+            ));
+        }
+    }
+}
+
+#[test]
+fn unknown_trigger_values_actions_properties_and_components_stay_opaque() {
+    assert_valid(&calendar(
+        "VTODO",
+        "",
+        "ACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\n\
+         TRIGGER;VALUE=X-FUTURE;RELATED=\"UNKNOWN\":opaque\r\n",
+    ));
+    assert_valid(&calendar(
+        "VTODO",
+        "",
+        "ACTION:X-CUSTOM\r\nTRIGGER;RELATED=\"UNKNOWN\":opaque\r\n",
+    ));
+    assert_valid(&calendar(
+        "VEVENT",
+        START,
+        &format!("{DISPLAY}X-TRIGGER;RELATED=\"UNKNOWN\":opaque\r\n"),
+    ));
+    assert_valid(&calendar(
+        "VEVENT",
+        START,
+        &DISPLAY.replace("TRIGGER:-PT15M", "TRIGGER;X-RELATED=\"UNKNOWN\":-PT15M"),
+    ));
+    assert_valid(
+        &calendar(
+            "VEVENT",
+            START,
+            &DISPLAY.replace("TRIGGER:-PT15M", "TRIGGER;RELATED=\"UNKNOWN\":opaque"),
+        )
+        .replace("VEVENT", "X-EXTENSION"),
+    );
 }
 
 #[test]

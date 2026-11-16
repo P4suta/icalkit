@@ -40,6 +40,9 @@ Attachment checks reject repeated `VALUE`, `ENCODING`, and `FMTTYPE` parameters.
 Media types remain optional, and unknown parameters keep their bytes.
 Unknown value types stay opaque during promotion.
 
+Encoding declarations follow the [token grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.7).
+`ENCODING` accepts unquoted `8BIT` for URI data and `BASE64` for explicit binary data.
+
 Attachment formats follow the [type/subtype grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.8).
 Strict promotion checks the permitted characters and the limit of 127 characters per name.
 The [format syntax decision](adr/attachment-format-parameter-syntax.md) records the protocol's referenced grammar and the scope of current registration rules.
@@ -126,6 +129,8 @@ An hour and second pair requires a minute term, including zero minutes.
 
 The `VALARM` checks follow [RFC 5545 section 3.6.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.6) and [RFC 9074](https://www.rfc-editor.org/rfc/rfc9074.html).
 They enforce the properties required by each action, paired repeat intervals and counts, trigger anchors, identifiers, and acknowledgement timestamps.
+Trigger anchors use one unquoted `START` or `END` token under the [`RELATED` parameter grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.14).
+Valid casing, line folds, and extension parameters keep their input bytes.
 Unknown actions and value types keep their opaque data.
 
 Free busy classifications follow the [token grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.9).

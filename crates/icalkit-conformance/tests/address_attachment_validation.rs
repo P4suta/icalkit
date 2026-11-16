@@ -4,6 +4,7 @@
 
 //! Addresses follow [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.3).
 //! Attachments follow [the URI and binary forms](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.1).
+//! Encoding controls follow [section 3.2.7](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.7).
 
 #![cfg(test)]
 
@@ -37,7 +38,9 @@ fn accepted(source: &str) {
 }
 
 fn rejected(source: &str) {
-    let error = Calendar::parse(source.as_bytes()).expect_err("invalid address or attachment");
+    let Err(error) = Calendar::parse(source.as_bytes()) else {
+        panic!("accepted invalid address or attachment: {source:?}");
+    };
     assert_eq!(error.code().as_str(), "icalkit.validation.failed");
     assert!(
         error
@@ -178,7 +181,7 @@ fn binary_attachments_require_one_base64_encoding_declaration() {
     }
     accepted(&calendar(
         "VEVENT",
-        "aTtAcH;VaLuE=\"BINARY\";EnCoDiNg=\"base64\":QQ==",
+        "aTtAcH;VaLuE=\"BINARY\";EnCoDiNg=base64:QQ==",
     ));
 }
 
@@ -195,7 +198,7 @@ fn uri_attachments_use_text_encoding() {
             &format!("ATTACH;{parameters}:https://example.test/file"),
         ));
     }
-    for parameters in ["VALUE=URI", "ENCODING=8BIT", "VALUE=URI;ENCODING=\"8bit\""] {
+    for parameters in ["VALUE=URI", "ENCODING=8BIT", "VALUE=URI;ENCODING=8bit"] {
         accepted(&calendar(
             "VEVENT",
             &format!("ATTACH;{parameters}:https://Example.Test/file%20name"),
@@ -219,6 +222,66 @@ fn attachment_media_types_are_optional_and_must_not_repeat() {
     ] {
         accepted(&calendar("VEVENT", property));
     }
+}
+
+#[test]
+fn attachment_encoding_controls_use_unquoted_tokens() {
+    for kind in ["VEVENT", "VTODO", "VJOURNAL"] {
+        for (value_type, encoding, value) in [
+            ("BINARY", "\"BASE64\"", "QQ=="),
+            ("BINARY", "\"base64\"", "QQ=="),
+            ("BINARY", "\"\r\n BASE64\"", "QQ=="),
+            ("BINARY", "BASE64,8BIT", "QQ=="),
+            ("BINARY", "BASE 64", "QQ=="),
+            ("BINARY", "BASE64^n", "QQ=="),
+            ("URI", "\"8BIT\"", "urn:attachment"),
+            ("URI", "\"8bit\"", "urn:attachment"),
+            ("URI", "\"\r\n 8BIT\"", "urn:attachment"),
+            ("URI", "8BIT,BASE64", "urn:attachment"),
+            ("URI", "8 BIT", "urn:attachment"),
+            ("URI", "8BIT^n", "urn:attachment"),
+        ] {
+            let property = format!("ATTACH;VALUE={value_type};ENCODING={encoding}:{value}");
+            rejected(&calendar(kind, &property));
+            if kind == "VJOURNAL" {
+                continue;
+            }
+            let nested = format!(
+                "BEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER:-PT15M\r\n\
+                 {property}\r\nEND:VALARM"
+            );
+            rejected(&calendar(kind, &nested));
+        }
+    }
+}
+
+#[test]
+fn encoding_tokens_keep_case_folding_and_value_declaration_compatibility() {
+    for property in [
+        "ATTACH;VALUE=\"BINARY\";ENCODING=Base64:QQ==",
+        "ATTACH;VALUE=BINARY;ENCODING\r\n =base64:QQ==",
+        "attach;value=binary;encoding=BASE64;X-SOURCE=one;X-SOURCE=two:QQ==",
+        "ATTACH;VALUE=\"URI\";ENCODING=8bIt:urn:attachment",
+        "ATTACH;ENCODING\r\n =8BIT:urn:attachment",
+    ] {
+        accepted(&calendar("VEVENT", property));
+    }
+}
+
+#[test]
+fn unknown_attachment_encodings_stay_opaque() {
+    for property in [
+        "ATTACH;VALUE=X-FUTURE;ENCODING=\"UNKNOWN\":opaque",
+        "X-ATTACH;VALUE=BINARY;ENCODING=\"UNKNOWN\":opaque",
+        "ATTACH;X-ENCODING=\"UNKNOWN\":urn:attachment",
+    ] {
+        accepted(&calendar("VEVENT", property));
+    }
+    accepted(concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit opaque controls//EN\r\n",
+        "BEGIN:X-EXTENSION\r\nATTACH;VALUE=BINARY;ENCODING=\"UNKNOWN\":opaque\r\n",
+        "END:X-EXTENSION\r\nEND:VCALENDAR\r\n",
+    ));
 }
 
 #[test]

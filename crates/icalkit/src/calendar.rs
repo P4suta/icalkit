@@ -851,12 +851,14 @@ fn linked_property_is_valid(property: &Property, kind: LinkedProperty) -> bool {
             UriValue::decode_property(property).is_ok()
         },
         (LinkedProperty::Attachment, ValueType::Uri) => {
-            encoding.is_none_or(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"8BIT"))
+            encoding
+                .is_none_or(|parameter| parameter.value().as_bytes().eq_ignore_ascii_case(b"8BIT"))
                 && UriValue::decode_property(property).is_ok()
         },
         (LinkedProperty::Attachment, ValueType::Binary) => {
-            encoding.is_some_and(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"BASE64"))
-                && BinaryValue::decode_property(property).is_ok()
+            encoding.is_some_and(|parameter| {
+                parameter.value().as_bytes().eq_ignore_ascii_case(b"BASE64")
+            }) && BinaryValue::decode_property(property).is_ok()
         },
         _ => false,
     }
@@ -1343,7 +1345,9 @@ fn trigger_is_valid(parent: &Component, alarm: &Component, trigger: &Property) -
             let related = trigger
                 .parameters_named(b"RELATED")
                 .next()
-                .map_or(b"START".as_slice(), |parameter| parameter.unquoted());
+                .map_or(b"START".as_slice(), |parameter| {
+                    parameter.value().as_bytes()
+                });
             if related.eq_ignore_ascii_case(b"START") {
                 has_property(parent, b"DTSTART")
             } else if related.eq_ignore_ascii_case(b"END") {
