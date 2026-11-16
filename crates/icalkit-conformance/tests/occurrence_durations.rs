@@ -11,11 +11,20 @@ use icalkit::caldav::{Match, ProjectedCalendar, Query};
 use icalkit::time::{DateTime, OffsetResolution, Timestamp, ZoneDatabase, ZoneResolution};
 use icalkit::{Calendar, Engine};
 use icalkit_conformance::internal::core::{
-    CivilDate, CivilDateTime, CivilTime, Document, Limits, UtcOffset,
+    CivilDate, CivilDateTime, CivilTime, Component, Document, Limits, UtcOffset,
 };
 
 #[derive(Debug)]
 struct DaylightZone;
+
+const DAYLIGHT_TIMEZONE: &str = concat!(
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit query zone//EN\r\n",
+    "BEGIN:VTIMEZONE\r\nTZID:Test/Daylight\r\n",
+    "BEGIN:STANDARD\r\nDTSTART:20231105T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nEND:STANDARD\r\n",
+    "BEGIN:DAYLIGHT\r\nDTSTART:20240310T020000\r\nTZOFFSETFROM:-0500\r\nTZOFFSETTO:-0400\r\nEND:DAYLIGHT\r\n",
+    "BEGIN:STANDARD\r\nDTSTART:20241103T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nEND:STANDARD\r\n",
+    "END:VTIMEZONE\r\nEND:VCALENDAR\r\n",
+);
 
 fn at(value: &str) -> Timestamp {
     value.parse().unwrap()
@@ -80,10 +89,14 @@ impl ZoneDatabase for DaylightZone {
 }
 
 fn event(properties: &str) -> String {
+    component("VEVENT", properties)
+}
+
+fn component(kind: &str, properties: &str) -> String {
     let properties = properties.replace(',', ",\r\n ");
     format!(
-        "BEGIN:VEVENT\r\nUID:one@example.test\r\nDTSTAMP:20240101T000000Z\r\n\
-         {properties}END:VEVENT\r\n"
+        "BEGIN:{kind}\r\nUID:one@example.test\r\nDTSTAMP:20240101T000000Z\r\n\
+         {properties}END:{kind}\r\n"
     )
 }
 
@@ -95,11 +108,24 @@ fn calendar(components: &str) -> String {
 }
 
 fn project(source: &str, start: &str, end: &str) -> Result<ProjectedCalendar, icalkit::Error> {
+    project_with_timezone(source, start, end, None)
+}
+
+fn project_with_timezone(
+    source: &str,
+    start: &str,
+    end: &str,
+    timezone: Option<&str>,
+) -> Result<ProjectedCalendar, icalkit::Error> {
+    let timezone = timezone.map_or_else(String::new, |data| {
+        format!("<C:timezone>{data}</C:timezone>")
+    });
     let query = Query::parse(
         format!(
             r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
 <D:prop><C:calendar-data><C:expand start="{start}" end="{end}"/></C:calendar-data></D:prop>
 <C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+{timezone}
 </C:calendar-query>"#
         )
         .as_bytes(),
@@ -113,6 +139,10 @@ fn project(source: &str, start: &str, end: &str) -> Result<ProjectedCalendar, ic
 
 fn projected_document(source: &str, start: &str, end: &str) -> Document {
     let projected = project(source, start, end).unwrap();
+    checked_projection(&projected)
+}
+
+fn checked_projection(projected: &ProjectedCalendar) -> Document {
     let document = Document::parse(projected.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
     if document
         .components()
@@ -125,6 +155,13 @@ fn projected_document(source: &str, start: &str, end: &str) -> Document {
         Calendar::parse(projected.as_bytes()).unwrap();
     }
     document
+}
+
+fn property_text<'a>(component: &'a Component, name: &[u8]) -> Option<&'a str> {
+    let property = component
+        .properties()
+        .find(|property| property.is_named(name))?;
+    std::str::from_utf8(property.value_text().as_bytes()).ok()
 }
 
 fn expanded_times(source: &str, start: &str, end: &str) -> Vec<(String, String)> {
@@ -456,5 +493,221 @@ fn detached_exceptions_keep_their_own_duration_clock() {
             ("20240310T090000Z", "20240310T100000Z"),
             ("20240311T090000Z", "20240311T100000Z"),
         ],
+    );
+}
+
+#[test]
+fn instantaneous_events_keep_their_implicit_end() {
+    let source = calendar(&event(
+        "DTSTART:20240101T090000Z\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    ));
+    let document = projected_document(&source, "20240101T000000Z", "20240103T000000Z");
+    let root = document.components().next().unwrap();
+    assert_eq!(root.components().count(), 2);
+    for event in root.components() {
+        assert!(property_text(event, b"DTEND").is_none());
+        assert!(property_text(event, b"DURATION").is_none());
+    }
+}
+
+#[test]
+fn task_instances_use_due_instead_of_an_event_end() {
+    let source = calendar(&component(
+        "VTODO",
+        "DTSTART:20240101T090000Z\r\nDUE:20240101T100000Z\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    ));
+    let document = projected_document(&source, "20240101T000000Z", "20240103T000000Z");
+    let root = document.components().next().unwrap();
+    let due: Vec<&str> = root
+        .components()
+        .map(|task| {
+            assert!(property_text(task, b"DTEND").is_none());
+            assert!(property_text(task, b"DURATION").is_none());
+            property_text(task, b"DUE").unwrap()
+        })
+        .collect();
+    assert_eq!(due, ["20240101T100000Z", "20240102T100000Z"]);
+}
+
+#[test]
+fn journal_instances_do_not_gain_event_end_properties() {
+    let source = calendar(&component(
+        "VJOURNAL",
+        "DTSTART:20240101T090000Z\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    ));
+    let document = projected_document(&source, "20240101T000000Z", "20240103T000000Z");
+    let root = document.components().next().unwrap();
+    assert_eq!(root.components().count(), 2);
+    for journal in root.components() {
+        assert!(property_text(journal, b"DTEND").is_none());
+        assert!(property_text(journal, b"DUE").is_none());
+    }
+}
+
+#[test]
+fn floating_periods_use_the_query_zone_and_keep_day_and_time_units_distinct() {
+    let timezone = DAYLIGHT_TIMEZONE;
+    for (length, expected_end) in [("P1D", "20240310T160000Z"), ("PT24H", "20240310T170000Z")] {
+        let source = calendar(&event(&format!(
+            "DTSTART:20240308T120000\r\nDURATION:PT1H\r\n\
+             RDATE;VALUE=PERIOD:20240309T120000/{length}\r\n"
+        )));
+        let projected = project_with_timezone(
+            &source,
+            "20240308T000000Z",
+            "20240311T000000Z",
+            Some(timezone),
+        )
+        .unwrap();
+        let document = checked_projection(&projected);
+        let root = document.components().next().unwrap();
+        let period = root
+            .components()
+            .find(|component| property_text(component, b"DTSTART") == Some("20240309T170000Z"))
+            .unwrap();
+        assert_eq!(property_text(period, b"DTEND"), Some(expected_end));
+    }
+}
+
+#[test]
+fn task_duration_instances_keep_their_duration_boundary_semantics() {
+    let source = calendar(&component(
+        "VTODO",
+        "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    ));
+    let filter = Query::parse(
+        br#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">
+<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VTODO">
+<C:time-range start="20240102T100000Z" end="20240102T103000Z"/>
+</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"#,
+    )
+    .unwrap();
+    let original = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    assert_eq!(
+        filter.matches(&mut session, &original).unwrap(),
+        Match::Matched
+    );
+    let projected = project(&source, "20240102T100000Z", "20240102T103000Z").unwrap();
+    let projected = Calendar::parse(projected.as_bytes()).unwrap();
+    assert_eq!(
+        filter.matches(&mut session, &projected).unwrap(),
+        Match::Matched
+    );
+    let document =
+        Document::parse(&projected.to_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let root = document.components().next().unwrap();
+    let task = root.components().next().unwrap();
+    assert!(property_text(task, b"DTEND").is_none());
+    assert!(property_text(task, b"DUE").is_none());
+    assert!(property_text(task, b"DURATION").is_some());
+}
+
+#[test]
+fn limited_task_overrides_use_the_original_duration_boundary() {
+    let source = calendar(&format!(
+        "{}{}",
+        component(
+            "VTODO",
+            "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=3\r\n",
+        ),
+        component(
+            "VTODO",
+            "RECURRENCE-ID:20240102T090000Z\r\nDTSTART:20240102T110000Z\r\nDURATION:PT2H\r\n",
+        ),
+    ));
+    let query = Query::parse(
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+<C:limit-recurrence-set start="20240102T100000Z" end="20240102T103000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter></C:calendar-query>"#,
+    )
+    .unwrap();
+    let original = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    let projected = query.project(&mut session, &original).unwrap();
+    let document = checked_projection(&projected);
+    let root = document.components().next().unwrap();
+    assert_eq!(root.components().count(), 2);
+    assert_eq!(
+        property_text(root.components().nth(1).unwrap(), b"RECURRENCE-ID"),
+        Some("20240102T090000Z")
+    );
+}
+
+#[test]
+fn detached_task_instances_remain_searchable_without_a_master() {
+    let source = calendar(&component(
+        "VTODO",
+        "RECURRENCE-ID:20240102T090000Z\r\nDTSTART:20240102T110000Z\r\nDURATION:PT2H\r\n",
+    ));
+    let query = Query::parse(
+        br#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">
+<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VTODO">
+<C:time-range start="20240102T120000Z" end="20240102T123000Z"/>
+</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"#,
+    )
+    .unwrap();
+    let original = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    assert_eq!(
+        query.matches(&mut session, &original).unwrap(),
+        Match::Matched
+    );
+}
+
+#[test]
+fn journal_periods_still_use_the_journal_point_overlap_rule() {
+    let source = calendar(&component(
+        "VJOURNAL",
+        "DTSTART:20240101T090000Z\r\nRRULE:FREQ=DAILY;COUNT=2\r\nRDATE;VALUE=PERIOD:20240102T090000Z/PT3H\r\n",
+    ));
+    let filter = Query::parse(
+        br#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">
+<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VJOURNAL">
+<C:time-range start="20240102T100000Z" end="20240102T110000Z"/>
+</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"#,
+    )
+    .unwrap();
+    let original = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    assert_eq!(
+        filter.matches(&mut session, &original).unwrap(),
+        Match::Unmatched
+    );
+    assert_times(&source, "20240102T100000Z", "20240102T110000Z", &[]);
+}
+
+#[test]
+fn date_journals_keep_their_date_values_after_expansion() {
+    let source = calendar(&component(
+        "VJOURNAL",
+        "DTSTART;VALUE=DATE:20240309\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    ));
+    let projected = project_with_timezone(
+        &source,
+        "20240309T000000Z",
+        "20240311T000000Z",
+        Some(DAYLIGHT_TIMEZONE),
+    )
+    .unwrap();
+    let document = checked_projection(&projected);
+    let root = document.components().next().unwrap();
+    let dates: Vec<&str> = root
+        .components()
+        .map(|journal| {
+            assert!(property_text(journal, b"DTEND").is_none());
+            property_text(journal, b"DTSTART").unwrap()
+        })
+        .collect();
+    assert_eq!(dates, ["20240309", "20240310"]);
+    assert_eq!(
+        property_text(root.components().nth(1).unwrap(), b"RECURRENCE-ID"),
+        Some("20240310")
     );
 }

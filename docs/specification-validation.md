@@ -38,6 +38,11 @@ Recurrence lengths follow [RFC 5545 section 3.8.5.3](https://www.rfc-editor.org/
 Period inclusions replace rule lengths when their start times coincide, following [section 5](https://www.rfc-editor.org/rfc/rfc5545.html#section-5).
 Search bounds account for long instances that begin before the requested range.
 Conflicting period lengths fail explicitly.
+Expanded tasks keep `DUE` or `DURATION` because their overlap boundaries differ under [RFC 4791 section 9.9](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.9).
+Journals keep their point or date form, and instantaneous events omit an end property.
+Filtering and recurrence limiting use the same component overlap table.
+Detached components remain searchable when no master is present.
+Query time zones apply to both filtering and projection.
 The [duration decision](adr/occurrence-duration-semantics.md) records the distinction between calendar days and elapsed time.
 
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.

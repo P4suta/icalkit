@@ -92,7 +92,7 @@ impl Query {
             .calendar_data
             .as_ref()
             .ok_or_else(|| Error::single("icalkit.caldav.calendar-data-not-requested"))?;
-        project_calendar_data(request, session, calendar)
+        project_calendar_data(request, session, calendar, self.query_zone.as_deref())
     }
 }
 
@@ -100,12 +100,16 @@ fn project_calendar_data(
     request: &CalendarDataRequest,
     session: &mut Session<'_>,
     calendar: &Calendar,
+    query_zone: Option<&str>,
 ) -> Result<ProjectedCalendar, Error> {
     let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
     let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
     if let Some(window) = request.expand.or(request.limit_recurrence_set) {
         let zone_adapter = ZoneAdapter::new(session.engine.zone_database());
-        let zones = Zones::new(&zone_adapter);
+        let mut zones = Zones::new(&zone_adapter);
+        if let Some(zone) = query_zone {
+            zones = zones.with_query_zone(zone);
+        }
         source = if request.expand.is_some() {
             query::expand_calendar(&source, window, zones, &mut budget)
         } else {
@@ -1816,7 +1820,7 @@ fn sync_change_response(
             .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
     }
     if let Some(calendar_data) = request.props.calendar_data.as_ref() {
-        let projected = project_calendar_data(calendar_data, session, &calendar)?;
+        let projected = project_calendar_data(calendar_data, session, &calendar, None)?;
         let payload = CalendarPayload::from_octets(projected.as_bytes(), policy.limits, meter)
             .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
         success

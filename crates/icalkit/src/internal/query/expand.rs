@@ -43,7 +43,7 @@
 //! Section 9.6.5 asks for the instances instead of the rule: the returned components carry a `RECURRENCE-ID`, carry no `RRULE`, `RDATE` or `EXDATE`, and have their `DTSTART` and `DTEND` rewritten to UTC.
 //! That is a calendar the server did not store, so whatever this unit produces for `subset` carries `crate::internal::query::Reduction::expanded`.
 //!
-//! [`Instance`] is that shape as a value: three real UTC instants and nothing else, so the unit that builds the calendar has nothing left to decide about the clock and no way to leave an `RRULE` on a component by forgetting to remove it.
+//! [`Instance`] carries the placed bounds and the component form needed by overlap and projection.
 //!
 //! # What this unit does not decide
 //!
@@ -286,6 +286,8 @@ pub struct Series<'a> {
     pub clock: SeriesClock<'a>,
     /// How long one instance occupies, from RFC 4791 section 9.9's table.
     pub occupies: InstanceSpan,
+    kind: ComponentKind,
+    end_kind: EndKind,
     durations: InstanceDurations<'a>,
     /// The `RRULE`, absent for a component that carries none.
     pub rule: Option<&'a RecurrenceRule>,
@@ -301,6 +303,7 @@ pub struct Series<'a> {
 struct ContextSpan<'a> {
     span: InstanceSpan,
     clock: SeriesClock<'a>,
+    end_kind: EndKind,
 }
 
 impl<'a> ContextSpan<'a> {
@@ -345,15 +348,26 @@ impl<'a> InstanceDurations<'a> {
         components: &[],
     };
 
-    fn at(self, key: Instant, base: InstanceSpan, clock: SeriesClock<'a>) -> ContextSpan<'a> {
+    fn at(
+        self,
+        key: Instant,
+        base: InstanceSpan,
+        end_kind: EndKind,
+        clock: SeriesClock<'a>,
+    ) -> ContextSpan<'a> {
+        let period = self
+            .periods
+            .binary_search_by_key(&key, |period| period.key)
+            .ok()
+            .and_then(|at| self.periods.get(at));
         let base = ContextSpan {
-            span: self
-                .periods
-                .binary_search_by_key(&key, |period| period.key)
-                .ok()
-                .and_then(|at| self.periods.get(at))
-                .map_or(base, |period| period.span),
+            span: period.map_or(base, |period| period.span),
             clock,
+            end_kind: if period.is_some() && end_kind == EndKind::Implied {
+                EndKind::Explicit
+            } else {
+                end_kind
+            },
         };
         if let Some(exact) = self
             .components
@@ -393,21 +407,51 @@ impl<'a> InstanceDurations<'a> {
             nominal_days: 0,
         }
     }
+
+    fn uses_duration(self, base: EndKind) -> bool {
+        base == EndKind::Duration
+            || self
+                .components
+                .iter()
+                .filter_map(|component| component.stated)
+                .any(|context| context.end_kind == EndKind::Duration)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum EndKind {
+    Implied,
+    Explicit,
+    Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum InstanceShape {
+    Event {
+        is_date: bool,
+        end: EndKind,
+    },
+    Todo {
+        end: EndKind,
+    },
+    Journal {
+        dates: Option<(CivilDate, CivilDate)>,
+    },
 }
 
 /// One expanded recurrence instance, on the UTC timeline RFC 4791 section 9.6.5 requires.
 ///
-/// Three instants and nothing else.
-/// Section 9.6.5 requires the returned components to carry a `RECURRENCE-ID`, to carry no `RRULE`, `RDATE` or `EXDATE`, and to state their `DTSTART` and `DTEND` as dates with UTC time; a value holding only what survives that leaves the unit building the calendar nothing to decide about the clock and no recurrence property it can forget to remove.
+/// Time bounds and the component form needed by overlap and projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instance {
     /// The `RECURRENCE-ID` this instance answers to: its cadence key, in UTC.
     recurrence_id: Instant,
     /// `DTSTART`, in UTC — where the instance happens, after any override moved it.
     start: Instant,
-    /// `DTEND`, in UTC.
+    /// The end of the instance's occupancy, in UTC.
     /// Equal to `start` for a component RFC 4791 section 9.9 gives no length.
     end: Instant,
+    shape: InstanceShape,
 }
 
 impl Instance {
@@ -418,6 +462,14 @@ impl Instance {
             recurrence_id,
             start,
             end,
+            shape: InstanceShape::Event {
+                is_date: false,
+                end: if start.unix_seconds() == end.unix_seconds() {
+                    EndKind::Implied
+                } else {
+                    EndKind::Explicit
+                },
+            },
         }
     }
 
@@ -436,10 +488,49 @@ impl Instance {
         self.start
     }
 
-    /// `DTEND`, in UTC.
+    /// The end of the instance's occupancy, in UTC.
     #[must_use]
     pub const fn end(self) -> Instant {
         self.end
+    }
+
+    #[must_use]
+    pub(super) const fn shape(self) -> InstanceShape {
+        self.shape
+    }
+
+    fn with_shape(
+        mut self,
+        kind: ComponentKind,
+        value_kind: ValueKind,
+        end: EndKind,
+        key: Instant,
+        start: Instant,
+    ) -> Result<Self, Undecided> {
+        self.shape = match kind {
+            ComponentKind::Event => InstanceShape::Event {
+                is_date: value_kind == ValueKind::Date,
+                end,
+            },
+            ComponentKind::Todo => InstanceShape::Todo { end },
+            ComponentKind::Journal => InstanceShape::Journal {
+                dates: if value_kind == ValueKind::Date {
+                    Some((
+                        wall_clock(key).ok_or(Undecided::ValueUnreadable)?.date(),
+                        wall_clock(start).ok_or(Undecided::ValueUnreadable)?.date(),
+                    ))
+                } else {
+                    None
+                },
+            },
+            ComponentKind::Calendar
+            | ComponentKind::FreeBusy
+            | ComponentKind::TimeZone
+            | ComponentKind::Standard
+            | ComponentKind::Daylight
+            | ComponentKind::Alarm => return Err(Undecided::OverlapUndefined),
+        };
+        Ok(self)
     }
 
     /// Whether an override moved this instance away from its cadence key.
@@ -468,7 +559,10 @@ impl SearchBounds {
     ///
     /// `None` is a fact rather than a refusal: an open bound is closed against the years RFC 5545 section 3.3.4 can write, so a range lying entirely outside them holds no instant any calendar can express and no instance can overlap it.
     pub fn compose(series: Series<'_>, range: TimeRange) -> Result<Option<Self>, QueryError> {
-        let span = series.durations.maximum(series.occupies, series.clock);
+        let mut span = series.durations.maximum(series.occupies, series.clock);
+        if series.kind == ComponentKind::Todo && series.durations.uses_duration(series.end_kind) {
+            span.seconds = span.seconds.saturating_add(1);
+        }
         let Some(window) = start_window(range, span, series.clock)? else {
             return Ok(None);
         };
@@ -547,7 +641,8 @@ impl Expansion {
 /// Whether the recurrence set represented by one stored component overlaps `range`.
 ///
 /// This is the storage-to-engine bridge used by the filter tree.
-/// A master component is read together with its sibling `RECURRENCE-ID` components; an override component is never tested as a second independent series.
+/// A master component is read together with its sibling `RECURRENCE-ID` components.
+/// An override is evaluated on its own when no master is present.
 /// Non-recurring components go through RFC 4791 section 9.9's complete table, while recurring event, to-do and journal components are reduced to the single-instance span that the recurrence engine can move and repeat.
 pub(crate) fn component_overlaps<S>(
     component: &Component,
@@ -560,7 +655,12 @@ pub(crate) fn component_overlaps<S>(
 where
     S: DiagnosticSink + ?Sized,
 {
-    if carries(component, &ids::RECURRENCE_ID) {
+    if carries(component, &ids::RECURRENCE_ID)
+        && siblings
+            .iter()
+            .filter_map(Item::as_component)
+            .any(|master| is_override_of(component, master))
+    {
         return Ok(Match::Unmatched);
     }
     let Some(kind) = component.kind() else {
@@ -628,7 +728,17 @@ pub(crate) fn override_impacts(
         let key = nominal_value(addressed, clock, zones)?;
         let start = clock.place(key, zones)?;
         let end = occupies.finish(key, start, clock, zones)?;
-        Ok::<_, Undecided>(Instance::new(start, start, end))
+        Instance::new(start, start, end).with_shape(
+            kind,
+            if matches!(opening, DateTimeValue::Date(_)) {
+                ValueKind::Date
+            } else {
+                ValueKind::DateTime
+            },
+            end_kind_of(master),
+            key,
+            key,
+        )
     })();
     let original = match original {
         Ok(instance) => Match::of(overlaps_range(instance, range)),
@@ -705,6 +815,8 @@ fn this_and_future_impacts(
             dtstart_kind,
             clock,
             occupies,
+            kind,
+            end_kind: end_kind_of(master),
             durations: InstanceDurations {
                 periods: &periods,
                 components: &durations,
@@ -838,6 +950,8 @@ pub(crate) fn expand_component(
             dtstart_kind,
             clock,
             occupies,
+            kind,
+            end_kind: end_kind_of(component),
             durations: InstanceDurations {
                 periods: &periods,
                 components: &durations,
@@ -924,6 +1038,8 @@ where
         dtstart_kind,
         clock,
         occupies: InstanceSpan::INSTANT,
+        kind: master.kind().ok_or(QueryError::Unrepresentable)?,
+        end_kind: EndKind::Implied,
         durations: InstanceDurations::EMPTY,
         rule: rule.as_ref(),
         rdates: &rdates,
@@ -1056,6 +1172,8 @@ where
             dtstart_kind,
             clock,
             occupies,
+            kind,
+            end_kind: end_kind_of(component),
             durations: InstanceDurations {
                 periods: &periods,
                 components: &durations,
@@ -1087,7 +1205,10 @@ fn carries(component: &Component, id: &'static PropertyId) -> bool {
 
 /// Whether `candidate` is an override belonging to `master`.
 fn is_override_of(candidate: &Component, master: &Component) -> bool {
-    if candidate.kind() != master.kind() || !carries(candidate, &ids::RECURRENCE_ID) {
+    if candidate.kind() != master.kind()
+        || !carries(candidate, &ids::RECURRENCE_ID)
+        || carries(master, &ids::RECURRENCE_ID)
+    {
         return false;
     }
     let master_uid = master
@@ -1355,6 +1476,7 @@ fn component_span<'a>(
             span: instance_span(component, kind, opening, clock, zones)
                 .map_err(|_| QueryError::Unrepresentable)?,
             clock,
+            end_kind: end_kind_of(component),
         })
     } else {
         None
@@ -1368,6 +1490,22 @@ fn component_span<'a>(
         },
         stated,
     })
+}
+
+fn end_kind_of(component: &Component) -> EndKind {
+    if component
+        .properties()
+        .any(|property| property.is_named(b"DURATION"))
+    {
+        EndKind::Duration
+    } else if component
+        .properties()
+        .any(|property| property.is_named(b"DTEND") || property.is_named(b"DUE"))
+    {
+        EndKind::Explicit
+    } else {
+        EndKind::Implied
+    }
 }
 
 /// The wall-clock length of one recurring component instance.
@@ -1701,8 +1839,9 @@ impl From<InputError> for Unassembled {
 
 /// The window over instance starts that `range` asks about, or `None` when it holds none.
 ///
-/// The whole of RFC 4791 section 9.9's start-edge distinction is the middle arm.
-/// An instance occupying a positive span is inside when `start < DTSTART+DURATION`, so a start as early as `range.start - span + 1` still reaches into the range; an instance occupying no time at all is inside when `start <= DTSTART`, and shifting that bound by a second would drop every zero-length component out of every query.
+/// A positive half-open span reaches back to `range.start - span + 1`.
+/// The caller widens inclusive duration ends before composing these bounds.
+/// A point instance keeps the range's inclusive start.
 fn start_window(
     range: TimeRange,
     span: InstanceSpan,
@@ -1729,18 +1868,27 @@ fn start_window(
 }
 
 /// Whether `instance` overlaps `range`, RFC 4791 section 9.9's condition for its own row.
-///
-/// Two comparisons, each of which an absent bound satisfies: section 9.9 reads a missing `start` as minus infinity and a missing `end` as plus infinity, and a range with neither is one `crate::internal::dav::TimeRange` refuses to hold.
 fn overlaps_range(instance: Instance, range: TimeRange) -> bool {
-    let reaches_start = match range.start() {
-        None => true,
-        // `(start <= DTSTART)`, the rows for a component that occupies no time.
-        Some(from) if instance.end() == instance.start() => from <= instance.start(),
-        // `(start < DTEND)` and `(start < DTSTART+DURATION)`, which are one condition once the effective end has been computed.
-        Some(from) => from < instance.end(),
+    let (kind, is_date, end_kind) = match instance.shape {
+        InstanceShape::Event { is_date, end } => (ComponentKind::Event, is_date, end),
+        InstanceShape::Todo { end } => (ComponentKind::Todo, false, end),
+        InstanceShape::Journal { dates } => {
+            (ComponentKind::Journal, dates.is_some(), EndKind::Implied)
+        },
     };
-    // `(end > DTSTART)`, which every row of every table states the same way.
-    reaches_start && range.end().is_none_or(|until| until > instance.start())
+    let occupancy = Occupancy {
+        start: Some(instance.start()),
+        start_is_date_time: Some(!is_date),
+        end: (kind == ComponentKind::Event && end_kind == EndKind::Explicit)
+            .then_some(instance.end()),
+        due: (kind == ComponentKind::Todo && end_kind == EndKind::Explicit)
+            .then_some(instance.end()),
+        has_duration: end_kind == EndKind::Duration,
+        duration_end: (end_kind == EndKind::Duration).then_some(instance.end()),
+        one_day_end: is_date.then_some(instance.end()),
+        ..Occupancy::default()
+    };
+    crate::internal::query::overlap::overlaps(kind, &occupancy, range).is_matched()
 }
 
 /// The answer one instance gives: a fact where the zone placed it, and not where it did not.
@@ -1768,9 +1916,39 @@ fn placed<'a>(
     } else {
         clock.place(key, zones)?
     };
-    let span = series.durations.at(key, series.occupies, clock);
+    let value_kind = if series
+        .durations
+        .periods
+        .binary_search_by_key(&key, |period| period.key)
+        .is_ok()
+    {
+        ValueKind::DateTime
+    } else {
+        series.dtstart_kind
+    };
+    let span = if series.kind == ComponentKind::Journal {
+        ContextSpan {
+            span: if value_kind == ValueKind::Date {
+                InstanceSpan::WHOLE_DAY
+            } else {
+                InstanceSpan::INSTANT
+            },
+            clock,
+            end_kind: EndKind::Implied,
+        }
+    } else {
+        series
+            .durations
+            .at(key, series.occupies, series.end_kind, clock)
+    };
     let finishes_at = span.finish(start, happens_at, clock, zones)?;
-    Ok(Instance::new(addressed, happens_at, finishes_at))
+    Instance::new(addressed, happens_at, finishes_at).with_shape(
+        series.kind,
+        value_kind,
+        span.end_kind,
+        key,
+        start,
+    )
 }
 
 /// The one instance a component with no `RRULE` has, which no search produces.
@@ -2066,6 +2244,8 @@ mod tests {
             dtstart_kind: ValueKind::DateTime,
             clock: SeriesClock::Zoned(EASTERN),
             occupies: InstanceSpan::of_seconds(ONE_HOUR).unwrap(),
+            kind: crate::internal::core::ComponentKind::Event,
+            end_kind: super::EndKind::Explicit,
             durations: super::InstanceDurations::EMPTY,
             rule,
             rdates: &[],

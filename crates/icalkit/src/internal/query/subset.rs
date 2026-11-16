@@ -64,13 +64,15 @@ use alloc::vec::{IntoIter, Vec};
 use core::{mem, slice};
 
 use crate::internal::core::{
-    CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration, EncodeValue, Instant,
-    Item, LimitExceeded, Limits, Meter, Period, Property, PropertyId, UtcOffset, ValueBuf,
+    CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration,
+    EncodeValue, Instant, Item, LimitExceeded, Limits, Meter, Parameter, Period, Property,
+    PropertyId, RawText, UtcOffset, ValueBuf,
 };
 use crate::internal::dav::{CompSelection, TimeRange};
 
 use crate::internal::query::expand::{
-    component_start, expand_component, override_impacts, override_recurrence_id,
+    EndKind, InstanceShape, component_start, expand_component, override_impacts,
+    override_recurrence_id,
 };
 use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
@@ -450,6 +452,7 @@ fn is_expansion_control(property: &Property) -> bool {
         &PropertyId::RECURRENCE_ID,
         &PropertyId::DTSTART,
         &PropertyId::DTEND,
+        &PropertyId::from_static(b"DUE"),
         &PropertyId::DURATION,
     ]
     .iter()
@@ -480,8 +483,54 @@ fn materialize_instance(
             .as_property()
             .is_none_or(|property| !is_expansion_control(property))
     });
+    if let InstanceShape::Journal {
+        dates: Some((key, start)),
+    } = instance.shape()
+    {
+        insert_property(&mut built, date_property(b"DTSTART", start)?);
+        if instance.recurrence_id() != initial {
+            insert_property(&mut built, date_property(b"RECURRENCE-ID", key)?);
+        }
+        return Ok(built);
+    }
     insert_property(&mut built, utc_property(b"DTSTART", instance.start())?);
-    insert_property(&mut built, utc_property(b"DTEND", instance.end())?);
+    match instance.shape() {
+        InstanceShape::Event { end, .. } => {
+            if instance.end() > instance.start() {
+                insert_property(&mut built, utc_property(b"DTEND", instance.end())?);
+            } else if end != EndKind::Implied {
+                return Err(QueryError::Unrepresentable);
+            }
+        },
+        InstanceShape::Todo {
+            end: EndKind::Duration,
+        } => {
+            let seconds = instance
+                .start()
+                .checked_seconds_until(instance.end())
+                .filter(|seconds| *seconds > 0)
+                .ok_or(QueryError::Unrepresentable)?;
+            let mut value = ValueBuf::new();
+            Duration::new(0, seconds)
+                .encode_value(&mut value)
+                .map_err(|_| QueryError::Unrepresentable)?;
+            let property = Property::create(b"DURATION", Vec::new(), value.as_bytes())
+                .map_err(|_| QueryError::Unrepresentable)?;
+            insert_property(&mut built, property);
+        },
+        InstanceShape::Todo {
+            end: EndKind::Explicit,
+        } => {
+            if instance.end() <= instance.start() {
+                return Err(QueryError::Unrepresentable);
+            }
+            insert_property(&mut built, utc_property(b"DUE", instance.end())?);
+        },
+        InstanceShape::Todo {
+            end: EndKind::Implied,
+        }
+        | InstanceShape::Journal { .. } => {},
+    }
     if instance.recurrence_id() != initial {
         insert_property(
             &mut built,
@@ -489,6 +538,18 @@ fn materialize_instance(
         );
     }
     Ok(built)
+}
+
+fn date_property(name: &[u8], date: CivilDate) -> Result<Property, QueryError> {
+    let mut value = ValueBuf::new();
+    DateTimeValue::Date(date)
+        .encode_value(&mut value)
+        .map_err(|_| QueryError::Unrepresentable)?;
+    let parameters = alloc::vec![Parameter::new(
+        RawText::from_bytes(b"VALUE"),
+        RawText::from_bytes(b"DATE")
+    )];
+    Property::create(name, parameters, value.as_bytes()).map_err(|_| QueryError::Unrepresentable)
 }
 
 /// One canonical UTC date-time property.
