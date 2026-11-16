@@ -9,6 +9,13 @@ A calendar requires a component, and a time zone requires a standard or daylight
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
 Unrecognized components keep their content without applying known component semantics inside them.
 
+Integer syntax follows [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.8).
+`PRIORITY` ranges from [0 through 9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.9).
+`PERCENT-COMPLETE` ranges from [0 through 100](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.8).
+The nonnegative `SEQUENCE` domain follows the [counter initialized at zero](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.7.4) and agrees with the scheduling reader.
+Known numeric values reject incompatible or repeated `VALUE` declarations.
+Unknown value types stay opaque, and successful validation preserves the original bytes.
+
 Date-time checks enforce the declared `VALUE` type and each property's UTC form.
 The `TZID` restrictions follow [RFC 5545 section 3.2.19](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.19).
 Related endpoints and recurrence identifiers must agree with the start's value type and floating form.

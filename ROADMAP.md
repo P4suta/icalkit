@@ -15,7 +15,7 @@ Further specification cases must reproduce missing behavior before implementatio
 ## M0 calendar data
 
 The library preserves admitted input bytes through import and typed views.
-Strict promotion validates known component structure, required properties, date-time forms, durations, related fields, and recurrence constraints.
+Strict promotion validates known component structure, required properties, integer bounds, date-time forms, durations, related fields, and recurrence constraints.
 Unknown components and `VALUE` types keep their opaque content.
 Transactional editing and explicit normalization share the tokenizer with strict parsing.
 The [round-trip decision](docs/adr/0001-lossless-round-trip.md) defines preservation requirements.

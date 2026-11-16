@@ -222,6 +222,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_text_is_utf8(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
+    if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-integer"));
+    }
     if first.is_some_and(|calendar| !known_date_times_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time"));
     }
@@ -331,6 +334,35 @@ fn known_text_is_utf8(component: &Component) -> bool {
         .iter()
         .filter_map(Item::as_component)
         .all(known_text_is_utf8)
+}
+
+fn known_integer_properties_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component.properties().all(|property| {
+        let bounds = if property.is_named(b"PRIORITY") {
+            0..=9
+        } else if property.is_named(b"PERCENT-COMPLETE") {
+            0..=100
+        } else if property.is_named(b"SEQUENCE") {
+            0..=i32::MAX
+        } else {
+            return true;
+        };
+        if property.parameters_named(b"VALUE").nth(1).is_some() {
+            return false;
+        }
+        match property.declared_value_type() {
+            Some(Err(_)) => true,
+            None | Some(Ok(ValueType::Integer)) => {
+                i32::decode_property(property).is_ok_and(|value| bounds.contains(&value))
+            },
+            Some(Ok(_)) => false,
+        }
+    }) && component
+        .components()
+        .all(known_integer_properties_are_valid)
 }
 
 fn is_text_property(property: &Property) -> bool {
