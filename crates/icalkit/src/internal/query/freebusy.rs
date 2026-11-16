@@ -363,7 +363,8 @@ fn collect_free_busy(
             .as_bytes()
             .split(|&octet| octet == b',')
         {
-            let written = Period::decode_value(text).map_err(|_| Undecided::ValueUnreadable)?;
+            let written = Period::decode_property_field(property, text)
+                .map_err(|_| Undecided::ValueUnreadable)?;
             coalesced.insert(clip(utc_period(written, kind)?, window))?;
         }
     }

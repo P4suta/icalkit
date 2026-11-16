@@ -546,7 +546,7 @@ pub fn limit_freebusy_set(
                 charge_line(&line, ledger)?;
                 return Ok(Some(line));
             }
-            let (kept, thinned) = kept_periods(line.value_text().as_bytes(), window);
+            let (kept, thinned) = kept_periods(&line, window);
             if !thinned {
                 charge_line(&line, ledger)?;
                 return Ok(Some(line));
@@ -993,11 +993,17 @@ fn with_value(line: &Property, value: &[u8], meter: &mut Meter) -> Result<Proper
 ///
 /// RFC 5545 section 3.8.2.6 writes the value as a comma-separated list of periods, so this answers in the octets the producer wrote for the periods that stay: nothing is re-encoded,
 /// and a period whose spelling this crate would not have chosen comes back in the spelling it arrived in.
-fn kept_periods(value: &[u8], window: TimeRange) -> (Vec<u8>, bool) {
+fn kept_periods(property: &Property, window: TimeRange) -> (Vec<u8>, bool) {
     let mut kept: Vec<u8> = Vec::new();
     let mut thinned = false;
-    for written in value.split(|octet| *octet == b',') {
-        if period_bounds(written).is_some_and(|(from, until)| !intersects(window, from, until)) {
+    for written in property
+        .value_text()
+        .as_bytes()
+        .split(|octet| *octet == b',')
+    {
+        if period_bounds(property, written)
+            .is_some_and(|(from, until)| !intersects(window, from, until))
+        {
             thinned = true;
             continue;
         }
@@ -1013,8 +1019,8 @@ fn kept_periods(value: &[u8], window: TimeRange) -> (Vec<u8>, bool) {
 ///
 /// `None` covers a value that does not decode and a value that is not UTC.
 /// RFC 5545 section 3.8.2.6 requires the periods of a `FREEBUSY` to be UTC date-times, so a floating or zoned one violates it — and placing that one would need a zone `docs/adr/0003` forbids inventing.
-fn period_bounds(written: &[u8]) -> Option<(Instant, Instant)> {
-    let period = Period::decode_value(written).ok()?;
+fn period_bounds(property: &Property, written: &[u8]) -> Option<(Instant, Instant)> {
+    let period = Period::decode_property_field(property, written).ok()?;
     let from = utc_instant(period.start())?;
     let until = match period {
         Period::Explicit { end, .. } => utc_instant(end)?,

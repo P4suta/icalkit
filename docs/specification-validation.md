@@ -32,6 +32,7 @@ Each field must match its declared type.
 Period checks validate the bounds and positive lengths that [section 3.3.9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.9) requires.
 `FREEBUSY` bounds use UTC under [section 3.8.2.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.6).
 List decoding keeps the property's parameters and refuses to interpret unknown value types during recurrence expansion.
+Free/busy aggregation reports unknown value types as unreadable, and projection keeps their original content.
 
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.
 The caller must enforce absence when storing the authorized result.

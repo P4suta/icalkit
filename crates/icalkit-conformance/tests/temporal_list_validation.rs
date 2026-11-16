@@ -8,10 +8,14 @@
 
 #![cfg(test)]
 
+use icalkit::caldav::Query;
 use icalkit::interop::Import;
 use icalkit::recurrence::Window;
 use icalkit::time::Timestamp;
 use icalkit::{Calendar, Engine};
+use icalkit_conformance::internal::core::{Document, Instant, Limits, Meter};
+use icalkit_conformance::internal::dav::{FreeBusyQuery, TimeRange};
+use icalkit_conformance::internal::query::{Budget, Placement, Undecided, free_busy};
 
 fn calendar(kind: &str, property: &str) -> String {
     let property = property.replace(',', ",\r\n ");
@@ -188,4 +192,62 @@ fn unknown_list_value_types_cannot_influence_occurrence_expansion() {
         );
         assert_eq!(calendar.to_bytes(), source.as_bytes());
     }
+}
+
+#[test]
+fn unknown_freebusy_value_types_cannot_be_trimmed_by_projection() {
+    let source = calendar(
+        "VFREEBUSY",
+        "FREEBUSY;VALUE=X-PRIVATE:20260814T090000Z/PT1H,20260815T090000Z/PT1H",
+    );
+    let query = Query::parse(
+        br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data>
+<C:limit-freebusy-set start="20260815T000000Z" end="20260816T000000Z"/>
+</C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+</C:calendar-query>"#,
+    )
+    .unwrap();
+    let calendar = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert_eq!(projected.as_bytes(), source.as_bytes());
+}
+
+#[test]
+fn unknown_freebusy_value_types_cannot_contribute_inferred_busy_time() {
+    let source = calendar(
+        "VFREEBUSY",
+        "FREEBUSY;VALUE=X-PRIVATE:20260815T090000Z/PT1H",
+    );
+    let document = Document::parse(source.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let component = document
+        .components()
+        .next()
+        .unwrap()
+        .components()
+        .next()
+        .unwrap();
+    let placement = Placement {
+        component,
+        instances: &[],
+        incomplete: None,
+    };
+    let query = FreeBusyQuery {
+        range: TimeRange::new(
+            Some(Instant::from_unix_seconds(1_786_656_000)),
+            Some(Instant::from_unix_seconds(1_787_001_600)),
+        )
+        .unwrap(),
+    };
+    let mut meter = Meter::new(Limits::DEFAULT);
+    let mut budget = Budget::new(Limits::DEFAULT, &mut meter);
+    let answer = free_busy(query, &[placement], &mut budget).unwrap();
+    assert!(!answer.is_complete());
+    assert_eq!(answer.unplaced().len(), 1);
+    assert_eq!(answer.unplaced()[0].reason, Undecided::ValueUnreadable);
+    assert_eq!(answer.report().periods(), []);
+    assert_eq!(document.to_bytes(), source.as_bytes());
 }
