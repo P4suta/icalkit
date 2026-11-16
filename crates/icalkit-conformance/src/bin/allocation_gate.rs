@@ -10,6 +10,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use icalkit::recurrence::Rule;
 use icalkit_conformance::internal::core::{Diagnostic, Document, Limits, Meter};
 use icalkit_conformance::internal::dav::{
     DecodeContext, MultiStatus, MultiStatusReader, XmlPull, XmlReader,
@@ -30,6 +31,8 @@ const MAX_PEAK_BYTES_PER_PROPERTY: u64 = 768;
 const MAX_RETAINED_BYTES_PER_XML_ELEMENT: u64 = 192;
 const MAX_PEAK_BYTES_PER_XML_ELEMENT: u64 = 384;
 const MAX_COMMENT_PEAK_BYTES: u64 = 256 * 1024;
+// A resource refusal keeps a fixed error, so its heap ceiling is independent of input size.
+const MAX_REFUSED_RULE_BYTES: u64 = 1_024;
 
 struct CountingAllocator;
 
@@ -188,6 +191,27 @@ fn comment_input() -> Vec<u8> {
     body
 }
 
+fn oversized_rule_input() -> Result<String, Box<dyn std::error::Error>> {
+    let part = ";X-NOTE=1";
+    let repetitions = usize::try_from(Limits::DEFAULT.max_value_bytes())?
+        .checked_div(part.len())
+        .and_then(|count| count.checked_add(1))
+        .ok_or("rule fixture size overflow")?;
+    Ok(format!("FREQ=DAILY{}", part.repeat(repetitions)))
+}
+
+fn check_rule_refusal() -> Result<(usize, Allocation), Box<dyn std::error::Error>> {
+    let input = oversized_rule_input()?;
+    let (refused, allocation) = measure(|| Rule::parse(&input));
+    assert!(
+        allocation.peak <= MAX_REFUSED_RULE_BYTES && allocation.allocated <= MAX_REFUSED_RULE_BYTES,
+        "rule refusal exceeded {MAX_REFUSED_RULE_BYTES} bytes: {allocation:?}"
+    );
+    let error = refused.err().ok_or("accepted oversize rule input")?;
+    assert_eq!(error.code().as_str(), "icalkit.recurrence.resource-limit");
+    Ok((input.len(), allocation))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calendar_bytes = calendar_input();
     let (calendar, property_allocation) = measure(|| {
@@ -268,8 +292,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         comment_allocation.peak
     );
 
+    let (rule_input_bytes, rule_allocation) = check_rule_refusal()?;
+
     println!(
-        "allocation gate: properties={{count:{PROPERTIES},input:{},retained:{},peak:{},allocated:{},retained_per_item:{property_retained},peak_per_item:{property_peak}}}; xml={{elements:{XML_ELEMENTS},input:{},retained:{},peak:{},allocated:{},retained_per_element:{xml_retained},peak_per_element:{xml_peak}}}; comment={{input:{},peak:{}}}",
+        "allocation gate: properties={{count:{PROPERTIES},input:{},retained:{},peak:{},allocated:{},retained_per_item:{property_retained},peak_per_item:{property_peak}}}; xml={{elements:{XML_ELEMENTS},input:{},retained:{},peak:{},allocated:{},retained_per_element:{xml_retained},peak_per_element:{xml_peak}}}; comment={{input:{},peak:{}}}; rule_refusal={{input:{},peak:{},allocated:{}}}",
         calendar_bytes.len(),
         property_allocation.retained,
         property_allocation.peak,
@@ -280,6 +306,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         xml_allocation.allocated,
         comment_bytes.len(),
         comment_allocation.peak,
+        rule_input_bytes,
+        rule_allocation.peak,
+        rule_allocation.allocated,
     );
     Ok(())
 }

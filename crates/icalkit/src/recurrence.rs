@@ -30,7 +30,14 @@ impl Rule {
     /// Parse and validate a recurrence rule supported by the native engine.
     pub fn parse(value: &str) -> Result<Self, Error> {
         let policy = ResourcePolicy::secure();
+        let octets = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        if octets > u64::from(policy.limits.max_value_bytes()) {
+            return Err(Error::single("icalkit.recurrence.resource-limit"));
+        }
         let mut meter = Meter::new(policy.limits);
+        meter
+            .try_charge_bytes(octets)
+            .map_err(|_| Error::single("icalkit.recurrence.resource-limit"))?;
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let parsed =
             crate::internal::recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics);

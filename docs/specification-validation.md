@@ -96,6 +96,9 @@ Other calendars, other `SKIP` modes, and leap month selectors produce `unsupport
 Malformed or repeated controls fail typed construction, including `SKIP` without `RSCALE`.
 Both typed decoders resolve `FREQ` independent of written order, following [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Public rule errors keep the kernel diagnostics.
+Standalone `Rule::parse` uses the inclusive value byte ceiling from the [shared resource policy](adr/0010-shared-resource-limits.md).
+It charges admitted input bytes to the secure meter before parsing and refuses larger values with `icalkit.recurrence.resource-limit`.
+The allocation gate bounds heap use for resource refusals independently of input size.
 Imports preserve original bytes, and unrelated unknown parts keep their notes.
 The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
 Calendar conversion, other `SKIP` modes, and CalDAV capability negotiation remain open.
