@@ -9,6 +9,13 @@ A calendar requires a component, and a time zone requires a standard or daylight
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
 Unrecognized components keep their content without applying known component semantics inside them.
 
+Calendar format declarations follow the [version property](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.7.4).
+Interpreted values must name `2.0` or the supported range `2.0;2.0`.
+Other interpreted values and incompatible recognized value types fail promotion.
+Unknown value types keep their opaque content under the existing declaration contract.
+The [format version decision](adr/calendar-format-version-validation.md) separates calendar formats from package releases.
+Supported spellings, folds, and extension parameters keep their original bytes through editing and scheduling reads.
+
 Component, property, and parameter names follow the [generic token grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.1).
 Strict promotion checks names throughout unknown component subtrees.
 Valid extension names keep their spelling, including folded names.

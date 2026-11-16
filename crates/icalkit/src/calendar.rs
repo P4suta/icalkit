@@ -443,7 +443,14 @@ fn known_alternate_representations_are_valid(component: &Component) -> bool {
 }
 
 fn enumerated_property_is_valid(kind: ComponentKind, property: &Property) -> bool {
-    const NAMES: &[&[u8]] = &[b"STATUS", b"TRANSP", b"CALSCALE", b"CLASS", b"METHOD"];
+    const NAMES: &[&[u8]] = &[
+        b"STATUS",
+        b"TRANSP",
+        b"CALSCALE",
+        b"CLASS",
+        b"METHOD",
+        b"VERSION",
+    ];
     if !NAMES.iter().any(|name| property.is_named(name)) {
         return true;
     }
@@ -456,7 +463,9 @@ fn enumerated_property_is_valid(kind: ComponentKind, property: &Property) -> boo
     if property.is_named(b"CLASS") || property.is_named(b"METHOD") {
         return is_iana_token(value);
     }
-    let allowed: &[&[u8]] = if property.is_named(b"STATUS") {
+    let allowed: &[&[u8]] = if property.is_named(b"VERSION") {
+        &[b"2.0", b"2.0;2.0"]
+    } else if property.is_named(b"STATUS") {
         match kind {
             ComponentKind::Event => &[b"TENTATIVE", b"CONFIRMED", b"CANCELLED"],
             ComponentKind::Todo => &[
