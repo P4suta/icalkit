@@ -491,9 +491,10 @@ impl Message {
                 .into_iter()
                 .map(Issue::from_diagnostic)
                 .collect();
-            if issues
-                .iter()
-                .any(|issue| issue.is_error() || issue.is_warning())
+            if meter.is_exhausted()
+                || issues
+                    .iter()
+                    .any(|issue| issue.is_error() || issue.is_warning())
             {
                 return Err(Error::new("icalkit.scheduling.message-invalid", issues));
             }
@@ -863,4 +864,36 @@ fn format_dtstamp(timestamp: Timestamp) -> Result<Vec<u8>, Error> {
     )
     .map_err(|_| Error::single("icalkit.scheduling.dtstamp-out-of-range"))?;
     Ok(written.into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Message;
+    use crate::{Calendar, Meter, ResourcePolicy};
+
+    #[test]
+    fn message_promotion_requires_a_complete_budgeted_inspection() {
+        let bytes = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n",
+            "METHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example.test\r\n",
+            "DTSTAMP:20240101T000000Z\r\nDTSTART:20240102T000000Z\r\nSUMMARY:Planning\r\n",
+            "ORGANIZER:mailto:alice@example.test\r\nATTENDEE:mailto:bob@example.test\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n",
+        );
+        let calendar = Calendar::parse(bytes.as_bytes()).unwrap();
+        let policy = ResourcePolicy::secure();
+        let mut admitted = 0;
+        for budget in 0..=1024 {
+            let mut meter = Meter::with_budget(policy.limits, budget);
+            if let Ok(message) = Message::from_calendar_in(calendar.clone(), policy, &mut meter) {
+                assert!(
+                    !meter.is_exhausted(),
+                    "promoted an incomplete inspection with budget {budget}"
+                );
+                assert_eq!(message.to_bytes(), bytes.as_bytes());
+                admitted += 1;
+            }
+        }
+        assert!(admitted > 0);
+    }
 }

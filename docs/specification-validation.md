@@ -177,6 +177,8 @@ Unknown or incompatible party values stay present as unreadable values for the e
 Review refuses held scheduling components with an unreadable `UID`, following the [scheduling identity policy](adr/0005-scheduling-apart-from-the-model.md).
 Review refuses a known `UID` associated with a different component kind.
 Calendars and imports keep opaque property values under [RFC 5545 section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
+Scheduling promotion requires the full inspection to finish within the session's resource budget.
+An inspection that crosses a limit can't produce a validated message, even when it hasn't yet reported a property violation.
 
 Outbox POST follows the busy time request contract in [RFC 6638 section 5](https://www.rfc-editor.org/rfc/rfc6638.html#section-5).
 Client and server require one `VFREEBUSY` with `METHOD:REQUEST` under [RFC 5546 section 3.3.2](https://www.rfc-editor.org/rfc/rfc5546.html#section-3.3.2).
