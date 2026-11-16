@@ -65,6 +65,7 @@ Resource failures use the channels defined by the diagnostic and allocation deci
 | malformed-boolean | A `BOOLEAN` value was neither `TRUE` nor `FALSE` in any casing. | Violation | M0 |
 | malformed-binary | A `BINARY` value was not the base 64 RFC 5545 section 3.3.1 requires. | Violation | M0 |
 | malformed-uri | A `URI` value did not match RFC 5545 section 3.3.13, or section 3.3.3's `CAL-ADDRESS`. | Violation | M0 |
+| malformed-value-type-parameter | A property declared an empty, repeated, or malformed `VALUE` parameter. | Violation | M0 |
 | unknown-value-type | A `VALUE` parameter named a value type this workspace does not know. | Note | M0 |
 | missing-required-property | A component did not carry a property RFC 5545 section 3.6 requires of it. | Violation | M0 |
 | property-not-allowed-here | A component carried a property RFC 5545 section 3.6 does not define for it. | Violation | M0 |

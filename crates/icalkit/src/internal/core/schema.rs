@@ -423,19 +423,10 @@ impl Component {
         ComponentKind::from_name(self.name().as_bytes())
     }
 
-    /// Report what RFC 5545 section 3.6 has to say about the properties this component carries.
-    ///
-    /// Five codes, and each of them is a claim this crate can defend:
-    /// [`DiagnosticCode::MissingRequiredProperty`] for a name section 3.6 requires and this component has none of, [`DiagnosticCode::DuplicateProperty`] for a name it allows once and this component has two of, [`DiagnosticCode::PropertyNotAllowedHere`] for a name RFC 5545 defines somewhere and not here, [`DiagnosticCode::UnknownValueType`] for a `VALUE` parameter naming a type this crate cannot read, and [`DiagnosticCode::MutuallyExclusiveProperties`] for a pair section 3.6 admits singly and forbids together.
-    ///
-    /// Nothing is reported about a component with no [`Component::kind`], and nothing is reported about a property whose name RFC 5545 does not define.
-    /// Both silences are the same silence: this crate has no reading of the thing, and a reading it does not have cannot be violated.
-    ///
-    /// Advisory, and it changes nothing.
-    /// The document that goes in comes back out octet for octet whether the audit ran or not, which is what lets it be a reading rather than a gate — see `docs/adr/0001`, and the module documentation for why no other stage calls it.
-    ///
-    /// One component's own properties, in the order they arrived and then in the order section 3.6 lists the names.
-    /// A nested component is audited by auditing it.
+    /// Report RFC 5545 schema constraints for the component's direct properties.
+    /// Unknown component kinds and property names remain uninterpreted.
+    /// The audit keeps source bytes unchanged.
+    /// Audit nested components through their own calls.
     pub fn audit<S: DiagnosticSink + ?Sized>(&self, meter: &mut Meter, sink: &mut S) {
         let Some(kind) = self.kind() else {
             // "I have no schema" and "the schema forbids it" are different answers, and only the second is reportable.
@@ -491,9 +482,12 @@ impl Component {
                 continue;
             }
             if let Some(Err(code)) = property.declared_value_type() {
-                // A note rather than a violation.
-                // Section 3.2.20's grammar admits an `X-` name and an IANA token, so a value type this crate does not carry is not by itself a defect in the file; what it costs is this crate's ability to type the value, which the caller is entitled to be told about.
-                report_here(sink, meter, code, Severity::Note);
+                let severity = if code == DiagnosticCode::UnknownValueType {
+                    Severity::Note
+                } else {
+                    Severity::Violation
+                };
+                report_here(sink, meter, code, severity);
             }
             if !kind.cardinality(name).is_defined() {
                 report_here(
@@ -551,23 +545,25 @@ impl Component {
 impl Property {
     /// The value type this property's `VALUE` parameter declares, RFC 5545 section 3.2.20.
     ///
-    /// Three answers, and they are three different things.
-    /// `None` is no `VALUE` parameter at all, which is the ordinary case and means the default type section 3.8 states for that property applies — this method does not guess which, because the default is a fact about the property's name and this level is asking about its parameters.
-    /// `Some(Ok(_))` is a type this crate knows.
-    /// `Some(Err(_))` is [`DiagnosticCode::UnknownValueType`]: a name section 3.2.20's grammar admits, since it allows an `X-` name and an IANA token, and this crate's [`ValueType`] table does not carry — so nothing here can type the value.
-    /// The octets are untouched in all three, and are written back in all three.
-    ///
-    /// The first occurrence, with a section 3.2 `DQUOTE` pair removed.
-    /// A second `VALUE` on one line is a defect this level cannot report, since it answers with one type or one code;
-    /// both stay in storage and reachable through [`Property::parameters_named`].
-    ///
-    /// A `VALUE` that arrived with no `=`, and one that arrived with nothing after it, both answer [`DiagnosticCode::UnknownValueType`].
-    /// One answer, because there is one question —
-    /// what did the producer name — and neither of them named anything.
+    /// `None` leaves the property's default type to the caller.
+    /// Recognized tokens return their [`ValueType`].
+    /// Valid unknown tokens return [`DiagnosticCode::UnknownValueType`].
+    /// Empty, repeated, or malformed declarations return [`DiagnosticCode::MalformedValueTypeParameter`].
+    /// The lookup removes matched parameter quotes from the view and keeps all source octets.
     #[must_use]
     pub fn declared_value_type(&self) -> Option<Result<ValueType, DiagnosticCode>> {
-        let declared = self.parameters_named(b"VALUE").next()?;
-        Some(ValueType::from_name(declared.unquoted()).ok_or(DiagnosticCode::UnknownValueType))
+        let mut declarations = self.parameters_named(b"VALUE");
+        let declared = declarations.next()?;
+        let token = declared.unquoted();
+        if declarations.next().is_some()
+            || token.is_empty()
+            || !token
+                .iter()
+                .all(|octet| octet.is_ascii_alphanumeric() || *octet == b'-')
+        {
+            return Some(Err(DiagnosticCode::MalformedValueTypeParameter));
+        }
+        Some(ValueType::from_name(token).ok_or(DiagnosticCode::UnknownValueType))
     }
 }
 
@@ -1191,7 +1187,7 @@ mod tests {
             ),
             (
                 &[(b"VALUE", b"")],
-                Some(Err(DiagnosticCode::UnknownValueType)),
+                Some(Err(DiagnosticCode::MalformedValueTypeParameter)),
             ),
         ];
 
@@ -1205,7 +1201,7 @@ mod tests {
         }
     }
 
-    /// A `VALUE` with no `=` names no type, exactly as an empty one does, and a second `VALUE` changes no answer — both stay in storage either way.
+    /// Empty and repeated value type declarations are malformed.
     #[test]
     fn a_value_parameter_that_names_nothing_and_one_that_names_twice() {
         let empty = Property::new(
@@ -1216,11 +1212,14 @@ mod tests {
         );
         assert_eq!(
             empty.declared_value_type(),
-            Some(Err(DiagnosticCode::UnknownValueType))
+            Some(Err(DiagnosticCode::MalformedValueTypeParameter))
         );
 
         let twice = decorated(b"X-P", &[(b"VALUE", b"DATE"), (b"VALUE", b"TEXT")], b"v");
-        assert_eq!(twice.declared_value_type(), Some(Ok(ValueType::Date)));
+        assert_eq!(
+            twice.declared_value_type(),
+            Some(Err(DiagnosticCode::MalformedValueTypeParameter))
+        );
         assert_eq!(twice.parameters_named(b"VALUE").count(), 2);
     }
 

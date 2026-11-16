@@ -9,6 +9,11 @@ A calendar requires a component, and a time zone requires a standard or daylight
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
 Unrecognized components keep their content without applying known component semantics inside them.
 
+[Value type declarations](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20) name one nonempty token formed from ASCII letters, digits, and hyphens.
+Repeated or malformed declarations produce a violation during strict promotion.
+Valid unknown tokens remain opaque and produce notes.
+Typed accessors refuse malformed declarations before decoding property data.
+
 The URI codec checks the [generic component grammar](https://www.rfc-editor.org/rfc/rfc3986.html#section-3) for reading and writing.
 Authority checks cover user information, registered hosts, address literals, and decimal ports.
 Paths, queries, and fragments use their defined character sets.

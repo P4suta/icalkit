@@ -111,6 +111,8 @@ pub enum DiagnosticCode {
     ///
     /// One code for both, because section 3.3.3 defines a calendar address as a URI and adds no syntax of its own; what distinguishes them is the property, which the caller holds.
     MalformedUri,
+    /// A property declared an empty, repeated, or malformed `VALUE` parameter.
+    MalformedValueTypeParameter,
     /// A `VALUE` parameter named a value type this workspace does not know.
     UnknownValueType,
     /// A component did not carry a property RFC 5545 section 3.6 requires of it.
@@ -423,6 +425,7 @@ impl DiagnosticCode {
             Self::MalformedBoolean => "malformed-boolean",
             Self::MalformedBinary => "malformed-binary",
             Self::MalformedUri => "malformed-uri",
+            Self::MalformedValueTypeParameter => "malformed-value-type-parameter",
             Self::UnknownValueType => "unknown-value-type",
             Self::MissingRequiredProperty => "missing-required-property",
             Self::PropertyNotAllowedHere => "property-not-allowed-here",
