@@ -2,97 +2,63 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 7 — `calendar-data` sub-selection. RFC 4791 sections 9.6, 9.6.1 through 9.6.4, 9.6.6
-//! and 9.6.7.
+//! Unit 7 — `calendar-data` sub-selection.
+//! RFC 4791 sections 9.6, 9.6.1 through 9.6.4, 9.6.6 and 9.6.7.
 //!
-//! **This is the one place `docs/adr/0001`'s round trip is deliberately broken, and a caller
-//! that does not know it will destroy somebody's data.** `CALDAV:comp`, `CALDAV:expand` and
-//! `CALDAV:limit-recurrence-set` each answer with a calendar that is *not* what the server
-//! stored. The octets are well-formed iCalendar and say nothing about being a reduction, so a
-//! client that reads a `calendar-multiget` response and `PUT`s it back deletes every component,
-//! property and override the selection left out — with a changed `ETag` as the only trace, which
-//! is the exact failure this workspace exists to make structurally impossible.
+//! **This is the one place `docs/adr/0001`'s round trip is deliberately broken, and a caller that does not know it will destroy somebody's data.** `CALDAV:comp`, `CALDAV:expand` and `CALDAV:limit-recurrence-set` each answer with a calendar that is *not* what the server stored.
+//! The octets are well-formed iCalendar and say nothing about being a reduction, so a client that reads a `calendar-multiget` response and `PUT`s it back deletes every component,
+//! property and override the selection left out — with a changed `ETag` as the only trace, which is the exact failure this workspace exists to make structurally impossible.
 //!
-//! Everything this unit returns therefore travels as a [`Selection`]: the calendar and a
-//! [`Reduction`] in one value, never a bare `Document`. A reduction reports itself to the
-//! caller's diagnostic sink as `DiagnosticCode::QueryCalendarDataReduced`. Every public function
-//! below repeats it, because the caller who needs to read it will not read this file.
+//! Everything this unit returns therefore travels as a [`Selection`]: the calendar and a [`Reduction`] in one value, never a bare `Document`.
+//! A reduction reports itself to the caller's diagnostic sink as `DiagnosticCode::QueryCalendarDataReduced`.
+//! Every public function below repeats it, because the caller who needs to read it will not read this file.
 //!
 //! # The chain, and why every door takes a [`Selection`] rather than a document
 //!
-//! RFC 4791 section 9.6 writes the request as `calendar-data (comp?, (expand |
-//! limit-recurrence-set)?, limit-freebusy-set?)`, so honoring one means applying up to three
-//! reductions in that order. Each door here takes the answer the previous one gave and hands on
-//! a witness carrying what *both* left out, so the fact that a calendar is a reduction cannot be
-//! lost between two steps of the chain that produced it. A caller starts the chain with
-//! `Selection::new(stored, Reduction::FAITHFUL)` and plugs `expand`'s answer in as the
-//! [`Selection`] it already is.
+//! RFC 4791 section 9.6 writes the request as `calendar-data (comp?, (expand | limit-recurrence-set)?, limit-freebusy-set?)`, so honoring one means applying up to three reductions in that order.
+//! Each door here takes the answer the previous one gave and hands on a witness carrying what *both* left out, so the fact that a calendar is a reduction cannot be lost between two steps of the chain that produced it.
+//! A caller starts the chain with `Selection::new(stored, Reduction::FAITHFUL)` and plugs `expand`'s answer in as the [`Selection`] it already is.
 //!
 //! # What this unit owns
 //!
-//! - **The absent `comp` element (section 9.6).** "If the CALDAV:calendar-data XML element
-//!   doesn't contain any CALDAV:comp element, calendar object resources will be returned in
-//!   their entirety." That is [`select`] with no selection, and it is the only shape
-//!   `docs/adr/0001`'s round trip survives.
-//! - **`CALDAV:comp` (section 9.6.1).** A tree of component names, each carrying either
-//!   `allprop` or a list of `prop` names, and either `allcomp` or a list of nested `comp`s. The
-//!   grammar is `comp ((allprop | prop*), (allcomp | comp*))`, so the halves of each pair are
-//!   alternatives: a value holding both is [`QueryError::SelectionContradiction`] and never
-//!   silently reduced to one of them. `ical-dav` models the contradiction rather than refusing
-//!   it, so this unit is where it is refused — and it is refused for the whole request tree
-//!   before any calendar is read, because a query that contradicts itself does so for every
-//!   resource and not only for the ones whose shape reaches the offending branch.
+//! - **The absent `comp` element (section 9.6).** "If the CALDAV:calendar-data XML element doesn't contain any CALDAV:comp element, calendar object resources will be returned in their entirety."
+//!   That is [`select`] with no selection, and it is the only shape `docs/adr/0001`'s round trip survives.
+//! - **`CALDAV:comp` (section 9.6.1).** A tree of component names, each carrying either `allprop` or a list of `prop` names, and either `allcomp` or a list of nested `comp`s.
+//!   The grammar is `comp ((allprop | prop*), (allcomp | comp*))`, so the halves of each pair are alternatives: a value holding both is [`QueryError::SelectionContradiction`] and never silently reduced to one of them.
+//!   `ical-dav` models the contradiction rather than refusing it, so this unit is where it is refused — and it is refused for the whole request tree before any calendar is read, because a query that contradicts itself does so for every resource and not only for the ones whose shape reaches the offending branch.
 //! - **`CALDAV:allcomp` (section 9.6.2)** and **`CALDAV:allprop` (section 9.6.3)**.
 //! - **`CALDAV:prop` (section 9.6.4)**, and its `novalue` attribute through [`without_values`]:
-//!   "just the iCalendar property name and any iCalendar parameters and a trailing ':' without
-//!   the subsequent value data".
-//! - **`CALDAV:limit-recurrence-set` (section 9.6.6)**, which keeps the `RECURRENCE-ID`
-//!   overrides that impact the window and drops the others while keeping the master component
-//!   and its rule. Note the asymmetry with `expand`: this one keeps the rule.
-//! - **`CALDAV:limit-freebusy-set` (section 9.6.7)**, the same for `VFREEBUSY` periods, decided
-//!   by the `VFREEBUSY` row of section 9.9.
-//! - `CALDAV:expand` is `expand`'s to generate and this unit's to place, which it does by taking
-//!   the [`Selection`] that unit produced as the source of the next reduction.
+//!   "just the iCalendar property name and any iCalendar parameters and a trailing ':' without the subsequent value data".
+//! - **`CALDAV:limit-recurrence-set` (section 9.6.6)**, which keeps the `RECURRENCE-ID` overrides that impact the window and drops the others while keeping the master component and its rule.
+//!   Note the asymmetry with `expand`: this one keeps the rule.
+//! - **`CALDAV:limit-freebusy-set` (section 9.6.7)**, the same for `VFREEBUSY` periods, decided by the `VFREEBUSY` row of section 9.9.
+//! - `CALDAV:expand` is `expand`'s to generate and this unit's to place, which it does by taking the [`Selection`] that unit produced as the source of the next reduction.
 //!
 //! # What must survive a reduction, and where that departs from the specification
 //!
 //! A selected subtree still has to be a calendar somebody can read: `BEGIN:VCALENDAR`,
-//! `VERSION`, `PRODID` and the `VTIMEZONE` components any surviving `TZID` refers to. Dropping a
-//! `VTIMEZONE` whose `TZID` a kept `DTSTART` still names produces a calendar no reader can place
-//! on a timeline, which is a worse answer than returning too much.
+//! `VERSION`, `PRODID` and the `VTIMEZONE` components any surviving `TZID` refers to.
+//! Dropping a `VTIMEZONE` whose `TZID` a kept `DTSTART` still names produces a calendar no reader can place on a timeline, which is a worse answer than returning too much.
 //!
-//! Read strictly, section 9.6.1 does not agree: a `comp` element "defines which component types
-//! to return", and section 9.6 states outright that what comes back "MAY be invalid per their
-//! media type specification if the CALDAV:calendar-data XML element part of the calendaring
-//! REPORT request did not specify required properties (e.g., UID, DTSTAMP, etc.)". The
-//! specification's own worked examples then contradict each other about it: in section 7.8.1 one
-//! request naming `<C:prop name="VERSION"/>` and no `PRODID` comes back for `abcd2.ics` without
-//! a `PRODID` and for `abcd3.ics` with one. Both readings have a citation, only one of them
-//! answers with a document a reader can parse, and this unit takes that one. It returns more
-//! than the client asked for and never less, and every departure is in this paragraph.
+//! Read strictly, section 9.6.1 does not agree: a `comp` element "defines which component types to return", and section 9.6 states outright that what comes back "MAY be invalid per their media type specification if the CALDAV:calendar-data XML element part of the calendaring REPORT request did not specify required properties (e.g., UID, DTSTAMP, etc.)".
+//! The specification's own worked examples then contradict each other about it: in section 7.8.1 one request naming `<C:prop name="VERSION"/>` and no `PRODID` comes back for `abcd2.ics` without a `PRODID` and for `abcd3.ics` with one.
+//! Both readings have a citation, only one of them answers with a document a reader can parse, and this unit takes that one.
+//! It returns more than the client asked for and never less, and every departure is in this paragraph.
 //!
-//! The same reading settles the empty `comp` element, which the grammar permits and section
-//! 9.6.1 says nothing about: `<C:comp name="VTIMEZONE"/>` names no property and no
-//! subcomponent, and section 7.8.1's response returns that `VTIMEZONE` whole. A component whose
-//! selection names nothing at all is therefore returned entire rather than as an empty shell.
+//! The same reading settles the empty `comp` element, which the grammar permits and section 9.6.1 says nothing about: `<C:comp name="VTIMEZONE"/>` names no property and no subcomponent, and section 7.8.1's response returns that `VTIMEZONE` whole.
+//! A component whose selection names nothing at all is therefore returned entire rather than as an empty shell.
 //!
 //! # What it must not do
 //!
-//! Rebuild a property from its parsed form. `ical-core` preserves the text of every line it
-//! read, and a selection that keeps a property keeps *that* text — anything else re-encodes a
-//! value the server stored and turns a reduction into an edit of the parts that were kept. The
-//! two doors that must author a line — a property returned without its value, and a `FREEBUSY`
-//! whose periods were thinned — assemble it out of the octets the producer wrote, and are the
-//! only places in this file that reach a constructor at all.
+//! Rebuild a property from its parsed form.
+//! `ical-core` preserves the text of every line it read, and a selection that keeps a property keeps *that* text — anything else re-encodes a value the server stored and turns a reduction into an edit of the parts that were kept.
+//! The two doors that must author a line — a property returned without its value, and a `FREEBUSY` whose periods were thinned — assemble it out of the octets the producer wrote, and are the only places in this file that reach a constructor at all.
 //!
 //! # What it cannot do, because the request cannot say it
 //!
-//! `ical-dav`'s `CompSelection` carries a property's *name* and nothing else, so section
-//! 9.6.4's `novalue` attribute has nowhere to live: a server that decoded `novalue="yes"` off
-//! the wire has already lost it by the time the filter value reaches this crate. [`select`]
-//! therefore cannot apply it, and [`without_values`] takes the names beside the selection
-//! instead. That is a gap in `ical-dav` rather than a decision here, and the day `CompSelection`
-//! carries the attribute this door reads it off the selection and loses its second argument.
+//! `ical-dav`'s `CompSelection` carries a property's *name* and nothing else, so section 9.6.4's `novalue` attribute has nowhere to live: a server that decoded `novalue="yes"` off the wire has already lost it by the time the filter value reaches this crate.
+//! [`select`] therefore cannot apply it, and [`without_values`] takes the names beside the selection instead.
+//! That is a gap in `ical-dav` rather than a decision here, and the day `CompSelection` carries the attribute this door reads it off the selection and loses its second argument.
 
 use alloc::vec::{IntoIter, Vec};
 use core::{mem, slice};
@@ -110,9 +76,7 @@ use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Un
 
 /// The identity [`zone_id`] looks up.
 ///
-/// `Component::properties_named` ties the identity's lifetime to the iterator it returns, so a
-/// reference to the associated constant would be a temporary whose lifetime is too short for
-/// the value borrowed from the matching property.
+/// `Component::properties_named` ties the identity's lifetime to the iterator it returns, so a reference to the associated constant would be a temporary whose lifetime is too short for the value borrowed from the matching property.
 static TZID: PropertyId = PropertyId::TZID;
 
 /// The identity [`component_uid`] looks up.
@@ -120,11 +84,9 @@ static UID: PropertyId = PropertyId::UID;
 
 /// What calendar-data sub-selection is reviewed against, one row per passage.
 ///
-/// The transcription manifest for this unit. Every rule in this file comes from one of these
-/// passages, and a reviewer checks the file by reading them in this order rather than by
-/// reconstructing which specification a branch came from. A rule with no row here is a rule
-/// somebody invented, which is the failure this crate is most exposed to: an evaluator that
-/// disagrees with a conformant server returns a different set of resources and says nothing.
+/// The transcription manifest for this unit.
+/// Every rule in this file comes from one of these passages, and a reviewer checks the file by reading them in this order rather than by reconstructing which specification a branch came from.
+/// A rule with no row here is a rule somebody invented, which is the failure this crate is most exposed to: an evaluator that disagrees with a conformant server returns a different set of resources and says nothing.
 pub const SUBSELECTION_SECTIONS: &[&str] = &[
     "RFC 4791 section 9.6, CALDAV:calendar-data, and the resource returned in its entirety",
     "RFC 4791 section 9.6.1, CALDAV:comp",
@@ -150,35 +112,21 @@ const FREE_BUSY: &[u8] = b"VFREEBUSY";
 
 /// Apply a `CALDAV:comp` tree to a calendar, RFC 4791 sections 9.6 and 9.6.1 through 9.6.4.
 ///
-/// **What comes back is not what the server stored.** The octets are well-formed iCalendar and
-/// say nothing about the components and properties that were left out, so a caller that writes
-/// them back deletes every one of them, with a changed `ETag` as the only trace. That is why
-/// this answers a [`Selection`] and never a bare document: the [`Reduction`] beside the calendar
-/// is the only record that the round trip was broken, and a reduction is reported to a
-/// diagnostic sink as `DiagnosticCode::QueryCalendarDataReduced`.
+/// **What comes back is not what the server stored.** The octets are well-formed iCalendar and say nothing about the components and properties that were left out, so a caller that writes them back deletes every one of them, with a changed `ETag` as the only trace.
+/// That is why this answers a [`Selection`] and never a bare document: the [`Reduction`] beside the calendar is the only record that the round trip was broken, and a reduction is reported to a diagnostic sink as `DiagnosticCode::QueryCalendarDataReduced`.
 ///
-/// `wanted` is `None` for a request carrying no `CALDAV:comp` element, which section 9.6 returns
-/// "in their entirety" — the witness `source` arrived with is handed back unchanged, because
-/// this call left nothing out.
+/// `wanted` is `None` for a request carrying no `CALDAV:comp` element, which section 9.6 returns "in their entirety" — the witness `source` arrived with is handed back unchanged, because this call left nothing out.
 ///
-/// Otherwise the selection is walked beside the calendar: a component survives when the
-/// selection at its level names it, its properties are the ones that level names, and both
-/// halves of section 9.6.1's grammar behave as the alternatives it writes them as. What survives
-/// beyond that is stated in this module's own documentation, which a reader comparing this
-/// against RFC 4791 has to read: `VERSION` and `PRODID` on the calendar, every `VTIMEZONE` a
-/// surviving `TZID` still names, and a component whose selection names nothing at all.
+/// Otherwise the selection is walked beside the calendar: a component survives when the selection at its level names it, its properties are the ones that level names, and both halves of section 9.6.1's grammar behave as the alternatives it writes them as.
+/// What survives beyond that is stated in this module's own documentation, which a reader comparing this against RFC 4791 has to read: `VERSION` and `PRODID` on the calendar, every `VTIMEZONE` a surviving `TZID` still names, and a component whose selection names nothing at all.
 ///
-/// Section 9.6.4's `novalue` attribute is not applied here and cannot be; see
-/// [`without_values`].
+/// Section 9.6.4's `novalue` attribute is not applied here and cannot be; see [`without_values`].
 ///
 /// # Errors
 ///
-/// [`QueryError::SelectionContradiction`] for a selection anywhere in the tree that states
-/// `allprop` beside a `prop`, or `allcomp` beside a `comp`: section 9.6.1 writes the two halves
-/// as alternatives, so a value holding both is one no request body expresses. The whole tree is
-/// checked before the calendar is read, so one query is refused for every resource or for none.
-/// [`QueryError::Limit`] where the calendar being built crosses the caller's octet budget, or
-/// where it nests past `Limits::max_component_depth`.
+/// [`QueryError::SelectionContradiction`] for a selection anywhere in the tree that states `allprop` beside a `prop`, or `allcomp` beside a `comp`: section 9.6.1 writes the two halves as alternatives, so a value holding both is one no request body expresses.
+/// The whole tree is checked before the calendar is read, so one query is refused for every resource or for none.
+/// [`QueryError::Limit`] where the calendar being built crosses the caller's octet budget, or where it nests past `Limits::max_component_depth`.
 pub fn select(
     source: &Selection,
     wanted: Option<&CompSelection>,
@@ -193,9 +141,7 @@ pub fn select(
     let mut dropped: usize = 0;
     let mut items = Vec::new();
     for entry in source.calendar().items() {
-        // Two entries are named by no `comp` element at any level and are left out together: a
-        // content line outside every component, which is what a stream carries before its first
-        // `BEGIN`, and a component the root of the selection does not name.
+        // Two entries are named by no `comp` element at any level and are left out together: a content line outside every component, which is what a stream carries before its first `BEGIN`, and a component the root of the selection does not name.
         let named = entry
             .as_component()
             .filter(|holder| holder.is_named(wanted.name()));
@@ -215,24 +161,19 @@ pub fn select(
 /// Return the named properties without their values, RFC 4791 section 9.6.4's `novalue="yes"`.
 ///
 /// **What comes back is not what the server stored**, for the reason [`select`] states in full:
-/// a property stripped of its value is a property whose value a client writing this calendar
-/// back deletes. The [`Reduction`] beside the calendar is the only record of it.
+/// a property stripped of its value is a property whose value a client writing this calendar back deletes.
+/// The [`Reduction`] beside the calendar is the only record of it.
 ///
-/// Section 9.6.4: "the server will return just the iCalendar property name and any iCalendar
-/// parameters and a trailing ':' without the subsequent value data". The name and the parameters
-/// keep the octets their producer wrote; only the line's recorded fold layout goes, because the
-/// folds were positions into text that no longer exists.
+/// Section 9.6.4: "the server will return just the iCalendar property name and any iCalendar parameters and a trailing ':' without the subsequent value data".
+/// The name and the parameters keep the octets their producer wrote; only the line's recorded fold layout goes, because the folds were positions into text that no longer exists.
 ///
-/// The names are an argument rather than a flag read off the selection because `ical-dav`'s
-/// `CompSelection` cannot carry `novalue` — see this module's own documentation. A caller that
-/// did not decode the attribute passes `&[]` and gets its source back unchanged.
+/// The names are an argument rather than a flag read off the selection because `ical-dav`'s `CompSelection` cannot carry `novalue` — see this module's own documentation.
+/// A caller that did not decode the attribute passes `&[]` and gets its source back unchanged.
 ///
 /// # Errors
 ///
-/// [`QueryError::Unrepresentable`] for a property whose name RFC 5545 section 3.1 cannot write
-/// back as one content line — a line the reader stored because a file held it, and which this
-/// crate declines to author a copy of. [`QueryError::Limit`] where the calendar being built
-/// crosses the caller's octet budget or nests past `Limits::max_component_depth`.
+/// [`QueryError::Unrepresentable`] for a property whose name RFC 5545 section 3.1 cannot write back as one content line — a line the reader stored because a file held it, and which this crate declines to author a copy of.
+/// [`QueryError::Limit`] where the calendar being built crosses the caller's octet budget or nests past `Limits::max_component_depth`.
 pub fn without_values(
     source: &Selection,
     names: &[&[u8]],
@@ -264,29 +205,21 @@ pub fn without_values(
 
 /// Keep the master component and the overrides `decide` admits, RFC 4791 section 9.6.6.
 ///
-/// **What comes back is not what the server stored.** A calendar missing the overrides that fell
-/// outside the window is well-formed iCalendar that says nothing about them, so a client writing
-/// it back deletes them. The [`Reduction`] beside it is the only record, and it reports itself
-/// as `DiagnosticCode::QueryCalendarDataReduced`.
+/// **What comes back is not what the server stored.** A calendar missing the overrides that fell outside the window is well-formed iCalendar that says nothing about them, so a client writing it back deletes them.
+/// The [`Reduction`] beside it is the only record, and it reports itself as `DiagnosticCode::QueryCalendarDataReduced`.
 ///
-/// Section 9.6.6: the server "MUST return, in addition to the 'master component', only the
-/// 'overridden components' that impact a specified time range". Which components those two names
-/// pick out is structural and is this unit's: a component carrying a `RECURRENCE-ID` is an
-/// overridden one, and everything else — the master, a non-recurring component, a `VTIMEZONE` —
-/// is kept unconditionally. Whether one *impacts* the range is not structural and is not this
-/// unit's: section 9.6.6 counts an override whose current start and end overlap the range, an
-/// override whose original start and end would have, and an override whose `RANGE` parameter
-/// makes it govern instances inside the range. All three need expansion and zone resolution, so
-/// the answer arrives through `decide`, which is called once per overridden component.
+/// Section 9.6.6: the server "MUST return, in addition to the 'master component', only the 'overridden components' that impact a specified time range".
+/// Which components those two names pick out is structural and is this unit's: a component carrying a `RECURRENCE-ID` is an overridden one, and everything else — the master, a non-recurring component, a `VTIMEZONE` —
+/// is kept unconditionally.
+/// Whether one *impacts* the range is not structural and is not this unit's: section 9.6.6 counts an override whose current start and end overlap the range, an override whose original start and end would have, and an override whose `RANGE` parameter makes it govern instances inside the range.
+/// All three need expansion and zone resolution, so the answer arrives through `decide`, which is called once per overridden component.
 ///
-/// An override `decide` cannot place is kept: only [`Match::Unmatched`] drops one, and
-/// [`Match::Undecided`] returns it. A resource whose overlap could not be decided is one nothing
-/// has established anything about, and dropping it would report an absence nobody established —
-/// the same invention [`Match`]'s third value exists to refuse. The caller reads the reason off
-/// the answer it produced.
+/// An override `decide` cannot place is kept: only [`Match::Unmatched`] drops one, and [`Match::Undecided`] returns it.
+/// A resource whose overlap could not be decided is one nothing has established anything about, and dropping it would report an absence nobody established —
+/// the same invention [`Match`]'s third value exists to refuse.
+/// The caller reads the reason off the answer it produced.
 ///
-/// Unlike `CALDAV:expand`, this keeps the recurrence rule: nothing here touches a property, so
-/// the master's `RRULE`, `RDATE` and `EXDATE` come back as they were stored.
+/// Unlike `CALDAV:expand`, this keeps the recurrence rule: nothing here touches a property, so the master's `RRULE`, `RDATE` and `EXDATE` come back as they were stored.
 ///
 /// # Errors
 ///
@@ -320,9 +253,8 @@ where
 
 /// Keep only overrides whose current or original occurrence impacts `window`.
 ///
-/// This is the timeline-aware composition used by the facade. Decisions are made against the
-/// complete stored calendar before the structural pass copies it, so a later component/property
-/// selection cannot erase the UID, recurrence ID, or start needed to decide safely.
+/// This is the timeline-aware composition used by the facade.
+/// Decisions are made against the complete stored calendar before the structural pass copies it, so a later component/property selection cannot erase the UID, recurrence ID, or start needed to decide safely.
 pub fn limit_recurrence_set_in_window(
     source: &Selection,
     window: TimeRange,
@@ -582,30 +514,20 @@ fn insert_property(component: &mut Component, property: Property) {
 
 /// Keep the `FREEBUSY` periods that intersect `window`, RFC 4791 section 9.6.7.
 ///
-/// **What comes back is not what the server stored.** A `VFREEBUSY` whose periods were thinned
-/// is well-formed iCalendar stating less busy time than the collection holds, and a client that
-/// writes it back deletes the rest — while a client reading the gap as free double-books
-/// somebody. The [`Reduction`] beside the calendar is the only record of either.
+/// **What comes back is not what the server stored.** A `VFREEBUSY` whose periods were thinned is well-formed iCalendar stating less busy time than the collection holds, and a client that writes it back deletes the rest — while a client reading the gap as free double-books somebody.
+/// The [`Reduction`] beside the calendar is the only record of either.
 ///
-/// Section 9.6.7: the server "MUST only return the FREEBUSY property values of a VFREEBUSY
-/// component that intersects a specified time range", using "the same logic as defined for
-/// CALDAV:time-range". Section 9.9 writes that logic for a free-busy period as `(start <
-/// freebusy-period-end) AND (end > freebusy-period-start)`, with a missing `start` read as minus
-/// infinity and a missing `end` as plus infinity. It is a rule about the *values* of one
-/// property rather than about the property, so a `FREEBUSY` listing three periods of which one
-/// intersects comes back listing that one, in the octets its producer wrote, and a `FREEBUSY`
-/// none of whose periods intersect is dropped.
+/// Section 9.6.7: the server "MUST only return the FREEBUSY property values of a VFREEBUSY component that intersects a specified time range", using "the same logic as defined for CALDAV:time-range".
+/// Section 9.9 writes that logic for a free-busy period as `(start < freebusy-period-end) AND (end > freebusy-period-start)`, with a missing `start` read as minus infinity and a missing `end` as plus infinity.
+/// It is a rule about the *values* of one property rather than about the property, so a `FREEBUSY` listing three periods of which one intersects comes back listing that one, in the octets its producer wrote, and a `FREEBUSY` none of whose periods intersect is dropped.
 ///
-/// A period this crate cannot place on the timeline is kept. RFC 5545 section 3.8.2.6 requires
-/// the values of a `FREEBUSY` to be UTC date-times, so one that is floating, zoned or
-/// undecodable violates the specification — and a comparison that never happened establishes
-/// nothing, so dropping it would state that the time is free on a guess.
+/// A period this crate cannot place on the timeline is kept.
+/// RFC 5545 section 3.8.2.6 requires the values of a `FREEBUSY` to be UTC date-times, so one that is floating, zoned or undecodable violates the specification — and a comparison that never happened establishes nothing, so dropping it would state that the time is free on a guess.
 ///
 /// # Errors
 ///
-/// [`QueryError::Unrepresentable`] where the thinned `FREEBUSY` cannot be written back as one
-/// content line. [`QueryError::Limit`] where the calendar being built crosses the caller's octet
-/// budget or nests past `Limits::max_component_depth`.
+/// [`QueryError::Unrepresentable`] where the thinned `FREEBUSY` cannot be written back as one content line.
+/// [`QueryError::Limit`] where the calendar being built crosses the caller's octet budget or nests past `Limits::max_component_depth`.
 pub fn limit_freebusy_set(
     source: &Selection,
     window: TimeRange,
@@ -642,9 +564,7 @@ pub fn limit_freebusy_set(
 
 /// The witness `earlier` carried, widened by what this pass left out.
 ///
-/// A reduction composes by union and never by replacement: the second step of a chain has no way
-/// to know what the first one dropped, and a step answering only for itself would hand a caller
-/// a faithful-looking witness over a calendar two reductions deep.
+/// A reduction composes by union and never by replacement: the second step of a chain has no way to know what the first one dropped, and a step answering only for itself would hand a caller a faithful-looking witness over a calendar two reductions deep.
 const fn widened(earlier: Reduction, components: bool, instances: bool) -> Reduction {
     Reduction {
         components_dropped: earlier.components_dropped || components,
@@ -661,17 +581,12 @@ fn unchanged(source: &Selection, meter: &mut Meter) -> Result<Selection, QueryEr
 
 /// Refuse a selection tree that states "everything" and names things beside it.
 ///
-/// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so each pair is
-/// an alternation and a value holding both halves is one no request body expresses. `ical-dav`
-/// represents it and reports it through `CompSelection::is_contradictory`; refusing it is this
-/// crate's, because reducing it to one half would answer a request nobody wrote.
+/// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so each pair is an alternation and a value holding both halves is one no request body expresses.
+/// `ical-dav` represents it and reports it through `CompSelection::is_contradictory`; refusing it is this crate's, because reducing it to one half would answer a request nobody wrote.
 ///
-/// The whole tree is checked, branches no calendar reaches included, because a contradictory
-/// query is contradictory for every resource: a refusal that depended on the data would return
-/// some resources and refuse others for one and the same `REPORT`.
+/// The whole tree is checked, branches no calendar reaches included, because a contradictory query is contradictory for every resource: a refusal that depended on the data would return some resources and refuse others for one and the same `REPORT`.
 ///
-/// Iterative, because nothing bounds the height of a `CompSelection` tree at construction and a
-/// walk that recursed once per level would be an attack on the stack rather than a check.
+/// Iterative, because nothing bounds the height of a `CompSelection` tree at construction and a walk that recursed once per level would be an attack on the stack rather than a check.
 fn refuse_contradiction(root: &CompSelection) -> Result<(), QueryError> {
     let mut pending: Vec<&CompSelection> = alloc::vec![root];
     while let Some(node) = pending.pop() {
@@ -741,8 +656,7 @@ enum Step<'a> {
 
 /// What the selection at `frame`'s level does with `entry`.
 ///
-/// Separate from the walk that applies it, so that the rules of section 9.6.1 read as rules
-/// rather than as arms of the loop that carries the stack.
+/// Separate from the walk that applies it, so that the rules of section 9.6.1 read as rules rather than as arms of the loop that carries the stack.
 fn step<'a>(
     frame: &SelectFrame<'a>,
     entry: &'a Item,
@@ -770,11 +684,8 @@ fn step<'a>(
 
 /// Build the component `wanted` selects out of `holder`, counting what was left out.
 ///
-/// Iterative, over an explicit stack, for the reason `crate::internal::core::Component` gives in full: the
-/// nesting depth of a parsed calendar is a bound the caller raises through a public builder, so
-/// a traversal recursing once per level takes the process down on a document the reader
-/// accepted. A stack overflow is an abort rather than an unwind, so a server would lose the
-/// process rather than the request.
+/// Iterative, over an explicit stack, for the reason `crate::internal::core::Component` gives in full: the nesting depth of a parsed calendar is a bound the caller raises through a public builder, so a traversal recursing once per level takes the process down on a document the reader accepted.
+/// A stack overflow is an abort rather than an unwind, so a server would lose the process rather than the request.
 fn select_component<'a>(
     holder: &'a Component,
     wanted: &'a CompSelection,
@@ -795,16 +706,14 @@ fn select_component<'a>(
             current.items.push(Item::Component(finished));
             continue;
         };
-        // Decided before the match, so the borrow the rules read the frame through has ended by
-        // the time an arm writes to it. The entry borrows the calendar rather than the frame, so
-        // it outlives both.
+        // Decided before the match, so the borrow the rules read the frame through has ended by the time an arm writes to it.
+        // The entry borrows the calendar rather than the frame, so it outlives both.
         let taken = step(&current, entry, meter)?;
         match taken {
             Step::Kept(kept) => current.items.push(kept),
             Step::Left => *dropped = dropped.saturating_add(1),
             Step::Enter(nested, inner) => {
-                // The component about to be entered sits `open.len() + 2` deep, counting the
-                // root this walk started at as depth one.
+                // The component about to be entered sits `open.len() + 2` deep, counting the root this walk started at as depth one.
                 if open.len().saturating_add(2) > usize::from(limits.max_component_depth()) {
                     return Err(QueryError::Limit(LimitExceeded::Depth));
                 }
@@ -817,9 +726,8 @@ fn select_component<'a>(
 
 /// Whether `wanted` names nothing at all, which returns the component it names entire.
 ///
-/// RFC 4791 section 9.6.1's grammar admits `<C:comp name="VTIMEZONE"/>`, and section 7.8.1 sends
-/// exactly that and gets the whole `VTIMEZONE` back. The alternative reading answers with a
-/// `BEGIN`/`END` pair holding nothing, which is not a component any reader can use.
+/// RFC 4791 section 9.6.1's grammar admits `<C:comp name="VTIMEZONE"/>`, and section 7.8.1 sends exactly that and gets the whole `VTIMEZONE` back.
+/// The alternative reading answers with a `BEGIN`/`END` pair holding nothing, which is not a component any reader can use.
 fn keeps_whole(wanted: &CompSelection) -> bool {
     !wanted.all_props && !wanted.all_comps && wanted.props().is_empty() && wanted.comps().is_empty()
 }
@@ -832,9 +740,8 @@ fn keeps_property(wanted: &CompSelection, holder: &Component, line: &Property) -
     if wanted.props().iter().any(|name| line.is_named(name)) {
         return true;
     }
-    // What a calendar needs in order to be read back as one at all. Section 9.6 permits the
-    // answer to be invalid instead; this module's own documentation states why that permission
-    // is declined.
+    // What a calendar needs in order to be read back as one at all.
+    // Section 9.6 permits the answer to be invalid instead; this module's own documentation states why that permission is declined.
     holder.is_named(CALENDAR)
         && (line.has_id(&PropertyId::VERSION) || line.has_id(&PropertyId::PRODID))
 }
@@ -856,13 +763,11 @@ fn chosen<'a>(wanted: &'a CompSelection, nested: &Component) -> Chosen<'a> {
 
 /// Put back every `VTIMEZONE` a surviving `TZID` still names, and say how many came back.
 ///
-/// A calendar whose `DTSTART` reads `TZID=US/Eastern` and whose `VTIMEZONE` the selection
-/// dropped cannot be placed on a timeline by any reader, which is a worse answer than one
-/// component the request did not name. What comes back is the component the resource stored,
+/// A calendar whose `DTSTART` reads `TZID=US/Eastern` and whose `VTIMEZONE` the selection dropped cannot be placed on a timeline by any reader, which is a worse answer than one component the request did not name.
+/// What comes back is the component the resource stored,
 /// whole.
 ///
-/// The count is what keeps the witness honest: a component dropped by the selection and put back
-/// here was not left out, so the caller is not told about a reduction that did not happen.
+/// The count is what keeps the witness honest: a component dropped by the selection and put back here was not left out, so the caller is not told about a reduction that did not happen.
 fn restore_zones(
     source: &Component,
     built: &mut Component,
@@ -879,8 +784,7 @@ fn restore_zones(
             .collect()
     };
     let restored = stranded.len();
-    // Before the first component, which is where every worked example of RFC 4791 section 7.8
-    // writes a `VTIMEZONE`: under the calendar's own properties and above what refers to it.
+    // Before the first component, which is where every worked example of RFC 4791 section 7.8 writes a `VTIMEZONE`: under the calendar's own properties and above what refers to it.
     let mut at = built
         .items()
         .iter()
@@ -911,8 +815,7 @@ fn holds_zone(holder: &Component, id: &[u8]) -> bool {
 
 /// Whether any property anywhere inside `holder` reads its value under the zone `id`.
 ///
-/// Compared octet for octet: RFC 5545 gives no case-folding for a `TZID`, and two identifiers
-/// differing in case name two rows of a database this crate does not hold.
+/// Compared octet for octet: RFC 5545 gives no case-folding for a `TZID`, and two identifiers differing in case name two rows of a database this crate does not hold.
 fn names_zone(holder: &Component, id: &[u8]) -> bool {
     let mut pending: Vec<&Component> = alloc::vec![holder];
     while let Some(current) = pending.pop() {
@@ -935,9 +838,8 @@ fn names_zone(holder: &Component, id: &[u8]) -> bool {
 
 /// Build one calendar's entries, dropping the overridden components `decide` excludes.
 ///
-/// Two levels and no recursion: RFC 4791 section 9.6.6's "overridden components" are the
-/// components of the recurrence set, which sit directly inside the `VCALENDAR` beside the master
-/// they override. A `RECURRENCE-ID` further down belongs to something else.
+/// Two levels and no recursion: RFC 4791 section 9.6.6's "overridden components" are the components of the recurrence set, which sit directly inside the `VCALENDAR` beside the master they override.
+/// A `RECURRENCE-ID` further down belongs to something else.
 fn limited_calendar<D>(
     holder: &Component,
     decide: &mut D,
@@ -973,9 +875,8 @@ where
 
 /// Whether `component` is an "overridden component" as RFC 4791 section 9.6.6 names one.
 ///
-/// A `RECURRENCE-ID` is what makes a component one instance of a series rather than the master
-/// of it, RFC 5545 section 3.8.4.4. Everything without one is returned unconditionally, which is
-/// what section 9.6.6's "in addition to the 'master component'" requires.
+/// A `RECURRENCE-ID` is what makes a component one instance of a series rather than the master of it, RFC 5545 section 3.8.4.4.
+/// Everything without one is returned unconditionally, which is what section 9.6.6's "in addition to the 'master component'" requires.
 pub(crate) fn is_override(component: &Component) -> bool {
     component
         .properties_named(&PropertyId::RECURRENCE_ID)
@@ -1012,12 +913,9 @@ struct EditFrame {
 
 /// Rebuild `entries`, replacing every property with what `edit` answers for it.
 ///
-/// `edit` is handed the name of the component the property sits in — empty for a line outside
-/// every component — the property itself, and the ledger, and answers with the property to keep
-/// or `None` to leave it out. The property arrives *by value*, so one kept unchanged is moved
-/// into the answer with its recorded line syntax intact rather than rebuilt from what it decodes
-/// to. The entries arrive by value for the same reason, which is why this takes what a document
-/// holds rather than the document.
+/// `edit` is handed the name of the component the property sits in — empty for a line outside every component — the property itself, and the ledger, and answers with the property to keep or `None` to leave it out.
+/// The property arrives *by value*, so one kept unchanged is moved into the answer with its recorded line syntax intact rather than rebuilt from what it decodes to.
+/// The entries arrive by value for the same reason, which is why this takes what a document holds rather than the document.
 ///
 /// Iterative, over an explicit stack, for the reason [`select_component`] gives.
 fn map_properties<F>(
@@ -1034,8 +932,7 @@ where
     let mut open: Vec<EditFrame> = Vec::new();
     loop {
         let Some(entry) = rest.next() else {
-            // This level is done: close the component it belonged to and carry on where the
-            // level above left off.
+            // This level is done: close the component it belonged to and carry on where the level above left off.
             let Some(frame) = open.pop() else {
                 return Ok(items);
             };
@@ -1059,8 +956,7 @@ where
                 }
             },
             Item::Component(mut nested) => {
-                // The component about to be entered sits `open.len() + 1` deep, the entries of
-                // the document itself being depth zero.
+                // The component about to be entered sits `open.len() + 1` deep, the entries of the document itself being depth zero.
                 if open.len().saturating_add(1) > usize::from(limits.max_component_depth()) {
                     return Err(QueryError::Limit(LimitExceeded::Depth));
                 }
@@ -1079,10 +975,7 @@ where
 
 /// One property with its name and its parameters and no value, RFC 4791 section 9.6.4.
 ///
-/// Authored rather than edited, because `ical-core` keeps no public door that replaces a value
-/// in place: what survives is the octets the producer wrote for the name and for every
-/// parameter, and the line's recorded fold layout goes because the folds were positions into
-/// text that no longer exists.
+/// Authored rather than edited, because `ical-core` keeps no public door that replaces a value in place: what survives is the octets the producer wrote for the name and for every parameter, and the line's recorded fold layout goes because the folds were positions into text that no longer exists.
 fn without_value(line: &Property, meter: &mut Meter) -> Result<Property, QueryError> {
     charge_line(line, meter)?;
     Property::create(line.name().as_bytes(), line.parameters().to_vec(), b"")
@@ -1098,10 +991,8 @@ fn with_value(line: &Property, value: &[u8], meter: &mut Meter) -> Result<Proper
 
 /// The periods of one `FREEBUSY` value that `window` keeps, and whether any were left out.
 ///
-/// RFC 5545 section 3.8.2.6 writes the value as a comma-separated list of periods, so this
-/// answers in the octets the producer wrote for the periods that stay: nothing is re-encoded,
-/// and a period whose spelling this crate would not have chosen comes back in the spelling it
-/// arrived in.
+/// RFC 5545 section 3.8.2.6 writes the value as a comma-separated list of periods, so this answers in the octets the producer wrote for the periods that stay: nothing is re-encoded,
+/// and a period whose spelling this crate would not have chosen comes back in the spelling it arrived in.
 fn kept_periods(value: &[u8], window: TimeRange) -> (Vec<u8>, bool) {
     let mut kept: Vec<u8> = Vec::new();
     let mut thinned = false;
@@ -1120,9 +1011,8 @@ fn kept_periods(value: &[u8], window: TimeRange) -> (Vec<u8>, bool) {
 
 /// Where one written period begins and ends, or `None` for one this crate cannot place.
 ///
-/// `None` covers a value that does not decode and a value that is not UTC. RFC 5545 section
-/// 3.8.2.6 requires the periods of a `FREEBUSY` to be UTC date-times, so a floating or zoned one
-/// violates it — and placing that one would need a zone `docs/adr/0003` forbids inventing.
+/// `None` covers a value that does not decode and a value that is not UTC.
+/// RFC 5545 section 3.8.2.6 requires the periods of a `FREEBUSY` to be UTC date-times, so a floating or zoned one violates it — and placing that one would need a zone `docs/adr/0003` forbids inventing.
 fn period_bounds(written: &[u8]) -> Option<(Instant, Instant)> {
     let period = Period::decode_value(written).ok()?;
     let from = utc_instant(period.start())?;
@@ -1151,10 +1041,8 @@ fn span_seconds(span: Duration) -> Option<i64> {
 
 /// Whether the period `from ..< until` intersects `window`, RFC 4791 section 9.9.
 ///
-/// The `VFREEBUSY` row, transcribed: `(start < freebusy-period-end) AND (end >
-/// freebusy-period-start)`, with a missing bound read as the infinity section 9.9 names for it.
-/// Both comparisons are strict, unlike the `DTSTART`/`DTEND` row above them, and relaxing either
-/// one to `<=` returns periods that touch the window at a point and occupy none of it.
+/// The `VFREEBUSY` row, transcribed: `(start < freebusy-period-end) AND (end > freebusy-period-start)`, with a missing bound read as the infinity section 9.9 names for it.
+/// Both comparisons are strict, unlike the `DTSTART`/`DTEND` row above them, and relaxing either one to `<=` returns periods that touch the window at a point and occupy none of it.
 fn intersects(window: TimeRange, from: Instant, until: Instant) -> bool {
     window
         .start()
@@ -1172,8 +1060,7 @@ fn charge_line(line: &Property, meter: &mut Meter) -> Result<(), QueryError> {
 
 /// Charge the caller's ledger for every octet of `holder` and everything nested inside it.
 ///
-/// Iterative, for the reason [`select_component`] gives, and over a worklist rather than a
-/// nesting stack because charging has no order to respect.
+/// Iterative, for the reason [`select_component`] gives, and over a worklist rather than a nesting stack because charging has no order to respect.
 fn charge_subtree(holder: &Component, meter: &mut Meter) -> Result<(), QueryError> {
     let mut pending: Vec<&Component> = alloc::vec![holder];
     while let Some(current) = pending.pop() {
@@ -1202,8 +1089,7 @@ fn charge_document(calendar: &Document, meter: &mut Meter) -> Result<(), QueryEr
 /// What one content line costs the calendar being built.
 ///
 /// The name, the value and every parameter, which is what a copy of the line occupies.
-/// Saturating throughout: at `u64::MAX` octets the answer is the same refusal either way, and a
-/// wrap would report a clean ledger over a calendar that had exhausted it (`docs/adr/0007`).
+/// Saturating throughout: at `u64::MAX` octets the answer is the same refusal either way, and a wrap would report a clean ledger over a calendar that had exhausted it (`docs/adr/0007`).
 fn line_octets(line: &Property) -> u64 {
     let mut total = octets(line.name().len()).saturating_add(octets(line.value_text().len()));
     for parameter in line.parameters() {
@@ -1216,9 +1102,8 @@ fn line_octets(line: &Property) -> u64 {
 
 /// What the two boundary lines of one component cost the calendar being built.
 ///
-/// The name written twice, beside `BEGIN:`, `END:` and the two terminators, which is fourteen
-/// octets. Charged rather than ignored because a calendar of ten thousand empty components has a
-/// size that a ledger counting only property text would report as nothing at all.
+/// The name written twice, beside `BEGIN:`, `END:` and the two terminators, which is fourteen octets.
+/// Charged rather than ignored because a calendar of ten thousand empty components has a size that a ledger counting only property text would report as nothing at all.
 fn boundary_octets(holder: &Component) -> u64 {
     const FIXED: u64 = 14;
     octets(holder.name().len())
@@ -1247,8 +1132,7 @@ mod tests {
     };
     use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided};
 
-    /// RFC 4791 Appendix B, `abcd2.ics`, carrying the second overridden component that section
-    /// 7.8.1's own response for that resource shows and section 7.8.2's narration counts.
+    /// RFC 4791 Appendix B, `abcd2.ics`, carrying the second overridden component that section 7.8.1's own response for that resource shows and section 7.8.2's narration counts.
     const RECURRING: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//Example Corp.//CalDAV Client//EN\r\n\
@@ -1296,9 +1180,8 @@ UID:00959BC664CA650E933C892C@example.com\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
 
-    /// What RFC 4791 section 7.8.1's request returns for that resource, plus the `PRODID` this
-    /// unit keeps. Its `VTIMEZONE` is whole, and no `VEVENT` carries the `DTSTAMP` the request
-    /// did not name.
+    /// What RFC 4791 section 7.8.1's request returns for that resource, plus the `PRODID` this unit keeps.
+    /// Its `VTIMEZONE` is whole, and no `VEVENT` carries the `DTSTAMP` the request did not name.
     const SELECTED: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//Example Corp.//CalDAV Client//EN\r\n\
@@ -1425,8 +1308,7 @@ END:VCALENDAR\r\n";
         TimeRange::new(Some(utc(from)), Some(utc(until))).unwrap()
     }
 
-    /// RFC 4791 section 9.6: "If the CALDAV:calendar-data XML element doesn't contain any
-    /// CALDAV:comp element, calendar object resources will be returned in their entirety."
+    /// RFC 4791 section 9.6: "If the CALDAV:calendar-data XML element doesn't contain any CALDAV:comp element, calendar object resources will be returned in their entirety."
     #[test]
     fn an_absent_comp_element_returns_the_resource_in_its_entirety() {
         let mut meter = ledger();
@@ -1443,16 +1325,11 @@ END:VCALENDAR\r\n";
 
     /// RFC 4791 section 7.8.1's worked example, request and response.
     ///
-    /// The request names `VERSION` on the calendar, ten properties on `VEVENT`, and an empty
-    /// `<C:comp name="VTIMEZONE"/>`. The response returns that `VTIMEZONE` whole and each
-    /// `VEVENT` without the `DTSTAMP` the request did not name, in the order the resource stored
-    /// them.
+    /// The request names `VERSION` on the calendar, ten properties on `VEVENT`, and an empty `<C:comp name="VTIMEZONE"/>`.
+    /// The response returns that `VTIMEZONE` whole and each `VEVENT` without the `DTSTAMP` the request did not name, in the order the resource stored them.
     ///
-    /// `PRODID` is the one octet-level departure from that response and it is deliberate: the
-    /// specification's own two responses to this one request disagree — `abcd2.ics` comes back
-    /// without a `PRODID` and `abcd3.ics` with one — and section 9.6 permits an invalid answer
-    /// rather than requiring one. This module's documentation states why the readable reading
-    /// wins.
+    /// `PRODID` is the one octet-level departure from that response and it is deliberate: the specification's own two responses to this one request disagree — `abcd2.ics` comes back without a `PRODID` and `abcd3.ics` with one — and section 9.6 permits an invalid answer rather than requiring one.
+    /// This module's documentation states why the readable reading wins.
     #[test]
     fn a_comp_tree_keeps_what_it_names_and_leaves_the_calendar_readable() {
         let event = comp(
@@ -1491,9 +1368,7 @@ END:VCALENDAR\r\n";
         );
     }
 
-    /// A selection naming a component type the resource does not carry returns none of that
-    /// type: RFC 4791 section 9.6.1 defines which component types to return, and the calendar it
-    /// is rooted at stays readable.
+    /// A selection naming a component type the resource does not carry returns none of that type: RFC 4791 section 9.6.1 defines which component types to return, and the calendar it is rooted at stays readable.
     #[test]
     fn a_selection_naming_nothing_the_resource_carries_returns_an_empty_calendar() {
         let wanted = comp(
@@ -1512,9 +1387,8 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().components_dropped);
     }
 
-    /// RFC 4791 section 9.6.1: `comp ((allprop | prop*), (allcomp | comp*))`. Each pair is an
-    /// alternation, so a value holding both halves is one no request body expresses — including
-    /// in a branch no calendar this query runs against would ever reach.
+    /// RFC 4791 section 9.6.1: `comp ((allprop | prop*), (allcomp | comp*))`.
+    /// Each pair is an alternation, so a value holding both halves is one no request body expresses — including in a branch no calendar this query runs against would ever reach.
     #[test]
     fn a_selection_that_states_everything_and_names_things_beside_it_is_refused() {
         let mut both_props = comp(b"VCALENDAR", &[b"VERSION"], Vec::new());
@@ -1544,9 +1418,8 @@ END:VCALENDAR\r\n";
         }
     }
 
-    /// RFC 4791 sections 9.6.2 and 9.6.3: `allcomp` and `allprop` ask for everything, so the
-    /// witness has to say that nothing was left out. This is the one answer a caller may write
-    /// back.
+    /// RFC 4791 sections 9.6.2 and 9.6.3: `allcomp` and `allprop` ask for everything, so the witness has to say that nothing was left out.
+    /// This is the one answer a caller may write back.
     #[test]
     fn a_selection_asking_for_everything_leaves_nothing_out() {
         let mut wanted = comp(b"VCALENDAR", &[], Vec::new());
@@ -1563,9 +1436,7 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().is_faithful());
     }
 
-    /// A `VTIMEZONE` no `comp` element names still comes back when a surviving `DTSTART` reads
-    /// its value under that zone: the alternative is a calendar no reader can place on a
-    /// timeline, which is a worse answer than one component too many.
+    /// A `VTIMEZONE` no `comp` element names still comes back when a surviving `DTSTART` reads its value under that zone: the alternative is a calendar no reader can place on a timeline, which is a worse answer than one component too many.
     #[test]
     fn a_time_zone_a_surviving_tzid_names_comes_back_unasked() {
         let wanted = comp(
@@ -1595,8 +1466,7 @@ END:VCALENDAR\r\n";
         );
     }
 
-    /// A zone nothing refers to any more stays out: the rescue is for a `TZID` still named, and
-    /// never a floor under every reduction.
+    /// A zone nothing refers to any more stays out: the rescue is for a `TZID` still named, and never a floor under every reduction.
     #[test]
     fn a_time_zone_nothing_refers_to_stays_out() {
         let wanted = comp(
@@ -1616,10 +1486,8 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().components_dropped);
     }
 
-    /// RFC 4791 section 7.8.2's worked example: with a `limit-recurrence-set` over January 3 to
-    /// January 5, 2006, "the first overridden component in the matching resource is returned,
-    /// but the second one is not" — and the master comes back with its `RRULE` intact, which is
-    /// the asymmetry with `CALDAV:expand`.
+    /// RFC 4791 section 7.8.2's worked example: with a `limit-recurrence-set` over January 3 to January 5, 2006, "the first overridden component in the matching resource is returned,
+    /// but the second one is not" — and the master comes back with its `RRULE` intact, which is the asymmetry with `CALDAV:expand`.
     #[test]
     fn limiting_a_recurrence_set_keeps_the_master_its_rule_and_what_impacts_the_range() {
         let mut meter = ledger();
@@ -1652,9 +1520,8 @@ END:VCALENDAR\r\n";
         );
     }
 
-    /// An override whose overlap could not be decided is returned rather than dropped. Dropping
-    /// it would report an absence nothing established, which is what the third value of a match
-    /// exists to refuse.
+    /// An override whose overlap could not be decided is returned rather than dropped.
+    /// Dropping it would report an absence nothing established, which is what the third value of a match exists to refuse.
     #[test]
     fn an_undecidable_override_is_returned_rather_than_left_out() {
         let mut meter = ledger();
@@ -1671,10 +1538,8 @@ END:VCALENDAR\r\n";
         );
     }
 
-    /// RFC 4791 section 9.6.7 keeps only the `FREEBUSY` property values that intersect the
-    /// window, by the `VFREEBUSY` row of section 9.9. Of the three periods here only the second
-    /// is inside 20:00 to 23:00: the first ends before it and the third starts at its
-    /// non-inclusive end.
+    /// RFC 4791 section 9.6.7 keeps only the `FREEBUSY` property values that intersect the window, by the `VFREEBUSY` row of section 9.9.
+    /// Of the three periods here only the second is inside 20:00 to 23:00: the first ends before it and the third starts at its non-inclusive end.
     #[test]
     fn limiting_a_freebusy_set_keeps_only_the_periods_that_intersect() {
         let mut meter = ledger();
@@ -1694,9 +1559,9 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().instances_dropped);
     }
 
-    /// RFC 4791 section 9.9, the `VFREEBUSY` row: `(start < freebusy-period-end) AND (end >
-    /// freebusy-period-start)`. Both comparisons are strict, so a period touching the window at
-    /// a point is outside it. The period under test runs from 16:00 to 19:00.
+    /// RFC 4791 section 9.9, the `VFREEBUSY` row: `(start < freebusy-period-end) AND (end > freebusy-period-start)`.
+    /// Both comparisons are strict, so a period touching the window at a point is outside it.
+    /// The period under test runs from 16:00 to 19:00.
     #[test]
     fn the_edges_of_the_window_are_the_ones_section_nine_nine_writes() {
         // The window, and whether the period survives it.
@@ -1728,9 +1593,8 @@ END:VCALENDAR\r\n";
         }
     }
 
-    /// A period this crate cannot place is kept: RFC 5545 section 3.8.2.6 requires UTC, and a
-    /// value violating it is one no comparison was made on. Reporting that time as free because
-    /// a value did not decode is the invention `docs/adr/0003` refuses.
+    /// A period this crate cannot place is kept: RFC 5545 section 3.8.2.6 requires UTC, and a value violating it is one no comparison was made on.
+    /// Reporting that time as free because a value did not decode is the invention `docs/adr/0003` refuses.
     #[test]
     fn a_freebusy_period_that_cannot_be_placed_is_kept() {
         let mut meter = ledger();
@@ -1748,9 +1612,7 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().instances_dropped);
     }
 
-    /// RFC 4791 section 9.6.4: with `novalue="yes"` "the server will return just the iCalendar
-    /// property name and any iCalendar parameters and a trailing ':' without the subsequent
-    /// value data".
+    /// RFC 4791 section 9.6.4: with `novalue="yes"` "the server will return just the iCalendar property name and any iCalendar parameters and a trailing ':' without the subsequent value data".
     #[test]
     fn a_property_returned_without_its_value_keeps_its_name_and_its_parameters() {
         let mut meter = ledger();
@@ -1775,8 +1637,7 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().components_dropped);
     }
 
-    /// Naming no property asks for nothing: the calendar comes back as it stands, with the
-    /// witness it arrived with.
+    /// Naming no property asks for nothing: the calendar comes back as it stands, with the witness it arrived with.
     #[test]
     fn naming_no_property_leaves_every_value_in_place() {
         let mut meter = ledger();
@@ -1790,9 +1651,7 @@ END:VCALENDAR\r\n";
         assert!(answer.reduction().is_faithful());
     }
 
-    /// The witness is the union of every step, because a step has no way to know what the one
-    /// before it left out — and a chain reporting only its last step would hand a caller a
-    /// faithful-looking calendar two reductions deep.
+    /// The witness is the union of every step, because a step has no way to know what the one before it left out — and a chain reporting only its last step would hand a caller a faithful-looking calendar two reductions deep.
     #[test]
     fn the_witness_carries_what_every_step_of_the_chain_left_out() {
         let mut meter = ledger();
@@ -1823,8 +1682,7 @@ END:VCALENDAR\r\n";
         assert!(!answer.reduction().is_faithful());
     }
 
-    /// Every door is bounded, `docs/adr/0010`: the calendar being built is charged to the
-    /// caller's ledger as it is assembled, and a ledger too small to hold it refuses.
+    /// Every door is bounded, `docs/adr/0010`: the calendar being built is charged to the caller's ledger as it is assembled, and a ledger too small to hold it refuses.
     #[test]
     fn a_ledger_too_small_to_hold_the_answer_refuses() {
         let mut meter = Meter::with_budget(Limits::DEFAULT, 64);
@@ -1837,9 +1695,8 @@ END:VCALENDAR\r\n";
         assert!(meter.is_exhausted(), "and the refusal latches");
     }
 
-    /// The nesting a selection may walk is the caller's `Limits::max_component_depth`, so a
-    /// calendar nested past it is refused rather than walked. The walk holds no stack frames of
-    /// its own, which is what makes the refusal a policy rather than a crash.
+    /// The nesting a selection may walk is the caller's `Limits::max_component_depth`, so a calendar nested past it is refused rather than walked.
+    /// The walk holds no stack frames of its own, which is what makes the refusal a policy rather than a crash.
     #[test]
     fn a_calendar_nested_past_the_callers_bound_is_refused() {
         let limits = Limits::DEFAULT.with_max_component_depth(1);
