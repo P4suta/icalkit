@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::internal::core::codec::{RequestStatus, TextSyntax, is_text_value};
+use crate::internal::core::mailto::is_mailto_uri;
 use crate::internal::core::{
     BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
     Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
@@ -237,6 +238,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
             "icalkit.validation.invalid-attendee-parameter",
         ));
     }
+    if first.is_some_and(|calendar| !known_address_parameters_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-address-parameter"));
+    }
     if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-integer"));
     }
@@ -446,6 +450,99 @@ enum LinkedProperty {
     Uri,
     CalendarAddress,
     Attachment,
+}
+
+#[derive(Clone, Copy)]
+enum AddressParameter {
+    Uri,
+    Mailto,
+    UriList,
+}
+
+fn known_address_parameters_are_valid(component: &Component) -> bool {
+    let Some(kind) = component.kind() else {
+        return true;
+    };
+    component
+        .properties()
+        .filter(|property| property.is_named(b"ATTENDEE") || property.is_named(b"ORGANIZER"))
+        .all(|property| address_parameters_are_valid(property, kind))
+        && component
+            .components()
+            .all(known_address_parameters_are_valid)
+}
+
+fn address_parameters_are_valid(property: &Property, kind: ComponentKind) -> bool {
+    const PARAMETERS: &[(&[u8], AddressParameter)] = &[
+        (b"MEMBER", AddressParameter::UriList),
+        (b"DELEGATED-FROM", AddressParameter::UriList),
+        (b"DELEGATED-TO", AddressParameter::UriList),
+        (b"DIR", AddressParameter::Uri),
+        (b"SENT-BY", AddressParameter::Mailto),
+    ];
+    if !matches!(
+        property.declared_value_type(),
+        None | Some(Ok(ValueType::CalAddress))
+    ) {
+        return true;
+    }
+    PARAMETERS.iter().all(|(name, syntax)| {
+        let mut parameters = property.parameters_named(name);
+        let Some(parameter) = parameters.next() else {
+            return true;
+        };
+        let allowed = (property.is_named(b"ATTENDEE")
+            && matches!(
+                kind,
+                ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
+            ))
+            || (property.is_named(b"ORGANIZER")
+                && !matches!(syntax, AddressParameter::UriList)
+                && matches!(
+                    kind,
+                    ComponentKind::Event
+                        | ComponentKind::Todo
+                        | ComponentKind::Journal
+                        | ComponentKind::FreeBusy
+                ));
+        parameters.next().is_none()
+            && allowed
+            && quoted_address_parameter_is_valid(parameter.value().as_bytes(), *syntax)
+    })
+}
+
+fn quoted_address_parameter_is_valid(mut bytes: &[u8], syntax: AddressParameter) -> bool {
+    loop {
+        let Some(quoted) = bytes.strip_prefix(b"\"") else {
+            return false;
+        };
+        let Some(ending) = quoted.iter().position(|octet| *octet == b'"') else {
+            return false;
+        };
+        let (uri, after) = quoted.split_at(ending);
+        let Some(tail) = after.strip_prefix(b"\"") else {
+            return false;
+        };
+        let valid = match syntax {
+            AddressParameter::Uri | AddressParameter::UriList => {
+                UriValue::decode_value(uri).is_ok()
+            },
+            AddressParameter::Mailto => is_mailto_uri(uri),
+        };
+        if !valid {
+            return false;
+        }
+        if tail.is_empty() {
+            return true;
+        }
+        if !matches!(syntax, AddressParameter::UriList) {
+            return false;
+        }
+        let Some(rest) = tail.strip_prefix(b",") else {
+            return false;
+        };
+        bytes = rest;
+    }
 }
 
 fn known_attendee_parameters_are_valid(component: &Component) -> bool {

@@ -39,6 +39,14 @@ The [attendee definition](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.
 Registered participation statuses follow their component domains, including task `FAILED` from [RFC 10051 section 9.1](https://www.rfc-editor.org/rfc/rfc10051.html#section-9.1).
 Valid extension tokens, unknown parameters, unknown value types, and unknown components keep their bytes.
 
+Participant address parameters follow the [quoted URI grammars](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.4).
+`DIR` and `SENT-BY` take single quoted values.
+`MEMBER`, `DELEGATED-FROM`, and `DELEGATED-TO` take lists of quoted values.
+Every URI must parse, and each parameter occurs at most once within its permitted component domain.
+Agent addresses follow [RFC 6068 syntax](https://www.rfc-editor.org/rfc/rfc6068.html#section-2), including [verified erratum 7919](https://errata.rfc-editor.org/eid7919/).
+The [agent address decision](adr/mailto-agent-address-validation.md) records the syntax boundary and source interpretation.
+Lossless imports keep invalid metadata available for inspection.
+
 Known text properties follow the [text grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) after content-line unfolding.
 Strict promotion rejects undefined escapes, dangling backslashes, unescaped delimiters, invalid UTF-8, and incompatible or repeated `VALUE` declarations.
 `CATEGORIES` and `RESOURCES` accept comma separators under their property definitions.
