@@ -15,6 +15,13 @@ Paths, queries, and fragments use their defined character sets.
 Address literals use the URI syntax restored by [RFC 9844](https://www.rfc-editor.org/rfc/rfc9844.html#section-3).
 Valid spellings keep their bytes, and lossless storage preserves malformed URI text without granting a typed URI view.
 
+Strict promotion validates `URL`, `TZURL`, `ORGANIZER`, `ATTENDEE`, and `ATTACH` through the shared URI and binary codecs.
+[Calendar user addresses](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.3) use the `CAL-ADDRESS` value type.
+[Attachments](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.1) use URI references or explicit binary values with base64 encoding.
+Attachment checks reject repeated `VALUE`, `ENCODING`, and `FMTTYPE` parameters.
+Media types remain optional, and unknown parameters keep their bytes.
+Unknown value types stay opaque during promotion.
+
 Known text properties follow the [text grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) after content-line unfolding.
 Strict promotion rejects undefined escapes, dangling backslashes, unescaped delimiters, invalid UTF-8, and incompatible or repeated `VALUE` declarations.
 `CATEGORIES` and `RESOURCES` accept comma separators under their property definitions.

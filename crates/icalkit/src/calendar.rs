@@ -6,9 +6,9 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::internal::core::{
-    Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
-    DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
-    TEXT_ESCAPES, TextValue, UtcOffset, ValueType,
+    BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
+    Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
+    TEXT_ESCAPES, TextValue, UriValue, UtcOffset, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -222,6 +222,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_text_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
+    if first.is_some_and(|calendar| !known_linked_values_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-uri-or-binary"));
+    }
     if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-integer"));
     }
@@ -375,6 +378,67 @@ fn text_property_is_valid(property: &Property) -> bool {
         }
     }
     true
+}
+
+#[derive(Clone, Copy)]
+enum LinkedProperty {
+    Uri,
+    CalendarAddress,
+    Attachment,
+}
+
+fn known_linked_values_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component.properties().all(|property| {
+        let kind = if property.is_named(b"ATTACH") {
+            LinkedProperty::Attachment
+        } else if property.is_named(b"ATTENDEE") || property.is_named(b"ORGANIZER") {
+            LinkedProperty::CalendarAddress
+        } else if property.is_named(b"URL") || property.is_named(b"TZURL") {
+            LinkedProperty::Uri
+        } else {
+            return true;
+        };
+        linked_property_is_valid(property, kind)
+    }) && component.components().all(known_linked_values_are_valid)
+}
+
+fn linked_property_is_valid(property: &Property, kind: LinkedProperty) -> bool {
+    if property.parameters_named(b"VALUE").nth(1).is_some() {
+        return false;
+    }
+    if matches!(kind, LinkedProperty::Attachment)
+        && (property.parameters_named(b"ENCODING").nth(1).is_some()
+            || property.parameters_named(b"FMTTYPE").nth(1).is_some())
+    {
+        return false;
+    }
+    let declared = match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        Some(Ok(value_type)) => value_type,
+        None => match kind {
+            LinkedProperty::CalendarAddress => ValueType::CalAddress,
+            LinkedProperty::Uri | LinkedProperty::Attachment => ValueType::Uri,
+        },
+    };
+    let encoding = property.parameters_named(b"ENCODING").next();
+    match (kind, declared) {
+        (LinkedProperty::Uri, ValueType::Uri)
+        | (LinkedProperty::CalendarAddress, ValueType::CalAddress) => {
+            UriValue::decode_property(property).is_ok()
+        },
+        (LinkedProperty::Attachment, ValueType::Uri) => {
+            encoding.is_none_or(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"8BIT"))
+                && UriValue::decode_property(property).is_ok()
+        },
+        (LinkedProperty::Attachment, ValueType::Binary) => {
+            encoding.is_some_and(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"BASE64"))
+                && BinaryValue::decode_property(property).is_ok()
+        },
+        _ => false,
+    }
 }
 
 fn known_integer_properties_are_valid(component: &Component) -> bool {
