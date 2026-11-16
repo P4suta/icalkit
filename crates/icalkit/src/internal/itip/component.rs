@@ -6,91 +6,59 @@
 //!
 //! Specification: RFC 5545 section 3.8.4.1 (`ATTENDEE`), section 3.8.4.3 (`ORGANIZER`),
 //! section 3.8.4.4 (`RECURRENCE-ID`), section 3.2.13 (`RANGE`), section 3.8.7.2 (`DTSTAMP`),
-//! section 3.8.7.4 (`SEQUENCE`); RFC 6868 section 2 for the caret encoding this module is the
-//! one reader of.
+//! section 3.8.7.4 (`SEQUENCE`); RFC 6868 section 2 for the caret encoding this module is the one reader of.
 //!
-//! [`ScheduledComponent`] is what the rest of this crate reads a calendar through, and
-//! [`ScheduledView`] is the implementation for a caller that holds an
-//! [`crate::internal::core::Component`]. One walk builds it and every later question is a lookup, which is
-//! what the trait asks for: a diff walks every property of both sides, so nothing on that path
-//! may allocate per call.
+//! [`ScheduledComponent`] is what the rest of this crate reads a calendar through, and [`ScheduledView`] is the implementation for a caller that holds an [`crate::internal::core::Component`].
+//! One walk builds it and every later question is a lookup, which is what the trait asks for: a diff walks every property of both sides, so nothing on that path may allocate per call.
 //!
 //! # Why this is a value and not a bare implementation on `Component`
 //!
-//! Two of the trait's answers are *derived* octets rather than stored ones, and both are
-//! returned by reference:
+//! Two of the trait's answers are *derived* octets rather than stored ones, and both are returned by reference:
 //!
-//! - [`ScheduledComponent::property_line`] hands back a whole content line, because that is the
-//!   unit [`crate::internal::core::ProposedChange::Replace`] takes. A [`crate::internal::core::Component`] stores a
-//!   name, an ordered parameter list and a value separately, with the producer's folds recorded
-//!   beside them; the line as one span of octets exists nowhere in the tree.
-//! - Every parameter value handed to [`Party`] or [`Attendee`] is a **value** and not a
-//!   spelling, so RFC 6868's caret encoding is resolved first. Resolving `^'` into `"` produces
-//!   octets the file does not contain.
+//! - [`ScheduledComponent::property_line`] hands back a whole content line, because that is the unit [`crate::internal::core::ProposedChange::Replace`] takes.
+//!   A [`crate::internal::core::Component`] stores a name, an ordered parameter list and a value separately, with the producer's folds recorded beside them; the line as one span of octets exists nowhere in the tree.
+//! - Every parameter value handed to [`Party`] or [`Attendee`] is a **value** and not a spelling, so RFC 6868's caret encoding is resolved first.
+//!   Resolving `^'` into `"` produces octets the file does not contain.
 //!
-//! A method returning `&[u8]` can only hand back octets something already owns, and a
-//! `Component` owns neither of these. So the derivation is done once, into storage this type
-//! owns, and the borrows point into it. That is the cost the trait was introduced to make
-//! payable — `ScheduledComponent` exists precisely so that state which is not a `Component`
-//! can answer these questions — and it is charged once per component rather than once per
-//! question.
+//! A method returning `&[u8]` can only hand back octets something already owns, and a `Component` owns neither of these.
+//! So the derivation is done once, into storage this type owns, and the borrows point into it.
+//! That is the cost the trait was introduced to make payable — `ScheduledComponent` exists precisely so that state which is not a `Component` can answer these questions — and it is charged once per component rather than once per question.
 //!
 //! # Values, not spellings
 //!
-//! The contract [`crate::internal::itip::party`] states from the other end. `SENT-BY`, `PARTSTAT`, `ROLE`,
-//! `DELEGATED-FROM` and `DELEGATED-TO` are read as *values*: the section 3.2 `DQUOTE` pair is
-//! removed and then [`crate::internal::core::decode_caret`] is applied, in that order, because that is the
-//! order a writer applies them in and a reader has to undo them in the reverse one.
-//! [`crate::internal::core::ParameterEdit`] takes a value and picks the spelling itself, so a value that
-//! skipped the decode here would be written back as `^^'` where the file had `^'` — a
-//! corruption no other gate in this workspace catches, which is why there is a test for exactly
-//! that round trip below.
+//! The contract [`crate::internal::itip::party`] states from the other end.
+//! `SENT-BY`, `PARTSTAT`, `ROLE`,
+//! `DELEGATED-FROM` and `DELEGATED-TO` are read as *values*: the section 3.2 `DQUOTE` pair is removed and then [`crate::internal::core::decode_caret`] is applied, in that order, because that is the order a writer applies them in and a reader has to undo them in the reverse one.
+//! [`crate::internal::core::ParameterEdit`] takes a value and picks the spelling itself, so a value that skipped the decode here would be written back as `^^'` where the file had `^'` — a corruption no other gate in this workspace catches, which is why there is a test for exactly that round trip below.
 //!
 //! # Present and unusable is an answer
 //!
 //! A name RFC 5545 declares at most once, arriving more than once with **two different lines**,
-//! is not one value — [`crate::internal::core::Component::get`] reports that as `View::Malformed` and this
-//! reports it in the only vocabulary the trait has. `UID`, `METHOD`, `DTSTAMP`, `RECURRENCE-ID`
-//! and `ORGANIZER` answer `None`, which refuses the message rather than picking a winner out of
-//! two. `SEQUENCE` has a third state of its own and answers [`SequenceRead::Unreadable`], which
-//! is not [`SequenceRead::Absent`]: an absent `SEQUENCE` is revision zero and an unreadable one
-//! is no revision at all.
+//! is not one value — [`crate::internal::core::Component::get`] reports that as `View::Malformed` and this reports it in the only vocabulary the trait has.
+//! `UID`, `METHOD`, `DTSTAMP`, `RECURRENCE-ID` and `ORGANIZER` answer `None`, which refuses the message rather than picking a winner out of two.
+//! `SEQUENCE` has a third state of its own and answers [`SequenceRead::Unreadable`], which is not [`SequenceRead::Absent`]: an absent `SEQUENCE` is revision zero and an unreadable one is no revision at all.
 //!
-//! Two occurrences whose whole content lines are byte-identical are **one statement written
-//! twice**, and they answer with that statement. Refusing them was the more conservative
-//! reading of the two and it was not the safer one: a stored copy whose `UID` line is
-//! duplicated — which ADR-0001's lossless reading preserves, and which any producer can leave
-//! behind — then reported as a component the caller does not hold, and a message about it was
-//! judged against itself instead of against the recipient's `ORGANIZER` line. There is no
-//! winner to pick between two identical claims, and reading one is not a guess.
+//! Two occurrences whose whole content lines are byte-identical are **one statement written twice**, and they answer with that statement.
+//! Refusing them was the more conservative reading of the two and it was not the safer one: a stored copy whose `UID` line is duplicated — which ADR-0001's lossless reading preserves, and which any producer can leave behind — then reported as a component the caller does not hold, and a message about it was judged against itself instead of against the recipient's `ORGANIZER` line.
+//! There is no winner to pick between two identical claims, and reading one is not a guess.
 //!
-//! A `RECURRENCE-ID` that is present and does not decode is the sharpest of these. Answering
-//! `None` would make a message about one instance look like a message about the whole series,
-//! which is how a `CANCEL` for Tuesday cancels the year. It answers an instance reference whose
-//! fold side is [`crate::internal::itip::FoldSide::Unresolved`] instead, and an unresolved side can never
-//! compare [`crate::internal::itip::InstanceMatch::Same`] — so the gate above denies rather than guesses.
+//! A `RECURRENCE-ID` that is present and does not decode is the sharpest of these.
+//! Answering `None` would make a message about one instance look like a message about the whole series,
+//! which is how a `CANCEL` for Tuesday cancels the year.
+//! It answers an instance reference whose fold side is [`crate::internal::itip::FoldSide::Unresolved`] instead, and an unresolved side can never compare [`crate::internal::itip::InstanceMatch::Same`] — so the gate above denies rather than guesses.
 //!
 //! # A wall clock is the series' clock, whether or not the file repeats the zone
 //!
-//! A `RECURRENCE-ID` written with a trailing `Z` names an instant and falls in no fold. Every
-//! other spelling names a wall clock, and this crate resolves no zone, so both the `TZID` form
-//! and the bare form answer [`crate::internal::itip::FoldSide::Unresolved`] and a caller holding the zone
-//! attaches a side with [`crate::internal::itip::resolve_instance`]. The bare form used to answer
-//! [`crate::internal::itip::FoldSide::Once`] on the reading that a floating value projects onto the nominal
-//! timeline as itself. That is true of a series that runs on no zone and false of the value
-//! several producers actually emit — a bare override of a *zoned* series — and the difference
-//! was one reply answering both halves of a repeated hour, which the zoned spelling of the same
-//! pair was already refused for.
+//! A `RECURRENCE-ID` written with a trailing `Z` names an instant and falls in no fold.
+//! Every other spelling names a wall clock, and this crate resolves no zone, so both the `TZID` form and the bare form answer [`crate::internal::itip::FoldSide::Unresolved`] and a caller holding the zone attaches a side with [`crate::internal::itip::resolve_instance`].
+//! The bare form used to answer [`crate::internal::itip::FoldSide::Once`] on the reading that a floating value projects onto the nominal timeline as itself.
+//! That is true of a series that runs on no zone and false of the value several producers actually emit — a bare override of a *zoned* series — and the difference was one reply answering both halves of a repeated hour, which the zoned spelling of the same pair was already refused for.
 //!
 //! # Names are normalized and lines are not
 //!
-//! [`ScheduledComponent::property_name`] answers the ASCII-uppercased name, while
-//! [`ScheduledComponent::property_line`] reproduces the octets the producer wrote. The asymmetry
-//! is deliberate and it is a security property: RFC 5546 section 3's tables are counted per
-//! name, and a table row of `1` counted over the octets as written admits `DTSTART` beside
-//! `dtstart` as two names appearing once each. Normalizing the name closes that, and it is also
-//! what makes an occurrence found by a diff address the same line
-//! [`crate::internal::core::Component::apply_to_occurrence`] writes, since that door counts by identity.
+//! [`ScheduledComponent::property_name`] answers the ASCII-uppercased name, while [`ScheduledComponent::property_line`] reproduces the octets the producer wrote.
+//! The asymmetry is deliberate and it is a security property: RFC 5546 section 3's tables are counted per name, and a table row of `1` counted over the octets as written admits `DTSTART` beside `dtstart` as two names appearing once each.
+//! Normalizing the name closes that, and it is also what makes an occurrence found by a diff address the same line [`crate::internal::core::Component::apply_to_occurrence`] writes, since that door counts by identity.
 //! The line stays as written because ADR-0001 says the octets are the producer's.
 
 use alloc::vec::Vec;
@@ -110,10 +78,8 @@ use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
 
 /// The RFC 6868-resolved parameter values one `ORGANIZER` or `ATTENDEE` line states.
 ///
-/// Owned, because resolving a caret pair produces octets the file does not hold. Only the five
-/// parameters the scheduling vocabulary reads are kept; every other parameter on the line stays
-/// where it is and is written back untouched, which is what makes a reply preserve the
-/// recipient's own `X-` parameters.
+/// Owned, because resolving a caret pair produces octets the file does not hold.
+/// Only the five parameters the scheduling vocabulary reads are kept; every other parameter on the line stays where it is and is written back untouched, which is what makes a reply preserve the recipient's own `X-` parameters.
 #[derive(Debug)]
 struct PartyValues {
     /// The `SENT-BY` value, absent when the line states none.
@@ -135,7 +101,8 @@ struct PartyValues {
 struct PropertyLine<'a> {
     /// The property itself, for the octets it does store.
     property: &'a Property,
-    /// The name, ASCII-uppercased. See this module's own documentation for why.
+    /// The name, ASCII-uppercased.
+    /// See this module's own documentation for why.
     name: RawText,
     /// The whole content line, unfolded, with no terminator.
     line: RawText,
@@ -157,13 +124,10 @@ impl<'a> PropertyLine<'a> {
 
 /// One [`crate::internal::core::Component`], read as the state a scheduling message is judged against.
 ///
-/// Built once with [`ScheduledView::of`] and then only looked up. It borrows the component, so
-/// the octets a value keeps are not copied twice; what it owns is exactly what the component
-/// does not store — the reconstructed content lines and the resolved parameter values.
+/// Built once with [`ScheduledView::of`] and then only looked up.
+/// It borrows the component, so the octets a value keeps are not copied twice; what it owns is exactly what the component does not store — the reconstructed content lines and the resolved parameter values.
 ///
-/// A caller that holds a `Component` builds one of these and hands it to
-/// [`crate::internal::itip::evaluate_message`]; a caller whose state is a database row implements
-/// [`ScheduledComponent`] against its rows and never builds one at all.
+/// A caller that holds a `Component` builds one of these and hands it to [`crate::internal::itip::evaluate_message`]; a caller whose state is a database row implements [`ScheduledComponent`] against its rows and never builds one at all.
 pub struct ScheduledView<'a> {
     /// The component this is a reading of.
     component: &'a Component,
@@ -179,12 +143,9 @@ pub struct ScheduledView<'a> {
 
 /// One component whose nested components are still being read.
 ///
-/// The explicit stack [`ScheduledView::of`] walks with. Recursion here would be bounded by
-/// [`crate::internal::core::Limits::max_component_depth`], which is a `u16` a caller raises through a public
-/// builder while the stack gives out several thousand frames sooner — and a stack overflow is an
-/// abort rather than an unwind, so a server that read an untrusted attachment loses the process
-/// instead of the request. `ical-core`'s own tree walks are written this way for the same
-/// reason.
+/// The explicit stack [`ScheduledView::of`] walks with.
+/// Recursion here would be bounded by [`crate::internal::core::Limits::max_component_depth`], which is a `u16` a caller raises through a public builder while the stack gives out several thousand frames sooner — and a stack overflow is an abort rather than an unwind, so a server that read an untrusted attachment loses the process instead of the request.
+/// `ical-core`'s own tree walks are written this way for the same reason.
 #[derive(Debug)]
 struct Frame<'a> {
     /// The component being read.
@@ -219,8 +180,8 @@ impl<'a> Frame<'a> {
 impl<'a> ScheduledView<'a> {
     /// Read `component` and everything nested inside it.
     ///
-    /// One walk. Every later question is a lookup, because a diff walks every property of both
-    /// sides and the trait forbids allocating on that path.
+    /// One walk.
+    /// Every later question is a lookup, because a diff walks every property of both sides and the trait forbids allocating on that path.
     #[must_use]
     pub fn of(component: &'a Component) -> Self {
         let mut stack = alloc::vec![Frame::open(component)];
@@ -230,9 +191,8 @@ impl<'a> ScheduledView<'a> {
                 continue;
             }
             let Some(closed) = stack.pop() else {
-                // Unreachable: the loop returns as the last frame is closed, so the stack is
-                // never empty here. The fallback is a reading rather than a panic, because a
-                // state this code has never reached is not a reason to take the process down.
+                // Unreachable: the loop returns as the last frame is closed, so the stack is never empty here.
+                // The fallback is a reading rather than a panic, because a state this code has never reached is not a reason to take the process down.
                 return Self::assemble(component, Vec::new());
             };
             let view = Self::assemble(closed.component, closed.built);
@@ -248,9 +208,8 @@ impl<'a> ScheduledView<'a> {
         let lines: Vec<PropertyLine<'a>> = component.properties().map(PropertyLine::read).collect();
         let attendees = positions_of(&lines, &PropertyId::ATTENDEE);
         let found = positions_of(&lines, &PropertyId::ORGANIZER);
-        // One claim, however many times it was written. Two `ORGANIZER` lines that differ are
-        // two claims about who owns this component, and picking the first is how the second one
-        // gets to be the one that counts; two that are byte-identical are one claim restated.
+        // One claim, however many times it was written.
+        // Two `ORGANIZER` lines that differ are two claims about who owns this component, and picking the first is how the second one gets to be the one that counts; two that are byte-identical are one claim restated.
         let organizer = found.first().copied().filter(|first| {
             let stated = lines.get(*first).map(|entry| &entry.line);
             found
@@ -268,10 +227,8 @@ impl<'a> ScheduledView<'a> {
 
     /// The one property of this component with the identity `id`, absent when there are two.
     ///
-    /// Two occurrences whose whole content lines are byte-identical are one statement stated
-    /// twice, and answering them is not picking a winner out of two — there is one value, and
-    /// a reader that refused it would report a component the caller plainly holds as one it
-    /// holds nothing about. Two that differ anywhere, in a parameter as much as in a value,
+    /// Two occurrences whose whole content lines are byte-identical are one statement stated twice, and answering them is not picking a winner out of two — there is one value, and a reader that refused it would report a component the caller plainly holds as one it holds nothing about.
+    /// Two that differ anywhere, in a parameter as much as in a value,
     /// are two claims, and those stay `None`.
     fn single(&self, id: &PropertyId) -> Option<&'a Property> {
         let mut found = self.lines.iter().filter(|entry| entry.property.has_id(id));
@@ -321,10 +278,7 @@ fn uppercased(name: &[u8]) -> RawText {
 
 /// One whole content line: name, parameters and value, unfolded and unterminated.
 ///
-/// Assembled exactly as `ical-core`'s own writer assembles one, so that a line handed back here
-/// and the same line written to a file are the same octets: a parameter that arrived with no `=`
-/// is written with none, a value that arrived quoted keeps its `DQUOTE`s, and a line whose
-/// producer wrote no `:` gets none.
+/// Assembled exactly as `ical-core`'s own writer assembles one, so that a line handed back here and the same line written to a file are the same octets: a parameter that arrived with no `=` is written with none, a value that arrived quoted keeps its `DQUOTE`s, and a line whose producer wrote no `:` gets none.
 fn content_line(property: &Property) -> Vec<u8> {
     let mut written = Vec::new();
     written.extend_from_slice(property.name().as_bytes());
@@ -355,9 +309,7 @@ fn party_values(property: &Property) -> Option<PartyValues> {
         delegated_from: parameter_value(property, b"DELEGATED-FROM"),
         delegated_to: parameter_value(property, b"DELEGATED-TO"),
         answered_at: parameter_value(property, ANSWERED_AT).and_then(|stated| {
-            // Read exactly as a `DTSTAMP` is read, because that is what it was: a value under a
-            // `TZID` or written as a `DATE` orders nothing, and a time nothing could read is
-            // the absence of one rather than a guess at one.
+            // Read exactly as a `DTSTAMP` is read, because that is what it was: a value under a `TZID` or written as a `DATE` orders nothing, and a time nothing could read is the absence of one rather than a guess at one.
             match DateTimeValue::decode_value(stated.as_bytes()).ok()? {
                 DateTimeValue::Utc(stamp) | DateTimeValue::Local(stamp) => nominal(stamp),
                 DateTimeValue::Date(_) | DateTimeValue::Zoned { .. } => None,
@@ -368,31 +320,24 @@ fn party_values(property: &Property) -> Option<PartyValues> {
 
 /// The value the first parameter named `name` states, unquoted and with its carets resolved.
 ///
-/// The first, because RFC 5545 section 3.2 puts no repeat limit on a parameter and none of the
-/// five read here means anything stated twice; taking the first is what every reading path in
-/// `ical-core` does.
+/// The first, because RFC 5545 section 3.2 puts no repeat limit on a parameter and none of the five read here means anything stated twice; taking the first is what every reading path in `ical-core` does.
 ///
-/// The whole value, without splitting on `,`. RFC 5545 writes `DELEGATED-TO` as a
-/// comma-separated list of quoted addresses, and [`Attendee`] has one slot for it: splitting
-/// would let an answer to a two-delegate line write only the first delegate back, while keeping
-/// the list whole makes it match nobody — the conservative direction, and the same one
-/// [`crate::internal::itip::PartyId`] takes for an address that does not decode.
+/// The whole value, without splitting on `,`.
+/// RFC 5545 writes `DELEGATED-TO` as a comma-separated list of quoted addresses, and [`Attendee`] has one slot for it: splitting would let an answer to a two-delegate line write only the first delegate back, while keeping the list whole makes it match nobody — the conservative direction, and the same one [`crate::internal::itip::PartyId`] takes for an address that does not decode.
 fn parameter_value(property: &Property, name: &[u8]) -> Option<RawText> {
     let held = property
         .parameters_named(name)
         .find(|entry| entry.has_value())?;
-    // Quoting is undone first and the caret encoding second, because a writer applies them the
-    // other way round: the `DQUOTE`s delimit the value rather than belong to it.
+    // Quoting is undone first and the caret encoding second, because a writer applies them the other way round: the `DQUOTE`s delimit the value rather than belong to it.
     Some(RawText::from_bytes(decode_caret(held.unquoted()).as_ref()))
 }
 
 /// The instant a `DTSTAMP` names, `None` when the value is not one.
 ///
 /// `Utc` is what RFC 5545 section 3.8.7.2 requires and `Local` is what producers write instead;
-/// a floating value is read on the nominal timeline, which is `ical-tz`'s own projection and the
-/// only reading available for a wall clock nobody placed. A `DATE`, and a value under a `TZID`,
-/// answer `None`: comparing one of those against a UTC `DTSTAMP` would order two different
-/// timelines against each other, and RFC 5546 section 2.1.5 breaks a tie with this number.
+/// a floating value is read on the nominal timeline, which is `ical-tz`'s own projection and the only reading available for a wall clock nobody placed.
+/// A `DATE`, and a value under a `TZID`,
+/// answer `None`: comparing one of those against a UTC `DTSTAMP` would order two different timelines against each other, and RFC 5546 section 2.1.5 breaks a tie with this number.
 fn timestamp_of(property: &Property) -> Option<Instant> {
     match property.value::<DateTimeValue<'_>>().value()? {
         DateTimeValue::Utc(stamp) | DateTimeValue::Local(stamp) => nominal(stamp),
@@ -403,8 +348,7 @@ fn timestamp_of(property: &Property) -> Option<Instant> {
 /// The clock and the instant a `RECURRENCE-ID` states, `None` when the value does not read.
 fn instance_reading(property: &Property) -> Option<(Instant, InstanceClock)> {
     let value = property.value::<DateTimeValue<'_>>().value()?;
-    // A `DATE` loses its `TZID` on the way through the value type, so the parameter is asked
-    // directly: a whole-day override under a named zone is a wall clock like any other.
+    // A `DATE` loses its `TZID` on the way through the value type, so the parameter is asked directly: a whole-day override under a named zone is a wall clock like any other.
     let placed = property.parameters_named(b"TZID").next().is_some();
     match value {
         DateTimeValue::Utc(stamp) => Some((nominal(stamp)?, InstanceClock::Utc)),
@@ -424,16 +368,11 @@ fn instance_reading(property: &Property) -> Option<(Instant, InstanceClock)> {
 
 /// Which half of a repeated wall clock a value written in `clock` names.
 ///
-/// A UTC value names a real instant, so it falls inside no fold and is [`FoldSide::Once`]
-/// whatever zone the series runs on.
+/// A UTC value names a real instant, so it falls inside no fold and is [`FoldSide::Once`] whatever zone the series runs on.
 ///
-/// Everything else is a wall clock, and a wall clock is the *series'* clock whether or not the
-/// value repeats the `TZID`: producers emit a bare `RECURRENCE-ID` for an override of a zoned
-/// series, and reading that as a value on no zone at all was how one reply answered both halves
-/// of a repeated hour. So a floating value is [`FoldSide::Unresolved`] exactly as a zoned one
-/// is, and a caller holding the zone attaches a side with [`crate::internal::itip::resolve_instance`] and
-/// [`InstanceRef::with_side`]. The cost lands where it should: a message whose instance nobody
-/// placed is refused rather than applied to a guess.
+/// Everything else is a wall clock, and a wall clock is the *series'* clock whether or not the value repeats the `TZID`: producers emit a bare `RECURRENCE-ID` for an override of a zoned series, and reading that as a value on no zone at all was how one reply answered both halves of a repeated hour.
+/// So a floating value is [`FoldSide::Unresolved`] exactly as a zoned one is, and a caller holding the zone attaches a side with [`crate::internal::itip::resolve_instance`] and [`InstanceRef::with_side`].
+/// The cost lands where it should: a message whose instance nobody placed is refused rather than applied to a guess.
 const fn side_of(clock: InstanceClock) -> FoldSide {
     match clock {
         InstanceClock::Utc => FoldSide::Once,
@@ -443,9 +382,8 @@ const fn side_of(clock: InstanceClock) -> FoldSide {
 
 /// How far forward a `RANGE` parameter reaches.
 ///
-/// Only `THISANDFUTURE` reaches further than this instance. RFC 5545 section 3.2.13 registers
-/// that one value, and a spelling nothing registers — RFC 2445's withdrawn `THISANDPRIOR`
-/// included — is read as the narrower claim rather than as the wider one.
+/// Only `THISANDFUTURE` reaches further than this instance.
+/// RFC 5545 section 3.2.13 registers that one value, and a spelling nothing registers — RFC 2445's withdrawn `THISANDPRIOR` included — is read as the narrower claim rather than as the wider one.
 fn range_of(property: &Property) -> OverrideRange {
     let Some(held) = property
         .parameters_named(b"RANGE")
@@ -488,8 +426,7 @@ impl ScheduledComponent for ScheduledView<'_> {
         let Some(stated) = self.single(&PropertyId::SEQUENCE) else {
             return SequenceRead::Unreadable;
         };
-        // A negative `SEQUENCE` is an integer RFC 5545 section 3.8.7.4 does not admit, and it is
-        // no more a revision than a value that is not an integer at all.
+        // A negative `SEQUENCE` is an integer RFC 5545 section 3.8.7.4 does not admit, and it is no more a revision than a value that is not an integer at all.
         stated
             .value::<i32>()
             .value()
@@ -505,9 +442,8 @@ impl ScheduledComponent for ScheduledView<'_> {
         let property = self.single(&PropertyId::RECURRENCE_ID)?;
         let range = range_of(property);
         let Some((named, clock)) = instance_reading(property) else {
-            // Present and unusable. Answering `None` would turn a message about one instance
-            // into a message about the whole series, so this answers a reference nothing can
-            // resolve: an unresolved side never compares `Same`, so the gate denies instead.
+            // Present and unusable.
+            // Answering `None` would turn a message about one instance into a message about the whole series, so this answers a reference nothing can resolve: an unresolved side never compares `Same`, so the gate denies instead.
             return Some(InstanceRef::new(
                 Instant::EPOCH,
                 InstanceClock::Zoned,
@@ -550,10 +486,8 @@ impl ScheduledComponent for ScheduledView<'_> {
     }
 
     fn attendee_occurrence(&self, index: usize) -> Option<PropertyOccurrence> {
-        // The list is collected in document order over the `ATTENDEE` identity, which is the
-        // counting `Component::apply_to_occurrence` uses, so the two indexes agree here. The
-        // trait states the question anyway because an implementation is free to order its list
-        // some other way, and a reply has to name the line it changed.
+        // The list is collected in document order over the `ATTENDEE` identity, which is the counting `Component::apply_to_occurrence` uses, so the two indexes agree here.
+        // The trait states the question anyway because an implementation is free to order its list some other way, and a reply has to name the line it changed.
         self.attendees
             .get(index)
             .map(|_| PropertyOccurrence::new(PropertyId::ATTENDEE, index))
@@ -583,8 +517,7 @@ impl ScheduledComponent for ScheduledView<'_> {
 }
 
 impl Debug for ScheduledView<'_> {
-    /// A summary rather than the tree, for the reason the walk above gives: a derived `Debug`
-    /// recurses one stack frame per level, and the nesting is attacker-chosen.
+    /// A summary rather than the tree, for the reason the walk above gives: a derived `Debug` recurses one stack frame per level, and the nesting is attacker-chosen.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ScheduledView")
@@ -599,8 +532,7 @@ impl Debug for ScheduledView<'_> {
 impl Drop for ScheduledView<'_> {
     /// Drop the nesting over an explicit stack, for the reason the walk above gives.
     ///
-    /// Each node's children are taken before that node is dropped, so the drop glue that runs
-    /// afterwards has an empty vector to walk and never re-enters this.
+    /// Each node's children are taken before that node is dropped, so the drop glue that runs afterwards has an empty vector to walk and never re-enters this.
     fn drop(&mut self) {
         let mut pending = alloc::vec![mem::take(&mut self.children)];
         while let Some(mut level) = pending.pop() {
@@ -631,8 +563,7 @@ mod tests {
     use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
     use crate::internal::itip::transition::{ScheduleTarget, WriteRejected};
 
-    /// The recipient's own copy: two attendees, an organizer with an assistant, and a
-    /// `DELEGATED-TO` whose value carries a `"` in RFC 6868's spelling of it.
+    /// The recipient's own copy: two attendees, an organizer with an assistant, and a `DELEGATED-TO` whose value carries a `"` in RFC 6868's spelling of it.
     const HELD: &str = concat!(
         "BEGIN:VCALENDAR\r\n",
         "VERSION:2.0\r\n",
@@ -694,9 +625,7 @@ mod tests {
 
     /// A place an authorized transition is written, so a test can go through the real door.
     ///
-    /// `ical-itip` ships no [`ScheduleTarget`] for a `Component` from this unit; this is the
-    /// same routing one would do, kept local so that the test exercises
-    /// [`apply_transition`] rather than a shortcut around it.
+    /// `ical-itip` ships no [`ScheduleTarget`] for a `Component` from this unit; this is the same routing one would do, kept local so that the test exercises [`apply_transition`] rather than a shortcut around it.
     #[derive(Debug)]
     struct Target<'a>(&'a mut Component);
 
@@ -718,9 +647,7 @@ mod tests {
 
     /// What the bridge reads out of a component, against what the file says.
     ///
-    /// The columns come from RFC 5545: the `SENT-BY` of section 3.2.18 is a second identity and
-    /// not the first, an absent `ROLE` is `REQ-PARTICIPANT` by section 3.2.16, and the content
-    /// line of section 3.1 is name, parameters and value together.
+    /// The columns come from RFC 5545: the `SENT-BY` of section 3.2.18 is a second identity and not the first, an absent `ROLE` is `REQ-PARTICIPANT` by section 3.2.16, and the content line of section 3.1 is name, parameters and value together.
     #[test]
     fn a_component_reads_as_the_state_a_message_is_judged_against() {
         let document = read(HELD.as_bytes());
@@ -775,8 +702,7 @@ mod tests {
         panic!("the fixture states two ATTENDEE lines");
     }
 
-    /// A name is normalized and a line is not, which is what stops a table row of `1` from being
-    /// satisfied twice by one property written in two cases.
+    /// A name is normalized and a line is not, which is what stops a table row of `1` from being satisfied twice by one property written in two cases.
     #[test]
     fn a_name_is_normalized_and_the_line_it_names_is_not() {
         const MIXED: &str = concat!(
@@ -846,7 +772,8 @@ mod tests {
         );
     }
 
-    /// Agenda item 6, in both directions. The value reaches the party with its carets resolved,
+    /// Agenda item 6, in both directions.
+    /// The value reaches the party with its carets resolved,
     /// and the reply writes back the octets the file had.
     #[test]
     fn a_delegated_to_carrying_a_caret_pair_survives_read_reply_and_apply() {
@@ -887,11 +814,8 @@ mod tests {
         let mut written = held.clone();
         let report = apply_transition(&mut Target(&mut written), authorized);
         assert!(report.is_complete() && report.applied() == 1);
-        // The reply restates the delegation it already carries and records when it was
-        // answered, and nothing else on the line moves: the value the file spelled with `^'`
-        // is written back with `^'`, where encoding a value that skipped the decode would
-        // write `^^'`. Compared through the reader rather than as file octets, because a line
-        // that grew past 75 octets is folded by the writer and a fold is not a difference.
+        // The reply restates the delegation it already carries and records when it was answered, and nothing else on the line moves: the value the file spelled with `^'` is written back with `^'`, where encoding a value that skipped the decode would write `^^'`.
+        // Compared through the reader rather than as file octets, because a line that grew past 75 octets is folded by the writer and a fold is not a difference.
         let after = ScheduledView::of(&written);
         let at = attendee_line(&after, 0);
         assert_eq!(
@@ -911,11 +835,8 @@ mod tests {
 
     /// The parameter the reply diff writes, and the ordering it exists for.
     ///
-    /// RFC 5546 section 2.1.5 orders two messages at one revision by `DTSTAMP`, and two replies
-    /// from one attendee are exactly that. The component's own `DTSTAMP` is the organizer's and
-    /// is older than both, so the time each answer was written at is recorded on the line it
-    /// answers for — and the attendee's own earlier answer, replayed afterwards, is then
-    /// refused rather than silently reverting the later one.
+    /// RFC 5546 section 2.1.5 orders two messages at one revision by `DTSTAMP`, and two replies from one attendee are exactly that.
+    /// The component's own `DTSTAMP` is the organizer's and is older than both, so the time each answer was written at is recorded on the line it answers for — and the attendee's own earlier answer, replayed afterwards, is then refused rather than silently reverting the later one.
     #[test]
     fn an_earlier_answer_replayed_after_a_later_one_is_refused() {
         let held_document = read(HELD.as_bytes());
@@ -1095,8 +1016,7 @@ mod tests {
         assert!(!named.compare(named).is_same());
     }
 
-    /// A `RANGE` reaching every later instance is represented, and a spelling nothing registers
-    /// is read as the narrower claim.
+    /// A `RANGE` reaching every later instance is represented, and a spelling nothing registers is read as the narrower claim.
     #[test]
     fn a_range_is_read_only_where_the_specification_registers_one() {
         let cases: [(&str, bool); 3] = [
@@ -1123,8 +1043,7 @@ mod tests {
         }
     }
 
-    /// Nesting is walked, dropped and printed over an explicit stack, so a tree deeper than the
-    /// call stack costs memory rather than the process.
+    /// Nesting is walked, dropped and printed over an explicit stack, so a tree deeper than the call stack costs memory rather than the process.
     #[test]
     fn a_deeply_nested_component_is_read_and_dropped_without_recursion() {
         const DEPTH: usize = 3_000;

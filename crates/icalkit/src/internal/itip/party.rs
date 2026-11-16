@@ -6,45 +6,31 @@
 //!
 //! Specification: RFC 5545 section 3.3.3 (`CAL-ADDRESS`), section 3.8.4.1 (`ATTENDEE`),
 //! section 3.8.4.3 (`ORGANIZER`), section 3.2.18 (`SENT-BY`), section 3.2.12 (`PARTSTAT`),
-//! section 3.2.16 (`ROLE`), sections 3.2.4 and 3.2.5 (`DELEGATED-FROM`, `DELEGATED-TO`); RFC
-//! 5546 section 1.3 for what the two roles mean in an exchange, and section 2.1.2 for
-//! delegation.
+//! section 3.2.16 (`ROLE`), sections 3.2.4 and 3.2.5 (`DELEGATED-FROM`, `DELEGATED-TO`); RFC 5546 section 1.3 for what the two roles mean in an exchange, and section 2.1.2 for delegation.
 //!
 //! # Values, not spellings
 //!
-//! Every octet slice these types hand back is a **value**: RFC 6868's caret encoding is
-//! already resolved, so `^'` has become `"` and `^^` has become `^`. That is the contract
-//! `docs/adr/0001` amendment 3 states from the other end —
-//! [`Parameter::create`](crate::internal::core::Parameter::create) and
-//! [`ParameterEdit`](crate::internal::core::ParameterEdit) take a value and pick its spelling — and this
-//! crate is the one that moves parameters between properties, so the two doors have to agree
-//! about which side of the codec they are on. A reader building these types calls
-//! [`decode_caret`](crate::internal::core::decode_caret); a writer handing one of these values to
-//! `ParameterEdit::set` does not encode it again. Encoding twice writes `^^'` where the file
-//! had `^'`, and no gate in this workspace catches that.
+//! Every octet slice these types hand back is a **value**: RFC 6868's caret encoding is already resolved, so `^'` has become `"` and `^^` has become `^`.
+//! That is the contract `docs/adr/0001` amendment 3 states from the other end —
+//! [`Parameter::create`](crate::internal::core::Parameter::create) and [`ParameterEdit`](crate::internal::core::ParameterEdit) take a value and pick its spelling — and this crate is the one that moves parameters between properties, so the two doors have to agree about which side of the codec they are on.
+//! A reader building these types calls [`decode_caret`](crate::internal::core::decode_caret); a writer handing one of these values to `ParameterEdit::set` does not encode it again.
+//! Encoding twice writes `^^'` where the file had `^'`, and no gate in this workspace catches that.
 
 use crate::internal::itip::method::ActorRole;
 
 /// The parameter an `ATTENDEE` line records the time of its own answer in.
 ///
-/// RFC 5545 registers no parameter for it and RFC 5546 section 2.1.5 needs one: two replies
-/// from one attendee are one revision answered twice, and nothing else on the line says which
-/// came first. Section 3.2 admits an `x-param` on any property, so this is where the fact goes
-/// — written by the reply diff, read back by [`crate::internal::itip::ScheduledView`], and named here so that a
-/// store keeping its own column can answer
-/// [`ScheduledComponent::attendee_answered_at`](crate::internal::itip::ScheduledComponent::attendee_answered_at)
-/// from the same fact under another name.
+/// RFC 5545 registers no parameter for it and RFC 5546 section 2.1.5 needs one: two replies from one attendee are one revision answered twice, and nothing else on the line says which came first.
+/// Section 3.2 admits an `x-param` on any property, so this is where the fact goes — written by the reply diff, read back by [`crate::internal::itip::ScheduledView`], and named here so that a store keeping its own column can answer [`ScheduledComponent::attendee_answered_at`](crate::internal::itip::ScheduledComponent::attendee_answered_at) from the same fact under another name.
 ///
 /// The value is a UTC `DATE-TIME`, which is what a `DTSTAMP` is.
 pub const ANSWERED_AT: &[u8] = b"X-ICALKIT-ANSWERED-AT";
 
 /// A calendar address, as an identity rather than as text.
 ///
-/// Holds valid UTF-8 by construction. A `CAL-ADDRESS` that does not decode is not a
-/// `PartyId`, and therefore matches nobody — the conservative direction, since the
-/// alternative is an address that compares equal to something it is not. That state is
-/// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`], and it is a different fact from an
-/// absent property.
+/// Holds valid UTF-8 by construction.
+/// A `CAL-ADDRESS` that does not decode is not a `PartyId`, and therefore matches nobody — the conservative direction, since the alternative is an address that compares equal to something it is not.
+/// That state is [`DiagnosticCode::SchedulingCalendarAddressUnreadable`], and it is a different fact from an absent property.
 ///
 /// [`DiagnosticCode::SchedulingCalendarAddressUnreadable`]: crate::internal::core::DiagnosticCode::SchedulingCalendarAddressUnreadable
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -77,14 +63,11 @@ impl<'a> PartyId<'a> {
 
     /// Whether this address and `other` name the same calendar user.
     ///
-    /// For a `mailto:` URI: the scheme and the domain are folded, and the local part is
-    /// compared exactly, per RFC 5321 section 2.4. The blanket ASCII fold every naive
-    /// implementation reaches for would merge `J.Doe@example.com` with `j.doe@example.com`,
-    /// which is the receiving host's decision to make and not this library's — and merging two
-    /// identities is the direction that ends with a reply accepted from the wrong person.
+    /// For a `mailto:` URI: the scheme and the domain are folded, and the local part is compared exactly, per RFC 5321 section 2.4.
+    /// The blanket ASCII fold every naive implementation reaches for would merge `J.Doe@example.com` with `j.doe@example.com`,
+    /// which is the receiving host's decision to make and not this library's — and merging two identities is the direction that ends with a reply accepted from the wrong person.
     ///
-    /// Every other scheme is compared octet for octet, because nothing here knows which parts
-    /// of a `urn:` or an `http:` calendar address are case-insensitive.
+    /// Every other scheme is compared octet for octet, because nothing here knows which parts of a `urn:` or an `http:` calendar address are case-insensitive.
     #[must_use]
     pub fn matches(self, other: PartyId<'_>) -> bool {
         match (mail_parts(self.0), mail_parts(other.0)) {
@@ -103,8 +86,7 @@ fn readable(address: &[u8]) -> Option<PartyId<'_>> {
 
 /// The local part and the domain of a `mailto:` address, or `None` for anything else.
 ///
-/// The last `@` separates them, because RFC 5321 section 4.1.2 lets a quoted local part carry
-/// one and the domain may not.
+/// The last `@` separates them, because RFC 5321 section 4.1.2 lets a quoted local part carry one and the domain may not.
 fn mail_parts(address: &str) -> Option<(&str, &str)> {
     let rest = address
         .get(..7)
@@ -115,9 +97,8 @@ fn mail_parts(address: &str) -> Option<(&str, &str)> {
 
 /// One `ORGANIZER` or `ATTENDEE` line, read as an identity.
 ///
-/// `raw` is the value's octets as the file has them, kept so that an address that did not
-/// decode is still something a caller can show a person. `address` is the identity, absent
-/// exactly when the octets were not UTF-8.
+/// `raw` is the value's octets as the file has them, kept so that an address that did not decode is still something a caller can show a person.
+/// `address` is the identity, absent exactly when the octets were not UTF-8.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Party<'a> {
     /// The `CAL-ADDRESS` value, as written.
@@ -131,13 +112,10 @@ pub struct Party<'a> {
 impl<'a> Party<'a> {
     /// The party `address` names, with `sent_by` from its `SENT-BY` parameter.
     ///
-    /// Both are decoded here rather than by the caller, so that "did not decode" is one
-    /// answer arrived at one way.
+    /// Both are decoded here rather than by the caller, so that "did not decode" is one answer arrived at one way.
     ///
-    /// An empty value is read the same way as one that is not UTF-8: the property is present
-    /// and it identifies nobody. RFC 5545 section 3.3.3 makes a `CAL-ADDRESS` a URI, and no URI
-    /// is the empty string — while a `PartyId` holding one would compare equal to the next
-    /// empty value it met, which is an identity two unrelated lines would share.
+    /// An empty value is read the same way as one that is not UTF-8: the property is present and it identifies nobody.
+    /// RFC 5545 section 3.3.3 makes a `CAL-ADDRESS` a URI, and no URI is the empty string — while a `PartyId` holding one would compare equal to the next empty value it met, which is an identity two unrelated lines would share.
     #[must_use]
     pub fn read(address: &'a [u8], sent_by: Option<&'a [u8]>) -> Self {
         Self {
@@ -167,8 +145,7 @@ impl<'a> Party<'a> {
 
     /// Whether the value decoded at all.
     ///
-    /// The present-and-unusable state `docs/adr/0009` amendment 1 names: RFC 5545 section
-    /// 3.6's audit counts the property as present and this says it identifies nobody.
+    /// The present-and-unusable state `docs/adr/0009` amendment 1 names: RFC 5545 section 3.6's audit counts the property as present and this says it identifies nobody.
     #[must_use]
     pub const fn is_readable(self) -> bool {
         self.address.is_some()
@@ -182,8 +159,8 @@ impl<'a> Party<'a> {
 
     /// Whether `who` is sending on this party's behalf.
     ///
-    /// Answered separately from [`Party::is`] so that "the assistant sent this" never becomes
-    /// "the organizer sent this". A message may satisfy both, and the two facts stay apart.
+    /// Answered separately from [`Party::is`] so that "the assistant sent this" never becomes "the organizer sent this".
+    /// A message may satisfy both, and the two facts stay apart.
     #[must_use]
     pub fn is_agent_of(self, who: PartyId<'_>) -> bool {
         self.sent_by.is_some_and(|agent| agent.matches(who))
@@ -191,8 +168,7 @@ impl<'a> Party<'a> {
 
     /// What `who` is to this party, or `None` when they are neither it nor its agent.
     ///
-    /// `principal` and `agent` are the two roles to answer with, so one function serves the
-    /// organizer line and an attendee line without either caller re-deriving the pairing.
+    /// `principal` and `agent` are the two roles to answer with, so one function serves the organizer line and an attendee line without either caller re-deriving the pairing.
     #[must_use]
     pub fn role_of(
         self,
@@ -213,8 +189,7 @@ impl<'a> Party<'a> {
 /// RFC 5545 section 3.2.12's participation status.
 ///
 /// `Other` keeps a value this crate does not interpret reachable rather than losing it:
-/// section 3.2.12 registers more values for `VTODO` than for `VEVENT` and lets an
-/// implementation define its own, and [`Attendee::part_stat_text`] is what it was.
+/// section 3.2.12 registers more values for `VTODO` than for `VEVENT` and lets an implementation define its own, and [`Attendee::part_stat_text`] is what it was.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum PartStat {
@@ -295,9 +270,7 @@ impl Role {
 
 /// One `ATTENDEE` line: who, how they answered, and who they delegated to or from.
 ///
-/// Built by a builder rather than by one constructor of six arguments, because most lines
-/// state none of the optional parameters and a positional `None` five times over is a call
-/// nobody can read.
+/// Built by a builder rather than by one constructor of six arguments, because most lines state none of the optional parameters and a positional `None` five times over is a call nobody can read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Attendee<'a> {
     /// The address and its agent.
@@ -421,8 +394,7 @@ mod tests {
     use super::{Attendee, PartStat, Party, PartyId, Role};
     use crate::internal::itip::method::ActorRole;
 
-    /// RFC 5321 section 2.4, in both directions: the host is the receiver's to case-fold and
-    /// the mailbox is not ours to.
+    /// RFC 5321 section 2.4, in both directions: the host is the receiver's to case-fold and the mailbox is not ours to.
     #[test]
     fn a_mail_address_folds_its_host_and_keeps_its_mailbox() {
         let doe = PartyId::new("mailto:J.Doe@Example.COM");
@@ -434,8 +406,7 @@ mod tests {
         assert!(!doe.matches(PartyId::new("mailto:J.Doe@example.org")));
     }
 
-    /// Anything that is not a `mailto:` URI is compared as octets, because nothing here knows
-    /// which halves of another scheme are case-insensitive.
+    /// Anything that is not a `mailto:` URI is compared as octets, because nothing here knows which halves of another scheme are case-insensitive.
     #[test]
     fn another_scheme_is_compared_exactly() {
         let urn = PartyId::new("urn:uuid:4f1b-9a");
@@ -444,8 +415,7 @@ mod tests {
         assert_eq!(PartyId::from_bytes(&[0xff, 0xfe]), None);
     }
 
-    /// An address that did not decode is present and identifies nobody, which is two facts
-    /// rather than one.
+    /// An address that did not decode is present and identifies nobody, which is two facts rather than one.
     #[test]
     fn an_address_that_did_not_decode_matches_nobody_and_is_still_shown() {
         let broken = Party::read(&[0x6d, 0xff], None);
@@ -462,11 +432,9 @@ mod tests {
         );
     }
 
-    /// An empty `CAL-ADDRESS` is present and identifies nobody, which is the same answer an
-    /// address that did not decode gets and for the same reason.
+    /// An empty `CAL-ADDRESS` is present and identifies nobody, which is the same answer an address that did not decode gets and for the same reason.
     ///
-    /// The alternative is an identity every empty value shares: `ATTENDEE;PARTSTAT=ACCEPTED:`
-    /// on one line would then be the same party as an empty `ORGANIZER` on another.
+    /// The alternative is an identity every empty value shares: `ATTENDEE;PARTSTAT=ACCEPTED:` on one line would then be the same party as an empty `ORGANIZER` on another.
     #[test]
     fn an_empty_address_identifies_nobody_rather_than_identifying_every_other_empty_one() {
         let empty = Party::read(b"", None);
@@ -494,8 +462,7 @@ mod tests {
         );
     }
 
-    /// The defaults RFC 5545 sections 3.2.12 and 3.2.16 state, and a value we do not
-    /// interpret surviving as the octets it was.
+    /// The defaults RFC 5545 sections 3.2.12 and 3.2.16 state, and a value we do not interpret surviving as the octets it was.
     #[test]
     fn an_attendee_defaults_the_way_the_specification_does_and_loses_no_value() {
         let plain = Attendee::new(Party::read(b"mailto:ann@example.com", None));
@@ -511,8 +478,7 @@ mod tests {
         assert!(odd.part_stat().is_answered());
     }
 
-    /// A delegate is on the list only as somebody else's `DELEGATED-TO` until the delegation
-    /// has been applied, and RFC 5546 section 2.1.2's reply arrives in that window.
+    /// A delegate is on the list only as somebody else's `DELEGATED-TO` until the delegation has been applied, and RFC 5546 section 2.1.2's reply arrives in that window.
     #[test]
     fn a_delegate_is_reachable_through_the_attendee_who_delegated() {
         let attendee = Attendee::new(Party::read(b"mailto:bo@example.com", None))
