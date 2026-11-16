@@ -348,6 +348,18 @@ impl<'a> InstanceDurations<'a> {
         components: &[],
     };
 
+    fn value_kind_at(self, key: Instant, default: ValueKind) -> ValueKind {
+        if self
+            .periods
+            .binary_search_by_key(&key, |period| period.key)
+            .is_ok()
+        {
+            ValueKind::DateTime
+        } else {
+            default
+        }
+    }
+
     fn at(
         self,
         key: Instant,
@@ -725,23 +737,42 @@ pub(crate) fn override_impacts(
         let occupies = instance_span(master, kind, opening, clock, zones)?;
         let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
         let key = nominal_value(addressed, clock, zones)?;
+        if master.properties_named(&ids::RDATE).any(|property| {
+            property
+                .declared_value_type()
+                .is_some_and(|value_type| value_type.is_err())
+        }) {
+            return Err(Unassembled::Undecidable(Undecided::ValueUnreadable));
+        }
+        let periods = period_spans(master, clock, zones, budget.meter)?;
+        let durations = InstanceDurations {
+            periods: &periods,
+            components: &[],
+        };
+        let span = durations.at(key, occupies, end_kind_of(master), clock);
         let start = clock.place(key, zones)?;
-        let end = occupies.finish(key, start, clock, zones)?;
-        Instance::new(start, start, end).with_shape(
-            kind,
-            if matches!(opening, DateTimeValue::Date(_)) {
-                ValueKind::Date
-            } else {
-                ValueKind::DateTime
-            },
-            end_kind_of(master),
-            key,
-            key,
-        )
+        let end = span.finish(key, start, clock, zones)?;
+        Instance::new(start, start, end)
+            .with_shape(
+                kind,
+                durations.value_kind_at(
+                    key,
+                    if matches!(opening, DateTimeValue::Date(_)) {
+                        ValueKind::Date
+                    } else {
+                        ValueKind::DateTime
+                    },
+                ),
+                span.end_kind,
+                key,
+                key,
+            )
+            .map_err(Unassembled::from)
     })();
     let original = match original {
         Ok(instance) => Match::of(overlaps_range(instance, range)),
-        Err(reason) => Match::Undecided(reason),
+        Err(Unassembled::Undecidable(reason)) => Match::Undecided(reason),
+        Err(Unassembled::Refused(error)) => return Err(error),
     };
     let direct = current.or(original);
     if direct.is_matched() || !is_this_and_future(candidate) {
@@ -1819,7 +1850,7 @@ impl Collector {
     }
 }
 
-/// Why a series could not be assembled into a search.
+/// Why an instance or series could not be prepared.
 ///
 /// Two answers, because they reach the caller on different channels.
 /// A list longer than the caller's own policy admits is a refusal the caller stated itself.
@@ -1828,10 +1859,25 @@ impl Collector {
 /// which is an undecided filter rather than an error: nothing about it says the resource does not match.
 #[derive(Debug)]
 enum Unassembled {
-    /// A caller-stated bound refused one of the series' own lists.
+    /// Preparation failed with an error for the caller.
     Refused(QueryError),
     /// The lists are not the shape expansion requires, so no instance can be established.
     Undecidable(Undecided),
+}
+
+impl From<Undecided> for Unassembled {
+    fn from(reason: Undecided) -> Self {
+        Self::Undecidable(reason)
+    }
+}
+
+impl From<QueryError> for Unassembled {
+    fn from(error: QueryError) -> Self {
+        match error {
+            QueryError::Unrepresentable => Self::Undecidable(Undecided::ValueUnreadable),
+            error => Self::Refused(error),
+        }
+    }
 }
 
 impl From<InputError> for Unassembled {
@@ -1924,16 +1970,7 @@ fn placed<'a>(
     } else {
         clock.place(key, zones)?
     };
-    let value_kind = if series
-        .durations
-        .periods
-        .binary_search_by_key(&key, |period| period.key)
-        .is_ok()
-    {
-        ValueKind::DateTime
-    } else {
-        series.dtstart_kind
-    };
+    let value_kind = series.durations.value_kind_at(key, series.dtstart_kind);
     let span = if series.kind == ComponentKind::Journal {
         ContextSpan {
             span: if value_kind == ValueKind::Date {

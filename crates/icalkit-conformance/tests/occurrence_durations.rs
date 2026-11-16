@@ -164,6 +164,28 @@ fn property_text<'a>(component: &'a Component, name: &[u8]) -> Option<&'a str> {
     std::str::from_utf8(property.value_text().as_bytes()).ok()
 }
 
+fn limited_document(source: &str, start: &str, end: &str) -> Result<Document, icalkit::Error> {
+    let query = Query::parse(format!(r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data><C:limit-recurrence-set start="{start}" end="{end}"/></C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter></C:calendar-query>"#).as_bytes()).unwrap();
+    let calendar = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::builder().zone_database(DaylightZone).build();
+    let mut session = engine.session();
+    let projected = query.project(&mut session, &calendar)?;
+    Ok(checked_projection(&projected))
+}
+
+fn limited_period_source(duration: &str, rdate: &str, count: u8) -> String {
+    calendar(&format!(
+        "{}{}",
+        event(&format!(
+            "DTSTART:20240101T090000Z\r\nDURATION:{duration}\r\n\
+             RRULE:FREQ=DAILY;COUNT={count}\r\n{rdate}\r\n"
+        )),
+        event("RECURRENCE-ID:20240103T090000Z\r\nDTSTART:20240104T090000Z\r\nDURATION:PT1H\r\n"),
+    ))
+}
+
 fn expanded_times(source: &str, start: &str, end: &str) -> Vec<(String, String)> {
     let document = projected_document(source, start, end);
     let root = document.components().next().unwrap();
@@ -747,4 +769,68 @@ fn date_journals_keep_extension_parameters_after_expansion() {
             b"DATE"
         );
     }
+}
+
+#[test]
+fn original_period_lengths_keep_moved_overrides_in_the_limited_set() {
+    for count in [2, 3] {
+        for period in [
+            "20240103T090000Z/20240103T190000Z",
+            "20240103T090000Z/PT10H",
+        ] {
+            let source =
+                limited_period_source("PT1H", &format!("RDATE;VALUE=PERIOD:{period}"), count);
+            let document =
+                limited_document(&source, "20240103T150000Z", "20240103T160000Z").unwrap();
+            assert_eq!(
+                document.components().next().unwrap().components().count(),
+                2
+            );
+        }
+    }
+}
+
+#[test]
+fn shorter_original_periods_do_not_inherit_the_master_length() {
+    let source = limited_period_source("PT10H", "RDATE;VALUE=PERIOD:20240103T090000Z/PT1H", 3);
+    let document = limited_document(&source, "20240103T150000Z", "20240103T160000Z").unwrap();
+    assert_eq!(
+        document.components().next().unwrap().components().count(),
+        1
+    );
+}
+
+#[test]
+fn original_zoned_periods_keep_their_own_nominal_day_length() {
+    let components = format!(
+        "{}{}",
+        event(concat!(
+            "DTSTART:20240308T170000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+            "RDATE;VALUE=PERIOD;TZID=Test/Daylight:20240309T120000/P1D\r\n",
+        )),
+        event("RECURRENCE-ID:20240309T170000Z\r\nDTSTART:20240311T170000Z\r\nDURATION:PT1H\r\n"),
+    );
+    let source = format!(
+        "{}{components}END:VCALENDAR\r\n",
+        DAYLIGHT_TIMEZONE.strip_suffix("END:VCALENDAR\r\n").unwrap()
+    );
+    let document = limited_document(&source, "20240310T150000Z", "20240310T153000Z").unwrap();
+    let events = document
+        .components()
+        .next()
+        .unwrap()
+        .components()
+        .filter(|component| component.is_named(b"VEVENT"))
+        .count();
+    assert_eq!(events, 2);
+}
+
+#[test]
+fn opaque_original_period_data_does_not_produce_a_negative_decision() {
+    let source = limited_period_source("PT1H", "RDATE;VALUE=X-FUTURE:20240103T090000Z/PT10H", 3);
+    let document = limited_document(&source, "20240103T150000Z", "20240103T160000Z").unwrap();
+    assert_eq!(
+        document.components().next().unwrap().components().count(),
+        2
+    );
 }
