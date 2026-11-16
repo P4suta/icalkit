@@ -27,18 +27,20 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Parse and validate an RFC 5545 recurrence rule.
+    /// Parse and validate a recurrence rule supported by the native engine.
     pub fn parse(value: &str) -> Result<Self, Error> {
         let policy = ResourcePolicy::secure();
         let mut meter = Meter::new(policy.limits);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let inner =
-            crate::internal::recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics)
-                .map_err(|_| Error::single("icalkit.recurrence.invalid-rule"))?;
+        let parsed =
+            crate::internal::recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics);
         let issues: Vec<Issue> = diagnostics
             .into_iter()
             .map(Issue::from_diagnostic)
             .collect();
+        let Ok(inner) = parsed else {
+            return Err(Error::new("icalkit.recurrence.invalid-rule", issues));
+        };
         if issues
             .iter()
             .any(|issue| issue.is_error() || issue.is_warning())

@@ -76,6 +76,7 @@ Resource failures use the channels defined by the diagnostic and allocation deci
 | malformed-recurrence-rule | A `RECUR` value did not match the grammar of RFC 5545 section 3.3.10. | Violation | M1 |
 | duplicate-recurrence-rule-part | A `RECUR` value named one rule part more than once, which RFC 5545 section 3.3.10 allows at most once. | Violation | M1 |
 | unknown-recurrence-rule-part | A `RECUR` value named a rule part RFC 5545 section 3.3.10 does not define. | Note | M1 |
+| unsupported-recurrence-semantics | A `RECUR` value requires unsupported `RSCALE` or `SKIP` semantics. | Violation | M1 |
 | recurrence-rule-part-out-of-range | A `RECUR` rule part carried a value outside the range RFC 5545 section 3.3.10 gives it, and the rest of the rule was kept. | Violation | M1 |
 | recurrence-until-value-type-mismatch | An `UNTIL` and its `DTSTART` disagreed about `DATE` versus `DATE-TIME`, which RFC 5545 section 3.3.10 requires to agree. | Violation | M1 |
 | by-set-pos-without-by-rule | A `RECUR` value carried `BYSETPOS` with no other `BYxxx` rule part to select from, which RFC 5545 section 3.3.10 forbids. | Violation | M1 |

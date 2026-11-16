@@ -149,6 +149,8 @@ pub enum DiagnosticCode {
     ///
     /// A note rather than a violation: section 3.3.10's grammar is closed, but an unrecognized part is indistinguishable from one a later specification added, and discarding the rest of a rule over it would lose a series this crate can still expand.
     UnknownRecurrenceRulePart,
+    /// A `RECUR` value requires unsupported `RSCALE` or `SKIP` semantics.
+    UnsupportedRecurrenceSemantics,
     /// A `RECUR` rule part carried a value outside the range RFC 5545 section 3.3.10 gives it, and the rest of the rule was kept.
     ///
     /// `BYMONTHDAY=32` names no day of any month.
@@ -436,6 +438,7 @@ impl DiagnosticCode {
             Self::MalformedRecurrenceRule => "malformed-recurrence-rule",
             Self::DuplicateRecurrenceRulePart => "duplicate-recurrence-rule-part",
             Self::UnknownRecurrenceRulePart => "unknown-recurrence-rule-part",
+            Self::UnsupportedRecurrenceSemantics => "unsupported-recurrence-semantics",
             Self::RecurrenceRulePartOutOfRange => "recurrence-rule-part-out-of-range",
             Self::RecurrenceUntilValueTypeMismatch => "recurrence-until-value-type-mismatch",
             Self::BySetPosWithoutByRule => "by-set-pos-without-by-rule",

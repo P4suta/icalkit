@@ -333,10 +333,10 @@ pub enum RuleLimit {
     },
 }
 
-/// Why no rule could be built at all.
+/// Why a usable native rule couldn't be built.
 ///
-/// This is the error channel of `docs/adr/0009`, and it is narrow on purpose: it names only the conditions under which no rule exists.
-/// Everything survivable — a part out of range, a part repeated, a part nothing defines — is a diagnostic on the property and the component still parses.
+/// Recoverable part faults remain diagnostics under `docs/adr/0009`.
+/// Calendar controls require a supported interpretation before construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum RuleError {
@@ -344,6 +344,12 @@ pub enum RuleError {
     MissingFrequency,
     /// The value's `FREQ` named none of the seven frequencies.
     UnknownFrequency,
+    /// `RSCALE` or `SKIP` was malformed, or `SKIP` lacked `RSCALE`.
+    MalformedCalendarControls,
+    /// A recurrence calendar control was written more than once.
+    DuplicateCalendarControls,
+    /// A recurrence rule requires calendar semantics the native engine can't represent.
+    UnsupportedCalendarSemantics,
     /// A `BYDAY` ordinal was outside ±53.
     OrdinalOutOfRange,
     /// `BYSETPOS` was given with no other `BYxxx` part for it to select from.
@@ -355,6 +361,15 @@ impl Display for RuleError {
         let reason = match *self {
             Self::MissingFrequency => "the recurrence rule carried no FREQ",
             Self::UnknownFrequency => "the recurrence rule's FREQ named no known frequency",
+            Self::MalformedCalendarControls => {
+                "the recurrence rule carried malformed calendar controls"
+            },
+            Self::DuplicateCalendarControls => {
+                "a recurrence calendar control was written more than once"
+            },
+            Self::UnsupportedCalendarSemantics => {
+                "the recurrence rule needs unsupported calendar semantics"
+            },
             Self::OrdinalOutOfRange => "a BYDAY ordinal was outside the range +/-53",
             Self::BySetPosWithoutByRule => "BYSETPOS was given with no other BYxxx part",
         };

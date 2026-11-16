@@ -20,10 +20,9 @@
 //!
 //! # Order
 //!
-//! Section 3.3.10 says the rule parts "are not ordered in any particular sequence", and the two readings honor that differently.
-//! [`parse_recur`] collects every pair before it decodes any of them, so `BYDAY=MO;FREQ=WEEKLY` is the weekly rule it looks like.
-//! The strict reading requires `FREQ` first, because it applies each part as it meets it and no builder exists before a frequency does; that is stricter than the grammar, and a conforming value written in the other order therefore reaches a caller as `View::Malformed` carrying its own octets rather than as a rule.
-//! Only the strict reading has that restriction, and only the lenient one is offered to a caller reading files it did not write.
+//! Both readings resolve `FREQ` before applying dependent parts and accept every written order under RFC 5545 section 3.3.10.
+//! The strict reading scans frequency parts first, while [`parse_recur`] collects all parts before decoding them.
+//! Calendar controls are validated before either reading constructs a rule.
 //!
 //! # Case
 //!
@@ -35,7 +34,8 @@ use core::num::{NonZeroI8, NonZeroU32};
 
 use crate::internal::core::{
     CivilDateTime, CivilTime, DateTimeValue, DecodeValue, Diagnostic, DiagnosticCode,
-    DiagnosticSink, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
+    DiagnosticSink, Location, Meter, Severity, UtcOffset, Weekday, is_iana_token,
+    report_diagnostic,
 };
 
 use crate::internal::recur::rule::{
@@ -109,8 +109,7 @@ fn split_once(bytes: &[u8], separator: u8) -> Option<(&[u8], &[u8])> {
 
 /// The name RFC 5545 section 3.3.10 gives the one rule part that is required.
 ///
-/// A constant rather than a literal at each of the three places that compare against it,
-/// because the two readings disagree about *where* `FREQ` may appear and must not be given the chance to disagree about what it is called.
+/// Shared by both readings when resolving frequency before dependent parts.
 const FREQ_NAME: &[u8] = b"FREQ";
 
 /// A rule part that carries one value and is not a row of the expand/limit table.
@@ -341,11 +340,7 @@ fn apply(state: &mut StrictDecode, part: RulePartText<'_>) -> Result<(), Diagnos
     Ok(())
 }
 
-/// Apply one pair to a builder that already knows its frequency.
-///
-/// Reaching this function at all means `FREQ` came first, which the strict reading requires and section 3.3.10 does not: its grammar says the rule parts "are not ordered in any particular sequence".
-/// The requirement is a consequence of applying each pair as it arrives — a `BYDAY` ordinal's meaning depends on the frequency through the table's two notes, so there is nothing to apply a part *to* until one is known.
-/// [`parse_recur`] buys the RFC's order back by collecting every pair before it decodes one; the price is holding thirteen slices, and the strict reading declines to pay it because refusing is its whole job.
+/// Apply one pair after resolving the frequency, independent of its written position.
 fn apply_to_builder(
     state: &mut StrictDecode,
     builder: RecurrenceRuleBuilder,
@@ -436,23 +431,32 @@ fn apply_by_part(
 /// The diagnostic code a construction failure travels on.
 const fn code_for(error: RuleError) -> DiagnosticCode {
     match error {
-        RuleError::MissingFrequency | RuleError::UnknownFrequency => {
-            DiagnosticCode::MalformedRecurrenceRule
-        },
+        RuleError::MissingFrequency
+        | RuleError::UnknownFrequency
+        | RuleError::MalformedCalendarControls => DiagnosticCode::MalformedRecurrenceRule,
+        RuleError::DuplicateCalendarControls => DiagnosticCode::DuplicateRecurrenceRulePart,
+        RuleError::UnsupportedCalendarSemantics => DiagnosticCode::UnsupportedRecurrenceSemantics,
         RuleError::OrdinalOutOfRange => DiagnosticCode::RecurrenceRulePartOutOfRange,
         RuleError::BySetPosWithoutByRule => DiagnosticCode::BySetPosWithoutByRule,
     }
 }
 
 impl DecodeValue<'_> for RecurrenceRule {
-    /// Read a `RECUR` value strictly: any deviation from RFC 5545 section 3.3.10 is refused.
+    /// Read the supported `RECUR` grammar without recovering invalid parts.
     ///
     /// Refused, not discarded.
     /// The caller receives `View::Malformed` carrying this code beside the property with its octets intact, which is what `docs/adr/0001` asks of every value type.
     /// A caller that wants the surviving parts of a nearly-legal rule uses the lenient reading, which needs a sink this signature cannot carry.
     fn decode_value(bytes: &[u8]) -> Result<Self, DiagnosticCode> {
+        validate_calendar_controls(bytes).map_err(code_for)?;
         let mut state = StrictDecode::new();
+        for part in parts(bytes).filter(|part| equals_ignoring_case(part.name(), FREQ_NAME)) {
+            apply(&mut state, part)?;
+        }
         for part in parts(bytes) {
+            if equals_ignoring_case(part.name(), FREQ_NAME) || is_calendar_control(part.name()) {
+                continue;
+            }
             apply(&mut state, part)?;
         }
         let builder = state
@@ -460,6 +464,60 @@ impl DecodeValue<'_> for RecurrenceRule {
             .ok_or(DiagnosticCode::MalformedRecurrenceRule)?;
         builder.build().map_err(code_for)
     }
+}
+
+fn is_calendar_control(name: &[u8]) -> bool {
+    equals_ignoring_case(name, b"RSCALE") || equals_ignoring_case(name, b"SKIP")
+}
+
+fn validate_calendar_controls(value_text: &[u8]) -> Result<(), RuleError> {
+    let mut scale: Option<&[u8]> = None;
+    let mut skip: Option<&[u8]> = None;
+    let mut leap_month = false;
+    for part in parts(value_text) {
+        let destination = if equals_ignoring_case(part.name(), b"RSCALE") {
+            &mut scale
+        } else if equals_ignoring_case(part.name(), b"SKIP") {
+            &mut skip
+        } else {
+            if equals_ignoring_case(part.name(), b"BYMONTH") {
+                leap_month |= part.value().split(|octet| *octet == b',').any(|month| {
+                    month
+                        .last()
+                        .is_some_and(|octet| octet.eq_ignore_ascii_case(&b'L'))
+                });
+            }
+            continue;
+        };
+        if destination.replace(part.value()).is_some() {
+            return Err(RuleError::DuplicateCalendarControls);
+        }
+    }
+    let Some(scale) = scale else {
+        return if skip.is_none() {
+            Ok(())
+        } else {
+            Err(RuleError::MalformedCalendarControls)
+        };
+    };
+    if !is_iana_token(scale) {
+        return Err(RuleError::MalformedCalendarControls);
+    }
+    if let Some(mode) = skip {
+        if ![b"OMIT".as_slice(), b"BACKWARD", b"FORWARD"]
+            .iter()
+            .any(|allowed| equals_ignoring_case(mode, allowed))
+        {
+            return Err(RuleError::MalformedCalendarControls);
+        }
+    }
+    let gregorian = [b"GREGORIAN".as_slice(), b"GREGORY"]
+        .iter()
+        .any(|name| equals_ignoring_case(scale, name));
+    if !gregorian || leap_month || skip.is_some_and(|mode| !equals_ignoring_case(mode, b"OMIT")) {
+        return Err(RuleError::UnsupportedCalendarSemantics);
+    }
+    Ok(())
 }
 
 /// Which slot of RFC 5545 section 3.3.10's grammar a part name occupies.
@@ -572,7 +630,8 @@ impl<'a> LenientParts<'a> {
 /// Both are bounded downstream by the window and the candidate budget a search is charged, which is where `docs/adr/0002` puts that job.
 ///
 /// Four things are reported and survived: a part out of range or unreadable ([`DiagnosticCode::RecurrenceRulePartOutOfRange`]), a part written twice ([`DiagnosticCode::DuplicateRecurrenceRulePart`], the last occurrence winning), a name the grammar does not define ([`DiagnosticCode::UnknownRecurrenceRulePart`], a note rather than a violation because a later specification may define it), and `BYSETPOS` with no other `BYxxx` part to select from ([`DiagnosticCode::BySetPosWithoutByRule`]).
-/// One thing is not: a value with no usable `FREQ` describes no series, and there is nothing left to hand back.
+/// A value with no usable `FREQ` describes no series, and there is nothing left to hand back.
+/// Calendar controls are checked before recovery; malformed, repeated, or unsupported controls prevent construction.
 ///
 /// `meter` is here for the refusals a sink is entitled to make, which [`report_diagnostic`] counts outside it — a caller passing `IgnoreDiagnostics` loses which violations occurred and never that they did.
 /// This reading charges no octets.
@@ -582,6 +641,7 @@ pub fn parse_recur<S: DiagnosticSink + ?Sized>(
     meter: &mut Meter,
     sink: &mut S,
 ) -> Result<RecurrenceRule, RuleError> {
+    validate_calendar_controls(value_text).map_err(|error| refuse(error, meter, sink))?;
     let collected = collect_parts(value_text, meter, sink);
     let freq = resolve_freq(&collected, meter, sink)?;
     let builder = apply_collected(freq, &collected, meter, sink);
@@ -646,6 +706,9 @@ fn collect_parts<'a, S: DiagnosticSink + ?Sized>(
 ) -> LenientParts<'a> {
     let mut collected = LenientParts::new();
     for (position, part) in parts(value_text).enumerate() {
+        if is_calendar_control(part.name()) {
+            continue;
+        }
         let at = u32::try_from(position).unwrap_or(LenientParts::UNWRITTEN);
         let Some(slot) = slot_of(part) else {
             // Section 3.3.10's grammar is closed, but a name it does not define is indistinguishable from one a later specification added, and the rest of the value still describes a series this crate can expand.
@@ -1067,13 +1130,11 @@ mod tests {
         const ALONE: DiagnosticCode = DiagnosticCode::BySetPosWithoutByRule;
 
         // The value, the one code the strict reading refuses it with, and every code the lenient reading reports while keeping a rule.
-        let divergences: [(&[u8], DiagnosticCode, &[DiagnosticCode]); 8] = [
+        let divergences: [(&[u8], DiagnosticCode, &[DiagnosticCode]); 7] = [
             (b"FREQ=MONTHLY;BYMONTHDAY=32", RANGE, &[RANGE]),
             (b"FREQ=MONTHLY;BYMONTHDAY=1;BYMONTHDAY=2", REPEAT, &[REPEAT]),
             (b"FREQ=MONTHLY;XYZZY=1", UNKNOWN, &[UNKNOWN]),
             (b"FREQ=MONTHLY;BYSETPOS=-1", ALONE, &[ALONE]),
-            // Section 3.3.10 states that the rule parts are not ordered in any particular sequence, so this value conforms and only the strict reading refuses it.
-            (b"BYDAY=MO;FREQ=WEEKLY", BROKEN, &[]),
             (b"FREQ=DAILY;INTERVAL=0", RANGE, &[RANGE]),
             (b"FREQ=DAILY;COUNT=0", RANGE, &[RANGE]),
             // A value whose shape is wrong rather than whose range is: one dropped part either way, so the lenient reading reports the one code a dropped part travels on.
@@ -1085,6 +1146,21 @@ mod tests {
             let (rule, codes) = lenient(text);
             assert!(rule.is_ok(), "lenient: {printed}");
             assert_eq!(codes.as_slice(), reported, "lenient: {printed}");
+        }
+    }
+
+    #[test]
+    fn both_readings_accept_frequency_after_dependent_parts() {
+        let expected = decode(b"FREQ=WEEKLY;COUNT=3;INTERVAL=2;BYDAY=MO").unwrap();
+        for text in [
+            b"BYDAY=MO;COUNT=3;INTERVAL=2;FREQ=WEEKLY".as_slice(),
+            b"INTERVAL=2;FREQ=WEEKLY;BYDAY=MO;COUNT=3",
+            b"COUNT=3;BYDAY=MO;FREQ=WEEKLY;INTERVAL=2",
+        ] {
+            assert_eq!(decode(text).unwrap(), expected);
+            let (relaxed, codes) = lenient(text);
+            assert_eq!(relaxed.unwrap(), expected);
+            assert_eq!(codes, []);
         }
     }
 
@@ -1301,9 +1377,9 @@ mod tests {
         );
     }
 
-    /// The one thing this reading cannot survive, and what it says on the way out.
+    /// Missing and unknown frequencies refuse construction and report their cause.
     #[test]
-    fn a_value_with_no_usable_frequency_is_the_only_refusal_that_remains() {
+    fn missing_or_unknown_frequencies_prevent_rule_construction() {
         let (missing, reported) = lenient(b"BYDAY=MO;COUNT=3");
         assert_eq!(missing, Err(RuleError::MissingFrequency));
         assert_eq!(

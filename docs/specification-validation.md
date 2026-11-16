@@ -90,6 +90,16 @@ Observance bounds use UTC.
 Standalone timestamp searches require UTC date-time bounds.
 Unknown `VALUE` types stop typed decoding and produce notes, as required by [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
 
+Calendar controls follow [RFC 7529](https://www.rfc-editor.org/rfc/rfc7529.html#section-4.1).
+The native engine admits the [Gregorian names](https://raw.githubusercontent.com/unicode-org/cldr/main/common/bcp47/calendar.xml) with absent or `OMIT` skipping.
+Other calendars, other `SKIP` modes, and leap month selectors produce `unsupported-recurrence-semantics`.
+Malformed or repeated controls fail typed construction, including `SKIP` without `RSCALE`.
+Both typed decoders resolve `FREQ` independent of written order, following [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
+Public rule errors keep the kernel diagnostics.
+Imports preserve original bytes, and unrelated unknown parts keep their notes.
+The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
+Calendar conversion, other `SKIP` modes, and CalDAV capability negotiation remain open.
+
 `RDATE` and `EXDATE` lists follow [RFC 5545 section 3.8.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5).
 Each field must match its declared type.
 Period checks validate the bounds and positive lengths that [section 3.3.9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.9) requires.
