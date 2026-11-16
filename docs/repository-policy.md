@@ -58,6 +58,14 @@ GitHub Actions receives read-only repository permissions by default and may not 
 Each workflow grants write permission only where a job needs it: `security-events: write` for CodeQL uploads.
 Workflows pin third-party Actions to full commit SHAs, and actionlint and zizmor audit the workflows.
 
+The repository uses GitHub's [selected actions policy](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#allowing-select-actions-and-reusable-workflows-to-run) for external action sources.
+The patterns permit `actions/checkout@*`, `jdx/mise-action@*`, and `Swatinem/rust-cache@*`.
+The CodeQL patterns are `github/codeql-action/init@*` and `github/codeql-action/analyze@*`.
+The candidate proof helper pattern is `P4suta/project-template/.github/actions/ci-policy@*`.
+GitHub requires every action to use a full commit SHA.
+Broad permissions for GitHub actions and verified Marketplace creators are off.
+Review the source and update the allowed patterns before adding an action from another repository.
+
 Renovate checks Cargo and GitHub Actions through the centrally managed repository configuration.
 Renovate groups compatible Cargo updates and isolates major updates for explicit compatibility review.
 Automated dependency pull requests must pass the same protected checks as maintainer changes.
