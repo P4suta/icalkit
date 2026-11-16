@@ -62,6 +62,15 @@ Expanded recurrence identifiers omit `RANGE`, because each returned component de
 Non-standard properties default to text under [RFC 5545 section 3.8.8.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.8.2).
 An exclusion can remove `DTSTART` without a recurrence rule.
 
+Query time zone definitions follow [RFC 4791 section 9.8](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.8).
+Dates and floating values use the query's bounded transition definition.
+Values with an explicit `TZID` use the caller's `ZoneDatabase`.
+Query parsing rejects malformed definitions, unsupported observance rules, and opaque transition values.
+Opaque metadata stays uninterpreted.
+The observance reader guards declared value types for transition dates and recurrence rules.
+Known observance `RDATE` values use local date-time form under [RFC 5545 section 3.6.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.5).
+The [query zone decision](adr/query-timezone-definitions.md) records source selection and supported-definition boundaries.
+
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.
 The caller must enforce absence when storing the authorized result.
 The [creation decision](adr/scheduling-creation-from-absence.md) records the API choice and its storage boundary.
@@ -72,7 +81,7 @@ The creation workflows live in `crates/icalkit/tests/scheduling_creation.rs`.
 Use the [contribution workflow](../CONTRIBUTING.md) to reproduce a failure before changing behavior and run the applicable checks after the fix.
 
 ```sh
-mise x -- cargo nextest run --locked -p icalkit-conformance --test calendar_validation --test alarm_validation --test component_structure --test opaque_value_types --test recurrence_validation --test temporal_list_validation --test occurrence_durations --test recurrence_ranges --test calendar_expansion
+mise x -- cargo nextest run --locked -p icalkit-conformance --test calendar_validation --test alarm_validation --test component_structure --test opaque_value_types --test recurrence_validation --test temporal_list_validation --test occurrence_durations --test recurrence_ranges --test calendar_expansion --test query_timezones
 mise x -- cargo nextest run --locked -p icalkit --test scheduling_creation
 mise x -- just ci
 ```

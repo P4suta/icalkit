@@ -433,22 +433,35 @@ fn date_time_value_is_valid(
             })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemporalListContext {
+    Recurrence,
+    Observance,
+    FreeBusy,
+}
+
 fn known_temporal_lists_are_valid(component: &Component) -> bool {
-    if component.kind().is_none() {
+    let Some(kind) = component.kind() else {
         return true;
-    }
+    };
+    let context = if matches!(kind, ComponentKind::Standard | ComponentKind::Daylight) {
+        TemporalListContext::Observance
+    } else {
+        TemporalListContext::Recurrence
+    };
     component.properties().all(|property| {
         if property.is_named(b"RDATE") || property.is_named(b"EXDATE") {
-            temporal_list_is_valid(property, false)
+            temporal_list_is_valid(property, context)
         } else if property.is_named(b"FREEBUSY") {
-            temporal_list_is_valid(property, true)
+            temporal_list_is_valid(property, TemporalListContext::FreeBusy)
         } else {
             true
         }
     }) && component.components().all(known_temporal_lists_are_valid)
 }
 
-fn temporal_list_is_valid(property: &Property, freebusy: bool) -> bool {
+fn temporal_list_is_valid(property: &Property, context: TemporalListContext) -> bool {
+    let freebusy = context == TemporalListContext::FreeBusy;
     if property.parameters_named(b"VALUE").nth(1).is_some()
         || property.parameters_named(b"TZID").nth(1).is_some()
         || (freebusy && property.parameters_named(b"FBTYPE").nth(1).is_some())
@@ -464,14 +477,22 @@ fn temporal_list_is_valid(property: &Property, freebusy: bool) -> bool {
     if freebusy && declared != ValueType::Period {
         return false;
     }
+    if context == TemporalListContext::Observance && declared != ValueType::DateTime {
+        return false;
+    }
     property
         .value_text()
         .as_bytes()
         .split(|octet| *octet == b',')
         .all(|field| match declared {
             ValueType::Date | ValueType::DateTime => {
-                DateTimeValue::decode_property_field(property, field)
-                    .is_ok_and(|value| date_time_value_is_valid(property, value, declared))
+                DateTimeValue::decode_property_field(property, field).is_ok_and(|value| {
+                    let form_valid = match context {
+                        TemporalListContext::Observance => matches!(value, DateTimeValue::Local(_)),
+                        TemporalListContext::Recurrence | TemporalListContext::FreeBusy => true,
+                    };
+                    form_valid && date_time_value_is_valid(property, value, declared)
+                })
             },
             ValueType::Period if !property.is_named(b"EXDATE") => {
                 period_field_is_valid(property, field, freebusy)

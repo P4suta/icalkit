@@ -304,7 +304,7 @@ fn push_dated_transitions(
             .as_bytes()
             .split(|octet| *octet == b',')
         {
-            let Ok(value) = DateTimeValue::decode_value(field) else {
+            let Ok(value) = DateTimeValue::decode_property_field(property, field) else {
                 continue;
             };
             let Some(start) = wall_clock(value, offset_from) else {
@@ -350,7 +350,11 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     let wanted = PropertyId::RRULE;
     let mut written = component.properties_named(&wanted);
     let first = written.next()?;
-    let rule = if written.next().is_some() {
+    let rule = if written.next().is_some()
+        || first
+            .declared_value_type()
+            .is_some_and(|value_type| value_type.is_err())
+    {
         None
     } else {
         parse_rule(first.value_text().as_bytes(), start, offset_from)

@@ -510,10 +510,16 @@ impl FreeBusyReport {
 pub struct Zones<'a> {
     /// Where zone answers come from.
     source: &'a dyn ZoneSource,
-    /// The `TZID` the query's own `CALDAV:timezone` declared, if it carried one.
-    query_zone: Option<&'a str>,
+    /// The query zone and its source for dates and floating values.
+    query_zone: Option<QueryZoneSource<'a>>,
     /// What to do with the two wall clocks a zone does not name one instant for.
     policy: ResolutionPolicy,
+}
+
+#[derive(Clone, Copy)]
+struct QueryZoneSource<'a> {
+    tzid: &'a str,
+    source: &'a dyn ZoneSource,
 }
 
 impl<'a> Zones<'a> {
@@ -529,11 +535,17 @@ impl<'a> Zones<'a> {
 
     /// The same seam with the zone a `calendar-query`'s `CALDAV:timezone` stated.
     ///
-    /// The identifier rather than the `VTIMEZONE`: reading that component into a source is `ical-tz`'s job and the caller's call, because a query's inline zone and the server's own database legitimately disagree and choosing between them is the policy ADR 0003 leaves with the caller.
+    /// Use the caller's source for the named query zone.
     #[must_use]
     pub const fn with_query_zone(self, tzid: &'a str) -> Self {
+        self.with_query_zone_source(tzid, self.source)
+    }
+
+    /// Use a supplied definition for dates and floating values under RFC 4791 section 9.8.
+    #[must_use]
+    pub const fn with_query_zone_source(self, tzid: &'a str, source: &'a dyn ZoneSource) -> Self {
         Self {
-            query_zone: Some(tzid),
+            query_zone: Some(QueryZoneSource { tzid, source }),
             ..self
         }
     }
@@ -553,7 +565,10 @@ impl<'a> Zones<'a> {
     /// The zone the query stated, if it stated one.
     #[must_use]
     pub const fn query_zone(self) -> Option<&'a str> {
-        self.query_zone
+        match self.query_zone {
+            Some(zone) => Some(zone.tzid),
+            None => None,
+        }
     }
 
     /// What to do with the two wall clocks a zone does not name one instant for.
@@ -567,8 +582,18 @@ impl<'a> Zones<'a> {
     /// A value that named one is read in that one.
     /// A floating value is read in the zone the query stated, and if the query stated none there is no answer at all — which is [`Undecided::ZoneUnstated`] and never UTC.
     pub const fn zone_for(self, tzid: Option<&'a str>) -> Result<&'a str, Undecided> {
+        match self.source_for(tzid) {
+            Ok(zone) => Ok(zone.tzid),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    const fn source_for(self, tzid: Option<&'a str>) -> Result<QueryZoneSource<'a>, Undecided> {
         match tzid {
-            Some(named) => Ok(named),
+            Some(named) => Ok(QueryZoneSource {
+                tzid: named,
+                source: self.source,
+            }),
             None => match self.query_zone {
                 Some(stated) => Ok(stated),
                 None => Err(Undecided::ZoneUnstated),
@@ -585,9 +610,9 @@ impl<'a> Zones<'a> {
         tzid: Option<&'a str>,
         local: CivilDateTime,
     ) -> Result<ZoneAnswer, Undecided> {
-        let zone = self.zone_for(tzid)?;
-        self.source
-            .resolve(zone, local)
+        let zone = self.source_for(tzid)?;
+        zone.source
+            .resolve(zone.tzid, local)
             .ok_or(Undecided::ZoneUnknown)
     }
 
@@ -597,9 +622,9 @@ impl<'a> Zones<'a> {
         tzid: Option<&'a str>,
         instant: Instant,
     ) -> Result<OffsetAnswer, Undecided> {
-        let zone = self.zone_for(tzid)?;
-        self.source
-            .offset_at(zone, instant)
+        let zone = self.source_for(tzid)?;
+        zone.source
+            .offset_at(zone.tzid, instant)
             .ok_or(Undecided::ZoneUnknown)
     }
 }
@@ -610,7 +635,7 @@ impl Debug for Zones<'_> {
         // What a reader debugging an evaluation wants is which zone the query stated and how gaps and folds are read.
         formatter
             .debug_struct("Zones")
-            .field("query_zone", &self.query_zone)
+            .field("query_zone", &self.query_zone())
             .field("policy", &self.policy)
             .finish_non_exhaustive()
     }

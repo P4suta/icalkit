@@ -14,7 +14,7 @@ use core::fmt::{self, Debug, Formatter};
 use core::str;
 
 use crate::internal::core::{
-    Component, ContentLineReader, Diagnostic, Document, Item, Meter, Severity,
+    CivilDateTime, Component, Diagnostic, DiagnosticCode, Instant, Meter, Severity, ValueType,
 };
 use crate::internal::dav::{
     CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
@@ -23,6 +23,9 @@ use crate::internal::dav::{
     SyncToken as DavSyncToken, UnknownPolicy, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
 };
 use crate::internal::query::{self, Budget, Reduction, Selection, Zones};
+use crate::internal::tz::{
+    OffsetAnswer, VtimezoneSet, ZoneAnswer, ZoneSource, read_calendar_zones,
+};
 use crate::scheduling::Message;
 use crate::time::ZoneAdapter;
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
@@ -31,7 +34,27 @@ use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 #[derive(Clone, Debug)]
 pub struct Query {
     query: crate::internal::dav::CalendarQuery,
-    query_zone: Option<String>,
+    query_zone: Option<QueryZoneDefinition>,
+}
+
+#[derive(Clone, Debug)]
+struct QueryZoneDefinition {
+    tzid: String,
+    definitions: VtimezoneSet,
+}
+
+impl ZoneSource for QueryZoneDefinition {
+    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+        self.definitions.table(tzid)?.resolve(tzid, local)
+    }
+
+    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+        self.definitions.table(tzid)?.offset_at(tzid, instant)
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.definitions.table(tzid).is_some()
+    }
 }
 
 impl Query {
@@ -71,8 +94,8 @@ impl Query {
         };
         let source = ZoneAdapter::new(session.engine.zone_database());
         let mut zones = Zones::new(&source);
-        if let Some(query_zone) = self.query_zone.as_deref() {
-            zones = zones.with_query_zone(query_zone);
+        if let Some(query_zone) = self.query_zone.as_ref() {
+            zones = zones.with_query_zone_source(&query_zone.tzid, query_zone);
         }
         let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
         query::matches(filter, &calendar.document, zones, &mut budget)
@@ -92,7 +115,7 @@ impl Query {
             .calendar_data
             .as_ref()
             .ok_or_else(|| Error::single("icalkit.caldav.calendar-data-not-requested"))?;
-        project_calendar_data(request, session, calendar, self.query_zone.as_deref())
+        project_calendar_data(request, session, calendar, self.query_zone.as_ref())
     }
 }
 
@@ -100,7 +123,7 @@ fn project_calendar_data(
     request: &CalendarDataRequest,
     session: &mut Session<'_>,
     calendar: &Calendar,
-    query_zone: Option<&str>,
+    query_zone: Option<&QueryZoneDefinition>,
 ) -> Result<ProjectedCalendar, Error> {
     let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
     let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
@@ -108,7 +131,7 @@ fn project_calendar_data(
         let zone_adapter = ZoneAdapter::new(session.engine.zone_database());
         let mut zones = Zones::new(&zone_adapter);
         if let Some(zone) = query_zone {
-            zones = zones.with_query_zone(zone);
+            zones = zones.with_query_zone_source(&zone.tzid, zone);
         }
         source = if request.expand.is_some() {
             query::expand_calendar(&source, window, zones, &mut budget)
@@ -148,52 +171,75 @@ fn read_query_zone(
     query: &crate::internal::dav::CalendarQuery,
     policy: ResourcePolicy,
     meter: &mut Meter,
-) -> Result<Option<String>, Error> {
+) -> Result<Option<QueryZoneDefinition>, Error> {
     let Some(payload) = query.timezone.as_ref() else {
         return Ok(None);
     };
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut reader = ContentLineReader::new(payload.as_bytes(), policy.limits.grammar());
-    let document = Document::from_tokens(&mut reader, meter, &mut diagnostics)
+    let calendar = crate::calendar::parse_calendar(payload.as_bytes(), policy, meter)
         .map_err(|_| Error::single("icalkit.caldav.query-timezone-invalid"))?;
-    if diagnostics.iter().any(|diagnostic| {
-        matches!(
-            diagnostic.severity(),
-            Severity::Violation | Severity::LimitReached
-        )
-    }) {
+    let root = calendar
+        .document
+        .components()
+        .next()
+        .ok_or_else(|| Error::single("icalkit.caldav.query-timezone-invalid"))?;
+    let mut components = root
+        .components()
+        .filter(|component| component.is_named(b"VTIMEZONE"));
+    let definition = components
+        .next()
+        .ok_or_else(|| Error::single("icalkit.caldav.query-timezone-invalid"))?;
+    if components.next().is_some() {
         return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
     }
-    let mut found: Option<String> = None;
-    for component in document.components() {
-        collect_query_tzid(component, &mut found)?;
+    if unsupported_transition_types(definition) {
+        return Err(Error::single("icalkit.caldav.query-timezone-unsupported"));
     }
-    found
-        .ok_or_else(|| Error::single("icalkit.caldav.query-timezone-invalid"))
-        .map(Some)
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let definitions = read_calendar_zones(root, meter, &mut diagnostics);
+    if meter.is_exhausted()
+        || diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.severity(),
+                Severity::Violation | Severity::LimitReached
+            )
+        })
+    {
+        return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
+    }
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code() == DiagnosticCode::VtimezoneRuleUnsupported)
+    {
+        return Err(Error::single("icalkit.caldav.query-timezone-unsupported"));
+    }
+    let table = definitions
+        .tables()
+        .first()
+        .filter(|table| !table.is_empty() && !table.is_truncated())
+        .ok_or_else(|| Error::single("icalkit.caldav.query-timezone-invalid"))?;
+    let tzid = table.tzid().as_str().into();
+    Ok(Some(QueryZoneDefinition { tzid, definitions }))
 }
 
-fn collect_query_tzid(component: &Component, found: &mut Option<String>) -> Result<(), Error> {
-    if component.is_named(b"VTIMEZONE") {
-        for property in component
-            .properties()
-            .filter(|property| property.is_named(b"TZID"))
-        {
-            if found.is_some() {
-                return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
-            }
-            let tzid = str::from_utf8(property.value_text().as_bytes())
-                .map_err(|_| Error::single("icalkit.caldav.query-timezone-invalid"))?;
-            if tzid.is_empty() {
-                return Err(Error::single("icalkit.caldav.query-timezone-invalid"));
-            }
-            *found = Some(tzid.into());
-        }
-    }
-    for child in component.items().iter().filter_map(Item::as_component) {
-        collect_query_tzid(child, found)?;
-    }
-    Ok(())
+fn unsupported_transition_types(definition: &Component) -> bool {
+    definition
+        .components()
+        .filter(|component| component.is_named(b"STANDARD") || component.is_named(b"DAYLIGHT"))
+        .flat_map(Component::properties)
+        .any(|property| {
+            let expected = if property.is_named(b"DTSTART") || property.is_named(b"RDATE") {
+                ValueType::DateTime
+            } else if property.is_named(b"TZOFFSETFROM") || property.is_named(b"TZOFFSETTO") {
+                ValueType::UtcOffset
+            } else if property.is_named(b"RRULE") {
+                ValueType::Recur
+            } else {
+                return false;
+            };
+            property
+                .declared_value_type()
+                .is_some_and(|value_type| value_type != Ok(expected))
+        })
 }
 
 /// The three-valued result of evaluating a CalDAV filter.
