@@ -57,9 +57,7 @@ use core::mem;
 
 use alloc::vec::Vec;
 
-use crate::internal::core::{
-    Component, Document, IgnoreDiagnostics, Item, LimitExceeded, PropertyId,
-};
+use crate::internal::core::{Component, Document, IgnoreDiagnostics, Item, LimitExceeded};
 use crate::internal::dav::{CompFilter, PropFilter, TextMatch, TimeRange};
 
 use crate::internal::query::prefilter::Exclusion;
@@ -243,22 +241,18 @@ impl Leaves for Units {
         use crate::internal::query::{expand, subset};
 
         if subset::is_override(component) {
-            return Ok(Some(Match::Unmatched));
+            let has_master = siblings
+                .iter()
+                .filter_map(Item::as_component)
+                .any(|master| subset::is_override_of(component, master));
+            return Ok(has_master.then_some(Match::Unmatched));
         }
         let related: Vec<&Component> = siblings
             .iter()
             .filter_map(Item::as_component)
             .filter(|candidate| subset::is_override_of(candidate, component))
             .collect();
-        let recurring = component
-            .properties_named(&PropertyId::RRULE)
-            .next()
-            .is_some()
-            || component
-                .properties_named(&PropertyId::RDATE)
-                .next()
-                .is_some()
-            || !related.is_empty();
+        let recurring = expand::has_recurrence(component) || !related.is_empty();
         if !recurring {
             return Ok(None);
         }

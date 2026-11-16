@@ -484,3 +484,29 @@ fn recurring_task_durations_keep_extension_parameters() {
         assert_eq!(parameter_text(task, b"DURATION", b"X-META"), Some("kept"));
     }
 }
+
+#[test]
+fn detached_instances_match_property_filters_without_a_master() {
+    for kind in ["VEVENT", "VTODO", "VJOURNAL"] {
+        let source = calendar(&component(
+            kind,
+            concat!(
+                "RECURRENCE-ID:20240101T090000Z\r\nDTSTART:20240102T110000Z\r\n",
+                "SUMMARY:Detached\r\n",
+            ),
+        ));
+        let query = Query::parse(format!(r#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">
+<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="{kind}">
+<C:time-range start="20240102T110000Z" end="20240102T120000Z"/>
+<C:prop-filter name="SUMMARY"><C:text-match collation="i;ascii-casemap">Detached</C:text-match></C:prop-filter>
+</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"#).as_bytes()).unwrap();
+        let original = Calendar::parse(source.as_bytes()).unwrap();
+        let engine = Engine::default();
+        let mut session = engine.session();
+        assert_eq!(
+            query.matches(&mut session, &original).unwrap(),
+            Match::Matched,
+            "{kind}"
+        );
+    }
+}

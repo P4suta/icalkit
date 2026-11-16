@@ -41,7 +41,7 @@ Conflicting period lengths fail explicitly.
 Expanded tasks keep `DUE` or `DURATION` because their overlap boundaries differ under [RFC 4791 section 9.9](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.9).
 Journals keep their point or date form, and instantaneous events omit an end property.
 Filtering and recurrence limiting use the same component overlap table.
-Detached components remain searchable when no master is present.
+Queries combine time ranges and property filters for detached components without a master.
 Query time zones apply to both filtering and projection.
 The [duration decision](adr/occurrence-duration-semantics.md) records the distinction between calendar days and elapsed time.
 
