@@ -51,14 +51,18 @@ pub fn icalkit::caldav::Revision::stored(impl core::convert::Into<alloc::string:
 pub fn icalkit::caldav::Revision::uri(&self) -> &str
 pub struct icalkit::caldav::ScheduleDelivery
 impl icalkit::caldav::ScheduleDelivery
+pub const fn icalkit::caldav::ScheduleDelivery::calendar_data(&self) -> core::option::Option<&icalkit::scheduling::Message>
+pub fn icalkit::caldav::ScheduleDelivery::calendar_data_bytes(&self) -> core::option::Option<&[u8]>
 pub fn icalkit::caldav::ScheduleDelivery::is_success(&self) -> bool
-pub fn icalkit::caldav::ScheduleDelivery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::ScheduleDelivery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<icalkit::scheduling::Message>) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::caldav::ScheduleDelivery::recipient(&self) -> &str
 pub fn icalkit::caldav::ScheduleDelivery::request_status(&self) -> &str
 pub struct icalkit::caldav::ScheduleResponse
 impl icalkit::caldav::ScheduleResponse
 pub fn icalkit::caldav::ScheduleResponse::deliveries(&self) -> &[icalkit::caldav::ScheduleDelivery]
+pub const fn icalkit::caldav::ScheduleResponse::is_no_content(&self) -> bool
 pub fn icalkit::caldav::ScheduleResponse::new(alloc::vec::Vec<icalkit::caldav::ScheduleDelivery>) -> core::result::Result<Self, icalkit::Error>
+pub const fn icalkit::caldav::ScheduleResponse::no_content() -> Self
 pub struct icalkit::caldav::Server
 impl icalkit::caldav::Server
 pub fn icalkit::caldav::Server::handle(&self, icalkit::caldav::WireRequest) -> core::result::Result<icalkit::caldav::ServerOperation, icalkit::Error>

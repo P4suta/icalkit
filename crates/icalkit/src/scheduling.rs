@@ -4,6 +4,7 @@
 
 //! Owned iTIP messages and a borrowed read-review-authorize-apply workflow.
 
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
@@ -35,6 +36,7 @@ pub struct Message {
 
 #[derive(Debug)]
 pub(crate) struct BusyTimeEnvelope<'a> {
+    pub(crate) uid: Cow<'a, str>,
     pub(crate) originator: &'a str,
     pub(crate) recipients: Vec<&'a str>,
 }
@@ -46,7 +48,15 @@ fn calendar_address(property: &Property) -> Option<&str> {
 
 impl Message {
     pub(crate) fn busy_time_envelope(&self) -> Option<BusyTimeEnvelope<'_>> {
-        if self.method != Method::Request {
+        self.busy_time_envelope_for(Method::Request)
+    }
+
+    pub(crate) fn busy_time_reply_envelope(&self) -> Option<BusyTimeEnvelope<'_>> {
+        self.busy_time_envelope_for(Method::Reply)
+    }
+
+    fn busy_time_envelope_for(&self, method: Method) -> Option<BusyTimeEnvelope<'_>> {
+        if self.method != method {
             return None;
         }
         let mut payloads = root_component(&self.calendar)?
@@ -56,6 +66,7 @@ impl Message {
         if !payload.is_named(b"VFREEBUSY") || payloads.next().is_some() {
             return None;
         }
+        let uid = decode_single_scalar_text(payload, &PropertyId::UID)?;
         let utc = |id: &PropertyId| -> Option<CivilDateTime> {
             let property = payload.properties().find(|property| property.has_id(id))?;
             match property.value::<DateTimeValue<'_>>().value()? {
@@ -84,6 +95,7 @@ impl Message {
             }
         }
         (!recipients.is_empty()).then_some(BusyTimeEnvelope {
+            uid,
             originator,
             recipients,
         })
@@ -98,8 +110,16 @@ impl Message {
 
     /// Strictly read an iTIP message under an engine session's aggregate resource budget.
     pub fn read_in(session: &mut Session<'_>, bytes: &[u8]) -> Result<Self, Error> {
-        let calendar = session.parse(bytes)?;
-        Self::from_calendar_in(calendar, session.engine.policy, &mut session.meter)
+        Self::read_with_policy(bytes, session.engine.policy, &mut session.meter)
+    }
+
+    pub(crate) fn read_with_policy(
+        bytes: &[u8],
+        policy: ResourcePolicy,
+        meter: &mut Meter,
+    ) -> Result<Self, Error> {
+        let calendar = parse_calendar(bytes, policy, meter)?;
+        Self::from_calendar_in(calendar, policy, meter)
     }
 
     /// Read a decoded RFC 6047 section 2.4 `text/calendar` MIME part.

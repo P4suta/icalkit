@@ -68,8 +68,14 @@ fn client_and_server_complete_a_header_independent_busy_time_request() {
     );
     server.supply(ServerAnswer::authorized(true)).unwrap();
     let outcomes = ScheduleResponse::new(vec![
-        ScheduleDelivery::new("mailto:bob@example.test", "3.7;Invalid calendar user").unwrap(),
-        ScheduleDelivery::new("mailto:carol@example.test", "3.7;Invalid calendar user").unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", "3.7;Invalid calendar user", None)
+            .unwrap(),
+        ScheduleDelivery::new(
+            "mailto:carol@example.test",
+            "3.7;Invalid calendar user",
+            None,
+        )
+        .unwrap(),
     ])
     .unwrap();
     server

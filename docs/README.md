@@ -184,6 +184,11 @@ It takes the Outbox URI and a validated `Message` with `METHOD:REQUEST`.
 The message's `ORGANIZER` and `ATTENDEE` properties determine delivery addresses.
 Server authorization receives the message and derived addresses before delivery.
 The caller checks the Outbox principal, organizer mapping, and privileges.
+Successful recipient outcomes require a validated `VFREEBUSY` reply in `ScheduleDelivery::new`.
+`calendar_data` exposes the reply as a `Message` with CRLF line endings.
+`calendar_data_bytes` preserves the original calendar octets decoded from XML.
+Client and server correlate the decoded `UID`, organizer, and recipient with the request.
+`ScheduleResponse::no_content` represents HTTP 204, and `is_no_content` distinguishes absent data from a reply with no busy periods.
 
 ## Architecture
 

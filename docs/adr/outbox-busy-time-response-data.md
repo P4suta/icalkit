@@ -13,10 +13,12 @@ The current response drops the data and rejects HTTP 204.
 
 ## Decision
 
-`ScheduleDelivery::new` takes an optional validated `Message` and requires data for success.
+`ScheduleDelivery::new` requires a reply `Message` for success.
 Data must be one readable `VFREEBUSY` reply for the recipient.
 Client and server check complete outcomes, decoded identifiers, and byte-identical participant addresses.
-Preserve calendar octets through XML.
+Expose both a validated message and the original calendar octets.
+[RFC 4791 section 9.6](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.6) permits LF lines.
+Validate normalized CRLF while keeping original bytes.
 Parse XML and messages under one shared budget.
 Represent HTTP 204 explicitly without interpreting absent data as free time.
 
@@ -27,8 +29,8 @@ Status-only outcomes can't convey busy time.
 
 ## Consequences
 
-Update constructor calls and API snapshots before publication.
-Stored replies need bounded heap storage.
+Update callers and API snapshots before publication.
+Replies need bounded heap storage.
 Revisit for equivalent participant addresses or other calendar representations.
 
 ## Confirmation

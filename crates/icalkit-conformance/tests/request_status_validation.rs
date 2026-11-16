@@ -10,6 +10,7 @@
 use icalkit::Calendar;
 use icalkit::caldav::ScheduleDelivery;
 use icalkit::interop::Import;
+use icalkit::scheduling::Message;
 
 const KINDS: &[&str] = &["VEVENT", "VTODO", "VJOURNAL", "VFREEBUSY"];
 
@@ -179,7 +180,8 @@ fn unknown_status_value_types_and_component_semantics_stay_opaque() {
 #[test]
 fn delivery_status_values_use_the_same_structured_grammar() {
     for value in VALID_VALUES {
-        let delivery = ScheduleDelivery::new("mailto:user@example.test", *value).unwrap();
+        let delivery =
+            ScheduleDelivery::new("mailto:user@example.test", *value, Some(busy_reply())).unwrap();
         assert_eq!(delivery.request_status(), *value);
     }
 }
@@ -195,7 +197,9 @@ fn delivery_status_values_reject_malformed_codes_and_text() {
         .map(String::as_str)
         .chain(INVALID_FIELDS.iter().copied())
     {
-        let Err(error) = ScheduleDelivery::new("mailto:user@example.test", value) else {
+        let Err(error) =
+            ScheduleDelivery::new("mailto:user@example.test", value, Some(busy_reply()))
+        else {
             panic!("accepted malformed delivery status: {value:?}");
         };
         assert_eq!(
@@ -215,7 +219,22 @@ fn delivery_success_uses_the_numeric_status_class() {
         ("3.7;Invalid user", false),
         ("000.2;Other class", false),
     ] {
-        let delivery = ScheduleDelivery::new("mailto:user@example.test", value).unwrap();
+        let delivery =
+            ScheduleDelivery::new("mailto:user@example.test", value, Some(busy_reply())).unwrap();
         assert_eq!(delivery.is_success(), success, "{value}");
     }
+}
+
+fn busy_reply() -> Message {
+    Message::read(
+        concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n",
+            "METHOD:REPLY\r\nBEGIN:VFREEBUSY\r\nUID:busy@example.test\r\n",
+            "DTSTAMP:20240101T000000Z\r\nDTSTART:20240102T000000Z\r\nDTEND:20240103T000000Z\r\n",
+            "ORGANIZER:mailto:organizer@example.test\r\nATTENDEE:mailto:user@example.test\r\n",
+            "END:VFREEBUSY\r\nEND:VCALENDAR\r\n",
+        )
+        .as_bytes(),
+    )
+    .unwrap()
 }

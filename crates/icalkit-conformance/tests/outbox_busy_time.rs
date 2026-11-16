@@ -201,7 +201,7 @@ fn scheduling_delivery_addresses_require_absolute_uri_syntax() {
         "https://[broken]/person",
         "https://example.test/\u{00e9}",
     ] {
-        let Err(error) = ScheduleDelivery::new(address, "2.0;Success") else {
+        let Err(error) = ScheduleDelivery::new(address, "3.7;Invalid calendar user", None) else {
             panic!("accepted a malformed calendar address {address}");
         };
         assert_eq!(
@@ -220,7 +220,7 @@ fn scheduling_delivery_addresses_keep_valid_uri_spellings() {
         "x-cua:opaque%2Cvalue",
         "https://[2001:db8::1]/principals/person",
     ] {
-        let result = ScheduleDelivery::new(address, "2.0;Success").unwrap();
+        let result = ScheduleDelivery::new(address, "3.7;Invalid calendar user", None).unwrap();
         assert_eq!(result.recipient(), address);
     }
 }

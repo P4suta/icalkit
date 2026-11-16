@@ -281,9 +281,14 @@ fn assert_server_outbox_round_trip(failure: &str, success: &str) {
         ]
     );
 
+    let reply = core::str::from_utf8(SCHEDULING_PAYLOAD)
+        .unwrap()
+        .replace("METHOD:REQUEST", "METHOD:REPLY")
+        .replace("ATTENDEE:mailto:carol@example.test\r\n", "");
+    let reply = Message::read(reply.as_bytes()).unwrap();
     let outcomes = ScheduleResponse::new(vec![
-        ScheduleDelivery::new("mailto:carol@example.test", failure).unwrap(),
-        ScheduleDelivery::new("mailto:bob@example.test", success).unwrap(),
+        ScheduleDelivery::new("mailto:carol@example.test", failure, None).unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", success, Some(reply)).unwrap(),
     ])
     .unwrap();
     server_operation
@@ -355,7 +360,8 @@ fn server_refuses_incomplete_delivery_results() {
     let mut operation = Server::new().handle(request).unwrap();
     operation.supply(ServerAnswer::authorized(true)).unwrap();
     let incomplete = ScheduleResponse::new(vec![
-        ScheduleDelivery::new("mailto:bob@example.test", "2.0;Success").unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", "3.7;Invalid calendar user", None)
+            .unwrap(),
     ])
     .unwrap();
 

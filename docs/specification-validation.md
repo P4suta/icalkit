@@ -187,6 +187,16 @@ Custom routing headers can't replace the message's participants.
 Authorization receives the validated message and addresses for caller checks of the principal, Outbox collection, and privileges.
 The [Outbox decision](adr/outbox-busy-time-from-message.md) records the API change and the media `method` rule.
 
+Successful Outbox outcomes include `CALDAV:calendar-data` under [RFC 6638 section 5](https://www.rfc-editor.org/rfc/rfc6638.html#section-5).
+Data must be a readable `VFREEBUSY` reply under [RFC 5546 section 3.3.3](https://www.rfc-editor.org/rfc/rfc5546.html#section-3.3.3).
+Client and server check complete recipient coverage, decoded identifiers, and matching participant addresses.
+The XML reader validates the declared media type, version, and supplied scheduling parameters.
+Calendar data follows [RFC 4791 section 9.6](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.6), including LF lines, `CDATA` sections, and character references.
+Validation converts transport LF lines to CRLF, while a separate byte view keeps the original calendar octets.
+XML fields, reply parsing, and response counts share one resource budget.
+HTTP 204 has an explicit outcome without recipient data under [RFC 6638 section 5.1](https://www.rfc-editor.org/rfc/rfc6638.html#section-5.1).
+The [response data decision](adr/outbox-busy-time-response-data.md) records the typed view and byte preservation contract.
+
 `EventRef::uid` returns decoded scalar text, or `None` for an unreadable identity.
 Ordinary identifiers borrow source storage.
 Editing and stored recurrence selection use the same decoded value.

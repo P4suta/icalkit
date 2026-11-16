@@ -222,6 +222,12 @@ END:VCALENDAR\r\n";
     Message::read(payload).unwrap()
 }
 
+fn scheduling_reply() -> String {
+    String::from_utf8(scheduling_message().to_bytes())
+        .unwrap()
+        .replace("METHOD:REQUEST", "METHOD:REPLY")
+}
+
 #[test]
 fn outbox_post_returns_one_typed_delivery_per_recipient() {
     let message = scheduling_message();
@@ -242,14 +248,18 @@ fn outbox_post_returns_one_typed_delivery_per_recipient() {
         .accept(WireResponse::new(
             200,
             Vec::new(),
-            br#"<?xml version="1.0" encoding="utf-8"?>
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
 <C:schedule-response xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
  <C:response>
   <C:recipient><D:href>mailto:bob@example.test</D:href></C:recipient>
   <C:request-status>2.0;Success</C:request-status>
+  <C:calendar-data>{}</C:calendar-data>
  </C:response>
-</C:schedule-response>"#
-                .to_vec(),
+</C:schedule-response>"#,
+                scheduling_reply()
+            )
+            .into_bytes(),
         ))
         .unwrap();
 
@@ -281,7 +291,9 @@ fn outbox_post_rejects_malformed_delivery_status_values() {
         let body = format!(
             "<C:schedule-response xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
              <C:response><C:recipient><D:href>mailto:bob@example.test</D:href></C:recipient>\
-             <C:request-status>{value}</C:request-status></C:response></C:schedule-response>"
+             <C:request-status>{value}</C:request-status><C:calendar-data>{}</C:calendar-data>\
+             </C:response></C:schedule-response>",
+            scheduling_reply()
         );
         let response = WireResponse::new(200, Vec::new(), body.into_bytes());
         let Err(error) = operation.accept(response).and_then(|()| operation.finish()) else {
