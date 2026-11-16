@@ -4,11 +4,10 @@
 
 //! Unit 4 — reading a `VTIMEZONE` out of `crate::internal::core::Component`.
 //!
-//! Specification: RFC 5545 section 3.6.5, with section 3.8.3.3 and section 3.8.3.4 for the
-//! offsets and section 3.8.5.2 and section 3.8.5.3 for the two transition forms.
+//! Specification: RFC 5545 section 3.6.5, with section 3.8.3.3 and section 3.8.3.4 for the offsets and section 3.8.5.2 and section 3.8.5.3 for the two transition forms.
 //!
-//! Owed by this unit and by nothing else. The trait impl needs no re-export line; the free
-//! function needs one appended to the crate root's block:
+//! Owed by this unit and by nothing else.
+//! The trait impl needs no re-export line; the free function needs one appended to the crate root's block:
 //!
 //! ```text
 //! impl ObservanceReader for crate::internal::core::Component { .. }
@@ -17,71 +16,46 @@
 //! ) -> VtimezoneSet;
 //! ```
 //!
-//! The one place untrusted zone text becomes a model, and therefore the only place in this
-//! crate that charges a meter. Each `STANDARD` and `DAYLIGHT` subcomponent becomes one
-//! `Observance` for its own `DTSTART`, one more for each `RDATE` value it carries, and a
-//! `YearlyRule` where its `RRULE` matches a `RuleDay` form. A definition carrying both forms
-//! carries both, which is ordinary rather than a conflict: the rule states the cadence and the
-//! dates state the exceptions to it.
+//! The one place untrusted zone text becomes a model, and therefore the only place in this crate that charges a meter.
+//! Each `STANDARD` and `DAYLIGHT` subcomponent becomes one `Observance` for its own `DTSTART`, one more for each `RDATE` value it carries, and a `YearlyRule` where its `RRULE` matches a `RuleDay` form.
+//! A definition carrying both forms carries both, which is ordinary rather than a conflict: the rule states the cadence and the dates state the exceptions to it.
 //!
-//! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no
-//! prefix stripping, no alias lookup. `docs/adr/0003` makes mapping a vendor identifier onto an
-//! IANA one the caller's visible step, and a reader that quietly normalized here would take it
-//! back.
+//! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no prefix stripping, no alias lookup.
+//! `docs/adr/0003` makes mapping a vendor identifier onto an IANA one the caller's visible step, and a reader that quietly normalized here would take it back.
 //!
 //! Codes this unit owns, and no other unit may emit:
 //!
-//! - `vtimezone-without-observance` — section 3.6.5 requires at least one and this file has
-//!   none. The component is kept and the zone answers nothing.
-//! - `vtimezone-rule-unsupported` — an observance `RRULE` outside the closed-form vocabulary. A
-//!   note, because the file is legal and what is missing is here: the observance's own
-//!   `DTSTART` still stands as one transition, so the answer is smaller rather than wrong.
-//! - `missing-time-zone-definition` — a `TZID` parameter naming no `VTIMEZONE` in the same
-//!   calendar, named by the identifier it is about.
-//! - `duplicate-time-zone-identifier` — read off `ZoneAdmission::diagnostic_code` when
-//!   `VtimezoneSet::insert` takes a second definition of one identifier beside the first.
-//! - `vtimezone-components-truncated` — read off `ZoneSetError::diagnostic_code` when the
-//!   caller's own zone-count bound turns a definition back. `docs/adr/0003` amendment 6 said
-//!   that refusal carried no code; the identifiers such a definition declares then looked
-//!   exactly like identifiers the calendar never wrote, which is a claim about the file that
-//!   the caller's policy made false.
-//! - `vtimezone-observance-unreadable` — a `STANDARD` or `DAYLIGHT` subcomponent stating every
-//!   property section 3.6.5 requires and yielding no transition at all.
+//! - `vtimezone-without-observance` — section 3.6.5 requires at least one and this file has none.
+//!   The component is kept and the zone answers nothing.
+//! - `vtimezone-rule-unsupported` — an observance `RRULE` outside the closed-form vocabulary.
+//!   A note, because the file is legal and what is missing is here: the observance's own `DTSTART` still stands as one transition, so the answer is smaller rather than wrong.
+//! - `missing-time-zone-definition` — a `TZID` parameter naming no `VTIMEZONE` in the same calendar, named by the identifier it is about.
+//! - `duplicate-time-zone-identifier` — read off `ZoneAdmission::diagnostic_code` when `VtimezoneSet::insert` takes a second definition of one identifier beside the first.
+//! - `vtimezone-components-truncated` — read off `ZoneSetError::diagnostic_code` when the caller's own zone-count bound turns a definition back.
+//!   `docs/adr/0003` amendment 6 said that refusal carried no code; the identifiers such a definition declares then looked exactly like identifiers the calendar never wrote, which is a claim about the file that the caller's policy made false.
+//! - `vtimezone-observance-unreadable` — a `STANDARD` or `DAYLIGHT` subcomponent stating every property section 3.6.5 requires and yielding no transition at all.
 //!
-//! `vtimezone-observances-truncated` is emitted by `TransitionTable::new`, which this unit
-//! calls and does not reimplement. That is deliberate: the truncation point and the code
-//! reporting it are one decision, and two callers deciding it separately is how they drift.
+//! `vtimezone-observances-truncated` is emitted by `TransitionTable::new`, which this unit calls and does not reimplement.
+//! That is deliberate: the truncation point and the code reporting it are one decision, and two callers deciding it separately is how they drift.
 //!
 //! # What a value this unit cannot read costs
 //!
-//! A required property that is *absent* is [`Component::audit`]'s finding under
-//! `missing-required-property`, and a second reading of it written here would be a second place
-//! for that answer to live and a second place for the two to disagree.
+//! A required property that is *absent* is [`Component::audit`]'s finding under `missing-required-property`, and a second reading of it written here would be a second place for that answer to live and a second place for the two to disagree.
 //!
-//! A required property that is *present and unusable* is nobody else's. That is the division M2
-//! corrected: `TZOFFSETTO:+9999` is a value the decoder refuses and the audit counts as there,
-//! and `DTSTART;VALUE=DATE` on an observance carries no hour for a transition to happen at, so
-//! both left a `VTIMEZONE` in the set holding nothing, answering nothing, with no code from
-//! anybody — a definition the file wrote in full, indistinguishable from one it never wrote.
-//! `vtimezone-observance-unreadable` is what this unit says about it, and it is emitted only
-//! where every property section 3.6.5 requires is present, so one fault never earns two codes.
+//! A required property that is *present and unusable* is nobody else's.
+//! That is the division M2 corrected: `TZOFFSETTO:+9999` is a value the decoder refuses and the audit counts as there,
+//! and `DTSTART;VALUE=DATE` on an observance carries no hour for a transition to happen at, so both left a `VTIMEZONE` in the set holding nothing, answering nothing, with no code from anybody — a definition the file wrote in full, indistinguishable from one it never wrote.
+//! `vtimezone-observance-unreadable` is what this unit says about it, and it is emitted only where every property section 3.6.5 requires is present, so one fault never earns two codes.
 //!
-//! A `VTIMEZONE` whose `TZID` is absent, empty, declared twice or not UTF-8 still contributes
-//! nothing and no code of its own: there is no identifier to file it under and none to name in
-//! a report.
+//! A `VTIMEZONE` whose `TZID` is absent, empty, declared twice or not UTF-8 still contributes nothing and no code of its own: there is no identifier to file it under and none to name in a report.
 //!
 //! # Bounds
 //!
-//! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by
-//! [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`]. The list handed to the
-//! former is built whole first, and that is bounded rather than unbounded — an observance costs
-//! at least sixteen octets of input, and those octets were charged against this same ledger by
-//! the parse that produced the tree being read. Cutting the list short before the table sees it
-//! would move the truncation point off the sorted order the table truncates in, which is how a
-//! table acquires a hole in the middle instead of an earlier end.
+//! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`].
+//! The list handed to the former is built whole first, and that is bounded rather than unbounded — an observance costs at least sixteen octets of input, and those octets were charged against this same ledger by the parse that produced the tree being read.
+//! Cutting the list short before the table sees it would move the truncation point off the sorted order the table truncates in, which is how a table acquires a hole in the middle instead of an earlier end.
 //!
-//! The walk looking for identifiers nothing defines keeps its own worklist rather than
-//! recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
+//! The walk looking for identifiers nothing defines keeps its own worklist rather than recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
 //!
 //! [`Component::audit`]: crate::internal::core::Component::audit
 //! [`TransitionTable::new`]: crate::internal::tz::TransitionTable::new
@@ -110,25 +84,18 @@ const MAX_MONTH_DAYS: usize = 31;
 
 /// How many `BYMONTHDAY` values the window forms are written with.
 ///
-/// Seven, because the shape means "whichever day of one week falls in this window" and a week
-/// is seven days long. A shorter or longer run says something else, and this crate does not
-/// guess what.
+/// Seven, because the shape means "whichever day of one week falls in this window" and a week is seven days long.
+/// A shorter or longer run says something else, and this crate does not guess what.
 const RUN_LENGTH: usize = 7;
 
 /// Read every `VTIMEZONE` a calendar carries, and report the identifiers nothing defines.
 ///
-/// The zones come back in a set keyed by exact bytes. A second definition of one identifier is
-/// kept beside the first and reported under [`DiagnosticCode::DuplicateTimeZoneIdentifier`] —
-/// both readings stay reachable through [`VtimezoneSet::definitions`], which is what
-/// `docs/adr/0003` requires of a file with two answers — and a `TZID` parameter anywhere in the
-/// calendar naming no definition here is reported once under
-/// [`DiagnosticCode::MissingTimeZoneDefinition`], naming the identifier it is about.
+/// The zones come back in a set keyed by exact bytes.
+/// A second definition of one identifier is kept beside the first and reported under [`DiagnosticCode::DuplicateTimeZoneIdentifier`] —
+/// both readings stay reachable through [`VtimezoneSet::definitions`], which is what `docs/adr/0003` requires of a file with two answers — and a `TZID` parameter anywhere in the calendar naming no definition here is reported once under [`DiagnosticCode::MissingTimeZoneDefinition`], naming the identifier it is about.
 ///
-/// Both bounds `docs/adr/0010` gives a zone are charged against `meter` on the way through. A
-/// calendar declaring more zones than the caller's policy admits keeps the ones that fit and
-/// says so under [`DiagnosticCode::VtimezoneComponentsTruncated`], naming each definition the
-/// bound turned back — and the identifiers those definitions declare are not then reported as
-/// identifiers the calendar never defined, because the calendar did define them.
+/// Both bounds `docs/adr/0010` gives a zone are charged against `meter` on the way through.
+/// A calendar declaring more zones than the caller's policy admits keeps the ones that fit and says so under [`DiagnosticCode::VtimezoneComponentsTruncated`], naming each definition the bound turned back — and the identifiers those definitions declare are not then reported as identifiers the calendar never defined, because the calendar did define them.
 ///
 /// [`VtimezoneSet::definitions`]: crate::internal::tz::VtimezoneSet::definitions
 #[must_use]
@@ -148,9 +115,8 @@ pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
             continue;
         };
         let table = TransitionTable::new(tzid, observances, meter, sink);
-        // Taken before the table is moved into the set, so that every code below can name the
-        // zone it is about. A diagnostic saying a definition was refused and not which one is
-        // a diagnostic a caller cannot act on.
+        // Taken before the table is moved into the set, so that every code below can name the zone it is about.
+        // A diagnostic saying a definition was refused and not which one is a diagnostic a caller cannot act on.
         let named = Subject::new(table.tzid().as_str().as_bytes());
         match zones.insert(table, meter) {
             Ok(admission) => {
@@ -159,9 +125,7 @@ pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
                 }
             },
             Err(turned_back) => {
-                // The identifier is remembered rather than the definition, because what the
-                // refusal costs downstream is the walk below deciding that this calendar never
-                // defined a zone that the caller's own policy refused.
+                // The identifier is remembered rather than the definition, because what the refusal costs downstream is the walk below deciding that this calendar never defined a zone that the caller's own policy refused.
                 refused.insert(Box::from(turned_back.table().tzid().as_str()));
                 report(
                     sink,
@@ -190,9 +154,8 @@ impl ObservanceReader for Component {
 
 /// Read one `VTIMEZONE` into `out`, answering with its identifier.
 ///
-/// Generic over the sink rather than taking the trait object [`ObservanceReader`] declares, so
-/// that the free function above does not pay for an erasure it has no use for. `dyn
-/// DiagnosticSink` is itself a legal `S`, which is what lets the trait impl be one call.
+/// Generic over the sink rather than taking the trait object [`ObservanceReader`] declares, so that the free function above does not pay for an erasure it has no use for.
+/// `dyn DiagnosticSink` is itself a legal `S`, which is what lets the trait impl be one call.
 fn read_definition<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
@@ -208,10 +171,8 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
         declared = declared.saturating_add(1);
         read_observance(inner, meter, sink, out);
     }
-    // Counted over the subcomponents rather than over what they yielded. The code says "carried
-    // neither a STANDARD nor a DAYLIGHT subcomponent"; a definition whose one observance was
-    // unreadable did carry one, and reporting that under this code would put a second meaning
-    // on a frozen one.
+    // Counted over the subcomponents rather than over what they yielded.
+    // The code says "carried neither a STANDARD nor a DAYLIGHT subcomponent"; a definition whose one observance was unreadable did carry one, and reporting that under this code would put a second meaning on a frozen one.
     if declared == 0 {
         report(
             sink,
@@ -226,11 +187,9 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
 
 /// The identifier a `VTIMEZONE` answers to, or `None` when it has none this crate can file.
 ///
-/// `None` for an absent, empty, repeated or non-UTF-8 `TZID`. The last is forced rather than
-/// chosen: [`ObservanceReader::read_vtimezone`] answers with a `Box<str>`, and octets that are
-/// not text cannot become one. The repeated case is `None` for the reason
-/// [`crate::internal::core::Component::get`] refuses a duplicate — two identities is not one of them, and
-/// picking the first would file a zone under a name the file does not unambiguously give it.
+/// `None` for an absent, empty, repeated or non-UTF-8 `TZID`.
+/// The last is forced rather than chosen: [`ObservanceReader::read_vtimezone`] answers with a `Box<str>`, and octets that are not text cannot become one.
+/// The repeated case is `None` for the reason [`crate::internal::core::Component::get`] refuses a duplicate — two identities is not one of them, and picking the first would file a zone under a name the file does not unambiguously give it.
 fn identifier(component: &Component) -> Option<Box<str>> {
     let wanted = PropertyId::TZID;
     let mut written = component.properties_named(&wanted);
@@ -244,9 +203,8 @@ fn identifier(component: &Component) -> Option<Box<str>> {
 
 /// `text` with a matched RFC 5545 section 3.2 `DQUOTE` pair removed, and nothing else done.
 ///
-/// The rule [`crate::internal::core::Parameter::unquoted`] applies on the other side of the comparison. The
-/// two sides have to strip alike, or a producer that quoted one of them would declare a zone
-/// that no lookup could ever reach.
+/// The rule [`crate::internal::core::Parameter::unquoted`] applies on the other side of the comparison.
+/// The two sides have to strip alike, or a producer that quoted one of them would declare a zone that no lookup could ever reach.
 fn unquoted(text: &[u8]) -> &[u8] {
     text.strip_prefix(b"\"")
         .and_then(|inside| inside.strip_suffix(b"\""))
@@ -255,15 +213,10 @@ fn unquoted(text: &[u8]) -> &[u8] {
 
 /// Read one `STANDARD` or `DAYLIGHT` subcomponent into `out`, reporting one that yields nothing.
 ///
-/// An observance contributing no transition at all is reported here under
-/// [`DiagnosticCode::VtimezoneObservanceUnreadable`], and that is a correction M2 made. This
-/// unit used to delegate every unreadable required value to [`Component::audit`]'s reading of
-/// section 3.6 — which is right for a property that is *absent* and answers nothing about one
-/// that is present and cannot be used. `TZOFFSETTO:+9999` is a property the audit counts and
-/// the value decoder refuses, and `DTSTART;VALUE=DATE` on an observance is a value that carries
-/// no hour for a transition to happen at. Both left a `VTIMEZONE` in the set carrying no
-/// observance, answering nothing, with no code emitted on either side — a definition the file
-/// wrote and nothing anywhere could tell from one it never wrote.
+/// An observance contributing no transition at all is reported here under [`DiagnosticCode::VtimezoneObservanceUnreadable`], and that is a correction M2 made.
+/// This unit used to delegate every unreadable required value to [`Component::audit`]'s reading of section 3.6 — which is right for a property that is *absent* and answers nothing about one that is present and cannot be used.
+/// `TZOFFSETTO:+9999` is a property the audit counts and the value decoder refuses, and `DTSTART;VALUE=DATE` on an observance is a value that carries no hour for a transition to happen at.
+/// Both left a `VTIMEZONE` in the set carrying no observance, answering nothing, with no code emitted on either side — a definition the file wrote and nothing anywhere could tell from one it never wrote.
 fn read_observance<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
@@ -285,11 +238,8 @@ fn read_observance<S: DiagnosticSink + ?Sized>(
 
 /// Whether this observance carries each property RFC 5545 section 3.6.5 requires of one.
 ///
-/// Presence only, never readability, and that is the whole of the division of labor: an
-/// *absent* required property is [`Component::audit`]'s finding under
-/// `missing-required-property`, and reporting it here as well would put two codes on one fault
-/// and make one defect look like two. What is left over — every required property present and
-/// the observance still stating no transition — is what nobody else can see.
+/// Presence only, never readability, and that is the whole of the division of labor: an *absent* required property is [`Component::audit`]'s finding under `missing-required-property`, and reporting it here as well would put two codes on one fault and make one defect look like two.
+/// What is left over — every required property present and the observance still stating no transition — is what nobody else can see.
 fn states_every_required_property(component: &Component) -> bool {
     [
         PropertyId::DTSTART,
@@ -307,9 +257,7 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
     out: &mut Vec<Observance>,
 ) {
-    // The classification is the subcomponent's own name, per RFC 5545 section 3.6.5, and never
-    // a comparison of the two offsets: a zone whose daylight offset is the smaller of the pair
-    // exists, and inferring the flag from arithmetic gets it backwards there.
+    // The classification is the subcomponent's own name, per RFC 5545 section 3.6.5, and never a comparison of the two offsets: a zone whose daylight offset is the smaller of the pair exists, and inferring the flag from arithmetic gets it backwards there.
     let daylight = component.is_named(b"DAYLIGHT");
     let Some(offset_from) = component
         .get::<UtcOffset>(&PropertyId::TZOFFSETFROM)
@@ -320,9 +268,7 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
     let Some(offset_to) = component.get::<UtcOffset>(&PropertyId::TZOFFSETTO).value() else {
         return;
     };
-    // The rule rides on the `DTSTART` observance and on no other: an `RDATE` names one
-    // transition and states no cadence, and repeating the rule on each explicit date would
-    // declare the same yearly series once per date.
+    // The rule rides on the `DTSTART` observance and on no other: an `RDATE` names one transition and states no cadence, and repeating the rule on each explicit date would declare the same yearly series once per date.
     if let Some(start) = component
         .dtstart()
         .value()
@@ -342,8 +288,7 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
 
 /// Append one observance per `RDATE` value of `component`.
 ///
-/// An `RDATE` is a list per line and may arrive on several lines, and RFC 5545 section 3.8.5.2
-/// puts no order on either, which is why [`TransitionTable::new`] sorts what it is handed.
+/// An `RDATE` is a list per line and may arrive on several lines, and RFC 5545 section 3.8.5.2 puts no order on either, which is why [`TransitionTable::new`] sorts what it is handed.
 /// Entries this crate cannot read as a wall clock yield nothing; see the module note.
 fn push_dated_transitions(
     component: &Component,
@@ -378,12 +323,9 @@ fn push_dated_transitions(
 
 /// The wall clock `value` names on the clock running before a transition.
 ///
-/// RFC 5545 section 3.6.5 writes an observance's `DTSTART` and `RDATE` as local times read
-/// against `TZOFFSETFROM`, so the ordinary case is the value's own fields taken as written. A
-/// value carrying `Z` violates that and still names a real instant, and the reading that
-/// recovers the producer's intent is that instant on this observance's own clock. A `DATE`
-/// carries no clock at all, and there is no hour to read out of one for a transition to happen
-/// at.
+/// RFC 5545 section 3.6.5 writes an observance's `DTSTART` and `RDATE` as local times read against `TZOFFSETFROM`, so the ordinary case is the value's own fields taken as written.
+/// A value carrying `Z` violates that and still names a real instant, and the reading that recovers the producer's intent is that instant on this observance's own clock.
+/// A `DATE` carries no clock at all, and there is no hour to read out of one for a transition to happen at.
 fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilDateTime> {
     match value {
         DateTimeValue::Local(stamp) | DateTimeValue::Zoned { stamp, .. } => Some(stamp),
@@ -397,9 +339,7 @@ fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilD
 
 /// The rule repeating an observance, reporting the ones this crate declines to evaluate.
 ///
-/// A second `RRULE` on one observance is outside the vocabulary rather than a rule to choose
-/// between: RFC 5545 section 3.6.5 gives an observance one cadence, and deciding which of two
-/// it is would be exactly the silent choice this crate is arranged against.
+/// A second `RRULE` on one observance is outside the vocabulary rather than a rule to choose between: RFC 5545 section 3.6.5 gives an observance one cadence, and deciding which of two it is would be exactly the silent choice this crate is arranged against.
 fn read_rule<S: DiagnosticSink + ?Sized>(
     component: &Component,
     start: CivilDateTime,
@@ -416,8 +356,8 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
         parse_rule(first.value_text().as_bytes(), start, offset_from)
     };
     if rule.is_none() {
-        // No subject: what this is about is one observance of a zone, and an observance has no
-        // name of its own to carry. The identifier alone would say less than it appears to,
+        // No subject: what this is about is one observance of a zone, and an observance has no name of its own to carry.
+        // The identifier alone would say less than it appears to,
         // because a definition states several observances and only one of them was refused.
         report(
             sink,
@@ -432,9 +372,7 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 
 /// One observance `RRULE`, read as the closed form or not at all.
 ///
-/// The month and the day fall back to `DTSTART`'s own, which is what RFC 5545 section 3.3.10
-/// says an unstated `BYMONTH` or `BYMONTHDAY` means, and the transition time is `DTSTART`'s
-/// because section 3.6.5 gives an observance no other place to write one.
+/// The month and the day fall back to `DTSTART`'s own, which is what RFC 5545 section 3.3.10 says an unstated `BYMONTH` or `BYMONTHDAY` means, and the transition time is `DTSTART`'s because section 3.6.5 gives an observance no other place to write one.
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRule> {
     let parts = collect_parts(text, offset_from)?;
     let month = match parts.month {
@@ -448,7 +386,8 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
 /// What a `RECUR` value said, as far as this crate reads one.
 #[derive(Clone, Copy, Debug)]
 struct RuleParts {
-    /// Whether `FREQ=YEARLY` was stated. Nothing else is a transition rule.
+    /// Whether `FREQ=YEARLY` was stated.
+    /// Nothing else is a transition rule.
     yearly: bool,
     /// The one `BYMONTH` value, absent when the rule states none.
     month: Option<u8>,
@@ -508,8 +447,7 @@ impl MonthDays {
 
     /// The lowest and highest value, present only when they and everything between are here.
     ///
-    /// Sorted rather than assumed sorted: a producer writing `31,25,26,27,28,29,30` wrote the
-    /// same set as one writing them in order, and what the window forms name is the set.
+    /// Sorted rather than assumed sorted: a producer writing `31,25,26,27,28,29,30` wrote the same set as one writing them in order, and what the window forms name is the set.
     fn contiguous_run(mut self) -> Option<(i8, i8)> {
         let used = self.values.get_mut(..self.count)?;
         used.sort_unstable();
@@ -527,9 +465,7 @@ impl MonthDays {
 
 /// Read every `name=value` term of a `RECUR` value, or refuse the whole of it.
 ///
-/// Refusing at the first unrecognized term rather than reading around it is the difference
-/// between a rule this crate evaluates and one it half evaluates: a `BYSETPOS` nobody read
-/// changes which day the rule names, and a transition on the wrong day is worse than none.
+/// Refusing at the first unrecognized term rather than reading around it is the difference between a rule this crate evaluates and one it half evaluates: a `BYSETPOS` nobody read changes which day the rule names, and a transition on the wrong day is worse than none.
 fn collect_parts(text: &[u8], offset_from: UtcOffset) -> Option<RuleParts> {
     let mut parts = RuleParts::EMPTY;
     for term in text.split(|octet| *octet == b';') {
@@ -545,8 +481,7 @@ fn collect_parts(text: &[u8], offset_from: UtcOffset) -> Option<RuleParts> {
 
 /// Read one `RECUR` term into `parts`, answering whether it is one this crate evaluates.
 ///
-/// `WKST` is accepted and ignored because it can only change a `BYWEEKNO` reading, and a rule
-/// carrying `BYWEEKNO` falls off the end of this function anyway.
+/// `WKST` is accepted and ignored because it can only change a `BYWEEKNO` reading, and a rule carrying `BYWEEKNO` falls off the end of this function anyway.
 fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcOffset) -> bool {
     if name.eq_ignore_ascii_case(b"FREQ") {
         parts.yearly = value.eq_ignore_ascii_case(b"YEARLY");
@@ -594,9 +529,8 @@ fn day_form(parts: RuleParts, start: CivilDate) -> Option<RuleDay> {
     match (parts.weekday, parts.month_days.count) {
         (Some(term), 0) => nth_form(term),
         (Some(term), _) => window_form(term, parts.month_days),
-        // No day part at all: RFC 5545 section 3.3.10 takes the day from `DTSTART`. A rule
-        // anchored on the 29th of February names nothing in three years of four, which the
-        // evaluation answers `None` to rather than moving to a nearby date.
+        // No day part at all: RFC 5545 section 3.3.10 takes the day from `DTSTART`.
+        // A rule anchored on the 29th of February names nothing in three years of four, which the evaluation answers `None` to rather than moving to a nearby date.
         (None, 0) => Some(RuleDay::DayOfMonth(start.day())),
         (None, 1) => fixed_form(parts.month_days),
         (None, _) => None,
@@ -612,8 +546,7 @@ fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
         4 => NthWeek::Fourth,
         5 => NthWeek::Fifth,
         -1 => NthWeek::Last,
-        // `-2SU` and the rest are legal `RECUR` and name no transition any zone database
-        // generates, so they are a reported gap rather than a form guessed at.
+        // `-2SU` and the rest are legal `RECUR` and name no transition any zone database generates, so they are a reported gap rather than a form guessed at.
         _ => return None,
     };
     Some(RuleDay::Nth {
@@ -624,12 +557,9 @@ fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
 
 /// `BYDAY=SU;BYMONTHDAY=8,..,14` and its two siblings, a weekday inside a window of a week.
 ///
-/// A window of seven consecutive days holds exactly one of each weekday, so the pair names one
-/// date. A window ending at the last day a month can have is read as [`RuleDay::OnOrBefore`]
-/// rather than [`RuleDay::OnOrAfter`], which is the spelling the model documents for it; the
-/// two agree in every month, because a window a short month clips is clipped at that same end
-/// either way. A window of negative days ending at `-1` is the last such weekday, which
-/// [`NthWeek::Last`] already says exactly and in every month length.
+/// A window of seven consecutive days holds exactly one of each weekday, so the pair names one date.
+/// A window ending at the last day a month can have is read as [`RuleDay::OnOrBefore`] rather than [`RuleDay::OnOrAfter`], which is the spelling the model documents for it; the two agree in every month, because a window a short month clips is clipped at that same end either way.
+/// A window of negative days ending at `-1` is the last such weekday, which [`NthWeek::Last`] already says exactly and in every month length.
 fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
     if term.ordinal.is_some() || month_days.count != RUN_LENGTH {
         return None;
@@ -662,18 +592,16 @@ fn fixed_form(month_days: MonthDays) -> Option<RuleDay> {
     if day == -1 {
         return Some(RuleDay::LastDayOfMonth);
     }
-    // Only the last day counts backwards. `-2` names the day before the last one, which the
-    // model has no form for and which no zone definition writes.
+    // Only the last day counts backwards.
+    // `-2` names the day before the last one, which the model has no form for and which no zone definition writes.
     u8::try_from(day).ok().map(RuleDay::DayOfMonth)
 }
 
 /// The last date an `UNTIL` keeps a rule alive, on the observance's own clock.
 ///
-/// RFC 5545 section 3.3.10 requires `UNTIL` to be UTC and section 3.6.5 evaluates an observance
-/// in wall-clock terms, so the two have to be reconciled somewhere. Here, once, against
-/// `TZOFFSETFROM` — the clock still running when the transition arrives. A rule whose end
-/// cannot be placed on that clock is one this crate does not evaluate, rather than one whose
-/// end is quietly dropped and which therefore runs forever.
+/// RFC 5545 section 3.3.10 requires `UNTIL` to be UTC and section 3.6.5 evaluates an observance in wall-clock terms, so the two have to be reconciled somewhere.
+/// Here, once, against `TZOFFSETFROM` — the clock still running when the transition arrives.
+/// A rule whose end cannot be placed on that clock is one this crate does not evaluate, rather than one whose end is quietly dropped and which therefore runs forever.
 fn until_date(value: &[u8], offset_from: UtcOffset) -> Option<CivilDate> {
     let written = DateTimeValue::decode_value(value).ok()?;
     match written {
@@ -701,8 +629,7 @@ fn month_day_number(value: &[u8]) -> Option<i8> {
 
 /// One `BYDAY` entry.
 ///
-/// A list — `BYDAY=SA,SU` — is refused here rather than by a check of its own: whatever precedes
-/// the two-letter name has to be a number, and `SA,` is not one.
+/// A list — `BYDAY=SA,SU` — is refused here rather than by a check of its own: whatever precedes the two-letter name has to be a number, and `SA,` is not one.
 fn weekday_term(value: &[u8]) -> Option<WeekdayTerm> {
     let split = value.len().checked_sub(2)?;
     let (prefix, name) = value.split_at_checked(split)?;
@@ -728,8 +655,7 @@ fn weekday_of(name: &[u8]) -> Option<Weekday> {
 
 /// One optionally signed one- or two-digit number, never zero.
 ///
-/// Zero is refused because every part this reads for excludes it: RFC 5545 section 3.3.10 has
-/// no month zero, no month day zero and no `0SU`.
+/// Zero is refused because every part this reads for excludes it: RFC 5545 section 3.3.10 has no month zero, no month day zero and no `0SU`.
 fn signed_number(bytes: &[u8]) -> Option<i8> {
     let (negative, digits) = match bytes.split_first() {
         Some((&b'-', tail)) => (true, tail),
@@ -757,15 +683,12 @@ fn signed_number(bytes: &[u8]) -> Option<i8> {
 /// Report each identifier a `TZID` parameter names that no definition in `zones` backs.
 ///
 /// Once per identifier rather than once per property, and each report *names* the identifier.
-/// A [`Location`] cannot: an [`crate::internal::core::Property`] owns fresh unfolded octets rather than the
-/// offsets they were read from, so any span this produced would address a buffer the caller
-/// never handed in. Without the name three undefined zones arrived as three diagnostics that
-/// were equal as values, which told a caller that something was missing and not what to find.
+/// A [`Location`] cannot: an [`crate::internal::core::Property`] owns fresh unfolded octets rather than the offsets they were read from, so any span this produced would address a buffer the caller never handed in.
+/// Without the name three undefined zones arrived as three diagnostics that were equal as values, which told a caller that something was missing and not what to find.
 ///
-/// An identifier the caller's own zone-count bound refused is not reported here. The calendar
-/// defines it; what dropped it is in `refused`, and it was reported there under
-/// [`DiagnosticCode::VtimezoneComponentsTruncated`]. Saying instead that the file never defined
-/// it would attribute the caller's policy to the file.
+/// An identifier the caller's own zone-count bound refused is not reported here.
+/// The calendar defines it; what dropped it is in `refused`, and it was reported there under [`DiagnosticCode::VtimezoneComponentsTruncated`].
+/// Saying instead that the file never defined it would attribute the caller's policy to the file.
 fn report_undefined<S: DiagnosticSink + ?Sized>(
     calendar: &Component,
     zones: &VtimezoneSet,
@@ -780,8 +703,7 @@ fn report_undefined<S: DiagnosticSink + ?Sized>(
         for property in component.properties() {
             for parameter in property.parameters_named(b"TZID") {
                 let named = parameter.unquoted();
-                // An empty `TZID` names no zone, which is the reading `ical-core` already gives
-                // it when it declines to make such a value a zoned one.
+                // An empty `TZID` names no zone, which is the reading `ical-core` already gives it when it declines to make such a value a zoned one.
                 if !named.is_empty() && !is_defined(zones, refused, named) {
                     undefined.insert(named);
                 }
@@ -802,21 +724,18 @@ fn report_undefined<S: DiagnosticSink + ?Sized>(
 
 /// Whether `named` is an identifier this calendar defined, compared by exact bytes.
 ///
-/// Defined covers both the definitions that were admitted and the ones the caller's bound
-/// turned back, because both are definitions the file wrote.
+/// Defined covers both the definitions that were admitted and the ones the caller's bound turned back, because both are definitions the file wrote.
 ///
-/// Octets that are not UTF-8 match nothing, because a definition's identifier is text. That is
-/// the refusal [`identifier`] makes at the other end, and for the same reason.
+/// Octets that are not UTF-8 match nothing, because a definition's identifier is text.
+/// That is the refusal [`identifier`] makes at the other end, and for the same reason.
 fn is_defined(zones: &VtimezoneSet, refused: &BTreeSet<Box<str>>, named: &[u8]) -> bool {
     str::from_utf8(named).is_ok_and(|text| zones.table(text).is_some() || refused.contains(text))
 }
 
 /// Offer one diagnostic about this calendar, charging a refusal to `meter`.
 ///
-/// The location is [`Location::NOWHERE`] throughout, and that is a statement rather than an
-/// omission: what this unit reads is a tree of properties owning fresh octets, so any span it
-/// produced would address a buffer the caller never handed in. What a report can carry instead
-/// is the name of the zone it is about, which is `subject`.
+/// The location is [`Location::NOWHERE`] throughout, and that is a statement rather than an omission: what this unit reads is a tree of properties owning fresh octets, so any span it produced would address a buffer the caller never handed in.
+/// What a report can carry instead is the name of the zone it is about, which is `subject`.
 fn report<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
     meter: &mut Meter,
@@ -873,8 +792,7 @@ END:STANDARD
 END:VTIMEZONE
 ";
 
-    /// Europe/Berlin, whose two transitions both happen at 01:00 UTC and are written at
-    /// different local hours because of it.
+    /// Europe/Berlin, whose two transitions both happen at 01:00 UTC and are written at different local hours because of it.
     const BERLIN: &str = "\
 BEGIN:VTIMEZONE
 TZID:Europe/Berlin
@@ -916,8 +834,7 @@ END:VTIMEZONE
 
     /// `America/New_York` written as an explicit table of dates that stops at the end of 2029.
     ///
-    /// The dates are the ones the United States rule actually produces: the second Sunday in
-    /// March and the first Sunday in November of 2027, 2028 and 2029.
+    /// The dates are the ones the United States rule actually produces: the second Sunday in March and the first Sunday in November of 2027, 2028 and 2029.
     const NEW_YORK_DATED: &str = "\
 BEGIN:VTIMEZONE
 TZID:America/New_York
@@ -985,8 +902,7 @@ END:VTIMEZONE
 
     /// The fixture text with the terminators RFC 5545 section 3.1 requires.
     ///
-    /// The fixtures are written with bare line feeds above so they read as the files they were
-    /// copied from, and converted here so the reader is handed conforming octets.
+    /// The fixtures are written with bare line feeds above so they read as the files they were copied from, and converted here so the reader is handed conforming octets.
     fn crlf(text: &str) -> String {
         let mut out = String::new();
         for line in text.lines() {
@@ -1105,10 +1021,8 @@ END:VTIMEZONE
 
     /// How many instants `local` names across `transition`, counted the way a resolver must.
     ///
-    /// A reading under an offset counts only where it lands on the side of the transition that
-    /// offset actually governs. Unit 2 owns the real one; the definition is restated here so
-    /// that what these tests assert is the model this unit built out of a real zone's published
-    /// rules, rather than the resolver agreeing with itself.
+    /// A reading under an offset counts only where it lands on the side of the transition that offset actually governs.
+    /// Unit 2 owns the real one; the definition is restated here so that what these tests assert is the model this unit built out of a real zone's published rules, rather than the resolver agreeing with itself.
     fn readings_of(transition: Observance, local: CivilDateTime) -> usize {
         let Some(moment) = transition.start().at_offset(transition.offset_from()) else {
             return 0;
@@ -1170,8 +1084,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A zone whose daylight saving is half an hour, which a reader that assumed an hour reads
-    /// as an offset nobody wrote.
+    /// A zone whose daylight saving is half an hour, which a reader that assumed an hour reads as an offset nobody wrote.
     #[test]
     fn a_zone_whose_daylight_saving_is_half_an_hour_reads_as_half_an_hour() {
         assert_reads_as(
@@ -1196,8 +1109,7 @@ END:VTIMEZONE
         );
     }
 
-    /// Europe/Berlin moves at 01:00 UTC in both directions and writes two different local hours
-    /// to say so, which is the pair a reader that mixed up the two offsets gets wrong.
+    /// Europe/Berlin moves at 01:00 UTC in both directions and writes two different local hours to say so, which is the pair a reader that mixed up the two offsets gets wrong.
     #[test]
     fn a_zone_that_transitions_at_one_utc_hour_reads_back_as_that_hour() {
         for observance in observances_of(BERLIN, "Europe/Berlin") {
@@ -1211,8 +1123,7 @@ END:VTIMEZONE
         }
     }
 
-    /// The hour that repeats and the hour that does not exist, both derived from what was read
-    /// and both taken from real transitions rather than from this crate's own answer.
+    /// The hour that repeats and the hour that does not exist, both derived from what was read and both taken from real transitions rather than from this crate's own answer.
     #[test]
     fn an_hour_that_repeats_and_an_hour_that_does_not_are_both_in_what_was_read() {
         let eastern = observances_of(NEW_YORK_DATED, "America/New_York");
@@ -1234,8 +1145,7 @@ END:VTIMEZONE
         assert_eq!(readings_of(fall, stamp(2027, 11, 7, 3, 30)), 1);
     }
 
-    /// Lord Howe's fold is thirty minutes wide, so an hour-wide reading of it reports an
-    /// ambiguity at 01:15 where the zone has none.
+    /// Lord Howe's fold is thirty minutes wide, so an hour-wide reading of it reports an ambiguity at 01:15 where the zone has none.
     #[test]
     fn a_half_hour_fold_is_half_an_hour_wide_and_not_an_hour() {
         let howe = observances_of(LORD_HOWE, "Australia/Lord_Howe");
@@ -1286,8 +1196,7 @@ END:VTIMEZONE
         assert!(table.coverage_end() < Some(date(2035, 6, 1)));
     }
 
-    /// A zone whose government moved its rules after 2007 keeps both, and each `UNTIL` is dated
-    /// on the observance's own clock rather than on the UTC one it was written in.
+    /// A zone whose government moved its rules after 2007 keeps both, and each `UNTIL` is dated on the observance's own clock rather than on the UTC one it was written in.
     #[test]
     fn a_zone_that_changed_its_rules_keeps_both_and_dates_each_on_its_own_clock() {
         let (zones, reported) = read(NEW_YORK_BOTH_RULES);
@@ -1344,8 +1253,7 @@ END:VTIMEZONE
         );
     }
 
-    /// Section 3.6.5 requires an observance and files without one exist, so the zone is
-    /// declared, reported, and answers nothing rather than answering UTC.
+    /// Section 3.6.5 requires an observance and files without one exist, so the zone is declared, reported, and answers nothing rather than answering UTC.
     #[test]
     fn a_definition_with_no_observance_is_reported_and_still_a_zone() {
         let (zones, reported) = read("BEGIN:VTIMEZONE\nTZID:Europe/Berlin\nEND:VTIMEZONE\n");
@@ -1395,8 +1303,7 @@ END:VTIMEZONE
         }
     }
 
-    /// The day forms the corpus actually writes, including the two window shapes Exchange and
-    /// older tz database releases emit instead of a `BYDAY` ordinal.
+    /// The day forms the corpus actually writes, including the two window shapes Exchange and older tz database releases emit instead of a `BYDAY` ordinal.
     #[test]
     fn every_day_form_the_corpus_writes_reads_as_the_one_it_names() {
         let cases = [
@@ -1432,8 +1339,7 @@ END:VTIMEZONE
                 RuleDay::DayOfMonth(15),
             ),
             ("freq=yearly;bymonth=3;byday=5su", 3, sunday(NthWeek::Fifth)),
-            // Neither a BYMONTH nor a day part: RFC 5545 section 3.3.10 takes both from
-            // DTSTART, which in this fixture is the 25th of March.
+            // Neither a BYMONTH nor a day part: RFC 5545 section 3.3.10 takes both from DTSTART, which in this fixture is the 25th of March.
             ("FREQ=YEARLY", 3, RuleDay::DayOfMonth(25)),
         ];
         for (written, month, expected) in cases {
@@ -1452,8 +1358,7 @@ END:VTIMEZONE
         }
     }
 
-    /// A `TZID` parameter naming nothing is reported once for the identifier, not once for
-    /// every property that used it.
+    /// A `TZID` parameter naming nothing is reported once for the identifier, not once for every property that used it.
     #[test]
     fn an_identifier_no_definition_backs_is_reported_once() {
         let mut body = String::from(BERLIN);
@@ -1474,8 +1379,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A calendar declaring one zone twice reports it and keeps the first, rather than
-    /// preferring the later definition out of sight.
+    /// A calendar declaring one zone twice reports it and keeps the first, rather than preferring the later definition out of sight.
     #[test]
     fn a_second_definition_of_one_zone_is_reported_and_not_chosen_between() {
         let mut body = String::from(BERLIN);
@@ -1494,8 +1398,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A bound nobody charges is decoration: the table that owns the truncation decision is the
-    /// one that reports it, and this unit calls it rather than repeating it.
+    /// A bound nobody charges is decoration: the table that owns the truncation decision is the one that reports it, and this unit calls it rather than repeating it.
     #[test]
     fn observances_past_the_bound_are_dropped_by_the_table_that_owns_the_decision() {
         let limits = Limits::DEFAULT.with_max_vtimezone_observances(4);
@@ -1514,8 +1417,7 @@ END:VTIMEZONE
         );
     }
 
-    /// The zone-count bound is charged too, and the definitions past it are refused rather than
-    /// admitted.
+    /// The zone-count bound is charged too, and the definitions past it are refused rather than admitted.
     #[test]
     fn a_calendar_declaring_more_zones_than_the_policy_admits_keeps_the_ones_that_fit() {
         let limits = Limits::DEFAULT.with_max_vtimezone_components(1);
@@ -1564,8 +1466,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A definition this crate cannot file anywhere is `None` rather than a zone filed under a
-    /// name nobody wrote.
+    /// A definition this crate cannot file anywhere is `None` rather than a zone filed under a name nobody wrote.
     #[test]
     fn a_definition_with_no_usable_identifier_is_filed_nowhere() {
         let bodies = [
@@ -1583,8 +1484,7 @@ END:VTIMEZONE
         }
     }
 
-    /// An observance with no readable offset contributes nothing and no code of its own, and
-    /// the definition around it is still a zone that carried a subcomponent.
+    /// An observance with no readable offset contributes nothing and no code of its own, and the definition around it is still a zone that carried a subcomponent.
     #[test]
     fn an_observance_with_no_readable_offset_yields_nothing_and_no_code_here() {
         let (zones, reported) = read(
@@ -1600,9 +1500,7 @@ END:VTIMEZONE
 
     /// The two dimensions this unit charges, and the only two a zone definition has.
     ///
-    /// Pinned before the reader existed because `docs/adr/0010`'s argument is that a bound
-    /// nobody charges is decoration: these fields sat in `Limits` through two milestones with
-    /// no charge site at all, and this is the milestone that owes them one.
+    /// Pinned before the reader existed because `docs/adr/0010`'s argument is that a bound nobody charges is decoration: these fields sat in `Limits` through two milestones with no charge site at all, and this is the milestone that owes them one.
     #[test]
     fn the_bounds_this_unit_charges_are_the_two_a_zone_definition_has() {
         let limits = Limits::DEFAULT;

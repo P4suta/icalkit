@@ -4,24 +4,18 @@
 
 //! The types every unit of this crate shares, frozen before any of them was written.
 //!
-//! Nothing here evaluates anything. What it owns is the vocabulary the evaluation is stated in:
-//! the three-valued answer a filter produces, the refusal that ends an evaluation, the
-//! sub-selection result and the witness that says it is not the resource the server stored, the
-//! free-busy report and its bound, and the seam by which a caller hands in a zone source.
+//! Nothing here evaluates anything.
+//! What it owns is the vocabulary the evaluation is stated in:
+//! the three-valued answer a filter produces, the refusal that ends an evaluation, the sub-selection result and the witness that says it is not the resource the server stored, the free-busy report and its bound, and the seam by which a caller hands in a zone source.
 //!
 //! # Why the answer has three values
 //!
-//! [`ADR 0003`](https://github.com/P4suta/icalkit/blob/main/docs/adr/0003-caller-supplied-time-zones.md)
-//! forbids inventing a zone. A floating `DTSTART` compared against a `time-range` has no place
-//! on the timeline until something says which zone to read it in, and if the query carried no
-//! `CALDAV:timezone` and no source recognizes the `TZID`, nothing does. An evaluator that
-//! answered "no match" there would be reporting an absence it never established — a resource
-//! that is in the window would be missing from the `REPORT`, and the client would have no way
-//! to tell that from a resource that is genuinely outside it.
+//! [`ADR 0003`](https://github.com/P4suta/icalkit/blob/main/docs/adr/0003-caller-supplied-time-zones.md) forbids inventing a zone.
+//! A floating `DTSTART` compared against a `time-range` has no place on the timeline until something says which zone to read it in, and if the query carried no `CALDAV:timezone` and no source recognizes the `TZID`, nothing does.
+//! An evaluator that answered "no match" there would be reporting an absence it never established — a resource that is in the window would be missing from the `REPORT`, and the client would have no way to tell that from a resource that is genuinely outside it.
 //!
-//! So [`Match::Undecided`] is a value, it composes through the boolean operators by Kleene's
-//! rules, and it reaches the caller. A server that wants the two-valued answer takes it by
-//! deciding what an undecided resource means to *it*, which is a policy and not a fact.
+//! So [`Match::Undecided`] is a value, it composes through the boolean operators by Kleene's rules, and it reaches the caller.
+//! A server that wants the two-valued answer takes it by deciding what an undecided resource means to *it*, which is a policy and not a fact.
 
 use core::error::Error;
 use core::fmt::{self, Debug, Display, Formatter};
@@ -37,11 +31,8 @@ use crate::internal::tz::{OffsetAnswer, ResolutionPolicy, ZoneAnswer, ZoneSource
 
 /// Whether a resource satisfies a filter, and the answer an evaluator may not invent.
 ///
-/// Three values rather than two, for the reason this module's own documentation gives. The
-/// combinators below are Kleene's strong three-valued logic, which is the reading that makes
-/// "undecided" behave like "one of matched or unmatched and I do not know which": a conjunction
-/// with an unmatched operand is unmatched however undecided the other one was, because no
-/// reading of the undecided operand could have rescued it.
+/// Three values rather than two, for the reason this module's own documentation gives.
+/// The combinators below are Kleene's strong three-valued logic, which is the reading that makes "undecided" behave like "one of matched or unmatched and I do not know which": a conjunction with an unmatched operand is unmatched however undecided the other one was, because no reading of the undecided operand could have rescued it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Match {
     /// The filter is satisfied.
@@ -63,8 +54,8 @@ impl Match {
         }
     }
 
-    /// Whether the filter is satisfied. `false` for an undecided answer, which is why no
-    /// caller should route a decision through it without reading [`Match::undecided`] first.
+    /// Whether the filter is satisfied.
+    /// `false` for an undecided answer, which is why no caller should route a decision through it without reading [`Match::undecided`] first.
     #[must_use]
     pub const fn is_matched(self) -> bool {
         matches!(self, Self::Matched)
@@ -81,10 +72,8 @@ impl Match {
 
     /// Both, as RFC 4791 section 9.7.1 composes the tests inside one filter.
     ///
-    /// An unmatched operand decides the conjunction whatever the other one was: every reading
-    /// of an undecided operand leaves the conjunction unmatched, so the answer is a fact rather
-    /// than a guess. Two undecided operands keep the first one's reason, because a caller
-    /// reading one reason acts the same way on either.
+    /// An unmatched operand decides the conjunction whatever the other one was: every reading of an undecided operand leaves the conjunction unmatched, so the answer is a fact rather than a guess.
+    /// Two undecided operands keep the first one's reason, because a caller reading one reason acts the same way on either.
     #[must_use]
     pub const fn and(self, other: Self) -> Self {
         match (self, other) {
@@ -98,8 +87,7 @@ impl Match {
 
     /// Either, as RFC 4791 section 9.7.1 composes the sibling filters of one component.
     ///
-    /// The dual of [`Match::and`]: a matched operand decides the disjunction whatever the other
-    /// one was.
+    /// The dual of [`Match::and`]: a matched operand decides the disjunction whatever the other one was.
     #[must_use]
     pub const fn or(self, other: Self) -> Self {
         match (self, other) {
@@ -113,8 +101,8 @@ impl Match {
 
     /// The negation `CALDAV:is-not-defined` and a `text-match`'s `negate-condition` take.
     ///
-    /// An undecided answer negates to itself. Negating it to "matched" would be the same
-    /// invention the third value exists to refuse, one operator further along.
+    /// An undecided answer negates to itself.
+    /// Negating it to "matched" would be the same invention the third value exists to refuse, one operator further along.
     #[must_use]
     pub const fn negate(self) -> Self {
         match self {
@@ -127,58 +115,49 @@ impl Match {
 
 /// Why a filter could not be decided.
 ///
-/// Every variant is a question the evaluator was asked and could not answer without inventing
-/// something — a zone, a value, or work past the caller's budget. None of them is a fault in
-/// the resource or in the query.
+/// Every variant is a question the evaluator was asked and could not answer without inventing something — a zone, a value, or work past the caller's budget.
+/// None of them is a fault in the resource or in the query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Undecided {
     /// A floating value had to be placed on a timeline and the query stated no zone.
     ///
-    /// RFC 4791 section 9.9 makes `CALDAV:timezone` the zone a floating `time-range` comparison
-    /// is made in, and permits a query to carry none.
+    /// RFC 4791 section 9.9 makes `CALDAV:timezone` the zone a floating `time-range` comparison is made in, and permits a query to carry none.
     ZoneUnstated,
     /// A value named a `TZID` that no source the caller supplied recognizes.
     ZoneUnknown,
     /// A wall clock fell in a gap or a fold and the caller's policy dropped it.
     ///
-    /// Distinct from an unknown zone: the zone answered, and what it answered was "this local
-    /// time names no instant" or "it names two". Which one to take is a caller's policy
-    /// ([`ResolutionPolicy`]), and a policy that declines to choose leaves the comparison with
-    /// no instant to make.
+    /// Distinct from an unknown zone: the zone answered, and what it answered was "this local time names no instant" or "it names two".
+    /// Which one to take is a caller's policy ([`ResolutionPolicy`]), and a policy that declines to choose leaves the comparison with no instant to make.
     ZoneAmbiguous,
     /// A recurrence search reached its budget before it reached the end of the window.
     ///
-    /// The resource may or may not have an occurrence inside the window; the search stopped
-    /// before it could say. `docs/adr/0002` makes this a reported outcome rather than a
-    /// truncated answer, and this is that outcome one layer up.
+    /// The resource may or may not have an occurrence inside the window; the search stopped before it could say.
+    /// `docs/adr/0002` makes this a reported outcome rather than a truncated answer, and this is that outcome one layer up.
     SearchExhausted,
     /// A value the comparison needs was present and did not decode.
     ValueUnreadable,
     /// RFC 4791 section 9.9 states no overlap rule for the component this filter named.
     ///
-    /// The table is per component type and closed. A `time-range` on a component outside it —
-    /// a `VTIMEZONE`, or a component type this workspace has no reading for — is a question
-    /// section 9.9 does not define an answer to, and guessing one would make this crate
-    /// disagree with a conformant server about which resources a query returns.
+    /// The table is per component type and closed.
+    /// A `time-range` on a component outside it —
+    /// a `VTIMEZONE`, or a component type this workspace has no reading for — is a question section 9.9 does not define an answer to, and guessing one would make this crate disagree with a conformant server about which resources a query returns.
     OverlapUndefined,
 }
 
 impl Undecided {
     /// The code every reason travels to a diagnostic sink under.
     ///
-    /// One code for all six: a caller acts on "the answer is not a fact" and the reason is prose
-    /// beside it. Splitting it into six codes would freeze six meanings (`docs/adr/0009`) to say
-    /// one thing. An associated constant rather than a method, because it does not depend on
-    /// which reason it is and a method taking `self` would suggest that it might.
+    /// One code for all six: a caller acts on "the answer is not a fact" and the reason is prose beside it.
+    /// Splitting it into six codes would freeze six meanings (`docs/adr/0009`) to say one thing.
+    /// An associated constant rather than a method, because it does not depend on which reason it is and a method taking `self` would suggest that it might.
     pub const CODE: DiagnosticCode = DiagnosticCode::QueryFilterUndecidable;
 
     /// The reason an incomplete recurrence search gives, or `None` when it was complete.
     ///
-    /// The one place `ical-recur`'s terminal state crosses into this crate's answer. A search
-    /// that stopped at its budget did not establish that the resource has no occurrence in the
-    /// window; it established that it did not find one before it ran out, and those are
-    /// different claims (`docs/adr/0002`).
+    /// The one place `ical-recur`'s terminal state crosses into this crate's answer.
+    /// A search that stopped at its budget did not establish that the resource has no occurrence in the window; it established that it did not find one before it ran out, and those are different claims (`docs/adr/0002`).
     #[must_use]
     pub const fn of_search(outcome: SearchOutcome) -> Option<Self> {
         if outcome.is_complete() {
@@ -210,8 +189,8 @@ impl Display for Undecided {
 
 /// A refusal that ends an evaluation.
 ///
-/// Nothing here is recoverable by ignoring it, which is the split `docs/adr/0009` draws and
-/// `ical-dav`'s `DavError` draws one layer down. An undecidable comparison is *not* an error:
+/// Nothing here is recoverable by ignoring it, which is the split `docs/adr/0009` draws and `ical-dav`'s `DavError` draws one layer down.
+/// An undecidable comparison is *not* an error:
 /// it is [`Match::Undecided`], and it travels as an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -220,27 +199,20 @@ pub enum QueryError {
     Limit(LimitExceeded),
     /// A filter states a condition and its own negation, RFC 4791 section 9.7.1.
     ///
-    /// `ical-dav` can represent such a filter and reports it through `is_contradictory`; this
-    /// crate refuses to evaluate one, because a component that is not defined has no time range
-    /// and no properties and there is no answer to give.
+    /// `ical-dav` can represent such a filter and reports it through `is_contradictory`; this crate refuses to evaluate one, because a component that is not defined has no time range and no properties and there is no answer to give.
     Contradictory,
     /// The filter names a collation this crate does not implement, RFC 4791 section 7.5.
     ///
-    /// A server answers this with the `CALDAV:supported-collation` precondition rather than
-    /// falling back to a collation the client did not ask for, because a substring test under
-    /// the wrong collation silently returns the wrong resources.
+    /// A server answers this with the `CALDAV:supported-collation` precondition rather than falling back to a collation the client did not ask for, because a substring test under the wrong collation silently returns the wrong resources.
     UnsupportedCollation,
     /// A `CALDAV:comp` selection states "every property" and names properties beside it.
     ///
-    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two
-    /// halves of each pair are alternatives and a value holding both is one no body expresses.
+    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two halves of each pair are alternatives and a value holding both is one no body expresses.
     SelectionContradiction,
     /// A calendar this crate had to build could not be written back as iCalendar.
     ///
-    /// Sub-selection and expansion both construct a calendar rather than copying one, and
-    /// `docs/adr/0001` requires what comes out to be a document that serializes. A value that
-    /// cannot be spelled — an instant outside the four-digit years RFC 5545 section 3.3.5
-    /// writes, say — is refused rather than clamped to one that can.
+    /// Sub-selection and expansion both construct a calendar rather than copying one, and `docs/adr/0001` requires what comes out to be a document that serializes.
+    /// A value that cannot be spelled — an instant outside the four-digit years RFC 5545 section 3.3.5 writes, say — is refused rather than clamped to one that can.
     Unrepresentable,
 }
 
@@ -276,11 +248,10 @@ impl Error for QueryError {}
 /// The comparison one `CALDAV:text-match` is made under, RFC 4791 section 7.5.
 ///
 /// A crate-owned classification of `ical-dav`'s [`Collation`] rather than that type re-used,
-/// because the two answer different questions. `Collation` records what the peer wrote,
-/// extension names included, so a request survives a read and a re-encode. This records what
-/// this crate can actually compare with, and the mapping between them is total in one direction
-/// only: a collation with no row here is [`QueryError::UnsupportedCollation`], which is the
-/// answer RFC 4791 section 7.5.1 gives it.
+/// because the two answer different questions.
+/// `Collation` records what the peer wrote,
+/// extension names included, so a request survives a read and a re-encode.
+/// This records what this crate can actually compare with, and the mapping between them is total in one direction only: a collation with no row here is [`QueryError::UnsupportedCollation`], which is the answer RFC 4791 section 7.5.1 gives it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Collator {
     /// `i;ascii-casemap`, the default: case-folded over ASCII and octet-exact elsewhere.
@@ -293,10 +264,8 @@ pub enum Collator {
 impl Collator {
     /// The comparison this crate makes for `collation`, or `None` for one it does not make.
     ///
-    /// `None` and never a fallback. A substring test run under a collation the client did not
-    /// ask for returns a different set of resources, silently, and RFC 4791 section 7.5.1 gives
-    /// a server the `CALDAV:supported-collation` precondition precisely so it does not have to
-    /// guess.
+    /// `None` and never a fallback.
+    /// A substring test run under a collation the client did not ask for returns a different set of resources, silently, and RFC 4791 section 7.5.1 gives a server the `CALDAV:supported-collation` precondition precisely so it does not have to guess.
     #[must_use]
     pub fn of(collation: &Collation) -> Option<Self> {
         match *collation {
@@ -318,10 +287,9 @@ impl Collator {
 
 /// What a sub-selection or an expansion left out of the resource it was taken from.
 ///
-/// The witness that `docs/adr/0001`'s round trip is broken on purpose. Nothing about the octets
-/// of a reduced calendar says they are a reduction — they are well-formed iCalendar — so a
-/// caller that wrote them back would delete whatever was left out. This value travels beside
-/// them, and [`DiagnosticCode::QueryCalendarDataReduced`] travels to the sink.
+/// The witness that `docs/adr/0001`'s round trip is broken on purpose.
+/// Nothing about the octets of a reduced calendar says they are a reduction — they are well-formed iCalendar — so a caller that wrote them back would delete whatever was left out.
+/// This value travels beside them, and [`DiagnosticCode::QueryCalendarDataReduced`] travels to the sink.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reduction {
     /// `CALDAV:comp` or `CALDAV:prop` kept a subtree rather than the whole object.
@@ -359,9 +327,8 @@ impl Reduction {
 
 /// The calendar a `CALDAV:calendar-data` request asks to be returned, and what it is not.
 ///
-/// The two are one value because separating them is how the second gets dropped. A function
-/// answering a bare `Document` would hand a caller something indistinguishable from the stored
-/// resource, and the caller would write it back.
+/// The two are one value because separating them is how the second gets dropped.
+/// A function answering a bare `Document` would hand a caller something indistinguishable from the stored resource, and the caller would write it back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Selection {
     /// The calendar to return.
@@ -394,8 +361,7 @@ impl Selection {
 
     /// The calendar, given up along with the witness.
     ///
-    /// Named rather than a `From` impl, so that discarding the reduction is something a reader
-    /// of the call site sees happening.
+    /// Named rather than a `From` impl, so that discarding the reduction is something a reader of the call site sees happening.
     #[must_use]
     pub fn into_calendar(self) -> Document {
         self.calendar
@@ -431,9 +397,7 @@ impl BusyType {
 
     /// Classify an `FBTYPE` value, or `None` for one section 3.2.9 does not define.
     ///
-    /// `None` rather than a default, because an `FBTYPE` this crate has no row for is an
-    /// extension whose meaning is the extender's, and reading it as `BUSY` would report time as
-    /// unavailable on a guess.
+    /// `None` rather than a default, because an `FBTYPE` this crate has no row for is an extension whose meaning is the extender's, and reading it as `BUSY` would report time as unavailable on a guess.
     #[must_use]
     pub fn parse(value: &[u8]) -> Option<Self> {
         [Self::Busy, Self::Unavailable, Self::Tentative, Self::Free]
@@ -469,9 +433,7 @@ impl BusyPeriod {
 
 /// The answer to a `CALDAV:free-busy-query`, RFC 4791 section 7.10.
 ///
-/// Bounded by `Limits::max_freebusy_periods`, which is charged on the way in rather than
-/// checked at the end: a report is generated from a whole collection, so the number of periods
-/// is chosen by the data and not by the request.
+/// Bounded by `Limits::max_freebusy_periods`, which is charged on the way in rather than checked at the end: a report is generated from a whole collection, so the number of periods is chosen by the data and not by the request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FreeBusyReport {
     /// The periods, in the order they were pushed.
@@ -501,9 +463,7 @@ impl FreeBusyReport {
 
     /// Record one more busy period, charging the caller's ledger for holding it.
     ///
-    /// An empty period is dropped rather than charged: RFC 5545 section 3.8.2.6 writes a
-    /// `FREEBUSY` value as a period with a positive duration, and a zero-width one states no
-    /// busy time for anybody to read.
+    /// An empty period is dropped rather than charged: RFC 5545 section 3.8.2.6 writes a `FREEBUSY` value as a period with a positive duration, and a zero-width one states no busy time for anybody to read.
     pub fn push(&mut self, period: BusyPeriod, meter: &mut Meter) -> Result<(), QueryError> {
         if period.is_empty() {
             return Ok(());
@@ -529,8 +489,8 @@ impl FreeBusyReport {
 
     /// Whether a bound stopped this report short of the collection.
     ///
-    /// A truncated report states less busy time than the collection holds, and a caller reading
-    /// the gap as free would double-book somebody. It is a field rather than an inference,
+    /// A truncated report states less busy time than the collection holds, and a caller reading the gap as free would double-book somebody.
+    /// It is a field rather than an inference,
     /// because a list of periods cannot say what is missing from it.
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
@@ -540,15 +500,12 @@ impl FreeBusyReport {
 
 /// The zone answers an evaluation may use, and the one door it may ask through.
 ///
-/// `docs/adr/0003` puts the zone data outside this workspace and the resolution policy in the
-/// caller's hands. This is the seam that carries both into an evaluation: the source, the zone
-/// a `CALDAV:timezone` on the query stated (RFC 4791 section 9.5), and the policy for the two
-/// wall clocks a zone does not answer uniquely.
+/// `docs/adr/0003` puts the zone data outside this workspace and the resolution policy in the caller's hands.
+/// This is the seam that carries both into an evaluation: the source, the zone a `CALDAV:timezone` on the query stated (RFC 4791 section 9.5), and the policy for the two wall clocks a zone does not answer uniquely.
 ///
-/// It deliberately has no fallback. There is no "assume UTC", no "use the system zone" and no
-/// constructor that omits the source, because every one of those is the invention ADR 0003
-/// exists to refuse. A question this cannot answer comes back as an [`Undecided`], which the
-/// caller sees.
+/// It deliberately has no fallback.
+/// There is no "assume UTC", no "use the system zone" and no constructor that omits the source, because every one of those is the invention ADR 0003 exists to refuse.
+/// A question this cannot answer comes back as an [`Undecided`], which the caller sees.
 #[derive(Clone, Copy)]
 pub struct Zones<'a> {
     /// Where zone answers come from.
@@ -572,10 +529,7 @@ impl<'a> Zones<'a> {
 
     /// The same seam with the zone a `calendar-query`'s `CALDAV:timezone` stated.
     ///
-    /// The identifier rather than the `VTIMEZONE`: reading that component into a source is
-    /// `ical-tz`'s job and the caller's call, because a query's inline zone and the server's own
-    /// database legitimately disagree and choosing between them is the policy ADR 0003 leaves
-    /// with the caller.
+    /// The identifier rather than the `VTIMEZONE`: reading that component into a source is `ical-tz`'s job and the caller's call, because a query's inline zone and the server's own database legitimately disagree and choosing between them is the policy ADR 0003 leaves with the caller.
     #[must_use]
     pub const fn with_query_zone(self, tzid: &'a str) -> Self {
         Self {
@@ -610,9 +564,8 @@ impl<'a> Zones<'a> {
 
     /// Which zone a value written with `tzid` is read in.
     ///
-    /// A value that named one is read in that one. A floating value is read in the zone the
-    /// query stated, and if the query stated none there is no answer at all — which is
-    /// [`Undecided::ZoneUnstated`] and never UTC.
+    /// A value that named one is read in that one.
+    /// A floating value is read in the zone the query stated, and if the query stated none there is no answer at all — which is [`Undecided::ZoneUnstated`] and never UTC.
     pub const fn zone_for(self, tzid: Option<&'a str>) -> Result<&'a str, Undecided> {
         match tzid {
             Some(named) => Ok(named),
@@ -625,10 +578,8 @@ impl<'a> Zones<'a> {
 
     /// What a wall clock names under the zone a value written with `tzid` is read in.
     ///
-    /// The whole of the floating-value question in one call: which zone applies, whether the
-    /// source recognizes it, and what it answered. Turning the answer into an instant is the
-    /// caller's, because a gap and a fold are read differently by different units and
-    /// [`Zones::policy`] is what they read them with.
+    /// The whole of the floating-value question in one call: which zone applies, whether the source recognizes it, and what it answered.
+    /// Turning the answer into an instant is the caller's, because a gap and a fold are read differently by different units and [`Zones::policy`] is what they read them with.
     pub fn resolve(
         self,
         tzid: Option<&'a str>,
@@ -655,9 +606,8 @@ impl<'a> Zones<'a> {
 
 impl Debug for Zones<'_> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        // The source is a caller's trait object with no `Debug` bound on it, and adding one
-        // would exclude every source that does not carry it. What a reader debugging an
-        // evaluation wants is which zone the query stated and how gaps and folds are read.
+        // The source is a caller's trait object with no `Debug` bound on it, and adding one would exclude every source that does not carry it.
+        // What a reader debugging an evaluation wants is which zone the query stated and how gaps and folds are read.
         formatter
             .debug_struct("Zones")
             .field("query_zone", &self.query_zone)
@@ -668,10 +618,8 @@ impl Debug for Zones<'_> {
 
 /// The bounds and the ledger every entry point of this crate takes, in one value.
 ///
-/// `docs/adr/0010` requires both at every hostile-input door, and an evaluation is a door: the
-/// filter came off the wire, the resource came out of a store somebody else writes to, and the
-/// zone source is the caller's. Passing them as one borrow rather than as two arguments is what
-/// keeps a unit from acquiring a `Limits` of its own halfway down a call chain.
+/// `docs/adr/0010` requires both at every hostile-input door, and an evaluation is a door: the filter came off the wire, the resource came out of a store somebody else writes to, and the zone source is the caller's.
+/// Passing them as one borrow rather than as two arguments is what keeps a unit from acquiring a `Limits` of its own halfway down a call chain.
 #[derive(Debug)]
 pub struct Budget<'a> {
     /// The policy this evaluation is bounded by.
@@ -689,9 +637,7 @@ impl<'a> Budget<'a> {
 
     /// Whether the ledger has already refused a charge.
     ///
-    /// Exhaustion latches, so an evaluation that reads `true` here has an answer that is at best
-    /// truncated and should be reported as [`Undecided::SearchExhausted`] rather than as a
-    /// resource that does not match.
+    /// Exhaustion latches, so an evaluation that reads `true` here has an answer that is at best truncated and should be reported as [`Undecided::SearchExhausted`] rather than as a resource that does not match.
     #[must_use]
     pub fn is_exhausted(&self) -> bool {
         self.meter.is_exhausted()
