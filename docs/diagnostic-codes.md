@@ -1,90 +1,40 @@
 # Diagnostic codes
 
-`DiagnosticCode` is one vocabulary for the whole workspace, and
-[ADR 0009](adr/0009-error-and-diagnostic-model.md) freezes each code's meaning as hard as its
-name: a variant may be added, and the meaning of one that already exists may not be edited
-without a rename or a deprecation.
-[ADR 0006](adr/0006-conformance-corpus-as-artifact.md)'s corpus asserts "this input produces
-this code, on this channel" across releases, and an edited meaning or a retuned channel breaks
-that claim while every variant and every doc comment sits still.
+The [diagnostic decision](adr/0009-error-and-diagnostic-model.md) keeps each diagnostic key and its meaning stable.
+A changed meaning requires a rename or deprecation.
+The [conformance decision](adr/0006-conformance-corpus-as-artifact.md) requires cases for diagnostic outcomes and channels.
 
-This file is the golden list that makes the freeze enforceable rather than merely documented.
-`just codes` reads it and `crates/icalkit/src/internal/core/grammar/report.rs`, and nothing else,
-with the same
-hand-rolled scan `just purity` uses and for the same reason: the tool that enforces "the core
-has no outside dependencies" may not acquire one.
+`just codes` compares the table with the declarations in `crates/icalkit/src/internal/core/grammar/report.rs`.
+The gate checks keys, meanings, row order, channels, and milestone names.
+Emitter behavior requires conformance tests alongside the registry check.
 
-## The columns
+## Contract fields
 
-- **code** — the `DiagnosticCode::as_str` key. That key, not the variant name, is what a
-  conformance case names and what this table is keyed on. Rows are in declaration order, and
-  the gate checks that they are, so a reordering is a diff nobody has to notice by eye.
-- **meaning** — the first paragraph of the variant's doc comment, verbatim. It is written
-  twice on purpose. The gate fails unless the two copies agree, so editing a meaning means
-  editing this file too, which is the review a frozen meaning is owed. Improving the prose
-  *below* the first paragraph stays free; the first paragraph is the meaning.
-- **channel** — the `Severity` the emitter passes. A severity retune changes what one input
-  does to a strict caller while every variant and doc comment sits still, which is why the
-  channel is a column here and not a remark in a doc comment. Every `Severity` must be carried
-  by at least one code, so a severity cannot sit in the enum with nothing traveling on it.
-- **milestone** — the milestone in [ROADMAP.md](../ROADMAP.md) that owns the emission site.
+The `code` field contains the key returned by `DiagnosticCode::as_str`.
+The `meaning` field contains the first paragraph of the variant's source comment.
+Each meaning stays unchanged inside the [literal registry block](adr/diagnostic-meanings-as-literal-data.md).
+The gate compares the literal contents without changing the source sentence.
 
-## Notes rather than violations
+The `channel` field names the `Severity` used by the emitter.
+Changing the channel can change how callers handle the same input.
+Every declared severity must appear in the registry.
 
-Seventeen codes travel on `Severity::Note`, and each is a case where the input is legal and the
-caller still needs telling. RFC 6868 section 2 requires an undefined caret pair to be left
-exactly as it is. RFC 5545 section 3.2.20 permits a `VALUE` type this workspace has no decoder
-for, so not knowing one is a gap here rather than a fault in the file. Section 3.3.10 requires
-a recurrence instance whose date does not exist to be ignored rather than moved. A rule part
-section 3.3.10 does not define is indistinguishable from one a later specification adds, and
-the rest of the rule still expands. An `EXDATE` colliding with a `RECURRENCE-ID` and an
-override moving a start out of the window it was generated in are both this project's stated
-precedence rather than anyone's violation. A rule with neither `COUNT` nor `UNTIL` runs out of
-calendar at the end of 9999 because section 3.3.4 writes four digits, which is a complete answer
-the rule does not explain and the caller cannot get more of. A local time that occurs twice does occur, and
-choosing between the two is a caller's policy rather than a repair. Two zone sources that
-disagree are each internally consistent, and neither is the one that violated something. An
-observance rule this workspace does not evaluate in closed form is a gap here rather than a
-fault in the file, and a zone asked about a year past the last transition it knows — or about
-one before its first — is a legal question put to a legal file. RFC 4918 section 17 requires a
-reader to tolerate the elements a server extended its bodies with, and RFC 4791 section 9.6
-explicitly permits a server to omit the `CR` of a `CRLF` inside `calendar-data`, so a skipped
-foreign element and a folded line ending are both legal documents a caller still has to be told
-about — the second because the octets it holds are no longer the ones the server stored, which
-is what makes writing them back a silent edit. A property kept as octets and a payload copied
-rather than borrowed are this crate reporting the limits of its own model and its own
-allocation. A caller enforcing strictness rejects on `Severity::Violation`,
-and would reject half the calendars in the world if it also rejected on `Severity::Note`.
+The `milestone` field records the implementation milestone from [ROADMAP.md](../ROADMAP.md).
+Milestones describe implementation responsibility, including emitters added after the initial calendar parser.
 
-## Codes with no M0 emitter
+## Notes and violations
 
-Every row whose milestone is not `M0` is a code this workspace declares today and does not
-emit yet. Two of those absences are worth naming, because both look like dead API to anyone
-reading the grammar layer alone and neither is:
+A note describes supported preservation or behavior that requires caller policy.
+Examples include unknown value types, undefined caret escapes, ambiguous local times, and foreign protocol elements.
+Violations cover malformed known data and the project's strict formatting rules.
+Strict promotion enforces the [recommended physical line limit](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.1) as project policy.
+The limit is 75 octets, excluding line endings.
+Strict promotion rejects violations and keeps notes with successfully validated values.
+Resource failures use the channels defined by the diagnostic and allocation decisions.
 
-- `Severity::LimitReached` is carried by three codes, `recurrence-budget-exhausted`,
-  `vtimezone-observances-truncated` and `vtimezone-components-truncated`, which belong to M1
-  and M2. Nothing in M0 emits any of them,
-  and nothing in M0 is supposed to: ADR 0009
-  routes M0's limit breaches to `ParseError`, because the alternative is a truncated value,
-  which writes back fewer bytes than it read and contradicts
-  [ADR 0001](adr/0001-lossless-round-trip.md). The severity is unbuilt, not unused.
-- `Diagnostic::at_instant` has no M0 caller either. It exists for diagnostics about an
-  occurrence that exists at no offset in any file: `nonexistent-recurrence-instance` in M1,
-  and `ambiguous-local-time`, `nonexistent-local-time`, and `time-zone-source-disagreement`
-  in M2.
+## Registry data
 
-## What this list does not prove
-
-ADR 0009 records the gap and this file does not close it: the gate proves that the table and
-the declarations agree, and nothing yet proves that either agrees with the emission sites. A
-code can carry a row, a channel, and a milestone, and still be emitted by nobody or emitted on
-the other channel. Deriving one artifact from the other is the real fix and is not here. The
-milestone column is the honest half of the answer — it says which milestone owes the emitter,
-so an unemitted code reads as unbuilt work rather than as a mystery.
-
-## The table
-
+```text
 | code | meaning | channel | milestone |
 | --- | --- | --- | --- |
 | invalid-utf8-text | Text that a typed view had to decode was not valid UTF-8. The octets are preserved. | Violation | M0 |
@@ -175,3 +125,4 @@ so an unemitted code reads as unbuilt work rather than as a mystery.
 | dav-sync-token-withheld | A synchronization token was withheld because the answer it arrived with was truncated. | LimitReached | M4 |
 | query-calendar-data-reduced | A `calendar-data` selection returned a calendar that is not the one the server stored. | Note | M5 |
 | query-filter-undecidable | A filter could not be decided, so the resource was neither matched nor excluded. | Note | M5 |
+```

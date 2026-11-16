@@ -2674,20 +2674,31 @@ impl Row {
     }
 }
 
-/// The rows of the golden list's table.
-///
-/// A hand-rolled scan rather than a Markdown parser, for the reason [`declared_dependencies`] gives about manifests.
-/// The table is the first one in the file, and its header is checked rather than skipped: the cells are read by position, so swapping two columns would redefine every row at once and change nothing a reader would notice.
-///
-/// Structure is the error channel and content is the diagnostic one, which is the split the crates themselves make: a table this cannot read at all is one message about the file rather than one message per row of it.
+/// Read the diagnostic registry's table from its fenced text block.
 fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
+    let mut lines = document.lines();
+    if !lines.by_ref().any(|line| line == "```text") {
+        return Err(format!(
+            "{GOLDEN_LIST}: no fenced text block contains the registry"
+        ));
+    }
     let mut rows = Vec::new();
     let mut header: Option<Vec<String>> = None;
     let mut in_table = false;
+    let mut closed = false;
 
-    for line in document.lines() {
+    for line in lines.by_ref() {
+        if line == "```" {
+            closed = true;
+            break;
+        }
         match table_cells(line) {
-            None if in_table => break,
+            None if in_table && !line.trim().is_empty() => {
+                return Err(format!(
+                    "{GOLDEN_LIST}: unexpected content in the registry block"
+                ));
+            },
+            None if in_table => {},
             None => header = None,
             Some(cells) if in_table => rows.push(Row::read(&cells)?),
             Some(cells) if is_rule_row(&cells) => {
@@ -2698,6 +2709,16 @@ fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
         }
     }
 
+    if !closed {
+        return Err(format!(
+            "{GOLDEN_LIST}: the registry text block has no closing fence"
+        ));
+    }
+    if lines.any(|line| line == "```text") {
+        return Err(format!(
+            "{GOLDEN_LIST}: multiple text blocks compete for the registry"
+        ));
+    }
     if !in_table {
         return Err(format!(
             "{GOLDEN_LIST}: no `{columns}` table was found, so the declarations would have been \
@@ -4456,10 +4477,12 @@ impl DiagnosticCode {
 
 Prose, and a `|` in it, above the table.
 
+```text
 | code | meaning | channel | milestone |
 | --- | --- | --- | --- |
 | missing-value-separator | A content line carried no `:`, so it has a name and no value. | Violation | M0 |
 | undefined-caret-escape | A `^` was followed by an octet RFC 6868 gives no meaning. | Note | M0 |
+```
 ";
 
     /// The sample list with one substring rewritten, which is how a drift case is written.
@@ -4474,9 +4497,34 @@ Prose, and a `|` in it, above the table.
     /// The sample list with the row an added code would arrive with.
     fn golden_with_added_row() -> String {
         format!(
-            "{SAMPLE_GOLDEN}| unmatched-end | An `END` arrived with no `BEGIN` open. | Violation \
-             | M0 |\n"
+            "{}| unmatched-end | An `END` arrived with no `BEGIN` open. | Violation \
+             | M0 |\n```\n",
+            SAMPLE_GOLDEN.strip_suffix("```\n").unwrap()
         )
+    }
+
+    #[test]
+    fn registry_tables_require_a_closed_literal_block() {
+        let unquoted = SAMPLE_GOLDEN.replace("```text\n", "").replace("```\n", "");
+        assert!(golden_rows(&unquoted).is_err());
+        let unclosed = SAMPLE_GOLDEN.strip_suffix("```\n").unwrap();
+        assert!(golden_rows(unclosed).is_err());
+    }
+
+    #[test]
+    fn registry_tables_ignore_prose_tables_outside_the_literal_block() {
+        let source =
+            format!("| unrelated | table |\n| --- | --- |\n| data | data |\n\n{SAMPLE_GOLDEN}");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &source),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn registry_tables_reject_multiple_authoritative_blocks() {
+        let source = format!("{SAMPLE_GOLDEN}\n{SAMPLE_GOLDEN}");
+        assert!(golden_rows(&source).is_err());
     }
 
     #[test]
@@ -4632,10 +4680,12 @@ Prose, and a `|` in it, above the table.
     #[test]
     fn rows_out_of_declaration_order_are_a_violation() {
         let golden = "\
+```text
 | code | meaning | channel | milestone |
 | --- | --- | --- | --- |
 | undefined-caret-escape | A `^` was followed by an octet RFC 6868 gives no meaning. | Note | M0 |
 | missing-value-separator | A content line carried no `:`, so it has a name and no value. | Violation | M0 |
+```
 ";
         let violations = codes_violations(SAMPLE_DECLARATIONS, golden);
         assert!(
