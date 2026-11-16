@@ -8,11 +8,13 @@ use core::str;
 use crate::internal::core::codec::{
     RequestStatus, TextSyntax, decode_single_scalar_text, is_text_value,
 };
+use crate::internal::core::language::is_language_tag;
 use crate::internal::core::mailto::is_mailto_uri;
 use crate::internal::core::{
     BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
-    Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
-    TextValue, UriValue, UtcOffset, ValueType, is_iana_token,
+    Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, LimitExceeded, Meter, Parameter,
+    Period, Property, PropertyId, TextValue, UriValue, UtcOffset, ValueType, is_iana_token,
+    parameter_is_representable, parameter_needs_quoting,
 };
 
 use crate::ResourcePolicy;
@@ -116,7 +118,9 @@ pub(crate) fn parse_calendar(
         .map(Issue::from_diagnostic)
         .collect();
     issues.extend(recurrence_issues);
-    validate_document_shape(&document, &mut issues);
+    if validate_document_shape(&document, meter, &mut issues).is_err() {
+        return Err(Error::new("icalkit.parse.resource-limit", issues));
+    }
     if issues
         .iter()
         .any(|issue| issue.is_error() || issue.is_warning())
@@ -212,7 +216,11 @@ fn recurrence_matches_start(component: &Component, rule: &RecurrenceRule) -> boo
     }
 }
 
-fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
+fn validate_document_shape(
+    document: &Document,
+    meter: &mut Meter,
+    issues: &mut Vec<Issue>,
+) -> Result<(), LimitExceeded> {
     let mut calendars = document.components();
     let first = calendars.next();
     if first.is_none_or(|component| !component.is_named(b"VCALENDAR"))
@@ -223,7 +231,7 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
             .any(|item| item.as_property().is_some())
     {
         issues.push(Issue::error("icalkit.validation.calendar-shape"));
-        return;
+        return Ok(());
     }
     if first.is_some_and(|calendar| !names_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-name"));
@@ -268,11 +276,13 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time-list"));
     }
     if let Some(calendar) = first {
+        validate_descriptive_parameters(calendar, meter, issues)?;
         validate_component_structure(calendar, issues);
         validate_required_starts(calendar, issues);
         validate_alarms(calendar, issues);
         validate_time_relationships(calendar, issues);
     }
+    Ok(())
 }
 
 fn names_are_valid(component: &Component) -> bool {
@@ -498,6 +508,92 @@ enum UriParameterSyntax {
     Uri,
     Mailto,
     UriList,
+}
+
+fn validate_descriptive_parameters(
+    component: &Component,
+    meter: &mut Meter,
+    issues: &mut Vec<Issue>,
+) -> Result<(), LimitExceeded> {
+    let Some(kind) = component.kind() else {
+        return Ok(());
+    };
+    for property in component.properties() {
+        let participant = property.is_named(b"ATTENDEE") || property.is_named(b"ORGANIZER");
+        if participant {
+            if !matches!(
+                property.declared_value_type(),
+                None | Some(Ok(ValueType::CalAddress))
+            ) {
+                continue;
+            }
+            let mut names = property.parameters_named(b"CN");
+            if let Some(name) = names.next() {
+                if names.next().is_some()
+                    || !common_name_is_allowed(property, kind)
+                    || !common_name_is_valid(name)
+                {
+                    issues.push(Issue::error("icalkit.validation.invalid-common-name"));
+                }
+            }
+        } else if ![
+            b"CATEGORIES".as_slice(),
+            b"COMMENT",
+            b"CONTACT",
+            b"DESCRIPTION",
+            b"LOCATION",
+            b"RESOURCES",
+            b"SUMMARY",
+            b"TZNAME",
+            b"REQUEST-STATUS",
+        ]
+        .iter()
+        .any(|name| property.is_named(name))
+            || !matches!(
+                property.declared_value_type(),
+                None | Some(Ok(ValueType::Text))
+            )
+        {
+            continue;
+        }
+        let mut languages = property.parameters_named(b"LANGUAGE");
+        if let Some(language) = languages.next() {
+            if languages.next().is_some()
+                || !language.has_value()
+                || !is_language_tag(language.value().as_bytes(), meter)?
+            {
+                issues.push(Issue::error("icalkit.validation.invalid-language"));
+            }
+        }
+    }
+    for child in component.components() {
+        validate_descriptive_parameters(child, meter, issues)?;
+    }
+    Ok(())
+}
+
+fn common_name_is_allowed(property: &Property, kind: ComponentKind) -> bool {
+    matches!(
+        kind,
+        ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
+    ) || (property.is_named(b"ORGANIZER") && kind == ComponentKind::FreeBusy)
+}
+
+fn common_name_is_valid(parameter: &Parameter) -> bool {
+    let bytes = parameter.value().as_bytes();
+    let (text, quoted) = match bytes.strip_prefix(b"\"") {
+        Some(inside) => {
+            let Some(text) = inside.strip_suffix(b"\"") else {
+                return false;
+            };
+            (text, true)
+        },
+        None => (bytes, false),
+    };
+    parameter.has_value()
+        && str::from_utf8(text).is_ok()
+        && parameter_is_representable(text)
+        && (quoted || !parameter_needs_quoting(text))
 }
 
 fn known_address_parameters_are_valid(component: &Component) -> bool {

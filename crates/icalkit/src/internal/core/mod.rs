@@ -12,6 +12,7 @@ pub(crate) mod emit;
 pub(crate) mod grammar;
 pub(crate) mod gregorian;
 pub(crate) mod ident;
+pub(crate) mod language;
 pub(crate) mod mailto;
 pub(crate) mod mutate;
 pub(crate) mod octets;

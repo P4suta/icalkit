@@ -48,6 +48,17 @@ Agent addresses follow [RFC 6068 syntax](https://www.rfc-editor.org/rfc/rfc6068.
 The [agent address decision](adr/mailto-agent-address-validation.md) records the syntax boundary and source interpretation.
 Lossless imports keep invalid metadata available for inspection.
 
+Common names follow the [single parameter value grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.2).
+Strict promotion checks UTF-8, quoting, cardinality, and participant placement while keeping empty names and caret escapes.
+`ATTENDEE` permits `LANGUAGE` without `CN` under the [attendee definition](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.4.1).
+The language syntax checks also apply in `VFREEBUSY` and `VALARM`.
+Known textual properties and participant names use the [language tag grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.10).
+Grandfathered tags and private use keep their spelling.
+Strict promotion rejects repeated variants and extension singletons without regard to case.
+Tag scans and repeated variant comparisons use the shared resource budget.
+The [language syntax decision](adr/language-parameter-syntax.md) distinguishes syntax acceptance from dated registry validity and locale matching.
+Unknown properties, value types, and component semantics keep their metadata.
+
 Known text properties follow the [text grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) after content-line unfolding.
 Strict promotion rejects undefined escapes, dangling backslashes, unescaped delimiters, invalid UTF-8, and incompatible or repeated `VALUE` declarations.
 `CATEGORIES` and `RESOURCES` accept comma separators under their property definitions.
