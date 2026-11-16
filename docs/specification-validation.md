@@ -33,6 +33,11 @@ Attachment checks reject repeated `VALUE`, `ENCODING`, and `FMTTYPE` parameters.
 Media types remain optional, and unknown parameters keep their bytes.
 Unknown value types stay opaque during promotion.
 
+Attachment formats follow the [type/subtype grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.8).
+Strict promotion checks the permitted characters and the limit of 127 characters per name.
+The [format syntax decision](adr/attachment-format-parameter-syntax.md) records the protocol's referenced grammar and the scope of current registration rules.
+Valid formats keep their case and non-standard names.
+
 Scalar `ATTENDEE` controls follow the [parameter grammars](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2).
 `RSVP` accepts `TRUE` or `FALSE`.
 `CUTYPE`, `ROLE`, and `PARTSTAT` use unquoted ASCII tokens.

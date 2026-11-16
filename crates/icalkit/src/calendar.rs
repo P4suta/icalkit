@@ -781,6 +781,14 @@ fn linked_property_is_valid(property: &Property, kind: LinkedProperty) -> bool {
             LinkedProperty::Uri | LinkedProperty::Attachment => ValueType::Uri,
         },
     };
+    if matches!(kind, LinkedProperty::Attachment)
+        && property
+            .parameters_named(b"FMTTYPE")
+            .next()
+            .is_some_and(|parameter| !attachment_format_is_valid(parameter.value().as_bytes()))
+    {
+        return false;
+    }
     let encoding = property.parameters_named(b"ENCODING").next();
     match (kind, declared) {
         (LinkedProperty::Uri, ValueType::Uri)
@@ -797,6 +805,20 @@ fn linked_property_is_valid(property: &Property, kind: LinkedProperty) -> bool {
         },
         _ => false,
     }
+}
+
+fn attachment_format_is_valid(bytes: &[u8]) -> bool {
+    let mut names = bytes.split(|octet| *octet == b'/');
+    names.next().is_some_and(format_type_name_is_valid)
+        && names.next().is_some_and(format_type_name_is_valid)
+        && names.next().is_none()
+}
+
+fn format_type_name_is_valid(bytes: &[u8]) -> bool {
+    (1..=127).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|octet| octet.is_ascii_alphanumeric() || b"!#$&.+-^_".contains(octet))
 }
 
 fn known_integer_properties_are_valid(component: &Component) -> bool {
