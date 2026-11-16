@@ -12,7 +12,6 @@ use icalkit::caldav::{
     StoredResource, SyncChange, SyncResult, SyncToken, WireRequest,
 };
 use icalkit::scheduling::Message;
-use icalkit::time::Timestamp;
 
 const MATCHING: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
@@ -39,16 +38,16 @@ END:VCALENDAR\r\n";
 const SCHEDULING_PAYLOAD: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit server tests//EN\r\n\
-BEGIN:VEVENT\r\n\
+METHOD:REQUEST\r\n\
+BEGIN:VFREEBUSY\r\n\
 UID:scheduled@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
 DTSTART:20260814T090000Z\r\n\
-SUMMARY:Planning\r\n\
+DTEND:20260814T100000Z\r\n\
 ORGANIZER:mailto:alice@example.test\r\n\
 ATTENDEE:mailto:bob@example.test\r\n\
 ATTENDEE:mailto:carol@example.test\r\n\
-SEQUENCE:1\r\n\
-END:VEVENT\r\n\
+END:VFREEBUSY\r\n\
 END:VCALENDAR\r\n";
 
 const QUERY: &[u8] = br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -95,15 +94,8 @@ fn mkcalendar(body: &[u8]) -> WireRequest {
 }
 
 fn schedule_operation() -> Option<(icalkit::caldav::Operation<ScheduleResponse>, WireRequest)> {
-    let message = Message::request(SCHEDULING_PAYLOAD, Timestamp::constant(0, 0)).ok()?;
-    let operation = Client::new()
-        .schedule(
-            "/outbox/alice/",
-            "mailto:alice@example.test",
-            &["mailto:bob@example.test", "mailto:carol@example.test"],
-            &message,
-        )
-        .ok()?;
+    let message = Message::read(SCHEDULING_PAYLOAD).ok()?;
+    let operation = Client::new().schedule("/outbox/alice/", &message).ok()?;
     let request = operation.next_request()?.clone();
     Some((operation, request))
 }

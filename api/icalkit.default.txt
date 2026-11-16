@@ -11,7 +11,7 @@ pub fn icalkit::caldav::Client::discover(&self, &str) -> core::result::Result<ic
 pub fn icalkit::caldav::Client::mkcalendar(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<icalkit::caldav::Operation<()>, icalkit::Error>
 pub const fn icalkit::caldav::Client::new() -> Self
 pub fn icalkit::caldav::Client::operation<T>(&self, icalkit::caldav::WireRequest, impl core::ops::function::FnOnce(icalkit::caldav::WireResponse) -> core::result::Result<T, icalkit::Error> + 'static) -> icalkit::caldav::Operation<T>
-pub fn icalkit::caldav::Client::schedule(&self, &str, &str, &[&str], &icalkit::scheduling::Message) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::ScheduleResponse>, icalkit::Error>
+pub fn icalkit::caldav::Client::schedule(&self, &str, &icalkit::scheduling::Message) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::ScheduleResponse>, icalkit::Error>
 pub fn icalkit::caldav::Client::sync(&self, &str, core::option::Option<&icalkit::caldav::SyncToken>) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::SyncResult>, icalkit::Error>
 impl core::default::Default for icalkit::caldav::Client
 pub fn icalkit::caldav::Client::default() -> Self

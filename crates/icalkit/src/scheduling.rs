@@ -7,10 +7,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
+use core::str;
 
 use crate::internal::core::{
-    CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
-    Property, PropertyId, TextValue, UtcOffset,
+    CivilDateTime, Component, ContentLineReader, DateTimeValue, Diagnostic, Document, Instant,
+    Item, Meter, Property, PropertyId, TextValue, UriValue, UtcOffset,
 };
 use crate::internal::itip::{
     ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method, PartyId,
@@ -32,7 +33,62 @@ pub struct Message {
     method: Method,
 }
 
+#[derive(Debug)]
+pub(crate) struct BusyTimeEnvelope<'a> {
+    pub(crate) originator: &'a str,
+    pub(crate) recipients: Vec<&'a str>,
+}
+
+fn calendar_address(property: &Property) -> Option<&str> {
+    let uri = property.value::<UriValue<'_>>().value()?;
+    str::from_utf8(uri.as_bytes()).ok()
+}
+
 impl Message {
+    pub(crate) fn busy_time_envelope(&self) -> Option<BusyTimeEnvelope<'_>> {
+        if self.method != Method::Request {
+            return None;
+        }
+        let mut payloads = root_component(&self.calendar)?
+            .components()
+            .filter(|component| is_scheduling_payload(component));
+        let payload = payloads.next()?;
+        if !payload.is_named(b"VFREEBUSY") || payloads.next().is_some() {
+            return None;
+        }
+        let utc = |id: &PropertyId| -> Option<CivilDateTime> {
+            let property = payload.properties().find(|property| property.has_id(id))?;
+            match property.value::<DateTimeValue<'_>>().value()? {
+                DateTimeValue::Utc(stamp) => Some(stamp),
+                _ => None,
+            }
+        };
+        utc(&PropertyId::DTSTAMP)?;
+        let start = utc(&PropertyId::DTSTART)?;
+        let end = utc(&PropertyId::DTEND)?;
+        if end <= start {
+            return None;
+        }
+        let organizer = payload
+            .properties()
+            .find(|property| property.has_id(&PropertyId::ORGANIZER))?;
+        let originator = calendar_address(organizer)?;
+        let mut recipients = Vec::new();
+        for property in payload
+            .properties()
+            .filter(|property| property.has_id(&PropertyId::ATTENDEE))
+        {
+            let address = calendar_address(property)?;
+            if !recipients.contains(&address) {
+                recipients.push(address);
+            }
+        }
+        (!recipients.is_empty()).then_some(BusyTimeEnvelope {
+            originator,
+            recipients,
+        })
+    }
+
     /// Strictly read a complete inbound iTIP message.
     pub fn read(bytes: &[u8]) -> Result<Self, Error> {
         let engine = Engine::default();

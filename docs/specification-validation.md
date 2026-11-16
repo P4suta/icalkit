@@ -178,6 +178,15 @@ Review refuses held scheduling components with an unreadable `UID`, following th
 Review refuses a known `UID` associated with a different component kind.
 Calendars and imports keep opaque property values under [RFC 5545 section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
 
+Outbox POST follows the busy time request contract in [RFC 6638 section 5](https://www.rfc-editor.org/rfc/rfc6638.html#section-5).
+Client and server require one `VFREEBUSY` with `METHOD:REQUEST` under [RFC 5546 section 3.3.2](https://www.rfc-editor.org/rfc/rfc5546.html#section-3.3.2).
+Required timestamps and participant addresses must have readable declared value types.
+Delivery uses the body's organizer and distinct attendee addresses.
+URI spelling and commas remain unchanged.
+Custom routing headers can't replace the message's participants.
+Authorization receives the validated message and addresses for caller checks of the principal, Outbox collection, and privileges.
+The [Outbox decision](adr/outbox-busy-time-from-message.md) records the API change and the media `method` rule.
+
 `EventRef::uid` returns decoded scalar text, or `None` for an unreadable identity.
 Ordinary identifiers borrow source storage.
 Editing and stored recurrence selection use the same decoded value.

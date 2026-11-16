@@ -179,6 +179,11 @@ assert_eq!(request.uri(), "/calendars/alice/work/");
 The caller sends the request through its chosen async or synchronous HTTP stack, then feeds the response back with `accept`.
 Server code follows the mirror sequence: `handle -> next_need -> supply -> finish`.
 Discovery, incremental sync, conditional writes, MKCALENDAR, calendar-query, and scheduling outbox POST use the same wire vocabulary.
+`Client::schedule` submits a `VFREEBUSY` request through the scheduling Outbox defined by [RFC 6638 section 5](https://www.rfc-editor.org/rfc/rfc6638.html#section-5).
+It takes the Outbox URI and a validated `Message` with `METHOD:REQUEST`.
+The message's `ORGANIZER` and `ATTENDEE` properties determine delivery addresses.
+Server authorization receives the message and derived addresses before delivery.
+The caller checks the Outbox principal, organizer mapping, and privileges.
 
 ## Architecture
 

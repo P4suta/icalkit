@@ -15,7 +15,8 @@ use core::str;
 
 use crate::internal::core::codec::RequestStatus;
 use crate::internal::core::{
-    CivilDateTime, Component, Diagnostic, DiagnosticCode, Instant, Meter, Severity, ValueType,
+    CivilDateTime, Component, DecodeValue as _, Diagnostic, DiagnosticCode, Instant, Meter,
+    Severity, UriValue, ValueType,
 };
 use crate::internal::dav::{
     CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
@@ -623,10 +624,7 @@ fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a [u8]> {
 }
 
 fn is_cal_address(value: &str) -> bool {
-    !value.is_empty()
-        && !value
-            .bytes()
-            .any(|octet| octet.is_ascii_control() || octet.is_ascii_whitespace())
+    UriValue::decode_value(value.as_bytes()).is_ok()
 }
 
 fn canonical_entity_tag(value: &str) -> Result<String, Error> {
@@ -878,6 +876,7 @@ impl MkCalendarRequest {
     }
 }
 
+#[derive(Clone)]
 struct ScheduleRequest {
     message: Message,
     originator: String,
@@ -893,43 +892,24 @@ impl ScheduleRequest {
             "icalkit.caldav.schedule-request-invalid",
         )?;
         let method = content_type_method(content_type)?;
-        let originator = required_single_header(
-            headers,
-            "Originator",
-            "icalkit.caldav.schedule-request-invalid",
-        )?;
-        let originator = str::from_utf8(originator)
-            .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?
-            .to_string();
-        if !is_cal_address(&originator) {
-            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
-        }
-
-        let mut recipients = Vec::new();
-        for header in headers
-            .iter()
-            .filter(|header| header.name.eq_ignore_ascii_case("Recipient"))
-        {
-            let value = str::from_utf8(&header.value)
-                .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?;
-            for recipient in value.split(',').map(str::trim) {
-                if !is_cal_address(recipient)
-                    || recipients.iter().any(|held: &String| held == recipient)
-                {
-                    return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
-                }
-                recipients.push(recipient.to_string());
-            }
-        }
-        if recipients.is_empty() {
-            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
-        }
-
         let message = Message::read(body)
             .map_err(|_| Error::single("icalkit.caldav.schedule-request-invalid"))?;
         if !method.eq_ignore_ascii_case(message.method()) {
             return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
         }
+        let (originator, recipients) = {
+            let envelope = message
+                .busy_time_envelope()
+                .ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))?;
+            (
+                envelope.originator.to_string(),
+                envelope
+                    .recipients
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            )
+        };
         Ok(Self {
             message,
             originator,
@@ -1062,13 +1042,6 @@ fn content_type_method(value: &[u8]) -> Result<&str, Error> {
         method = Some(value);
     }
     method.ok_or_else(|| Error::single("icalkit.caldav.schedule-request-invalid"))
-}
-
-fn validate_header_text(value: &str) -> Result<(), Error> {
-    if value.is_empty() || value.as_bytes().iter().any(u8::is_ascii_control) {
-        return Err(Error::single("icalkit.caldav.header-value-invalid"));
-    }
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1547,36 +1520,21 @@ impl Client {
         }))
     }
 
-    /// Submit an iTIP message to an RFC 6638 scheduling outbox.
+    /// Submit a free-busy `REQUEST` to an RFC 6638 scheduling Outbox.
     pub fn schedule(
         &self,
         outbox_uri: &str,
-        originator: &str,
-        recipients: &[&str],
         message: &Message,
     ) -> Result<Operation<ScheduleResponse>, Error> {
         validate_uri(outbox_uri)?;
-        validate_header_text(originator)?;
-        if recipients.is_empty() {
-            return Err(Error::single("icalkit.caldav.recipient-missing"));
-        }
-        let mut recipient_value = Vec::new();
-        for (index, recipient) in recipients.iter().enumerate() {
-            validate_header_text(recipient)?;
-            if index > 0 {
-                recipient_value.extend_from_slice(b", ");
-            }
-            recipient_value.extend_from_slice(recipient.as_bytes());
+        if message.busy_time_envelope().is_none() {
+            return Err(Error::single("icalkit.caldav.schedule-request-invalid"));
         }
         let content_type = message.imip_content_type();
         let request = WireRequest::new(
             "POST",
             outbox_uri,
-            vec![
-                Header::new("Content-Type", content_type.into_bytes()),
-                Header::new("Originator", originator.as_bytes().to_vec()),
-                Header::new("Recipient", recipient_value),
-            ],
+            vec![Header::new("Content-Type", content_type.into_bytes())],
             message.to_bytes(),
         );
         let policy = self.policy;
@@ -2244,7 +2202,7 @@ impl Server {
         let schedule = ScheduleRequest::parse(&request.headers, &request.body, self.policy)?;
         let method = request.method;
         let uri = request.uri;
-        let need = ServerNeed::request("caldav.authorize", &method, &uri);
+        let need = ServerNeed::schedule("caldav.authorize", &method, &uri, schedule.clone());
         let policy = self.policy;
         Ok(ServerOperation::from_responder(
             need,
@@ -2500,19 +2458,19 @@ impl ServerNeed {
         &self.body
     }
 
-    /// Validated iTIP message associated with a scheduling delivery need.
+    /// Validated busy time request supplied for authorization or delivery.
     #[must_use]
     pub fn message(&self) -> Option<&Message> {
         self.message.as_deref()
     }
 
-    /// Validated RFC 6638 Originator value associated with a scheduling need.
+    /// The `ORGANIZER` calendar address from the busy time request.
     #[must_use]
     pub fn originator(&self) -> Option<&str> {
         self.originator.as_deref()
     }
 
-    /// Validated RFC 6638 recipients associated with a scheduling need.
+    /// Distinct `ATTENDEE` calendar addresses from the busy time request.
     #[must_use]
     pub fn recipients(&self) -> &[String] {
         &self.recipients

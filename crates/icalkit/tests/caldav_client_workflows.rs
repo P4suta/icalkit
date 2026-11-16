@@ -9,7 +9,6 @@
 use icalkit::Calendar;
 use icalkit::caldav::{Client, Header, Revision, SyncToken, WireResponse};
 use icalkit::scheduling::Message;
-use icalkit::time::Timestamp;
 
 const CALENDAR: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
@@ -210,42 +209,29 @@ fn scheduling_message() -> Message {
     let payload = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit client tests//EN\r\n\
-BEGIN:VEVENT\r\n\
+METHOD:REQUEST\r\n\
+BEGIN:VFREEBUSY\r\n\
 UID:one@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
 DTSTART:20260814T090000Z\r\n\
-SUMMARY:Planning\r\n\
+DTEND:20260814T100000Z\r\n\
 ORGANIZER:mailto:alice@example.test\r\n\
 ATTENDEE:mailto:bob@example.test\r\n\
-SEQUENCE:1\r\n\
-END:VEVENT\r\n\
+END:VFREEBUSY\r\n\
 END:VCALENDAR\r\n";
-    Message::request(payload, Timestamp::constant(0, 0)).unwrap()
+    Message::read(payload).unwrap()
 }
 
 #[test]
 fn outbox_post_returns_one_typed_delivery_per_recipient() {
     let message = scheduling_message();
     let client = Client::new();
-    let mut operation = client
-        .schedule(
-            "/outbox/alice/",
-            "mailto:alice@example.test",
-            &["mailto:bob@example.test"],
-            &message,
-        )
-        .unwrap();
+    let mut operation = client.schedule("/outbox/alice/", &message).unwrap();
 
     let request = operation.next_request().unwrap();
     assert_eq!(request.method(), "POST");
-    assert_eq!(
-        header(request.headers(), "Originator"),
-        Some(b"mailto:alice@example.test".as_slice())
-    );
-    assert_eq!(
-        header(request.headers(), "Recipient"),
-        Some(b"mailto:bob@example.test".as_slice())
-    );
+    assert_eq!(header(request.headers(), "Originator"), None);
+    assert_eq!(header(request.headers(), "Recipient"), None);
     assert_eq!(
         header(request.headers(), "Content-Type"),
         Some(message.imip_content_type().as_bytes())
@@ -290,14 +276,7 @@ fn outbox_post_rejects_malformed_delivery_status_values() {
         "2.0;one;two;three",
     ] {
         let client = Client::new();
-        let mut operation = client
-            .schedule(
-                "/outbox/alice/",
-                "mailto:alice@example.test",
-                &["mailto:bob@example.test"],
-                &message,
-            )
-            .unwrap();
+        let mut operation = client.schedule("/outbox/alice/", &message).unwrap();
         operation.next_request().unwrap();
         let body = format!(
             "<C:schedule-response xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
