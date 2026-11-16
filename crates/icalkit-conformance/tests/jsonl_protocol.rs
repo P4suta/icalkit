@@ -5,10 +5,11 @@
 //! The process boundary is the conformance contract; no Rust library API is required.
 
 use std::error::Error;
-use std::io::{self, Write};
-use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
+
+#[path = "support/subject.rs"]
+mod subject;
 
 const PROTOCOL: &str = "icalkit-conformance/1";
 const VALID: &[u8] = b"BEGIN:VCALENDAR\r\n\
@@ -32,27 +33,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn run(requests: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_icalkit-conformance"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| io::Error::other("subject stdin was not piped"))?;
-        for request in requests {
-            serde_json::to_writer(&mut *stdin, request)?;
-            stdin.write_all(b"\n")?;
-        }
-    }
-    let output = child.wait_with_output()?;
-    assert!(output.status.success(), "{output:?}");
-    let text = String::from_utf8(output.stdout)?;
-    text.lines()
-        .map(serde_json::from_str)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Into::into)
+    subject::run(requests).map_err(Into::into)
 }
 
 #[test]
@@ -120,5 +101,36 @@ fn a_protocol_mismatch_is_a_correlated_answer_not_a_process_crash() -> Result<()
     assert_eq!(answers[0]["id"], "future");
     assert_eq!(answers[0]["outcome"], "protocol-error");
     assert_eq!(answers[0]["code"], "icalkit.conformance.protocol-version");
+    Ok(())
+}
+
+#[test]
+fn large_native_exchanges_preserve_order_and_bytes() -> Result<(), Box<dyn Error>> {
+    let description = format!(
+        "DESCRIPTION:{}{}\r\n",
+        "D".repeat(60),
+        format!("\r\n {}", "D".repeat(60)).repeat(2047)
+    );
+    let calendar = String::from_utf8(VALID.to_vec())?
+        .replace("END:VEVENT\r\n", &format!("{description}END:VEVENT\r\n"));
+    let encoded = hex(calendar.as_bytes());
+    let requests: Vec<Value> = (0..4)
+        .map(|id| {
+            json!({
+                "protocol": PROTOCOL,
+                "id": id.to_string(),
+                "operation": "strict-parse",
+                "input_hex": encoded,
+            })
+        })
+        .collect();
+    let answers = run(&requests)?;
+    assert_eq!(answers.len(), requests.len());
+    for (request, answer) in requests.iter().zip(answers) {
+        assert_eq!(answer["protocol"], PROTOCOL);
+        assert_eq!(answer["id"], request["id"]);
+        assert_eq!(answer["outcome"], "accepted");
+        assert_eq!(answer["output_hex"], encoded);
+    }
     Ok(())
 }
