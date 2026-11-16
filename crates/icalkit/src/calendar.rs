@@ -272,6 +272,9 @@ fn validate_document_shape(
     if first.is_some_and(|calendar| !known_date_times_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time"));
     }
+    if first.is_some_and(|calendar| !known_recurrence_ranges_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-recurrence-range"));
+    }
     if first.is_some_and(|calendar| !known_temporal_lists_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time-list"));
     }
@@ -950,6 +953,33 @@ fn known_date_times_are_valid(component: &Component) -> bool {
         .iter()
         .filter_map(Item::as_component)
         .all(known_date_times_are_valid)
+}
+
+fn known_recurrence_ranges_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component.properties().all(|property| {
+        if !property.is_named(b"RECURRENCE-ID")
+            || !matches!(
+                property.declared_value_type(),
+                None | Some(Ok(ValueType::Date | ValueType::DateTime))
+            )
+        {
+            return true;
+        }
+        let mut ranges = property.parameters_named(b"RANGE");
+        let Some(range) = ranges.next() else {
+            return true;
+        };
+        ranges.next().is_none()
+            && range
+                .value()
+                .as_bytes()
+                .eq_ignore_ascii_case(b"THISANDFUTURE")
+    }) && component
+        .components()
+        .all(known_recurrence_ranges_are_valid)
 }
 
 fn date_time_property_is_valid(component: &Component, property: &Property) -> bool {

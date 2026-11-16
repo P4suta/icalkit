@@ -115,6 +115,12 @@ The `VALARM` checks follow [RFC 5545 section 3.6.6](https://www.rfc-editor.org/r
 They enforce the properties required by each action, paired repeat intervals and counts, trigger anchors, identifiers, and acknowledgement timestamps.
 Unknown actions and value types keep their opaque data.
 
+Recurrence identifier ranges follow [RFC 5545 section 3.2.13](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.13).
+A `DATE` or `DATE-TIME` recurrence identifier permits one unquoted `RANGE=THISANDFUTURE` parameter.
+Strict promotion rejects unsupported range values and repeated parameters before expansion or scheduling reads the scope.
+Lossless imports preserve malformed range data.
+Unknown property, value type, and component semantics stay opaque.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Bounds follow the `DTSTART` conditions in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Floating starts follow the explicit condition that both times use local time.
