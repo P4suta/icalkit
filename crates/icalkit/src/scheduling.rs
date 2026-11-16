@@ -11,8 +11,8 @@ use core::fmt::{self, Display, Formatter, Write as _};
 use core::str;
 
 use crate::internal::core::{
-    CivilDateTime, Component, ContentLineReader, DateTimeValue, Diagnostic, Document, Instant,
-    Item, Meter, Property, PropertyId, TextValue, UriValue, UtcOffset,
+    CivilDateTime, Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
+    Document, Instant, Item, Meter, Property, PropertyId, TextValue, UriValue, UtcOffset,
 };
 use crate::internal::itip::{
     ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method, PartyId,
@@ -511,15 +511,13 @@ pub struct Actor {
 }
 
 impl Actor {
-    /// Construct a non-empty CAL-ADDRESS without control or whitespace characters.
+    /// Construct a calendar user address with valid URI syntax.
     #[must_use]
     pub fn new(address: impl Into<String>) -> Option<Self> {
         let address = address.into();
-        (!address.is_empty()
-            && !address
-                .bytes()
-                .any(|octet| octet.is_ascii_control() || octet.is_ascii_whitespace()))
-        .then_some(Self { address })
+        UriValue::decode_value(address.as_bytes())
+            .is_ok()
+            .then_some(Self { address })
     }
 
     /// The CAL-ADDRESS spelling.

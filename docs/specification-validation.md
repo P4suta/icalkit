@@ -27,6 +27,7 @@ Valid spellings keep their bytes, and lossless storage preserves malformed URI t
 
 Strict promotion validates `URL`, `TZURL`, `ORGANIZER`, `ATTENDEE`, and `ATTACH` through the shared URI and binary codecs.
 [Calendar user addresses](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.3) use the `CAL-ADDRESS` value type.
+`Actor::new` applies the same URI syntax without changing the address spelling.
 [Attachments](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.1) use URI references or explicit binary values with base64 encoding.
 Attachment checks reject repeated `VALUE`, `ENCODING`, and `FMTTYPE` parameters.
 Media types remain optional, and unknown parameters keep their bytes.
