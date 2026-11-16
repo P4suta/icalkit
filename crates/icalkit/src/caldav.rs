@@ -80,8 +80,7 @@ impl Query {
             .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))
     }
 
-    /// Apply this query's `calendar-data` selection without turning partial data into a
-    /// persistable [`Calendar`].
+    /// Apply this query's `calendar-data` selection without turning partial data into a persistable [`Calendar`].
     pub fn project(
         &self,
         session: &mut Session<'_>,
