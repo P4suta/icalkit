@@ -54,6 +54,11 @@ Strict promotion rejects undefined escapes, dangling backslashes, unescaped deli
 Calendar metadata and time zone text use the same checks.
 Unknown value types stay opaque, and the lossless text view keeps its existing behavior.
 
+Alternate text representations follow the [quoted URI rule](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.1).
+`COMMENT`, `CONTACT`, `DESCRIPTION`, `LOCATION`, `RESOURCES`, and `SUMMARY` permit at most one `ALTREP` parameter.
+The shared codec preserves each valid URI's spelling.
+Commas inside the quoted URI don't use `TEXT` escaping, following [verified erratum 7691](https://www.rfc-editor.org/errata/eid7691/).
+
 Structured `REQUEST-STATUS` values follow [RFC 5545 section 3.8.8.3](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.8.3).
 Codes contain two or three numeric parts without a machine integer width limit.
 Descriptions and optional exception fields use scalar `TEXT` syntax.

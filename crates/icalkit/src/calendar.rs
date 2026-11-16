@@ -231,6 +231,11 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_text_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
+    if first.is_some_and(|calendar| !known_alternate_representations_are_valid(calendar)) {
+        issues.push(Issue::error(
+            "icalkit.validation.invalid-alternate-representation",
+        ));
+    }
     if first.is_some_and(|calendar| !known_enumerations_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-enumeration"));
     }
@@ -389,6 +394,38 @@ fn known_enumerations_are_valid(component: &Component) -> bool {
         && component.components().all(known_enumerations_are_valid)
 }
 
+fn known_alternate_representations_are_valid(component: &Component) -> bool {
+    const NAMES: &[&[u8]] = &[
+        b"COMMENT",
+        b"CONTACT",
+        b"DESCRIPTION",
+        b"LOCATION",
+        b"RESOURCES",
+        b"SUMMARY",
+    ];
+    if component.kind().is_none() {
+        return true;
+    }
+    component.properties().all(|property| {
+        if !NAMES.iter().any(|name| property.is_named(name))
+            || !matches!(
+                property.declared_value_type(),
+                None | Some(Ok(ValueType::Text))
+            )
+        {
+            return true;
+        }
+        let mut parameters = property.parameters_named(b"ALTREP");
+        let Some(parameter) = parameters.next() else {
+            return true;
+        };
+        parameters.next().is_none()
+            && quoted_uri_parameter_is_valid(parameter.value().as_bytes(), UriParameterSyntax::Uri)
+    }) && component
+        .components()
+        .all(known_alternate_representations_are_valid)
+}
+
 fn enumerated_property_is_valid(kind: ComponentKind, property: &Property) -> bool {
     const NAMES: &[&[u8]] = &[b"STATUS", b"TRANSP", b"CALSCALE", b"CLASS", b"METHOD"];
     if !NAMES.iter().any(|name| property.is_named(name)) {
@@ -457,7 +494,7 @@ enum LinkedProperty {
 }
 
 #[derive(Clone, Copy)]
-enum AddressParameter {
+enum UriParameterSyntax {
     Uri,
     Mailto,
     UriList,
@@ -477,12 +514,12 @@ fn known_address_parameters_are_valid(component: &Component) -> bool {
 }
 
 fn address_parameters_are_valid(property: &Property, kind: ComponentKind) -> bool {
-    const PARAMETERS: &[(&[u8], AddressParameter)] = &[
-        (b"MEMBER", AddressParameter::UriList),
-        (b"DELEGATED-FROM", AddressParameter::UriList),
-        (b"DELEGATED-TO", AddressParameter::UriList),
-        (b"DIR", AddressParameter::Uri),
-        (b"SENT-BY", AddressParameter::Mailto),
+    const PARAMETERS: &[(&[u8], UriParameterSyntax)] = &[
+        (b"MEMBER", UriParameterSyntax::UriList),
+        (b"DELEGATED-FROM", UriParameterSyntax::UriList),
+        (b"DELEGATED-TO", UriParameterSyntax::UriList),
+        (b"DIR", UriParameterSyntax::Uri),
+        (b"SENT-BY", UriParameterSyntax::Mailto),
     ];
     if !matches!(
         property.declared_value_type(),
@@ -501,7 +538,7 @@ fn address_parameters_are_valid(property: &Property, kind: ComponentKind) -> boo
                 ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
             ))
             || (property.is_named(b"ORGANIZER")
-                && !matches!(syntax, AddressParameter::UriList)
+                && !matches!(syntax, UriParameterSyntax::UriList)
                 && matches!(
                     kind,
                     ComponentKind::Event
@@ -511,11 +548,11 @@ fn address_parameters_are_valid(property: &Property, kind: ComponentKind) -> boo
                 ));
         parameters.next().is_none()
             && allowed
-            && quoted_address_parameter_is_valid(parameter.value().as_bytes(), *syntax)
+            && quoted_uri_parameter_is_valid(parameter.value().as_bytes(), *syntax)
     })
 }
 
-fn quoted_address_parameter_is_valid(mut bytes: &[u8], syntax: AddressParameter) -> bool {
+fn quoted_uri_parameter_is_valid(mut bytes: &[u8], syntax: UriParameterSyntax) -> bool {
     loop {
         let Some(quoted) = bytes.strip_prefix(b"\"") else {
             return false;
@@ -528,10 +565,10 @@ fn quoted_address_parameter_is_valid(mut bytes: &[u8], syntax: AddressParameter)
             return false;
         };
         let valid = match syntax {
-            AddressParameter::Uri | AddressParameter::UriList => {
+            UriParameterSyntax::Uri | UriParameterSyntax::UriList => {
                 UriValue::decode_value(uri).is_ok()
             },
-            AddressParameter::Mailto => is_mailto_uri(uri),
+            UriParameterSyntax::Mailto => is_mailto_uri(uri),
         };
         if !valid {
             return false;
@@ -539,7 +576,7 @@ fn quoted_address_parameter_is_valid(mut bytes: &[u8], syntax: AddressParameter)
         if tail.is_empty() {
             return true;
         }
-        if !matches!(syntax, AddressParameter::UriList) {
+        if !matches!(syntax, UriParameterSyntax::UriList) {
             return false;
         }
         let Some(rest) = tail.strip_prefix(b",") else {
