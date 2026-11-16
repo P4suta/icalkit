@@ -6,29 +6,20 @@
 //!
 //! Specification: RFC 5545 section 3.4 and section 3.6.
 //!
-//! The tree knows nothing about component names, and that is deliberate: a `BEGIN` this crate
-//! has never heard of keeps its entries, its order and its octets exactly as one it has
-//! (`docs/adr/0001`). What this module adds is a *reading* of the ones section 3.6 defines —
-//! which properties each may carry, which it must, and how often — as a lookup keyed on the
-//! component's name and answering nothing at all for a name it does not know.
+//! The tree knows nothing about component names, and that is deliberate: a `BEGIN` this crate has never heard of keeps its entries, its order and its octets exactly as one it has (`docs/adr/0001`).
+//! What this module adds is a *reading* of the ones section 3.6 defines —
+//! which properties each may carry, which it must, and how often — as a lookup keyed on the component's name and answering nothing at all for a name it does not know.
 //!
-//! Nothing here changes storage and nothing here refuses a document. A component carrying a
-//! property section 3.6 does not define for it is a diagnostic; a component this crate has no
-//! definition for allows everything, because "I have no schema" and "the schema forbids it"
-//! are different answers and only the second may be reported.
+//! Nothing here changes storage and nothing here refuses a document.
+//! A component carrying a property section 3.6 does not define for it is a diagnostic; a component this crate has no definition for allows everything, because "I have no schema" and "the schema forbids it" are different answers and only the second may be reported.
 //!
-//! [`Component::audit`] is advisory and the caller decides when to run it. Running it inside
-//! `parse` would make a reading of section 3.6 a condition of getting a tree back, and running
-//! it inside `serialize` would let writing refuse; both contradict `docs/adr/0001` outright,
-//! which is why the audit is a method a caller calls when it wants the answer and never a
-//! stage anything else goes through. It reports about one component's own properties, so a
-//! nested `VALARM` is audited by auditing it — exactly as a nested `DTSTART` is read by reading
-//! it there.
+//! [`Component::audit`] is advisory and the caller decides when to run it.
+//! Running it inside `parse` would make a reading of section 3.6 a condition of getting a tree back, and running it inside `serialize` would let writing refuse; both contradict `docs/adr/0001` outright,
+//! which is why the audit is a method a caller calls when it wants the answer and never a stage anything else goes through.
+//! It reports about one component's own properties, so a nested `VALARM` is audited by auditing it — exactly as a nested `DTSTART` is read by reading it there.
 //!
-//! The accessors here are the same one accessor `access.rs` describes, called with a different
-//! name. They are not gated on the component's kind: [`Component::due`] on a `VEVENT` answers
-//! absence rather than an error, because a component that carries one is a component this crate
-//! must still be able to read.
+//! The accessors here are the same one accessor `access.rs` describes, called with a different name.
+//! They are not gated on the component's kind: [`Component::due`] on a `VEVENT` answers absence rather than an error, because a component that carries one is a component this crate must still be able to read.
 
 use crate::internal::core::{
     Diagnostic, DiagnosticCode, DiagnosticSink, Location, Meter, Severity, report_diagnostic,
@@ -41,13 +32,9 @@ use crate::internal::core::view::{TextValue, UriValue, ValueType, View};
 
 /// One of the calendar components RFC 5545 defines.
 ///
-/// `#[non_exhaustive]` because a later RFC may define another — `VAVAILABILITY` of RFC 7953 is
-/// the one already published — and because a name this crate does not know is answered with
-/// `None` rather than with a variant that would pretend to a schema it has not got.
+/// `#[non_exhaustive]` because a later RFC may define another — `VAVAILABILITY` of RFC 7953 is the one already published — and because a name this crate does not know is answered with `None` rather than with a variant that would pretend to a schema it has not got.
 ///
-/// The identity is normalized on the way in, as section 3.1 compares every name; the spelling
-/// stays on the [`Boundary`](crate::internal::core::Boundary), so a producer that wrote `begin:vevent` gets
-/// `begin:vevent` back.
+/// The identity is normalized on the way in, as section 3.1 compares every name; the spelling stays on the [`Boundary`](crate::internal::core::Boundary), so a producer that wrote `begin:vevent` gets `begin:vevent` back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ComponentKind {
@@ -103,8 +90,7 @@ impl ComponentKind {
 
     /// The kind `name` spells, or `None` for a component this crate has no definition for.
     ///
-    /// `None` is the answer for every `X-` component and for every component from an RFC
-    /// published after this code, and it means "no schema", never "not allowed".
+    /// `None` is the answer for every `X-` component and for every component from an RFC published after this code, and it means "no schema", never "not allowed".
     #[must_use]
     pub fn from_name(name: &[u8]) -> Option<Self> {
         Self::SPELLINGS
@@ -115,11 +101,8 @@ impl ComponentKind {
 
     /// How often this component may carry the property `name`.
     ///
-    /// The name is compared as section 3.1 compares one, so a producer that wrote `summary`
-    /// gets the answer it would have got for `SUMMARY`. A name this reading does not carry is
-    /// [`Cardinality::NotDefined`], which is a statement about this crate and not about the
-    /// file: section 3.8.8 lets a producer put an `X-` name or an IANA name in any component
-    /// it likes, and so does every RFC published after this one.
+    /// The name is compared as section 3.1 compares one, so a producer that wrote `summary` gets the answer it would have got for `SUMMARY`.
+    /// A name this reading does not carry is [`Cardinality::NotDefined`], which is a statement about this crate and not about the file: section 3.8.8 lets a producer put an `X-` name or an IANA name in any component it likes, and so does every RFC published after this one.
     #[must_use]
     pub fn cardinality(self, name: &[u8]) -> Cardinality {
         let schema = self.schema();
@@ -137,8 +120,7 @@ impl ComponentKind {
 
     /// The three name lists section 3.6 gives this component.
     ///
-    /// `STANDARD` and `DAYLIGHT` share one, because section 3.6.5 states the observance's
-    /// property list once and both of its subcomponents are that list.
+    /// `STANDARD` and `DAYLIGHT` share one, because section 3.6.5 states the observance's property list once and both of its subcomponents are that list.
     const fn schema(self) -> ComponentSchema {
         match self {
             Self::Calendar => CALENDAR_SCHEMA,
@@ -161,11 +143,9 @@ impl ComponentKind {
 ///
 /// Four answers rather than three, and the fourth is the load-bearing one.
 /// [`Cardinality::NotDefined`] says this crate has no reading of that name in that component,
-/// which is what every `X-` name, every name from an RFC published after this code, and every
-/// name inside a component with no [`ComponentKind`] resolves to. It does not say "forbidden":
-/// a table that answered "not allowed" where it means "not known" would report a violation
-/// against a file that has none, which is the one mistake a reading of an extensible format
-/// must not make.
+/// which is what every `X-` name, every name from an RFC published after this code, and every name inside a component with no [`ComponentKind`] resolves to.
+/// It does not say "forbidden":
+/// a table that answered "not allowed" where it means "not known" would report a violation against a file that has none, which is the one mistake a reading of an extensible format must not make.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Cardinality {
@@ -194,9 +174,7 @@ impl Cardinality {
 
     /// Whether a second occurrence is something this crate is willing to report.
     ///
-    /// True for [`Cardinality::NotDefined`] as well as for [`Cardinality::Repeatable`], and for
-    /// the reason the enum has a fourth variant at all: a name with no reading here is a name
-    /// this crate may not count either.
+    /// True for [`Cardinality::NotDefined`] as well as for [`Cardinality::Repeatable`], and for the reason the enum has a fourth variant at all: a name with no reading here is a name this crate may not count either.
     #[must_use]
     pub const fn allows_repeat(self) -> bool {
         matches!(self, Self::Repeatable | Self::NotDefined)
@@ -209,11 +187,9 @@ impl Cardinality {
 
 /// The property names one kind of component is a reading of, grouped by how often each occurs.
 ///
-/// Three lists rather than one list of pairs, because both halves of the audit walk a class at
-/// a time — the missing-property pass reads the first, the duplicate pass reads the first two —
-/// and because section 3.6 itself states the class above a group of names rather than beside
-/// each one. Keeping the shape the specification uses is what makes a table reviewable against
-/// it.
+/// Three lists rather than one list of pairs, because both halves of the audit walk a class at a time — the missing-property pass reads the first, the duplicate pass reads the first two —
+/// and because section 3.6 itself states the class above a group of names rather than beside each one.
+/// Keeping the shape the specification uses is what makes a table reviewable against it.
 #[derive(Clone, Copy, Debug)]
 struct ComponentSchema {
     /// Names section 3.6 requires, each at most once.
@@ -228,15 +204,10 @@ struct ComponentSchema {
 const CALENDAR_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"PRODID", b"VERSION"],
     optional_once: &[b"CALSCALE", b"METHOD"],
-    // Section 3.4 defines no repeatable calendar property, and these five are not its. They
-    // are RFC 7986's, which puts names section 3.8 defines for a component onto the calendar
-    // itself — so a reader that knew only section 3.4 would report a `UID` beside `PRODID` as
-    // a violation of a document RFC 7986 says is well formed, which is exactly the report the
-    // code for it forbids. They are classified as repeatable rather than at-most-once because
-    // that RFC admits a second `DESCRIPTION` under a second `LANGUAGE`, and because a count is
-    // a claim this table has no reason to make about names it carries in order to stay silent
-    // about them. None of them is a new name, so none of them widens what this crate treats as
-    // known: that set is still exactly section 3.7's and section 3.8's.
+    // Section 3.4 defines no repeatable calendar property, and these five are not its.
+    // They are RFC 7986's, which puts names section 3.8 defines for a component onto the calendar itself — so a reader that knew only section 3.4 would report a `UID` beside `PRODID` as a violation of a document RFC 7986 says is well formed, which is exactly the report the code for it forbids.
+    // They are classified as repeatable rather than at-most-once because that RFC admits a second `DESCRIPTION` under a second `LANGUAGE`, and because a count is a claim this table has no reason to make about names it carries in order to stay silent about them.
+    // None of them is a new name, so none of them widens what this crate treats as known: that set is still exactly section 3.7's and section 3.8's.
     repeatable: &[
         b"CATEGORIES",
         b"DESCRIPTION",
@@ -250,11 +221,8 @@ const CALENDAR_SCHEMA: ComponentSchema = ComponentSchema {
 const EVENT_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"DTSTAMP", b"UID"],
     optional_once: &[
-        // Section 3.6.1 requires a `DTSTART` of an event in a calendar that states no `METHOD`
-        // and makes it optional in one that does. That condition is a property of the enclosing
-        // `VCALENDAR`, which a reading of one component cannot see, so this table takes the
-        // weaker of the two readings: a missing `DTSTART` is reported by nobody here rather
-        // than reported wrongly against every scheduling message that legitimately has none.
+        // Section 3.6.1 requires a `DTSTART` of an event in a calendar that states no `METHOD` and makes it optional in one that does.
+        // That condition is a property of the enclosing `VCALENDAR`, which a reading of one component cannot see, so this table takes the weaker of the two readings: a missing `DTSTART` is reported by nobody here rather than reported wrongly against every scheduling message that legitimately has none.
         b"DTSTART",
         b"CLASS",
         b"CREATED",
@@ -270,14 +238,11 @@ const EVENT_SCHEMA: ComponentSchema = ComponentSchema {
         b"TRANSP",
         b"URL",
         b"RECURRENCE-ID",
-        // Section 3.6.1 says a second `RRULE` should not occur, where it says a second
-        // `SUMMARY` must not. One class covers both: this crate reports the same thing about
-        // each, since a caller handed two rules has the same problem either way and
-        // `Component::get` already refuses to pick a winner between them.
+        // Section 3.6.1 says a second `RRULE` should not occur, where it says a second `SUMMARY` must not.
+        // One class covers both: this crate reports the same thing about each, since a caller handed two rules has the same problem either way and `Component::get` already refuses to pick a winner between them.
         b"RRULE",
-        // Section 3.6.1 admits either of these and forbids both together. That "and" is an
-        // entailment between two properties rather than a count of one, so the count is here
-        // and the exclusion is in `EXCLUSIVE_PAIRS`, which `Component::audit` reads.
+        // Section 3.6.1 admits either of these and forbids both together.
+        // That "and" is an entailment between two properties rather than a count of one, so the count is here and the exclusion is in `EXCLUSIVE_PAIRS`, which `Component::audit` reads.
         b"DTEND",
         b"DURATION",
     ],
@@ -317,9 +282,7 @@ const TODO_SCHEMA: ComponentSchema = ComponentSchema {
         b"URL",
         b"RRULE",
         // As in section 3.6.1, the pair is exclusive and the exclusion is in `EXCLUSIVE_PAIRS`.
-        // The extra condition section 3.6.2 states — that a `DURATION` here needs a `DTSTART`
-        // to measure from — is a third name against a pair rather than a pair, and it is
-        // recorded as deferred in `docs/adr/0001` rather than deferred onto anything here.
+        // The extra condition section 3.6.2 states — that a `DURATION` here needs a `DTSTART` to measure from — is a third name against a pair rather than a pair, and it is recorded as deferred in `docs/adr/0001` rather than deferred onto anything here.
         b"DUE",
         b"DURATION",
     ],
@@ -359,9 +322,8 @@ const JOURNAL_SCHEMA: ComponentSchema = ComponentSchema {
         b"CATEGORIES",
         b"COMMENT",
         b"CONTACT",
-        // A journal entry may carry several descriptions where an event may carry one. The two
-        // lists differ by exactly this name, which is the sort of difference a shared table
-        // would have quietly averaged away.
+        // A journal entry may carry several descriptions where an event may carry one.
+        // The two lists differ by exactly this name, which is the sort of difference a shared table would have quietly averaged away.
         b"DESCRIPTION",
         b"EXDATE",
         b"RELATED-TO",
@@ -373,17 +335,15 @@ const JOURNAL_SCHEMA: ComponentSchema = ComponentSchema {
 /// RFC 5545 section 3.6.4: what a `VFREEBUSY` carries.
 const FREE_BUSY_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"DTSTAMP", b"UID"],
-    // `CONTACT` is at most once here and repeatable in an event, and section 3.6.4 is where
-    // that difference is stated.
+    // `CONTACT` is at most once here and repeatable in an event, and section 3.6.4 is where that difference is stated.
     optional_once: &[b"CONTACT", b"DTSTART", b"DTEND", b"ORGANIZER", b"URL"],
     repeatable: &[b"ATTENDEE", b"COMMENT", b"FREEBUSY", b"REQUEST-STATUS"],
 };
 
 /// RFC 5545 section 3.6.5: what a `VTIMEZONE` carries.
 ///
-/// The section also requires at least one `STANDARD` or `DAYLIGHT` subcomponent. That is a
-/// claim about entries rather than about properties, and this reading does not make it: the
-/// four codes the audit reports are all about property names.
+/// The section also requires at least one `STANDARD` or `DAYLIGHT` subcomponent.
+/// That is a claim about entries rather than about properties, and this reading does not make it: the four codes the audit reports are all about property names.
 const TIME_ZONE_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"TZID"],
     optional_once: &[b"LAST-MODIFIED", b"TZURL"],
@@ -399,37 +359,23 @@ const OBSERVANCE_SCHEMA: ComponentSchema = ComponentSchema {
 
 /// RFC 5545 section 3.6.6: what a `VALARM` carries.
 ///
-/// Section 3.6.6 states three property lists rather than one, and the `ACTION` decides which of
-/// them applies: a display alarm must carry a `DESCRIPTION` that an audio alarm must not, and
-/// an email alarm must carry a `SUMMARY` and at least one `ATTENDEE` that neither of the others
-/// may have. This table is their union, which is the weaker reading and the safe one — it
-/// reports what all three forbid and stays silent where they disagree, so an audio alarm with a
-/// `SUMMARY` earns no diagnostic here. Splitting the table by `ACTION` would make the audit's
-/// answer depend on a value rather than on a name, and that belongs with the other cross-
-/// property entailments `docs/adr/0001` names rather than here.
+/// Section 3.6.6 states three property lists rather than one, and the `ACTION` decides which of them applies: a display alarm must carry a `DESCRIPTION` that an audio alarm must not, and an email alarm must carry a `SUMMARY` and at least one `ATTENDEE` that neither of the others may have.
+/// This table is their union, which is the weaker reading and the safe one — it reports what all three forbid and stays silent where they disagree, so an audio alarm with a `SUMMARY` earns no diagnostic here.
+/// Splitting the table by `ACTION` would make the audit's answer depend on a value rather than on a name, and that belongs with the other cross- property entailments `docs/adr/0001` names rather than here.
 const ALARM_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"ACTION", b"TRIGGER"],
-    // Section 3.6.6 requires `DURATION` and `REPEAT` to appear together or not at all, which is
-    // an entailment and not a count.
+    // Section 3.6.6 requires `DURATION` and `REPEAT` to appear together or not at all, which is an entailment and not a count.
     optional_once: &[b"DESCRIPTION", b"DURATION", b"REPEAT", b"SUMMARY"],
-    // `RELATED-TO` and `UID` are RFC 9074's addition to this component, carried for the reason
-    // the calendar table carries RFC 7986's: an alarm that has one is well formed, and neither
-    // is a name this crate did not already know.
+    // `RELATED-TO` and `UID` are RFC 9074's addition to this component, carried for the reason the calendar table carries RFC 7986's: an alarm that has one is well formed, and neither is a name this crate did not already know.
     repeatable: &[b"ATTACH", b"ATTENDEE", b"RELATED-TO", b"UID"],
 };
 
 /// The property pairs section 3.6 admits either of and forbids the two of together.
 ///
-/// A table of its own rather than a fourth group inside [`ComponentSchema`], because this is a
-/// relation between two names and that structure is a count of one: every entry there answers
-/// "how often may this name occur", and neither `DTEND` nor `DURATION` has an answer to that
-/// which says anything about the other. Section 3.6.1 writes the pair as an "and" — "either
-/// `DTEND` or `DURATION` may appear, but not both" — and section 3.6.2 writes `DUE` against
-/// `DURATION` the same way.
+/// A table of its own rather than a fourth group inside [`ComponentSchema`], because this is a relation between two names and that structure is a count of one: every entry there answers "how often may this name occur", and neither `DTEND` nor `DURATION` has an answer to that which says anything about the other.
+/// Section 3.6.1 writes the pair as an "and" — "either `DTEND` or `DURATION` may appear, but not both" — and section 3.6.2 writes `DUE` against `DURATION` the same way.
 ///
-/// This is the entailment half of the reading `docs/adr/0001` describes, and it is the whole of
-/// what M0 implements; the two entailments that need a value rather than a name are recorded as
-/// deferred in that ADR's amendments rather than deferred onto this table.
+/// This is the entailment half of the reading `docs/adr/0001` describes, and it is the whole of what M0 implements; the two entailments that need a value rather than a name are recorded as deferred in that ADR's amendments rather than deferred onto this table.
 const EXCLUSIVE_PAIRS: &[(ComponentKind, &[u8], &[u8])] = &[
     (ComponentKind::Event, b"DTEND", b"DURATION"),
     (ComponentKind::Todo, b"DUE", b"DURATION"),
@@ -437,15 +383,10 @@ const EXCLUSIVE_PAIRS: &[(ComponentKind, &[u8], &[u8])] = &[
 
 /// Whether RFC 5545 defines `name` as a property of anything at all.
 ///
-/// This is the answer that decides silence, and it is derived from the tables rather than kept
-/// beside them, because a second list of names is a second place to forget one. Every property
-/// section 3.7 and section 3.8 define appears in at least one of the nine tables — a fact a
-/// test checks rather than a claim this comment makes — and the later-RFC placements a table
-/// carries introduce no name that was not already there, so this stays exactly RFC 5545's set.
+/// This is the answer that decides silence, and it is derived from the tables rather than kept beside them, because a second list of names is a second place to forget one.
+/// Every property section 3.7 and section 3.8 define appears in at least one of the nine tables — a fact a test checks rather than a claim this comment makes — and the later-RFC placements a table carries introduce no name that was not already there, so this stays exactly RFC 5545's set.
 ///
-/// A name outside it is an `X-` name, an IANA name from an RFC published after this code, or
-/// something a producer invented, and this crate has nothing true to say about any of the
-/// three.
+/// A name outside it is an `X-` name, an IANA name from an RFC published after this code, or something a producer invented, and this crate has nothing true to say about any of the three.
 fn defined_by_rfc5545(name: &[u8]) -> bool {
     ComponentKind::SPELLINGS
         .iter()
@@ -458,15 +399,10 @@ fn defined_by_rfc5545(name: &[u8]) -> bool {
 
 /// Offer one diagnostic about a component to the sink.
 ///
-/// The location is [`Location::NOWHERE`], for the reason every accessor gives it: a
-/// [`Property`] owns fresh unfolded octets and not the offsets they were read from, so a span
-/// produced here would address a buffer the caller never handed in, and a plausible-looking
-/// offset into the wrong buffer is worse than admitting there is none.
+/// The location is [`Location::NOWHERE`], for the reason every accessor gives it: a [`Property`] owns fresh unfolded octets and not the offsets they were read from, so a span produced here would address a buffer the caller never handed in, and a plausible-looking offset into the wrong buffer is worse than admitting there is none.
 ///
-/// The meter is here because a sink may refuse and the count of refusals has to live outside
-/// the sink (`docs/adr/0009`). The audit charges it nothing else: it reads what is already
-/// resident, allocates nothing, and an advisory reading that could fail on a budget would be a
-/// reading a caller cannot rely on having.
+/// The meter is here because a sink may refuse and the count of refusals has to live outside the sink (`docs/adr/0009`).
+/// The audit charges it nothing else: it reads what is already resident, allocates nothing, and an advisory reading that could fail on a budget would be a reading a caller cannot rely on having.
 fn report_here<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
     meter: &mut Meter,
@@ -490,31 +426,20 @@ impl Component {
     /// Report what RFC 5545 section 3.6 has to say about the properties this component carries.
     ///
     /// Five codes, and each of them is a claim this crate can defend:
-    /// [`DiagnosticCode::MissingRequiredProperty`] for a name section 3.6 requires and this
-    /// component has none of, [`DiagnosticCode::DuplicateProperty`] for a name it allows once
-    /// and this component has two of, [`DiagnosticCode::PropertyNotAllowedHere`] for a name
-    /// RFC 5545 defines somewhere and not here, [`DiagnosticCode::UnknownValueType`] for a
-    /// `VALUE` parameter naming a type this crate cannot read, and
-    /// [`DiagnosticCode::MutuallyExclusiveProperties`] for a pair section 3.6 admits singly and
-    /// forbids together.
+    /// [`DiagnosticCode::MissingRequiredProperty`] for a name section 3.6 requires and this component has none of, [`DiagnosticCode::DuplicateProperty`] for a name it allows once and this component has two of, [`DiagnosticCode::PropertyNotAllowedHere`] for a name RFC 5545 defines somewhere and not here, [`DiagnosticCode::UnknownValueType`] for a `VALUE` parameter naming a type this crate cannot read, and [`DiagnosticCode::MutuallyExclusiveProperties`] for a pair section 3.6 admits singly and forbids together.
     ///
-    /// Nothing is reported about a component with no [`Component::kind`], and nothing is
-    /// reported about a property whose name RFC 5545 does not define. Both silences are the
-    /// same silence: this crate has no reading of the thing, and a reading it does not have
-    /// cannot be violated.
+    /// Nothing is reported about a component with no [`Component::kind`], and nothing is reported about a property whose name RFC 5545 does not define.
+    /// Both silences are the same silence: this crate has no reading of the thing, and a reading it does not have cannot be violated.
     ///
-    /// Advisory, and it changes nothing. The document that goes in comes back out octet for
-    /// octet whether the audit ran or not, which is what lets it be a reading rather than a
-    /// gate — see `docs/adr/0001`, and the module documentation for why no other stage calls
-    /// it.
+    /// Advisory, and it changes nothing.
+    /// The document that goes in comes back out octet for octet whether the audit ran or not, which is what lets it be a reading rather than a gate — see `docs/adr/0001`, and the module documentation for why no other stage calls it.
     ///
-    /// One component's own properties, in the order they arrived and then in the order
-    /// section 3.6 lists the names. A nested component is audited by auditing it.
+    /// One component's own properties, in the order they arrived and then in the order section 3.6 lists the names.
+    /// A nested component is audited by auditing it.
     pub fn audit<S: DiagnosticSink + ?Sized>(&self, meter: &mut Meter, sink: &mut S) {
         let Some(kind) = self.kind() else {
-            // "I have no schema" and "the schema forbids it" are different answers, and only
-            // the second is reportable. A component this crate has no definition for keeps
-            // every entry it arrived with and earns no diagnostic about any of them.
+            // "I have no schema" and "the schema forbids it" are different answers, and only the second is reportable.
+            // A component this crate has no definition for keeps every entry it arrived with and earns no diagnostic about any of them.
             return;
         };
         self.audit_each_property(kind, meter, sink);
@@ -524,9 +449,7 @@ impl Component {
 
     /// The pass over the pairs section 3.6 forbids together, in the order the table lists them.
     ///
-    /// Reported once per pair rather than once per line, for the reason the count pass reports
-    /// once per name: what section 3.6 forbids is the combination, and a `VEVENT` carrying two
-    /// `DTEND`s beside a `DURATION` has one exclusion broken and not two.
+    /// Reported once per pair rather than once per line, for the reason the count pass reports once per name: what section 3.6 forbids is the combination, and a `VEVENT` carrying two `DTEND`s beside a `DURATION` has one exclusion broken and not two.
     fn audit_each_pair<S: DiagnosticSink + ?Sized>(
         &self,
         kind: ComponentKind,
@@ -563,18 +486,13 @@ impl Component {
         for property in self.properties() {
             let name = property.name().as_bytes();
             if !defined_by_rfc5545(name) {
-                // Section 3.8.8 puts an `X-` name, and an IANA name this crate has never heard
-                // of, in whatever component their producer chose. Nothing here can say anything
-                // true about either — including about a `VALUE` one of them carries, since a
-                // property this crate cannot name is a property whose value type is its
-                // producer's business.
+                // Section 3.8.8 puts an `X-` name, and an IANA name this crate has never heard of, in whatever component their producer chose.
+                // Nothing here can say anything true about either — including about a `VALUE` one of them carries, since a property this crate cannot name is a property whose value type is its producer's business.
                 continue;
             }
             if let Some(Err(code)) = property.declared_value_type() {
-                // A note rather than a violation. Section 3.2.20's grammar admits an `X-` name
-                // and an IANA token, so a value type this crate does not carry is not by itself
-                // a defect in the file; what it costs is this crate's ability to type the
-                // value, which the caller is entitled to be told about.
+                // A note rather than a violation.
+                // Section 3.2.20's grammar admits an `X-` name and an IANA token, so a value type this crate does not carry is not by itself a defect in the file; what it costs is this crate's ability to type the value, which the caller is entitled to be told about.
                 report_here(sink, meter, code, Severity::Note);
             }
             if !kind.cardinality(name).is_defined() {
@@ -590,10 +508,8 @@ impl Component {
 
     /// The pass over the names section 3.6 gives this component, in the order it gives them.
     ///
-    /// Counted per name rather than per occurrence, so two `SUMMARY` lines are one report about
-    /// a name and not two reports about lines. That is the same claim [`Component::get`] makes
-    /// when it refuses to pick a winner between them, stated once for a whole component instead
-    /// of once per read.
+    /// Counted per name rather than per occurrence, so two `SUMMARY` lines are one report about a name and not two reports about lines.
+    /// That is the same claim [`Component::get`] makes when it refuses to pick a winner between them, stated once for a whole component instead of once per read.
     fn audit_each_name<S: DiagnosticSink + ?Sized>(
         &self,
         kind: ComponentKind,
@@ -607,8 +523,7 @@ impl Component {
                     .properties()
                     .filter(|property| property.is_named(wanted))
                     .count();
-                // Counted, not short-circuited: "none of them" and "two of them" are the two
-                // answers section 3.6 has an opinion about, and they are not the same walk.
+                // Counted, not short-circuited: "none of them" and "two of them" are the two answers section 3.6 has an opinion about, and they are not the same walk.
                 if seen == 0 && required {
                     report_here(
                         sink,
@@ -636,21 +551,18 @@ impl Component {
 impl Property {
     /// The value type this property's `VALUE` parameter declares, RFC 5545 section 3.2.20.
     ///
-    /// Three answers, and they are three different things. `None` is no `VALUE` parameter at
-    /// all, which is the ordinary case and means the default type section 3.8 states for that
-    /// property applies — this method does not guess which, because the default is a fact about
-    /// the property's name and this level is asking about its parameters. `Some(Ok(_))` is a
-    /// type this crate knows. `Some(Err(_))` is [`DiagnosticCode::UnknownValueType`]: a name
-    /// section 3.2.20's grammar admits, since it allows an `X-` name and an IANA token, and
-    /// this crate's [`ValueType`] table does not carry — so nothing here can type the value.
+    /// Three answers, and they are three different things.
+    /// `None` is no `VALUE` parameter at all, which is the ordinary case and means the default type section 3.8 states for that property applies — this method does not guess which, because the default is a fact about the property's name and this level is asking about its parameters.
+    /// `Some(Ok(_))` is a type this crate knows.
+    /// `Some(Err(_))` is [`DiagnosticCode::UnknownValueType`]: a name section 3.2.20's grammar admits, since it allows an `X-` name and an IANA token, and this crate's [`ValueType`] table does not carry — so nothing here can type the value.
     /// The octets are untouched in all three, and are written back in all three.
     ///
-    /// The first occurrence, with a section 3.2 `DQUOTE` pair removed. A second `VALUE` on one
-    /// line is a defect this level cannot report, since it answers with one type or one code;
+    /// The first occurrence, with a section 3.2 `DQUOTE` pair removed.
+    /// A second `VALUE` on one line is a defect this level cannot report, since it answers with one type or one code;
     /// both stay in storage and reachable through [`Property::parameters_named`].
     ///
-    /// A `VALUE` that arrived with no `=`, and one that arrived with nothing after it, both
-    /// answer [`DiagnosticCode::UnknownValueType`]. One answer, because there is one question —
+    /// A `VALUE` that arrived with no `=`, and one that arrived with nothing after it, both answer [`DiagnosticCode::UnknownValueType`].
+    /// One answer, because there is one question —
     /// what did the producer name — and neither of them named anything.
     #[must_use]
     pub fn declared_value_type(&self) -> Option<Result<ValueType, DiagnosticCode>> {
@@ -667,21 +579,21 @@ impl Property {
 ///
 /// `static` rather than `const`, and the difference is not cosmetic:
 /// [`Component::properties_named`] ties the identity's lifetime to the iterator it hands back,
-/// and `&SOME_CONST` is a temporary that cannot be promoted to `'static` for a type that owns a
-/// name. A `static` is the borrow the signature asks for.
+/// and `&SOME_CONST` is a temporary that cannot be promoted to `'static` for a type that owns a name.
+/// A `static` is the borrow the signature asks for.
 static ATTENDEE: PropertyId = PropertyId::ATTENDEE;
 
-/// The identity [`Component::freebusy`] looks up. See [`ATTENDEE`] for why it is a `static`.
+/// The identity [`Component::freebusy`] looks up.
+/// See [`ATTENDEE`] for why it is a `static`.
 static FREEBUSY: PropertyId = PropertyId::FREEBUSY;
 
 /// The identity [`Component::due`] looks up.
 ///
-/// [`PropertyId`]'s constants are a convenience over [`PropertyId::from_static`] and never a
-/// closed set, so a name that list does not carry is reached the same way and reaches the same
-/// storage.
+/// [`PropertyId`]'s constants are a convenience over [`PropertyId::from_static`] and never a closed set, so a name that list does not carry is reached the same way and reaches the same storage.
 static DUE: PropertyId = PropertyId::from_static(b"DUE");
 
-/// The identity [`Component::trigger`] looks up. See [`DUE`] for why it is spelled out here.
+/// The identity [`Component::trigger`] looks up.
+/// See [`DUE`] for why it is spelled out here.
 static TRIGGER: PropertyId = PropertyId::from_static(b"TRIGGER");
 
 impl Component {
@@ -705,13 +617,9 @@ impl Component {
 
     /// The `TRIGGER` of an alarm, RFC 5545 section 3.8.6.3, in its relative form.
     ///
-    /// Section 3.8.6.3 gives the property two value types: a span measured from the event by
-    /// default, and an absolute instant under `VALUE=DATE-TIME`. This reads the default, so an
-    /// alarm whose trigger is absolute reads as [`View::Malformed`] here and its value is one
-    /// call away — `get::<DateTimeValue<'_>>` against the same name — with
-    /// [`Property::declared_value_type`] saying which of the two arrived. Two accessors
-    /// differing only in the type they decode would be one call written twice, and the caller
-    /// has to ask the parameter either way.
+    /// Section 3.8.6.3 gives the property two value types: a span measured from the event by default, and an absolute instant under `VALUE=DATE-TIME`.
+    /// This reads the default, so an alarm whose trigger is absolute reads as [`View::Malformed`] here and its value is one call away — `get::<DateTimeValue<'_>>` against the same name — with [`Property::declared_value_type`] saying which of the two arrived.
+    /// Two accessors differing only in the type they decode would be one call written twice, and the caller has to ask the parameter either way.
     #[must_use]
     pub fn trigger(&self) -> View<'_, Duration> {
         self.get(&TRIGGER)
@@ -719,10 +627,8 @@ impl Component {
 
     /// The `ORGANIZER`, RFC 5545 section 3.8.4.3.
     ///
-    /// Section 3.3.3 defines a calendar address as a URI and adds no syntax of its own, which
-    /// is why this reads as a [`UriValue`] rather than through a type that would be a second
-    /// name for one grammar. Nothing is normalized: a scheme's case and a path's percent-
-    /// encoding are exactly what a scheduling reply has to match against.
+    /// Section 3.3.3 defines a calendar address as a URI and adds no syntax of its own, which is why this reads as a [`UriValue`] rather than through a type that would be a second name for one grammar.
+    /// Nothing is normalized: a scheme's case and a path's percent- encoding are exactly what a scheduling reply has to match against.
     #[must_use]
     pub fn organizer(&self) -> View<'_, UriValue<'_>> {
         self.get(&PropertyId::ORGANIZER)
@@ -730,10 +636,8 @@ impl Component {
 
     /// Every `ATTENDEE`, RFC 5545 section 3.8.4.1, in the order they arrived.
     ///
-    /// An iterator rather than a [`View`], because section 3.6 puts no limit on how many a
-    /// component carries. A singular accessor here would silently keep the first, which is the
-    /// data loss this crate exists to prevent, arriving through an accessor instead of through
-    /// a parser.
+    /// An iterator rather than a [`View`], because section 3.6 puts no limit on how many a component carries.
+    /// A singular accessor here would silently keep the first, which is the data loss this crate exists to prevent, arriving through an accessor instead of through a parser.
     #[must_use]
     pub fn attendees(&self) -> PropertiesNamed<'_> {
         self.properties_named(&ATTENDEE)
@@ -741,10 +645,8 @@ impl Component {
 
     /// The `STATUS`, RFC 5545 section 3.8.1.11.
     ///
-    /// The octets, not one of section 3.8.1.11's enumerated tokens. Which tokens are legal
-    /// depends on the component the property sits in, and a value outside the list is still a
-    /// value this crate writes back; a caller comparing against `CONFIRMED` compares the bytes
-    /// it was given.
+    /// The octets, not one of section 3.8.1.11's enumerated tokens.
+    /// Which tokens are legal depends on the component the property sits in, and a value outside the list is still a value this crate writes back; a caller comparing against `CONFIRMED` compares the bytes it was given.
     #[must_use]
     pub fn status(&self) -> View<'_, TextValue<'_>> {
         self.get(&PropertyId::STATUS)
@@ -758,9 +660,8 @@ impl Component {
 
     /// The `PRIORITY`, RFC 5545 section 3.8.1.9.
     ///
-    /// The integer as written. Section 3.8.1.9 bounds it to zero through nine and maps it onto
-    /// three bands, and neither the bound nor the mapping is applied here: a `PRIORITY:42` is a
-    /// violation to report rather than octets to reinterpret.
+    /// The integer as written.
+    /// Section 3.8.1.9 bounds it to zero through nine and maps it onto three bands, and neither the bound nor the mapping is applied here: a `PRIORITY:42` is a violation to report rather than octets to reinterpret.
     #[must_use]
     pub fn priority(&self) -> View<'_, i32> {
         self.get(&PropertyId::PRIORITY)
@@ -780,10 +681,8 @@ impl Component {
 
     /// The `DESCRIPTION`, RFC 5545 section 3.8.1.5, with its escapes still in it.
     ///
-    /// A `VJOURNAL` may carry several, and section 3.6.3 is the only place that says so. This
-    /// reads the one a component the specification allows one of has, and a journal entry with
-    /// two of them reads as [`View::Malformed`] here while both stay reachable through
-    /// [`Component::properties_named`].
+    /// A `VJOURNAL` may carry several, and section 3.6.3 is the only place that says so.
+    /// This reads the one a component the specification allows one of has, and a journal entry with two of them reads as [`View::Malformed`] here while both stay reachable through [`Component::properties_named`].
     #[must_use]
     pub fn description(&self) -> View<'_, TextValue<'_>> {
         self.get(&PropertyId::DESCRIPTION)
@@ -791,9 +690,7 @@ impl Component {
 
     /// The `TZID` of a `VTIMEZONE`, RFC 5545 section 3.8.3.1.
     ///
-    /// The zone this component *defines*, which is not the `TZID` parameter a date-time carries
-    /// to name a zone it is *in*. The two are spelled alike and are different questions, and
-    /// the parameter is read where the value is.
+    /// The zone this component *defines*, which is not the `TZID` parameter a date-time carries to name a zone it is *in*. The two are spelled alike and are different questions, and the parameter is read where the value is.
     #[must_use]
     pub fn tzid(&self) -> View<'_, TextValue<'_>> {
         self.get(&PropertyId::TZID)
@@ -813,9 +710,7 @@ impl Component {
 
     /// Every `FREEBUSY`, RFC 5545 section 3.8.2.6, in the order they arrived.
     ///
-    /// An iterator for [`Component::attendees`]'s reason, and one more of its own: section
-    /// 3.8.2.6 lets one line carry several periods and lets several lines carry more, so the
-    /// count of busy spans is not the count of properties either way.
+    /// An iterator for [`Component::attendees`]'s reason, and one more of its own: section 3.8.2.6 lets one line carry several periods and lets several lines carry more, so the count of busy spans is not the count of properties either way.
     #[must_use]
     pub fn freebusy(&self) -> PropertiesNamed<'_> {
         self.properties_named(&FREEBUSY)
@@ -823,10 +718,8 @@ impl Component {
 
     /// The `RRULE`, RFC 5545 section 3.8.5.3, as the octets it arrived as.
     ///
-    /// Section 3.3.10's grammar belongs to `ical-recur` and is not read here, so what comes
-    /// back is a view over preserved text and [`TextValue::as_bytes`] is the whole of it. This
-    /// accessor exists so that "this crate does not parse a recurrence rule" does not also mean
-    /// "this crate cannot find one".
+    /// Section 3.3.10's grammar belongs to `ical-recur` and is not read here, so what comes back is a view over preserved text and [`TextValue::as_bytes`] is the whole of it.
+    /// This accessor exists so that "this crate does not parse a recurrence rule" does not also mean "this crate cannot find one".
     #[must_use]
     pub fn rrule(&self) -> View<'_, TextValue<'_>> {
         self.get(&PropertyId::RRULE)
@@ -882,9 +775,8 @@ mod tests {
 
     /// Every code the audit reports about every component of `document`, in document order.
     ///
-    /// The walk is the caller's, because [`Component::audit`] reports about one component. An
-    /// explicit stack rather than recursion, for the reason every other traversal in this crate
-    /// uses one: the depth is a caller-tunable bound and a stack overflow is an abort.
+    /// The walk is the caller's, because [`Component::audit`] reports about one component.
+    /// An explicit stack rather than recursion, for the reason every other traversal in this crate uses one: the depth is a caller-tunable bound and a stack overflow is an abort.
     fn audit_every_component(document: &Document) -> Vec<DiagnosticCode> {
         let mut meter = Meter::new(Limits::DEFAULT);
         let mut reported: Vec<DiagnosticCode> = Vec::new();
@@ -926,10 +818,10 @@ mod tests {
         );
     }
 
-    /// The audit, case by case: the octets a producer wrote, and what section 3.6 has to say
-    /// about them.
+    /// The audit, case by case: the octets a producer wrote, and what section 3.6 has to say about them.
     const CASES: [(&[u8], &[DiagnosticCode]); 13] = [
-        // Nothing at all. No component, so nothing to have a schema for.
+        // Nothing at all.
+        // No component, so nothing to have a schema for.
         (b"", &[]),
         // A calendar with every name section 3.6 requires of it.
         (
@@ -956,45 +848,43 @@ mod tests {
               DUE:20260810T110000Z\r\nEND:VEVENT\r\n",
             &[DiagnosticCode::PropertyNotAllowedHere],
         ),
-        // A vendor name, a name from an RFC published after this code, and a name RFC 2445
-        // defined and RFC 5545 does not. This crate has no reading of any of the three.
+        // A vendor name, a name from an RFC published after this code, and a name RFC 2445 defined and RFC 5545 does not.
+        // This crate has no reading of any of the three.
         (
             b"BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20260810T090000Z\r\nX-VENDOR-THING:1\r\n\
               CONFERENCE;VALUE=URI:https://example.test/call\r\nEXRULE:FREQ=DAILY\r\n\
               END:VEVENT\r\n",
             &[],
         ),
-        // A `VALUE` naming a type this crate cannot read, on a name it knows and on one it
-        // does not. Only the first is something it can say anything about.
+        // A `VALUE` naming a type this crate cannot read, on a name it knows and on one it does not.
+        // Only the first is something it can say anything about.
         (
             b"BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20260810T090000Z\r\n\
               SUMMARY;VALUE=WIDGET:hi\r\nX-VENDOR;VALUE=WIDGET:hi\r\nEND:VEVENT\r\n",
             &[DiagnosticCode::UnknownValueType],
         ),
-        // The boundary this reading is bounded by: no kind, so no schema, so no report — not
-        // about the missing `UID`, the misplaced `DUE`, the duplicate, or the value type.
+        // The boundary this reading is bounded by: no kind, so no schema, so no report — not about the missing `UID`, the misplaced `DUE`, the duplicate, or the value type.
         (
             b"BEGIN:X-VENDOR-BLOCK\r\nDUE:20260810T110000Z\r\nSUMMARY;VALUE=WIDGET:a\r\n\
               SUMMARY:b\r\nEND:X-VENDOR-BLOCK\r\n",
             &[],
         ),
-        // A nested component is audited by auditing it, and this alarm is missing its
-        // `ACTION` while the event around it is complete.
+        // A nested component is audited by auditing it, and this alarm is missing its `ACTION` while the event around it is complete.
         (
             b"BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20260810T090000Z\r\nBEGIN:VALARM\r\n\
               TRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\n",
             &[DiagnosticCode::MissingRequiredProperty],
         ),
-        // An observance with no `TZOFFSETTO`. The zone around it is complete.
+        // An observance with no `TZOFFSETTO`.
+        // The zone around it is complete.
         (
             b"BEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:STANDARD\r\n\
               DTSTART:19701025T030000\r\nTZOFFSETFROM:+0200\r\nEND:STANDARD\r\n\
               END:VTIMEZONE\r\n",
             &[DiagnosticCode::MissingRequiredProperty],
         ),
-        // RFC 7986 puts a `UID` and a `NAME` on the calendar itself. One is a name RFC 5545
-        // defines elsewhere and one is a name it does not define at all, and neither is a
-        // violation of anything.
+        // RFC 7986 puts a `UID` and a `NAME` on the calendar itself.
+        // One is a name RFC 5545 defines elsewhere and one is a name it does not define at all, and neither is a violation of anything.
         (
             b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit//test//EN\r\n\
               UID:calendar-1@example.test\r\nNAME:Team\r\nEND:VCALENDAR\r\n",
@@ -1010,18 +900,16 @@ mod tests {
                 DiagnosticCode::DuplicateProperty,
             ],
         ),
-        // A file whose syntax is broken in four places: a bare `LF`, a blank line, a line with
-        // no `:`, and an `END` that disagrees in case. None of the three names is one RFC 5545
-        // defines, the audit says only what it can defend, and every octet comes back.
+        // A file whose syntax is broken in four places: a bare `LF`, a blank line, a line with no `:`, and an `END` that disagrees in case.
+        // None of the three names is one RFC 5545 defines, the audit says only what it can defend, and every octet comes back.
         (
             b"BEGIN:VEVENT\nDTSTAMP:20260810T090000Z\r\n\r\nGARBAGE\r\nEND:vevent\r\n",
             &[DiagnosticCode::MissingRequiredProperty],
         ),
     ];
 
-    /// Every case asserts twice: the codes, and that the document writes back the octets it
-    /// read. The second assertion is the one that would catch a reading that had quietly
-    /// become an edit.
+    /// Every case asserts twice: the codes, and that the document writes back the octets it read.
+    /// The second assertion is the one that would catch a reading that had quietly become an edit.
     #[test]
     fn what_section_3_6_says_about_a_calendar_and_what_it_does_to_it() {
         for (input, expected) in CASES {
@@ -1040,8 +928,7 @@ mod tests {
         }
     }
 
-    /// A missing name is a violation, and a value type nobody here knows is a note: section
-    /// 3.2.20's grammar admits the name, so the file is not wrong for carrying it.
+    /// A missing name is a violation, and a value type nobody here knows is a note: section 3.2.20's grammar admits the name, so the file is not wrong for carrying it.
     #[test]
     fn the_two_severities_say_different_things_and_are_not_interchangeable() {
         let event = component(
@@ -1070,9 +957,8 @@ mod tests {
         );
     }
 
-    /// Nothing runs the audit but a caller. A parse that reported section 3.6's requirements
-    /// would make a reading of them a condition of getting a tree back, which is the posture
-    /// `docs/adr/0001` refuses.
+    /// Nothing runs the audit but a caller.
+    /// A parse that reported section 3.6's requirements would make a reading of them a condition of getting a tree back, which is the posture `docs/adr/0001` refuses.
     #[test]
     fn no_stage_of_reading_or_writing_runs_the_audit() {
         let input: &[u8] = b"BEGIN:VEVENT\r\nEND:VEVENT\r\n";
@@ -1098,8 +984,7 @@ mod tests {
         );
     }
 
-    /// A sink is allowed to refuse, and a caller that loses *which* violations occurred must
-    /// not also lose *that* they did (`docs/adr/0009`).
+    /// A sink is allowed to refuse, and a caller that loses *which* violations occurred must not also lose *that* they did (`docs/adr/0009`).
     #[test]
     fn a_refused_diagnostic_is_counted_against_the_meter() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1108,8 +993,7 @@ mod tests {
         assert!(!meter.is_exhausted(), "a reading spends no octet budget");
     }
 
-    /// The table and the singular accessor make one claim, not two: a name classified at most
-    /// once here is a name [`Component::get`] refuses two of.
+    /// The table and the singular accessor make one claim, not two: a name classified at most once here is a name [`Component::get`] refuses two of.
     #[test]
     fn a_name_the_table_allows_once_is_a_name_the_accessor_refuses_two_of() {
         assert_eq!(
@@ -1137,9 +1021,7 @@ mod tests {
         );
     }
 
-    /// Every property RFC 5545 defines is known to at least one component, which is what lets
-    /// the silence rule be derived from the tables instead of kept in a second list beside
-    /// them.
+    /// Every property RFC 5545 defines is known to at least one component, which is what lets the silence rule be derived from the tables instead of kept in a second list beside them.
     #[test]
     fn every_property_sections_3_7_and_3_8_define_is_known_to_some_component() {
         let defined: [&[u8]; 46] = [
@@ -1195,9 +1077,8 @@ mod tests {
         }
     }
 
-    /// The other half of the same rule. A name RFC 5545 does not define is a name this crate
-    /// reports nothing about, wherever a producer put it — including the names later RFCs added
-    /// beside the ones the tables carry for those RFCs' sake.
+    /// The other half of the same rule.
+    /// A name RFC 5545 does not define is a name this crate reports nothing about, wherever a producer put it — including the names later RFCs added beside the ones the tables carry for those RFCs' sake.
     #[test]
     fn a_name_no_section_of_rfc_5545_defines_is_not_this_crates_to_report() {
         let unknown: [&[u8]; 8] = [
@@ -1220,8 +1101,8 @@ mod tests {
         }
     }
 
-    /// Each table states one class per name, in the spelling the RFC uses. A name in two lists
-    /// would make the class depend on which pass looked first.
+    /// Each table states one class per name, in the spelling the RFC uses.
+    /// A name in two lists would make the class depend on which pass looked first.
     #[test]
     fn each_table_states_one_class_per_name_and_states_it_in_the_rfcs_spelling() {
         for (kind, _) in ComponentKind::SPELLINGS {
@@ -1251,8 +1132,7 @@ mod tests {
         }
     }
 
-    /// The classes are what section 3.6 says, read back through the two questions the audit
-    /// asks of them.
+    /// The classes are what section 3.6 says, read back through the two questions the audit asks of them.
     #[test]
     fn the_classes_are_the_ones_section_3_6_states() {
         assert!(ComponentKind::Event.cardinality(b"dtstamp").is_required());
@@ -1287,8 +1167,7 @@ mod tests {
         );
     }
 
-    /// The parameters a property carries, as name/value pairs, and the answer
-    /// [`Property::declared_value_type`] owes for them.
+    /// The parameters a property carries, as name/value pairs, and the answer [`Property::declared_value_type`] owes for them.
     type DeclaredCase<'a> = (
         &'a [(&'a [u8], &'a [u8])],
         Option<Result<ValueType, DiagnosticCode>>,
@@ -1326,8 +1205,7 @@ mod tests {
         }
     }
 
-    /// A `VALUE` with no `=` names no type, exactly as an empty one does, and a second `VALUE`
-    /// changes no answer — both stay in storage either way.
+    /// A `VALUE` with no `=` names no type, exactly as an empty one does, and a second `VALUE` changes no answer — both stay in storage either way.
     #[test]
     fn a_value_parameter_that_names_nothing_and_one_that_names_twice() {
         let empty = Property::new(
@@ -1346,8 +1224,7 @@ mod tests {
         assert_eq!(twice.parameters_named(b"VALUE").count(), 2);
     }
 
-    /// Every accessor is the general accessor called with a name, so each of them answers
-    /// absence the way it does, and none of them reads a component's kind before answering.
+    /// Every accessor is the general accessor called with a name, so each of them answers absence the way it does, and none of them reads a component's kind before answering.
     #[test]
     fn every_accessor_answers_absence_and_finds_what_it_names() {
         let empty = component(b"VEVENT", Vec::new());
