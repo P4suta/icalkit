@@ -97,19 +97,28 @@ pub trait DecodeValue<'a>: Sized {
     /// Read this type out of `bytes`, or say which diagnostic describes the failure.
     fn decode_value(bytes: &'a [u8]) -> Result<Self, DiagnosticCode>;
 
-    /// Read this type out of a whole property, for a value whose shape its parameters decide.
-    ///
-    /// One value type needs this and the rest must not: RFC 5545 makes a date-time's zone a `TZID` parameter rather than part of the value, so a decoder handed only the octets cannot tell a floating time from a zoned one — and a caller that read one and wrote it back would silently drop the zone.
-    /// `docs/adr/0001` requires the two to be inseparable,
-    /// which is a requirement about the read side as much as the write side.
-    ///
-    /// The default is the value's own octets and nothing else, so adding this changed no existing codec.
-    /// What an implementation may read is this property's parameters and its value; the property's *name* is not a question a value type is allowed to ask, because the two accessor levels are named on different axes and a decoder that looked at the name would be a property accessor wearing a value type's clothes.
+    /// Read the complete value with its declared type and property parameters.
     fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
+        Self::decode_property_field(property, property.value_text().as_bytes())
+    }
+
+    /// Read one list field with its declared type and property parameters.
+    fn decode_property_field(
+        property: &'a Property,
+        bytes: &'a [u8],
+    ) -> Result<Self, DiagnosticCode> {
         if let Some(Err(code)) = property.declared_value_type() {
             return Err(code);
         }
-        Self::decode_value(property.value_text().as_bytes())
+        Self::decode_contextual_value(property, bytes)
+    }
+
+    /// Decode a recognized field with its property parameters.
+    fn decode_contextual_value(
+        _property: &'a Property,
+        bytes: &'a [u8],
+    ) -> Result<Self, DiagnosticCode> {
+        Self::decode_value(bytes)
     }
 }
 

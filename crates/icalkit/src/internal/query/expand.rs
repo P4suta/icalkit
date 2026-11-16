@@ -2,80 +2,57 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 5 — expansion and window composition. RFC 4791 sections 9.6.5 and 9.9.
+//! Unit 5 — expansion and window composition.
+//! RFC 4791 sections 9.6.5 and 9.9.
 //!
 //! # What this unit owns
 //!
-//! The bridge from a `time-range` to `ical-recur`, and it is the only file in this crate that
-//! names `RecurrenceInput`, `Window` or `SearchStep`. Everything above it asks "does this
-//! component occupy a period overlapping that range" and gets an answer; everything about how
-//! that answer is obtained is here.
+//! The bridge from a `time-range` to `ical-recur`, and it is the only file in this crate that names `RecurrenceInput`, `Window` or `SearchStep`.
+//! Everything above it asks "does this component occupy a period overlapping that range" and gets an answer; everything about how that answer is obtained is here.
 //!
 //! - Compose the search window from the filter's `time-range` and the component's own bounds.
-//!   Both of the range's bounds are independently optional; a search window is not, so an open
-//!   bound has to be closed against something the calendar can express, and the choice has to be
-//!   the same one `overlap` assumes. `crate::internal::recur::generation_window` and `max_absolute_shift`
-//!   exist because an override may move an instance into a window it would never have been
-//!   generated in, and a window composed without them silently drops moved occurrences.
-//! - Run the search under the caller's `Meter`. A search that stops at its budget is
-//!   [`crate::internal::query::Undecided::SearchExhausted`] through [`crate::internal::query::Undecided::of_search`] — never an
-//!   empty result, and never a resource reported as not matching.
-//! - Stop at the first occurrence that overlaps. A filter asks whether *any* instance is in the
-//!   window, so expanding the rest of a decade after the answer is known is work an attacker
-//!   sizes.
-//! - Honor `docs/adr/0002`'s ordering warning: occurrences are emitted by cadence key and not by
-//!   effective start, so an override that moved an instance earlier arrives after instances that
-//!   start later than it does. A walk that stopped at the first key past the window would miss
-//!   it.
+//!   Both of the range's bounds are independently optional; a search window is not, so an open bound has to be closed against something the calendar can express, and the choice has to be the same one `overlap` assumes.
+//!   `crate::internal::recur::generation_window` and `max_absolute_shift` exist because an override may move an instance into a window it would never have been generated in, and a window composed without them silently drops moved occurrences.
+//! - Run the search under the caller's `Meter`.
+//!   A search that stops at its budget is [`crate::internal::query::Undecided::SearchExhausted`] through [`crate::internal::query::Undecided::of_search`] — never an empty result, and never a resource reported as not matching.
+//! - Stop at the first occurrence that overlaps.
+//!   A filter asks whether *any* instance is in the window, so expanding the rest of a decade after the answer is known is work an attacker sizes.
+//! - Honor `docs/adr/0002`'s ordering warning: occurrences are emitted by cadence key and not by effective start, so an override that moved an instance earlier arrives after instances that start later than it does.
+//!   A walk that stopped at the first key past the window would miss it.
 //!
 //! # The seam with `ical-tz`, which is not optional
 //!
-//! `crate::internal::tz::seam` states it in full and it is stated again here because getting it wrong puts
-//! every zoned series an hour out for half the year: `ical-recur` works on the series' own wall
-//! clock projected onto UTC, not on the UTC timeline. Every instant going in — `DTSTART`,
-//! `UNTIL`, each `RDATE`, `EXDATE` and `RECURRENCE-ID` — goes through `crate::internal::tz::nominal`, every
-//! cadence key coming back through `crate::internal::tz::wall_clock`, and each key is resolved against the
-//! zone one at a time. Do that through [`crate::internal::query::Zones`], which is the only door in this crate
-//! that reaches a `ZoneSource`.
+//! `crate::internal::tz::seam` states it in full and it is stated again here because getting it wrong puts every zoned series an hour out for half the year: `ical-recur` works on the series' own wall clock projected onto UTC, not on the UTC timeline.
+//! Every instant going in — `DTSTART`,
+//! `UNTIL`, each `RDATE`, `EXDATE` and `RECURRENCE-ID` — goes through `crate::internal::tz::nominal`, every cadence key coming back through `crate::internal::tz::wall_clock`, and each key is resolved against the zone one at a time.
+//! Do that through [`crate::internal::query::Zones`], which is the only door in this crate that reaches a `ZoneSource`.
 //!
-//! [`Series`] therefore takes its instants **already nominal**, which is where the caller's own
-//! projection ends, and every instant this unit hands back is **real UTC**, which is where the
-//! comparison RFC 4791 section 9.9 states has to be made. [`SeriesClock`] is what says which of
-//! RFC 5545 section 3.3.5's three forms the file wrote, because the way back is the identity for
-//! one of them, the query's own `CALDAV:timezone` for another and the series' own `TZID` for the
-//! third — and reading any of the three as another is the hour this seam exists to keep.
+//! [`Series`] therefore takes its instants **already nominal**, which is where the caller's own projection ends, and every instant this unit hands back is **real UTC**, which is where the comparison RFC 4791 section 9.9 states has to be made.
+//! [`SeriesClock`] is what says which of RFC 5545 section 3.3.5's three forms the file wrote, because the way back is the identity for one of them, the query's own `CALDAV:timezone` for another and the series' own `TZID` for the third — and reading any of the three as another is the hour this seam exists to keep.
 //!
 //! ## Why the search window carries a day of slack
 //!
-//! The two timelines are not the same one, so a window stated on the real timeline cannot bound
-//! nominal cadence keys exactly. It can bound them *safely*: a nominal instant and the real
-//! instant it stands for differ by the zone's offset, and RFC 5545 section 3.3.14 writes an
-//! offset as at most `+hhmmss`, which `crate::internal::core::UtcOffset` refuses to hold a whole day of. So
-//! every cadence key whose occurrence starts inside the caller's window lies inside that window
-//! widened by [`ZONE_SLACK_SECONDS`], generation over the widened window is a superset, and the
-//! exact comparison then filters it back down. A series written in UTC needs no slack at all,
+//! The two timelines are not the same one, so a window stated on the real timeline cannot bound nominal cadence keys exactly.
+//! It can bound them *safely*: a nominal instant and the real instant it stands for differ by the zone's offset, and RFC 5545 section 3.3.14 writes an offset as at most `+hhmmss`, which `crate::internal::core::UtcOffset` refuses to hold a whole day of.
+//! So every cadence key whose occurrence starts inside the caller's window lies inside that window widened by [`ZONE_SLACK_SECONDS`], generation over the widened window is a superset, and the exact comparison then filters it back down.
+//! A series written in UTC needs no slack at all,
 //! because there the projection is the identity, and that case is the common one.
 //!
 //! # `CALDAV:expand`
 //!
-//! Section 9.6.5 asks for the instances instead of the rule: the returned components carry a
-//! `RECURRENCE-ID`, carry no `RRULE`, `RDATE` or `EXDATE`, and have their `DTSTART` and `DTEND`
-//! rewritten to UTC. That is a calendar the server did not store, so whatever this unit produces
-//! for `subset` carries `crate::internal::query::Reduction::expanded`.
+//! Section 9.6.5 asks for the instances instead of the rule: the returned components carry a `RECURRENCE-ID`, carry no `RRULE`, `RDATE` or `EXDATE`, and have their `DTSTART` and `DTEND` rewritten to UTC.
+//! That is a calendar the server did not store, so whatever this unit produces for `subset` carries `crate::internal::query::Reduction::expanded`.
 //!
-//! [`Instance`] is that shape as a value: three real UTC instants and nothing else, so the unit
-//! that builds the calendar has nothing left to decide about the clock and no way to leave an
-//! `RRULE` on a component by forgetting to remove it.
+//! [`Instance`] is that shape as a value: three real UTC instants and nothing else, so the unit that builds the calendar has nothing left to decide about the clock and no way to leave an `RRULE` on a component by forgetting to remove it.
 //!
 //! # What this unit does not decide
 //!
-//! - Which period a component occupies is RFC 4791 section 9.9's table, and transcribing that
-//!   table is `overlap`'s work. What arrives here is [`InstanceSpan`], the length of the period
-//!   it selected.
-//! - Whether a component type has an overlap rule at all. That is
-//!   [`crate::internal::query::Undecided::OverlapUndefined`], and it is decided before a window is composed.
-//! - What a reduced calendar looks like as octets. This unit answers instants; `subset` writes
-//!   components.
+//! - Which period a component occupies is RFC 4791 section 9.9's table, and transcribing that table is `overlap`'s work.
+//!   What arrives here is [`InstanceSpan`], the length of the period it selected.
+//! - Whether a component type has an overlap rule at all.
+//!   That is [`crate::internal::query::Undecided::OverlapUndefined`], and it is decided before a window is composed.
+//! - What a reduced calendar looks like as octets.
+//!   This unit answers instants; `subset` writes components.
 
 use alloc::vec::Vec;
 
@@ -99,9 +76,8 @@ use crate::internal::query::vocabulary::{
 
 /// Property identities used while turning a stored component into one recurrence series.
 ///
-/// These are statics because `Component::properties_named` ties the identity borrow to the
-/// iterator. Keeping the identities here also makes the component-to-series bridge the only
-/// place in this unit that knows how the stored RFC 5545 names map onto [`Series`].
+/// These are statics because `Component::properties_named` ties the identity borrow to the iterator.
+/// Keeping the identities here also makes the component-to-series bridge the only place in this unit that knows how the stored RFC 5545 names map onto [`Series`].
 mod ids {
     use crate::internal::core::PropertyId;
 
@@ -116,11 +92,9 @@ mod ids {
 
 /// What expansion and window composition is reviewed against, one row per passage.
 ///
-/// The transcription manifest for this unit. Every rule in this file comes from one of these
-/// passages, and a reviewer checks the file by reading them in this order rather than by
-/// reconstructing which specification a branch came from. A rule with no row here is a rule
-/// somebody invented, which is the failure this crate is most exposed to: an evaluator that
-/// disagrees with a conformant server returns a different set of resources and says nothing.
+/// The transcription manifest for this unit.
+/// Every rule in this file comes from one of these passages, and a reviewer checks the file by reading them in this order rather than by reconstructing which specification a branch came from.
+/// A rule with no row here is a rule somebody invented, which is the failure this crate is most exposed to: an evaluator that disagrees with a conformant server returns a different set of resources and says nothing.
 pub const EXPANSION_SECTIONS: &[&str] = &[
     "RFC 4791 section 9.6.5, CALDAV:expand",
     "RFC 4791 section 9.9, the window a time-range states",
@@ -135,31 +109,22 @@ pub const EXPANSION_SECTIONS: &[&str] = &[
 
 /// How far a nominal instant and the real instant it stands for can lie apart, in seconds.
 ///
-/// RFC 5545 section 3.3.14 writes a UTC offset as `+hhmmss` at most, and
-/// `crate::internal::core::UtcOffset::from_seconds` refuses a magnitude of a whole day or more, so no zone
-/// this workspace can hold moves a wall clock further than this from the instant it names. That
-/// makes this an exact bound rather than a margin somebody guessed, which is what lets a window
-/// composed on the real timeline bound the nominal keys of every occurrence inside it.
+/// RFC 5545 section 3.3.14 writes a UTC offset as `+hhmmss` at most, and `crate::internal::core::UtcOffset::from_seconds` refuses a magnitude of a whole day or more, so no zone this workspace can hold moves a wall clock further than this from the instant it names.
+/// That makes this an exact bound rather than a margin somebody guessed, which is what lets a window composed on the real timeline bound the nominal keys of every occurrence inside it.
 pub const ZONE_SLACK_SECONDS: i64 = 86_399;
 
 /// The seconds in a nominal day, which is what RFC 4791 section 9.9's `+P1D` measures.
 ///
-/// Nominal: the projection `crate::internal::tz::seam` describes preserves civil fields, so one day on the
-/// series' own wall clock is 86,400 seconds on that timeline whatever the zone did inside it.
-/// Placing both ends of the span through the zone separately is what turns that back into the
-/// 23 or 25 real hours the day actually had.
+/// Nominal: the projection `crate::internal::tz::seam` describes preserves civil fields, so one day on the series' own wall clock is 86,400 seconds on that timeline whatever the zone did inside it.
+/// Placing both ends of the span through the zone separately is what turns that back into the 23 or 25 real hours the day actually had.
 const NOMINAL_DAY_SECONDS: i64 = 86_400;
 
 /// How long one instance of a component occupies, on the series' own clock.
 ///
-/// The length of the period RFC 4791 section 9.9's table gives the component, handed in already
-/// computed: this unit composes windows and expands series, and the table that decides which row
-/// a component is on belongs to `overlap`.
+/// The length of the period RFC 4791 section 9.9's table gives the component, handed in already computed: this unit composes windows and expands series, and the table that decides which row a component is on belongs to `overlap`.
 ///
-/// Measured on the series' own wall clock rather than in elapsed seconds, because that is the
-/// timeline every other instant crossing this seam is on and because it is what makes `+P1D` a
-/// day. Both ends of the span are placed through the zone independently, so an instance that
-/// spans a transition is as long in real seconds as the zone made it.
+/// Measured on the series' own wall clock rather than in elapsed seconds, because that is the timeline every other instant crossing this seam is on and because it is what makes `+P1D` a day.
+/// Both ends of the span are placed through the zone independently, so an instance that spans a transition is as long in real seconds as the zone made it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InstanceSpan {
     /// Seconds on the series' own wall clock, never negative.
@@ -169,10 +134,8 @@ pub struct InstanceSpan {
 impl InstanceSpan {
     /// No length at all: the instant itself.
     ///
-    /// RFC 4791 section 9.9 gives this to a `VEVENT` whose `DTSTART` is a `DATE-TIME` with
-    /// neither `DTEND` nor `DURATION`, and to a `DURATION` of zero seconds. It is the one length
-    /// that changes the comparison rather than only its operand, which is why
-    /// [`InstanceSpan::is_instantaneous`] is asked at both sites the two rows differ.
+    /// RFC 4791 section 9.9 gives this to a `VEVENT` whose `DTSTART` is a `DATE-TIME` with neither `DTEND` nor `DURATION`, and to a `DURATION` of zero seconds.
+    /// It is the one length that changes the comparison rather than only its operand, which is why [`InstanceSpan::is_instantaneous`] is asked at both sites the two rows differ.
     pub const INSTANT: Self = Self { seconds: 0 };
 
     /// `+P1D`, which section 9.9 gives a component whose `DTSTART` is a `DATE`.
@@ -182,9 +145,8 @@ impl InstanceSpan {
 
     /// A span of `seconds`, or `None` for a negative one.
     ///
-    /// `None` rather than an absolute value. RFC 4791 section 9.9 requires `DTEND` to be later
-    /// than `DTSTART`, so a negative span is a component the table cannot be evaluated for, and
-    /// reading it as its own magnitude would answer for a period the file never described.
+    /// `None` rather than an absolute value.
+    /// RFC 4791 section 9.9 requires `DTEND` to be later than `DTSTART`, so a negative span is a component the table cannot be evaluated for, and reading it as its own magnitude would answer for a period the file never described.
     #[must_use]
     pub const fn of_seconds(seconds: i64) -> Option<Self> {
         if seconds < 0 {
@@ -209,17 +171,14 @@ impl InstanceSpan {
 
 /// Which clock a series' own values are written on, RFC 5545 section 3.3.5's three forms.
 ///
-/// Closed rather than `#[non_exhaustive]`, because section 3.3.5 defines three forms and a
-/// fourth would be a new value type rather than a new variant.
+/// Closed rather than `#[non_exhaustive]`, because section 3.3.5 defines three forms and a fourth would be a new value type rather than a new variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SeriesClock<'a> {
     /// Form 2, a `Z`-terminated value: the nominal timeline and the real one coincide.
     Utc,
     /// Form 1, a floating value: read in the zone the query's `CALDAV:timezone` stated.
     ///
-    /// RFC 4791 section 9.9 makes that zone the one a floating comparison is made in and section
-    /// 9.5 permits a query to state none, which is `docs/adr/0003`'s refusal to invent one and
-    /// [`Undecided::ZoneUnstated`] here.
+    /// RFC 4791 section 9.9 makes that zone the one a floating comparison is made in and section 9.5 permits a query to state none, which is `docs/adr/0003`'s refusal to invent one and [`Undecided::ZoneUnstated`] here.
     Floating,
     /// Form 3, a value written with a `TZID`.
     Zoned(&'a str),
@@ -236,21 +195,15 @@ impl<'a> SeriesClock<'a> {
 
     /// The real instant that a nominal instant of this series stands for.
     ///
-    /// The outgoing half of the seam, in one place: the nominal instant is read back into the
-    /// wall clock it spells, and that wall clock is resolved against the zone in force on that
-    /// particular day. Resolving one key at a time is what keeps a daily 09:00 series at 09:00
-    /// across a transition; applying one offset to an anchor would move half the year by an hour.
+    /// The outgoing half of the seam, in one place: the nominal instant is read back into the wall clock it spells, and that wall clock is resolved against the zone in force on that particular day.
+    /// Resolving one key at a time is what keeps a daily 09:00 series at 09:00 across a transition; applying one offset to an anchor would move half the year by an hour.
     ///
-    /// A UTC series skips the door entirely, and that is not an optimization: a `Z`-terminated
-    /// value names a real instant already, so asking a zone about it would be putting a question
-    /// the file never posed.
+    /// A UTC series skips the door entirely, and that is not an optimization: a `Z`-terminated value names a real instant already, so asking a zone about it would be putting a question the file never posed.
     fn place(self, at: Instant, zones: Zones<'a>) -> Result<Instant, Undecided> {
         if matches!(self, Self::Utc) {
             return Ok(at);
         }
-        // Unreachable for a key inside the years RFC 5545 section 3.3.4 writes, and checked
-        // anyway: a generation window widened past them would otherwise be resolved into an
-        // instant no calendar can name.
+        // Unreachable for a key inside the years RFC 5545 section 3.3.4 writes, and checked anyway: a generation window widened past them would otherwise be resolved into an instant no calendar can name.
         let local = wall_clock(at).ok_or(Undecided::ValueUnreadable)?;
         let answer = zones.resolve(self.tzid(), local)?;
         answer
@@ -261,15 +214,12 @@ impl<'a> SeriesClock<'a> {
 
     /// Whether the caller's zone and policy admit an occurrence at cadence key `key`.
     ///
-    /// `docs/adr/0011`'s second gate, in the shape `crate::internal::recur::RecurrenceInput::admitting`
-    /// takes. This crate holds the zone and `ical-recur` holds `COUNT`, so an instance dropped
-    /// after the count is an instance the count already spent: a `COUNT=5` series with one
-    /// occurrence in an hour its zone never showed delivers four without it.
+    /// `docs/adr/0011`'s second gate, in the shape `crate::internal::recur::RecurrenceInput::admitting` takes.
+    /// This crate holds the zone and `ical-recur` holds `COUNT`, so an instance dropped after the count is an instance the count already spent: a `COUNT=5` series with one occurrence in an hour its zone never showed delivers four without it.
     ///
-    /// A key the zone could not be asked about at all — no query zone, an identifier nothing
-    /// recognizes — is admitted. Nothing there established that the local time does not exist,
-    /// and a gate that dropped it would be answering a question nobody asked; the undecidability
-    /// is reported when the occurrence is placed, where the caller sees it.
+    /// A key the zone could not be asked about at all — no query zone, an identifier nothing recognizes — is admitted.
+    /// Nothing there established that the local time does not exist,
+    /// and a gate that dropped it would be answering a question nobody asked; the undecidability is reported when the occurrence is placed, where the caller sees it.
     fn admits(self, key: Instant, zones: Zones<'a>) -> bool {
         !matches!(self.place(key, zones), Err(Undecided::ZoneAmbiguous))
     }
@@ -277,11 +227,8 @@ impl<'a> SeriesClock<'a> {
 
 /// One component's recurrence set, as the values RFC 5545 section 3.8.5 describes it with.
 ///
-/// Every instant here is **nominal** — the series' own wall clock projected onto UTC, which is
-/// the timeline `crate::internal::tz::seam` puts `ical-recur` on. A caller holding a parsed component gets
-/// them from `crate::internal::tz::nominal` and from `crate::internal::tz::ZonedSeries`; handing in real UTC instants for
-/// a zoned series is the mistake the seam exists to name, and it moves the whole series by the
-/// zone's offset.
+/// Every instant here is **nominal** — the series' own wall clock projected onto UTC, which is the timeline `crate::internal::tz::seam` puts `ical-recur` on.
+/// A caller holding a parsed component gets them from `crate::internal::tz::nominal` and from `crate::internal::tz::ZonedSeries`; handing in real UTC instants for a zoned series is the mistake the seam exists to name, and it moves the whole series by the zone's offset.
 #[derive(Clone, Copy, Debug)]
 pub struct Series<'a> {
     /// `DTSTART`, nominal.
@@ -304,18 +251,16 @@ pub struct Series<'a> {
 
 /// One expanded recurrence instance, on the UTC timeline RFC 4791 section 9.6.5 requires.
 ///
-/// Three instants and nothing else. Section 9.6.5 requires the returned components to carry a
-/// `RECURRENCE-ID`, to carry no `RRULE`, `RDATE` or `EXDATE`, and to state their `DTSTART` and
-/// `DTEND` as dates with UTC time; a value holding only what survives that leaves the unit
-/// building the calendar nothing to decide about the clock and no recurrence property it can
-/// forget to remove.
+/// Three instants and nothing else.
+/// Section 9.6.5 requires the returned components to carry a `RECURRENCE-ID`, to carry no `RRULE`, `RDATE` or `EXDATE`, and to state their `DTSTART` and `DTEND` as dates with UTC time; a value holding only what survives that leaves the unit building the calendar nothing to decide about the clock and no recurrence property it can forget to remove.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instance {
     /// The `RECURRENCE-ID` this instance answers to: its cadence key, in UTC.
     recurrence_id: Instant,
     /// `DTSTART`, in UTC — where the instance happens, after any override moved it.
     start: Instant,
-    /// `DTEND`, in UTC. Equal to `start` for a component RFC 4791 section 9.9 gives no length.
+    /// `DTEND`, in UTC.
+    /// Equal to `start` for a component RFC 4791 section 9.9 gives no length.
     end: Instant,
 }
 
@@ -332,9 +277,8 @@ impl Instance {
 
     /// The cadence key this instance answers to, in UTC.
     ///
-    /// Carried for every instance including the first. RFC 4791 section 9.6.5 requires it of
-    /// every recurring component "other than the initial instance", which is a statement about
-    /// what a server must write rather than about what an expansion knows.
+    /// Carried for every instance including the first.
+    /// RFC 4791 section 9.6.5 requires it of every recurring component "other than the initial instance", which is a statement about what a server must write rather than about what an expansion knows.
     #[must_use]
     pub const fn recurrence_id(self) -> Instant {
         self.recurrence_id
@@ -361,11 +305,8 @@ impl Instance {
 
 /// The window a search runs over, and how far an override set widened it.
 ///
-/// Two windows rather than one, because they answer different questions and a caller that saw
-/// only the second could not tell a widening from a wider query. [`SearchBounds::window`] is what
-/// an occurrence is admitted against; [`SearchBounds::generation`] is what cadence keys are
-/// generated over, and it reaches further precisely so that an override which moved an instance
-/// into the window from a key outside it is still generated.
+/// Two windows rather than one, because they answer different questions and a caller that saw only the second could not tell a widening from a wider query.
+/// [`SearchBounds::window`] is what an occurrence is admitted against; [`SearchBounds::generation`] is what cadence keys are generated over, and it reaches further precisely so that an override which moved an instance into the window from a key outside it is still generated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchBounds {
     /// The window over instance starts the filter asked about.
@@ -379,18 +320,14 @@ pub struct SearchBounds {
 impl SearchBounds {
     /// The bounds a `time-range` and a series imply, or `None` when nothing can fall inside.
     ///
-    /// `None` is a fact rather than a refusal: an open bound is closed against the years RFC 5545
-    /// section 3.3.4 can write, so a range lying entirely outside them holds no instant any
-    /// calendar can express and no instance can overlap it.
+    /// `None` is a fact rather than a refusal: an open bound is closed against the years RFC 5545 section 3.3.4 can write, so a range lying entirely outside them holds no instant any calendar can express and no instance can overlap it.
     pub fn compose(series: Series<'_>, range: TimeRange) -> Result<Option<Self>, QueryError> {
         let Some(window) = start_window(range, series.occupies, series.clock)? else {
             return Ok(None);
         };
         let widening = max_absolute_shift(series.overrides);
-        // `None` where the widening leaves the timeline. The window asked about is then used
-        // unchanged, which is what `ical-recur`'s own search does with it, and `widening` still
-        // reports the shift — so a caller can see that some occurrence's start lies outside
-        // anything a search could generate rather than being told the question narrowed.
+        // `None` where the widening leaves the timeline.
+        // The window asked about is then used unchanged, which is what `ical-recur`'s own search does with it, and `widening` still reports the shift — so a caller can see that some occurrence's start lies outside anything a search could generate rather than being told the question narrowed.
         let generation = generation_window(window, series.overrides).unwrap_or(window);
         Ok(Some(Self {
             window,
@@ -409,9 +346,7 @@ impl SearchBounds {
 
     /// The window cadence keys are generated over.
     ///
-    /// Equal to [`SearchBounds::window`] when no override moves anything, and equal to it again
-    /// when the widening would leave the timeline — in which case [`SearchBounds::widening`] is
-    /// the number that says so.
+    /// Equal to [`SearchBounds::window`] when no override moves anything, and equal to it again when the widening would leave the timeline — in which case [`SearchBounds::widening`] is the number that says so.
     #[must_use]
     pub const fn generation(self) -> (Instant, Instant) {
         (self.generation.start(), self.generation.end())
@@ -426,10 +361,8 @@ impl SearchBounds {
 
 /// Every instance of a series that a `CALDAV:expand` request asks to be returned.
 ///
-/// The instances, the witness that they are not what the server stored, and the reason the set is
-/// incomplete when it is. The third is not an error: an instance whose wall clock no zone could
-/// place is one this expansion could not write in UTC, and a report that dropped it silently
-/// would be a shorter answer that looked complete.
+/// The instances, the witness that they are not what the server stored, and the reason the set is incomplete when it is.
+/// The third is not an error: an instance whose wall clock no zone could place is one this expansion could not write in UTC, and a report that dropped it silently would be a shorter answer that looked complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expansion {
     /// The instances that overlap the range, in cadence order.
@@ -444,8 +377,8 @@ impl Expansion {
     /// The instances that overlap the range, in the order the search produced them.
     ///
     /// Cadence order, which is not the order they start in: `docs/adr/0002` emits by cadence key,
-    /// so an override that moved an instance earlier arrives after ones that start later than it
-    /// does. A caller rendering a list sorts by [`Instance::start`] and knows why.
+    /// so an override that moved an instance earlier arrives after ones that start later than it does.
+    /// A caller rendering a list sorts by [`Instance::start`] and knows why.
     #[must_use]
     pub fn instances(&self) -> &[Instance] {
         &self.instances
@@ -466,11 +399,9 @@ impl Expansion {
 
 /// Whether the recurrence set represented by one stored component overlaps `range`.
 ///
-/// This is the storage-to-engine bridge used by the filter tree. A master component is read
-/// together with its sibling `RECURRENCE-ID` components; an override component is never tested
-/// as a second independent series. Non-recurring components go through RFC 4791 section 9.9's
-/// complete table, while recurring event, to-do and journal components are reduced to the
-/// single-instance span that the recurrence engine can move and repeat.
+/// This is the storage-to-engine bridge used by the filter tree.
+/// A master component is read together with its sibling `RECURRENCE-ID` components; an override component is never tested as a second independent series.
+/// Non-recurring components go through RFC 4791 section 9.9's complete table, while recurring event, to-do and journal components are reduced to the single-instance span that the recurrence engine can move and repeat.
 pub(crate) fn component_overlaps<S>(
     component: &Component,
     siblings: &[Item],
@@ -521,8 +452,8 @@ where
 
 /// Whether one overridden component impacts `range` through either its current or original span.
 ///
-/// RFC 4791 section 9.6.6 names both. `RANGE=THISANDFUTURE` propagation is composed by the
-/// calendar-level limiting helper after these two direct tests.
+/// RFC 4791 section 9.6.6 names both.
+/// `RANGE=THISANDFUTURE` propagation is composed by the calendar-level limiting helper after these two direct tests.
 pub(crate) fn override_impacts(
     master: &Component,
     candidate: &Component,
@@ -791,10 +722,8 @@ pub(crate) fn override_recurrence_id(
 
 /// Whether a detached component's RECURRENCE-ID belongs to its master's recurrence set.
 ///
-/// This is deliberately a cadence-key test, not an overlap test: an event spanning a whole day
-/// must not make an unrelated key inside that day a valid override. The same nominal recurrence
-/// assembly used by CalDAV expansion supplies the answer, while the zone seam only decides
-/// whether a zoned wall clock is one the series admits.
+/// This is deliberately a cadence-key test, not an overlap test: an event spanning a whole day must not make an unrelated key inside that day a valid override.
+/// The same nominal recurrence assembly used by CalDAV expansion supplies the answer, while the zone seam only decides whether a zoned wall clock is one the series admits.
 pub(crate) fn recurrence_set_contains<S>(
     master: &Component,
     candidate: &Component,
@@ -1139,17 +1068,7 @@ fn instant_list(
 
 /// Decode one field of a list property, retaining the property's `TZID` parameter.
 fn list_value<'a>(property: &'a Property, field: &'a [u8]) -> Result<DateTimeValue<'a>, Undecided> {
-    let value = DateTimeValue::decode_value(field).map_err(|_| Undecided::ValueUnreadable)?;
-    let Some(parameter) = property.parameters_named(b"TZID").next() else {
-        return Ok(value);
-    };
-    match value {
-        DateTimeValue::Local(stamp) => Ok(DateTimeValue::Zoned {
-            stamp,
-            tzid: parameter.unquoted(),
-        }),
-        DateTimeValue::Date(_) | DateTimeValue::Utc(_) | DateTimeValue::Zoned { .. } => Ok(value),
-    }
+    DateTimeValue::decode_property_field(property, field).map_err(|_| Undecided::ValueUnreadable)
 }
 
 /// The wall-clock length of one recurring component instance.
@@ -1266,7 +1185,8 @@ fn freebusy_periods(component: &Component) -> Result<Vec<BusyPeriod>, QueryError
             .as_bytes()
             .split(|octet| *octet == b',')
         {
-            let written = Period::decode_value(field).map_err(|_| QueryError::Unrepresentable)?;
+            let written = Period::decode_property_field(property, field)
+                .map_err(|_| QueryError::Unrepresentable)?;
             let start = utc_value(written.start())?;
             let end = match written {
                 Period::Explicit { end, .. } => utc_value(end)?,
@@ -1297,15 +1217,10 @@ fn utc_value(value: DateTimeValue<'_>) -> Result<Instant, QueryError> {
 
 /// Whether any instance of `series` overlaps `range`, RFC 4791 section 9.9.
 ///
-/// Section 9.9 makes the test a disjunction over the recurrence set — "if any one instance
-/// matches, then the test returns true" — so the answer is [`Match::or`] folded over the
-/// instances, which is also what makes stopping at the first overlap safe: Kleene's disjunction
-/// is decided by a matched operand whatever the rest of them would have been.
+/// Section 9.9 makes the test a disjunction over the recurrence set — "if any one instance matches, then the test returns true" — so the answer is [`Match::or`] folded over the instances, which is also what makes stopping at the first overlap safe: Kleene's disjunction is decided by a matched operand whatever the rest of them would have been.
 ///
-/// The two answers that are not a fold are the ones a budget produces. A search that stopped at
-/// its own limit did not establish that nothing matches, so it is [`Undecided::SearchExhausted`]
-/// and never an empty result; and a ledger that had already latched before this call is the same
-/// fact one layer earlier, so no search is started at all.
+/// The two answers that are not a fold are the ones a budget produces.
+/// A search that stopped at its own limit did not establish that nothing matches, so it is [`Undecided::SearchExhausted`] and never an empty result; and a ledger that had already latched before this call is the same fact one layer earlier, so no search is started at all.
 pub fn overlaps<'a, S>(
     series: Series<'a>,
     range: TimeRange,
@@ -1342,13 +1257,10 @@ where
 
 /// The instances of `series` that overlap `range`, RFC 4791 section 9.6.5.
 ///
-/// Every instance rather than the first, because section 9.6.5 asks a server to return them and
-/// not to decide anything with them. What comes back carries [`Reduction::expanded`]: the octets
-/// a caller writes from it are well-formed iCalendar the server never stored, and writing them
-/// back replaces a rule with the handful of instances one query asked about.
+/// Every instance rather than the first, because section 9.6.5 asks a server to return them and not to decide anything with them.
+/// What comes back carries [`Reduction::expanded`]: the octets a caller writes from it are well-formed iCalendar the server never stored, and writing them back replaces a rule with the handful of instances one query asked about.
 ///
-/// The range bounds the answer twice over, exactly as section 9.6.5 says it does: it is the
-/// window the search runs over, and it is the overlap test each instance is then put to.
+/// The range bounds the answer twice over, exactly as section 9.6.5 says it does: it is the window the search runs over, and it is the overlap test each instance is then put to.
 pub fn expand<'a, S>(
     series: Series<'a>,
     range: TimeRange,
@@ -1395,9 +1307,7 @@ where
 
 /// The instances an expansion has collected, and the two ways it stops early.
 ///
-/// A named state rather than four captured bindings, because the closure that fills it is handed
-/// to [`walk`], and a closure borrowing four locals mutably reads as four independent facts when
-/// it is one.
+/// A named state rather than four captured bindings, because the closure that fills it is handed to [`walk`], and a closure borrowing four locals mutably reads as four independent facts when it is one.
 #[derive(Debug)]
 struct Collector {
     /// The instances kept so far.
@@ -1423,9 +1333,7 @@ impl Collector {
 
     /// Offer one instance, answering whether the walk should carry on.
     ///
-    /// An instance the zone could not place keeps the walk going and is recorded: the rest of the
-    /// range is still expandable, and one occurrence in an hour a zone never showed does not make
-    /// the others unknown.
+    /// An instance the zone could not place keeps the walk going and is recorded: the rest of the range is still expandable, and one occurrence in an hour a zone never showed does not make the others unknown.
     fn offer(
         &mut self,
         found: Result<Instance, Undecided>,
@@ -1447,9 +1355,8 @@ impl Collector {
             return true;
         }
         if self.lone == Some(instance.recurrence_id()) {
-            // The recurrence set is a set and `DTSTART` is in it once. A component with no rule
-            // whose `RDATE` list repeats its own `DTSTART` offers this key twice, and the one
-            // established before the search is the one carrying the override that addresses it.
+            // The recurrence set is a set and `DTSTART` is in it once.
+            // A component with no rule whose `RDATE` list repeats its own `DTSTART` offers this key twice, and the one established before the search is the one carrying the override that addresses it.
             return true;
         }
         if self.instances.try_reserve(1).is_err() {
@@ -1463,11 +1370,11 @@ impl Collector {
 
 /// Why a series could not be assembled into a search.
 ///
-/// Two answers, because they reach the caller on different channels. A list longer than the
-/// caller's own policy admits is a refusal the caller stated itself. A list that does not ascend,
+/// Two answers, because they reach the caller on different channels.
+/// A list longer than the caller's own policy admits is a refusal the caller stated itself.
+/// A list that does not ascend,
 /// or that names one instant twice, is a series whose instances cannot be established at all,
-/// which is an undecided filter rather than an error: nothing about it says the resource does not
-/// match.
+/// which is an undecided filter rather than an error: nothing about it says the resource does not match.
 #[derive(Debug)]
 enum Unassembled {
     /// A caller-stated bound refused one of the series' own lists.
@@ -1481,8 +1388,7 @@ impl From<InputError> for Unassembled {
         match error {
             InputError::TooMany(_, breach) => Self::Refused(QueryError::Limit(breach)),
             // `InputError` is `#[non_exhaustive]`, so this arm is required rather than chosen.
-            // Undecidable is the conservative reading of a shape this unit cannot expand: it
-            // neither claims the resource matches nor claims that it does not.
+            // Undecidable is the conservative reading of a shape this unit cannot expand: it neither claims the resource matches nor claims that it does not.
             _ => Self::Undecidable(Undecided::ValueUnreadable),
         }
     }
@@ -1490,11 +1396,8 @@ impl From<InputError> for Unassembled {
 
 /// The window over instance starts that `range` asks about, or `None` when it holds none.
 ///
-/// The whole of RFC 4791 section 9.9's start-edge distinction is the middle arm. An instance
-/// occupying a positive span is inside when `start < DTSTART+DURATION`, so a start as early as
-/// `range.start - span + 1` still reaches into the range; an instance occupying no time at all is
-/// inside when `start <= DTSTART`, and shifting that bound by a second would drop every
-/// zero-length component out of every query.
+/// The whole of RFC 4791 section 9.9's start-edge distinction is the middle arm.
+/// An instance occupying a positive span is inside when `start < DTSTART+DURATION`, so a start as early as `range.start - span + 1` still reaches into the range; an instance occupying no time at all is inside when `start <= DTSTART`, and shifting that bound by a second would drop every zero-length component out of every query.
 fn start_window(
     range: TimeRange,
     span: InstanceSpan,
@@ -1522,16 +1425,13 @@ fn start_window(
 
 /// Whether `instance` overlaps `range`, RFC 4791 section 9.9's condition for its own row.
 ///
-/// Two comparisons, each of which an absent bound satisfies: section 9.9 reads a missing `start`
-/// as minus infinity and a missing `end` as plus infinity, and a range with neither is one
-/// `crate::internal::dav::TimeRange` refuses to hold.
+/// Two comparisons, each of which an absent bound satisfies: section 9.9 reads a missing `start` as minus infinity and a missing `end` as plus infinity, and a range with neither is one `crate::internal::dav::TimeRange` refuses to hold.
 fn overlaps_range(instance: Instance, range: TimeRange, span: InstanceSpan) -> bool {
     let reaches_start = match range.start() {
         None => true,
         // `(start <= DTSTART)`, the rows for a component that occupies no time.
         Some(from) if span.is_instantaneous() => from <= instance.start(),
-        // `(start < DTEND)` and `(start < DTSTART+DURATION)`, which are one condition once the
-        // effective end has been computed.
+        // `(start < DTEND)` and `(start < DTSTART+DURATION)`, which are one condition once the effective end has been computed.
         Some(from) => from < instance.end(),
     };
     // `(end > DTSTART)`, which every row of every table states the same way.
@@ -1548,9 +1448,8 @@ fn decide(found: Result<Instance, Undecided>, range: TimeRange, span: InstanceSp
 
 /// The real UTC instants an occurrence at nominal `key`, starting at nominal `start`, occupies.
 ///
-/// Three placements at most and one at least. The cadence key and the effective start are the
-/// same instant for every occurrence no override moved, and the end is the start again for a
-/// component RFC 4791 section 9.9 gives no length, so the ordinary case asks the zone once.
+/// Three placements at most and one at least.
+/// The cadence key and the effective start are the same instant for every occurrence no override moved, and the end is the start again for a component RFC 4791 section 9.9 gives no length, so the ordinary case asks the zone once.
 fn placed<'a>(
     series: Series<'a>,
     key: Instant,
@@ -1567,8 +1466,8 @@ fn placed<'a>(
     let finishes_at = if series.occupies.is_instantaneous() {
         happens_at
     } else {
-        // Both ends go through the zone, so the span is as long in real seconds as the zone made
-        // that wall-clock day. The sum is checked because the span is a number a file supplies:
+        // Both ends go through the zone, so the span is as long in real seconds as the zone made that wall-clock day.
+        // The sum is checked because the span is a number a file supplies:
         // `DURATION:P100000000W` is a value RFC 5545 section 3.3.6 can write.
         let ends = start
             .checked_add_seconds(series.occupies.seconds())
@@ -1580,19 +1479,14 @@ fn placed<'a>(
 
 /// The one instance a component with no `RRULE` has, which no search produces.
 ///
-/// RFC 5545 section 3.8.5 puts `DTSTART` in every recurrence set, and `ical-recur` produces it
-/// from the rule rather than adding it: a component with no rule yields its `RDATE` instants and
-/// nothing else, and one with neither yields nothing at all. Most resources in a collection have
-/// no rule, so a filter reading that silence as "no instance" would answer "no match" for nearly
-/// every calendar object there is.
+/// RFC 5545 section 3.8.5 puts `DTSTART` in every recurrence set, and `ical-recur` produces it from the rule rather than adding it: a component with no rule yields its `RDATE` instants and nothing else, and one with neither yields nothing at all.
+/// Most resources in a collection have no rule, so a filter reading that silence as "no instance" would answer "no match" for nearly every calendar object there is.
 ///
-/// The exclusion list and any override addressing the key are applied here for the reason the
-/// search applies them: an `EXDATE` naming `DTSTART` removes the only instance there is, and an
-/// override that moved it moved the only start there is.
+/// The exclusion list and any override addressing the key are applied here for the reason the search applies them: an `EXDATE` naming `DTSTART` removes the only instance there is, and an override that moved it moved the only start there is.
 ///
-/// `None` where the component has a rule. There the recurrence set is what the rule generates,
-/// including whether an unsynchronized `DTSTART` belongs to it — a question RFC 5545 section
-/// 3.8.5.3 calls undefined and `ical-recur` answers once, on its own terms.
+/// `None` where the component has a rule.
+/// There the recurrence set is what the rule generates,
+/// including whether an unsynchronized `DTSTART` belongs to it — a question RFC 5545 section 3.8.5.3 calls undefined and `ical-recur` answers once, on its own terms.
 fn lone_instance(series: Series<'_>) -> Option<(Instant, Instant)> {
     if series.rule.is_some() || series.exdates.binary_search(&series.dtstart).is_ok() {
         return None;
@@ -1606,14 +1500,12 @@ fn lone_instance(series: Series<'_>) -> Option<(Instant, Instant)> {
 
 /// Walk the occurrences of `series` inside `bounds`, offering each to `visit`.
 ///
-/// `visit` answers whether to carry on, which is how "stop at the first overlapping occurrence"
-/// is stated once rather than at each caller. The reason the walk is incomplete comes back, and
-/// it is `None` for a walk that reached the end of the search.
+/// `visit` answers whether to carry on, which is how "stop at the first overlapping occurrence" is stated once rather than at each caller.
+/// The reason the walk is incomplete comes back, and it is `None` for a walk that reached the end of the search.
 ///
 /// The window the search is given is the one the caller asked about and never the widened one:
-/// `ical-recur` widens generation itself, from the same override set, and admits an occurrence
-/// whose cadence key falls in the asked window **or** whose effective start does. Handing it the
-/// widened window instead would admit occurrences by a key nobody asked about.
+/// `ical-recur` widens generation itself, from the same override set, and admits an occurrence whose cadence key falls in the asked window **or** whose effective start does.
+/// Handing it the widened window instead would admit occurrences by a key nobody asked about.
 fn walk<'a, S, V>(
     series: Series<'a>,
     bounds: SearchBounds,
@@ -1638,10 +1530,8 @@ where
     let mut incomplete = None;
     let mut stopped_by_caller = false;
     for step in &mut search {
-        // `SearchStep::occurrence` answers `None` for the terminal step, and for any terminal
-        // state a later `ical-recur` adds. Recording it rather than dropping it is the whole
-        // difference between the discard that type documents and this: a search stopped short
-        // never established that the range holds no instance.
+        // `SearchStep::occurrence` answers `None` for the terminal step, and for any terminal state a later `ical-recur` adds.
+        // Recording it rather than dropping it is the whole difference between the discard that type documents and this: a search stopped short never established that the range holds no instance.
         let Some(occurrence) = step.occurrence() else {
             incomplete = Some(Undecided::SearchExhausted);
             break;
@@ -1652,9 +1542,8 @@ where
         }
     }
     if incomplete.is_none() && !stopped_by_caller {
-        // Only for a walk the caller let run out. A search stopped early leaves its outcome
-        // `SearchOutcome::Pending`, which `Undecided::of_search` reads as incomplete — true of
-        // the search and false of the question, which was answered.
+        // Only for a walk the caller let run out.
+        // A search stopped early leaves its outcome `SearchOutcome::Pending`, which `Undecided::of_search` reads as incomplete — true of the search and false of the question, which was answered.
         incomplete = Undecided::of_search(search.outcome());
     }
     Ok(incomplete)
@@ -1676,9 +1565,8 @@ fn assemble<'a>(series: Series<'a>, meter: &mut Meter) -> Result<RecurrenceInput
 
 /// The answer a call gets when the caller's ledger had already latched.
 ///
-/// Exhaustion latches, so a search started here would walk a rule against a meter refusing every
-/// charge and come back empty. That is the truncated-but-plausible answer a budget exists to
-/// prevent, one layer up from where `docs/adr/0002` prevents it.
+/// Exhaustion latches, so a search started here would walk a rule against a meter refusing every charge and come back empty.
+/// That is the truncated-but-plausible answer a budget exists to prevent, one layer up from where `docs/adr/0002` prevents it.
 fn exhausted_before_starting<S>(series: Series<'_>, budget: &mut Budget<'_>, sink: &mut S) -> Match
 where
     S: DiagnosticSink + ?Sized,
@@ -1694,18 +1582,13 @@ where
 
 /// Report that a filter could not be decided, and why.
 ///
-/// One code for all six reasons, which is what `crate::internal::query::Undecided::CODE` fixes, and the reason
-/// itself as the diagnostic's subject. A subject is what tells two reports of one code apart, and
-/// six undecidable filters arriving as six equal values would tell a caller that something could
-/// not be answered without saying what.
+/// One code for all six reasons, which is what `crate::internal::query::Undecided::CODE` fixes, and the reason itself as the diagnostic's subject.
+/// A subject is what tells two reports of one code apart, and six undecidable filters arriving as six equal values would tell a caller that something could not be answered without saying what.
 ///
-/// The instant is the series' own `DTSTART`, nominal: it is the one instant identifying the
-/// component whatever went wrong, and an occurrence that could not be placed has no instant of
-/// its own to name.
+/// The instant is the series' own `DTSTART`, nominal: it is the one instant identifying the component whatever went wrong, and an occurrence that could not be placed has no instant of its own to name.
 ///
-/// Nothing about the zone is reported here. `ical-tz` emits `ambiguous-local-time` and its
-/// siblings from the answers themselves, and a second emission would make one awkward hour look
-/// like two.
+/// Nothing about the zone is reported here.
+/// `ical-tz` emits `ambiguous-local-time` and its siblings from the answers themselves, and a second emission would make one awkward hour look like two.
 fn note_undecided<S>(reason: Undecided, at: Instant, meter: &mut Meter, sink: &mut S)
 where
     S: DiagnosticSink + ?Sized,
@@ -1720,9 +1603,7 @@ where
 
 /// `at` moved `seconds` earlier, stopping at `floor`.
 ///
-/// Saturating at the calendar's own edge rather than refusing: an instance long enough to reach
-/// back past the year RFC 5545 section 3.3.4 begins at has a window that starts at that year, and
-/// no instant before it exists to be missed.
+/// Saturating at the calendar's own edge rather than refusing: an instance long enough to reach back past the year RFC 5545 section 3.3.4 begins at has a window that starts at that year, and no instant before it exists to be missed.
 fn earlier(at: Instant, seconds: i64, floor: Instant) -> Instant {
     seconds
         .checked_neg()
@@ -1740,9 +1621,8 @@ fn later(at: Instant, seconds: i64, ceiling: Instant) -> Instant {
 
 /// The first instant RFC 5545 section 3.3.4 can write, on the nominal timeline.
 ///
-/// Computed rather than written as a number, so that the bound and the calendar it comes from
-/// cannot drift apart. `None` is unreachable — year zero, January, the first — and is checked
-/// because a bound that holds today is not a bound the compiler checks.
+/// Computed rather than written as a number, so that the bound and the calendar it comes from cannot drift apart.
+/// `None` is unreachable — year zero, January, the first — and is checked because a bound that holds today is not a bound the compiler checks.
 fn calendar_start() -> Option<Instant> {
     nominal(CivilDateTime::new(
         CivilDate::from_ymd(0, 1, 1)?,
@@ -1752,8 +1632,7 @@ fn calendar_start() -> Option<Instant> {
 
 /// The first instant past the last one RFC 5545 section 3.3.4 can write.
 ///
-/// One second past 9999-12-31T23:59:59, because every window in this workspace is half-open and a
-/// closed upper bound would exclude the last second a calendar can name.
+/// One second past 9999-12-31T23:59:59, because every window in this workspace is half-open and a closed upper bound would exclude the last second a calendar can name.
 fn calendar_end() -> Option<Instant> {
     nominal(CivilDateTime::new(
         CivilDate::from_ymd(9999, 12, 31)?,
@@ -1793,12 +1672,9 @@ mod tests {
     /// One hour, which is the `DURATION:PT1H` every event in the example carries.
     const ONE_HOUR: i64 = 3_600;
 
-    // The instants of RFC 4791 section 7.8.3's worked example, transcribed by hand. The nominal
-    // ones are the wall clocks the file writes -- `DTSTART;TZID=US/Eastern:20060102T120000` and
-    // the daily keys after it -- projected by `crate::internal::tz::seam`; the UTC ones are what those wall
-    // clocks name under EST, and what the example's own `>> Response <<` states. Every one of
-    // them is checked against `ical-core`'s calendar arithmetic by the first test below, so a
-    // transcription slip fails a test rather than quietly moving the example.
+    // The instants of RFC 4791 section 7.8.3's worked example, transcribed by hand.
+    // The nominal ones are the wall clocks the file writes -- `DTSTART;TZID=US/Eastern:20060102T120000` and the daily keys after it -- projected by `crate::internal::tz::seam`; the UTC ones are what those wall clocks name under EST, and what the example's own `>> Response <<` states.
+    // Every one of them is checked against `ical-core`'s calendar arithmetic by the first test below, so a transcription slip fails a test rather than quietly moving the example.
 
     /// `20060102T120000` local, nominal: the example's `DTSTART`.
     const NOMINAL_JAN2: i64 = 1_136_203_200;
@@ -1830,9 +1706,8 @@ mod tests {
     const UTC_JAN4_2000: i64 = 1_136_404_800;
 
     // The composed window for the example's range over an hour-long zoned event, by hand:
-    // `20060103T000000Z` less the 3,599 seconds a positive span reaches back by, less the
-    // 86,399 of zone slack; and `20060105T000000Z` plus that same slack. The generation window
-    // is those two moved out by the 7,200 seconds the example's own override shifts.
+    // `20060103T000000Z` less the 3,599 seconds a positive span reaches back by, less the 86,399 of zone slack; and `20060105T000000Z` plus that same slack.
+    // The generation window is those two moved out by the 7,200 seconds the example's own override shifts.
 
     /// `1_136_246_400 - 3_599 - 86_399`.
     const WINDOW_LOWER: i64 = 1_136_156_402;
@@ -1851,10 +1726,8 @@ mod tests {
 
     /// The example's zone, as the one offset January has in it.
     ///
-    /// A fixed offset is not a zone and this source says so by construction. It is the right
-    /// stand-in here and nowhere else: the `VTIMEZONE` the example carries puts `US/Eastern` on
-    /// EST from the last Sunday in October to the first in April, so every instant under test is
-    /// on `-05:00` and no transition falls inside any window here.
+    /// A fixed offset is not a zone and this source says so by construction.
+    /// It is the right stand-in here and nowhere else: the `VTIMEZONE` the example carries puts `US/Eastern` on EST from the last Sunday in October to the first in April, so every instant under test is on `-05:00` and no transition falls inside any window here.
     fn eastern() -> FixedOffsetSource {
         FixedOffsetSource::new(
             EASTERN,
@@ -1933,8 +1806,7 @@ mod tests {
 
     /// Every constant transcribed from RFC 4791 section 7.8.3 is the instant its text names.
     ///
-    /// The transcription is what every other expectation in this module rests on, so it is
-    /// checked against `ical-core`'s calendar arithmetic rather than against itself.
+    /// The transcription is what every other expectation in this module rests on, so it is checked against `ical-core`'s calendar arithmetic rather than against itself.
     #[test]
     fn the_worked_examples_instants_are_the_ones_the_rfc_writes() {
         // Nominal: the wall clock the file writes, read at UTC, which is the projection.
@@ -1957,9 +1829,7 @@ mod tests {
 
     /// RFC 4791 section 9.9's VEVENT table, at every boundary the two rows distinguish.
     ///
-    /// The expected column is the RFC's own condition evaluated by hand over a range of
-    /// `[10_000, 20_000)`: `(start <= DTSTART AND end > DTSTART)` for a component that occupies
-    /// no time, and `(start < DTSTART+DURATION AND end > DTSTART)` for one that does.
+    /// The expected column is the RFC's own condition evaluated by hand over a range of `[10_000, 20_000)`: `(start <= DTSTART AND end > DTSTART)` for a component that occupies no time, and `(start < DTSTART+DURATION AND end > DTSTART)` for one that does.
     #[test]
     fn the_overlap_condition_is_the_one_section_9_9_writes_for_each_row() {
         let window = spanning(at(10_000), at(20_000));
@@ -2048,8 +1918,7 @@ mod tests {
 
     /// The composed window is the range reaching back by the span, and by nothing else.
     ///
-    /// A UTC series is the case with no slack in it, so the arithmetic RFC 4791 section 9.9
-    /// states stands on its own here.
+    /// A UTC series is the case with no slack in it, so the arithmetic RFC 4791 section 9.9 states stands on its own here.
     #[test]
     fn the_window_reaches_back_by_the_span_and_stops_at_the_range_end() {
         let utc = Series {
@@ -2109,9 +1978,8 @@ mod tests {
     /// RFC 4791 section 7.8.3's expansion, instance for instance.
     ///
     /// The expected column is that example's `>> Response <<` for `abcd2.ics`: two components,
-    /// the first at `20060103T170000` and the second at `20060104T190000` with
-    /// `RECURRENCE-ID:20060104T170000`. The January 2nd instance ends before the range opens and
-    /// the January 5th one starts after it closes, and neither is in the response.
+    /// the first at `20060103T170000` and the second at `20060104T190000` with `RECURRENCE-ID:20060104T170000`.
+    /// The January 2nd instance ends before the range opens and the January 5th one starts after it closes, and neither is in the response.
     #[test]
     fn the_worked_example_expands_to_the_two_instances_the_rfc_returns() {
         let rule = daily(5);
@@ -2204,10 +2072,8 @@ mod tests {
 
     /// An instance an override moved into the window is found by its moved start.
     ///
-    /// RFC 4791 section 9.6.6 states the same fact from the other side: an overridden component
-    /// impacts a range if its *current* start and end overlap it. The unmoved January 4th
-    /// instance runs 17:00Z to 18:00Z and does not reach a range opening at 18:00Z; the moved one
-    /// runs 19:00Z to 20:00Z and does.
+    /// RFC 4791 section 9.6.6 states the same fact from the other side: an overridden component impacts a range if its *current* start and end overlap it.
+    /// The unmoved January 4th instance runs 17:00Z to 18:00Z and does not reach a range opening at 18:00Z; the moved one runs 19:00Z to 20:00Z and does.
     #[test]
     fn an_instance_an_override_moved_into_the_window_is_not_lost() {
         let rule = daily(5);
@@ -2247,9 +2113,7 @@ mod tests {
 
     /// An override reaching further than the slack is why generation is widened at all.
     ///
-    /// The moved instance's cadence key is five days past the window, so only the widening
-    /// `crate::internal::recur::generation_window` applies reaches it, and an exclusion removes the ordinary
-    /// instance of that day so that the answer can only have come from the moved one.
+    /// The moved instance's cadence key is five days past the window, so only the widening `crate::internal::recur::generation_window` applies reaches it, and an exclusion removes the ordinary instance of that day so that the answer can only have come from the moved one.
     #[test]
     fn an_override_moved_from_beyond_the_slack_is_still_generated() {
         let rule = daily(10);
@@ -2343,9 +2207,8 @@ mod tests {
 
     /// The answer this crate exists for: a floating value with no zone is not "no match".
     ///
-    /// RFC 4791 section 9.9 compares a floating value in the zone the query's `CALDAV:timezone`
-    /// stated and section 9.5 permits a query to state none, so there is no timeline to make the
-    /// comparison on. `docs/adr/0003` forbids inventing one.
+    /// RFC 4791 section 9.9 compares a floating value in the zone the query's `CALDAV:timezone` stated and section 9.5 permits a query to state none, so there is no timeline to make the comparison on.
+    /// `docs/adr/0003` forbids inventing one.
     #[test]
     fn a_floating_series_with_no_query_zone_is_undecidable_and_not_unmatched() {
         let rule = daily(5);
@@ -2424,8 +2287,7 @@ mod tests {
     fn a_search_stopped_at_its_budget_is_undecidable() {
         let rule = daily(10_000);
         let source = eastern();
-        // Two octets of budget: the third candidate the walk generates is refused, long before
-        // the walk reaches a window four years past `DTSTART`.
+        // Two octets of budget: the third candidate the walk generates is refused, long before the walk reaches a window four years past `DTSTART`.
         let mut meter = Meter::with_budget(Limits::DEFAULT, 2);
         let mut budget = Budget::new(Limits::DEFAULT, &mut meter);
         let answer = overlaps(

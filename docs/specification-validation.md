@@ -27,6 +27,12 @@ Observance bounds use UTC.
 Standalone timestamp searches require UTC date-time bounds.
 Unknown `VALUE` types stop typed decoding and produce notes, as required by [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
 
+`RDATE` and `EXDATE` lists follow [RFC 5545 section 3.8.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5).
+Each field must match its declared type.
+Period checks validate the bounds and positive lengths that [section 3.3.9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.9) requires.
+`FREEBUSY` bounds use UTC under [section 3.8.2.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.6).
+List decoding keeps the property's parameters and refuses to interpret unknown value types during recurrence expansion.
+
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.
 The caller must enforce absence when storing the authorized result.
 The [creation decision](adr/scheduling-creation-from-absence.md) records the API choice and its storage boundary.
@@ -37,7 +43,7 @@ The creation workflows live in `crates/icalkit/tests/scheduling_creation.rs`.
 Use the [contribution workflow](../CONTRIBUTING.md) to reproduce a failure before changing behavior and run the applicable checks after the fix.
 
 ```sh
-mise x -- cargo nextest run --locked -p icalkit-conformance --test calendar_validation --test alarm_validation --test component_structure --test opaque_value_types --test recurrence_validation
+mise x -- cargo nextest run --locked -p icalkit-conformance --test calendar_validation --test alarm_validation --test component_structure --test opaque_value_types --test recurrence_validation --test temporal_list_validation
 mise x -- cargo nextest run --locked -p icalkit --test scheduling_creation
 mise x -- just ci
 ```

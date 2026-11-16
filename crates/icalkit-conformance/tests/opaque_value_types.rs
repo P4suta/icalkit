@@ -7,8 +7,8 @@
 #![cfg(test)]
 
 use icalkit_conformance::internal::core::{
-    BinaryValue, CivilDate, CivilDateTime, CivilTime, DateTimeValue, DiagnosticCode, Document,
-    Duration, Geo, Limits, Period, Severity, TextValue, UriValue, UtcOffset, View,
+    BinaryValue, CivilDate, CivilDateTime, CivilTime, DateTimeValue, DecodeValue, DiagnosticCode,
+    Document, Duration, Geo, Limits, Period, Severity, TextValue, UriValue, UtcOffset, View,
 };
 
 fn assert_opaque<T>(view: &View<'_, T>) {
@@ -32,6 +32,10 @@ macro_rules! opaque_value {
             let component = document.components().next().unwrap();
             let property = component.properties().next().unwrap();
             assert_opaque::<$value_type>(&property.value());
+            assert_eq!(
+                <$value_type>::decode_property_field(property, property.value_text().as_bytes()),
+                Err(DiagnosticCode::UnknownValueType)
+            );
             assert_eq!(document.to_bytes(), input.as_bytes());
         }
     };
@@ -54,3 +58,38 @@ opaque_value!(period, Period<'_>, "20260814T090000Z/20260814T100000Z");
 opaque_value!(opaque_duration, Duration, "opaque");
 opaque_value!(opaque_date_time, DateTimeValue<'_>, "opaque");
 opaque_value!(opaque_period, Period<'_>, "opaque");
+
+#[test]
+fn list_fields_keep_the_property_zone() {
+    let input =
+        b"BEGIN:VEVENT\r\nRDATE;TZID=Test/Zone:20260815T090000,20260816T090000\r\nEND:VEVENT\r\n";
+    let document = Document::parse(input, Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let property = document
+        .components()
+        .next()
+        .unwrap()
+        .properties()
+        .next()
+        .unwrap();
+    for field in property
+        .value_text()
+        .as_bytes()
+        .split(|octet| *octet == b',')
+    {
+        let value = DateTimeValue::decode_property_field(property, field).unwrap();
+        assert_eq!(value.tzid(), Some(b"Test/Zone".as_slice()));
+    }
+
+    let input =
+        b"BEGIN:VEVENT\r\nRDATE;VALUE=PERIOD;TZID=Test/Zone:20260815T090000/PT1H\r\nEND:VEVENT\r\n";
+    let document = Document::parse(input, Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let property = document
+        .components()
+        .next()
+        .unwrap()
+        .properties()
+        .next()
+        .unwrap();
+    let value = Period::decode_property_field(property, property.value_text().as_bytes()).unwrap();
+    assert_eq!(value.start().tzid(), Some(b"Test/Zone".as_slice()));
+}

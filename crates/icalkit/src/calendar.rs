@@ -7,7 +7,8 @@ use core::str;
 
 use crate::internal::core::{
     Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
-    DiagnosticCode, Document, Duration, Item, Meter, Property, PropertyId, TextValue, ValueType,
+    DiagnosticCode, Document, Duration, Item, Meter, Period, Property, PropertyId, TextValue,
+    ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -224,6 +225,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_date_times_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time"));
     }
+    if first.is_some_and(|calendar| !known_temporal_lists_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-date-time-list"));
+    }
     if let Some(calendar) = first {
         validate_component_structure(calendar, issues);
         validate_required_starts(calendar, issues);
@@ -390,15 +394,8 @@ fn date_time_property_is_valid(component: &Component, property: &Property) -> bo
     let Ok(value) = DateTimeValue::decode_property(property) else {
         return false;
     };
-    if value.value_type() != declared || crate::time::from_core_date_time(value).is_none() {
+    if !date_time_value_is_valid(property, value, declared) {
         return false;
-    }
-    if let Some(zone) = property.parameters_named(b"TZID").next() {
-        if zone.unquoted().is_empty()
-            || matches!(value, DateTimeValue::Date(_) | DateTimeValue::Utc(_))
-        {
-            return false;
-        }
     }
     let requires_utc = [
         b"ACKNOWLEDGED".as_slice(),
@@ -418,6 +415,100 @@ fn date_time_property_is_valid(component: &Component, property: &Property) -> bo
     let requires_local = property.is_named(b"DTSTART")
         && (component.is_named(b"STANDARD") || component.is_named(b"DAYLIGHT"));
     !requires_local || matches!(value, DateTimeValue::Local(_))
+}
+
+fn date_time_value_is_valid(
+    property: &Property,
+    value: DateTimeValue<'_>,
+    declared: ValueType,
+) -> bool {
+    value.value_type() == declared
+        && crate::time::from_core_date_time(value).is_some()
+        && property
+            .parameters_named(b"TZID")
+            .next()
+            .is_none_or(|zone| {
+                !zone.unquoted().is_empty()
+                    && !matches!(value, DateTimeValue::Date(_) | DateTimeValue::Utc(_))
+            })
+}
+
+fn known_temporal_lists_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component.properties().all(|property| {
+        if property.is_named(b"RDATE") || property.is_named(b"EXDATE") {
+            temporal_list_is_valid(property, false)
+        } else if property.is_named(b"FREEBUSY") {
+            temporal_list_is_valid(property, true)
+        } else {
+            true
+        }
+    }) && component.components().all(known_temporal_lists_are_valid)
+}
+
+fn temporal_list_is_valid(property: &Property, freebusy: bool) -> bool {
+    if property.parameters_named(b"VALUE").nth(1).is_some()
+        || property.parameters_named(b"TZID").nth(1).is_some()
+        || (freebusy && property.parameters_named(b"FBTYPE").nth(1).is_some())
+    {
+        return false;
+    }
+    let declared = match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        Some(Ok(value_type)) => value_type,
+        None if freebusy => ValueType::Period,
+        None => ValueType::DateTime,
+    };
+    if freebusy && declared != ValueType::Period {
+        return false;
+    }
+    property
+        .value_text()
+        .as_bytes()
+        .split(|octet| *octet == b',')
+        .all(|field| match declared {
+            ValueType::Date | ValueType::DateTime => {
+                DateTimeValue::decode_property_field(property, field)
+                    .is_ok_and(|value| date_time_value_is_valid(property, value, declared))
+            },
+            ValueType::Period if !property.is_named(b"EXDATE") => {
+                period_field_is_valid(property, field, freebusy)
+            },
+            _ => false,
+        })
+}
+
+fn period_field_is_valid(property: &Property, field: &[u8], utc_only: bool) -> bool {
+    let Ok(period) = Period::decode_property_field(property, field) else {
+        return false;
+    };
+    if property
+        .parameters_named(b"TZID")
+        .next()
+        .is_some_and(|zone| zone.unquoted().is_empty())
+    {
+        return false;
+    }
+    let valid_bound = |bound| {
+        crate::time::from_core_date_time(bound).is_some()
+            && (!utc_only || matches!(bound, DateTimeValue::Utc(_)))
+    };
+    if !valid_bound(period.start()) {
+        return false;
+    }
+    match period {
+        Period::Explicit { start, end } => {
+            valid_bound(end)
+                && match (start, end) {
+                    (DateTimeValue::Local(start), DateTimeValue::Local(end))
+                    | (DateTimeValue::Utc(start), DateTimeValue::Utc(end)) => end > start,
+                    _ => true,
+                }
+        },
+        Period::Starting { .. } => true,
+    }
 }
 
 fn first_property<'a>(component: &'a Component, name: &[u8]) -> Option<&'a Property> {

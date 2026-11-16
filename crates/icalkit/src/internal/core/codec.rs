@@ -263,11 +263,11 @@ impl<'a> DecodeValue<'a> for DateTimeValue<'a> {
         decode_date_time_value(bytes).ok_or(DiagnosticCode::MalformedDateTime)
     }
 
-    fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
-        if let Some(Err(code)) = property.declared_value_type() {
-            return Err(code);
-        }
-        let written = Self::decode_value(property.value_text().as_bytes())?;
+    fn decode_contextual_value(
+        property: &'a Property,
+        bytes: &'a [u8],
+    ) -> Result<Self, DiagnosticCode> {
+        let written = Self::decode_value(bytes)?;
         // Only a floating date-time can become a zoned one.
         // A `TZID` beside a `DATE` or beside a value ending in `Z` is what section 3.2.19 forbids, and the value's own octets are the stronger statement of the two: `Z` says UTC outright, and a date has no clock for a zone to move.
         // The stray parameter is neither obeyed nor removed — it is still in storage, still written back, and still there for a caller to see.
@@ -541,11 +541,11 @@ impl<'a> DecodeValue<'a> for Period<'a> {
         decode_period(bytes).ok_or(DiagnosticCode::MalformedPeriod)
     }
 
-    fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
-        if let Some(Err(code)) = property.declared_value_type() {
-            return Err(code);
-        }
-        let written = Self::decode_value(property.value_text().as_bytes())?;
+    fn decode_contextual_value(
+        property: &'a Property,
+        bytes: &'a [u8],
+    ) -> Result<Self, DiagnosticCode> {
+        let written = Self::decode_value(bytes)?;
         let Some(tzid) = zone_of(property) else {
             return Ok(written);
         };
