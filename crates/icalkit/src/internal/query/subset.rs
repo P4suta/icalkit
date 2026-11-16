@@ -70,10 +70,10 @@ use crate::internal::core::{
 };
 use crate::internal::dav::{CompSelection, TimeRange};
 
-pub(crate) use crate::internal::query::expand::is_override_of;
 use crate::internal::query::expand::{
     EndKind, InstanceShape, component_overlaps, component_start, expand_component, has_recurrence,
-    occupancy_of, override_impacts, override_recurrence_id, placed_value,
+    occupancy_of, override_impacts, override_master, override_recurrence_id, placed_value,
+    related_overrides,
 };
 use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
@@ -263,19 +263,14 @@ pub fn limit_recurrence_set_in_window(
 ) -> Result<Selection, QueryError> {
     let mut decisions = Vec::new();
     for calendar in source.calendar().components() {
-        let components: Vec<&Component> = calendar.components().collect();
-        for candidate in components
-            .iter()
-            .copied()
+        for candidate in calendar
+            .components()
             .filter(|component| is_override(component))
         {
-            let answer = match components
-                .iter()
-                .copied()
-                .find(|master| is_override_of(candidate, master))
-            {
-                Some(master) => override_impacts(master, candidate, window, zones, budget)?,
-                None => Match::Undecided(Undecided::OverlapUndefined),
+            let answer = match override_master(candidate, calendar.items()) {
+                Ok(Some(master)) => override_impacts(master, candidate, window, zones, budget)?,
+                Ok(None) => Match::Undecided(Undecided::OverlapUndefined),
+                Err(reason) => Match::Undecided(reason),
             };
             decisions.push(answer);
         }
@@ -339,7 +334,6 @@ fn expand_calendar_component(
     budget: &mut Budget<'_>,
 ) -> Result<Component, QueryError> {
     let siblings = calendar.items();
-    let components: Vec<&Component> = calendar.components().collect();
     let mut items = Vec::new();
     for entry in siblings {
         let Item::Component(master) = entry else {
@@ -350,10 +344,9 @@ fn expand_calendar_component(
             continue;
         }
         if is_override(master) {
-            if components
-                .iter()
-                .copied()
-                .any(|candidate| is_override_of(master, candidate))
+            if override_master(master, siblings)
+                .map_err(|_| QueryError::Unrepresentable)?
+                .is_some()
             {
                 continue;
             }
@@ -362,11 +355,8 @@ fn expand_calendar_component(
             }
             continue;
         }
-        let related: Vec<&Component> = components
-            .iter()
-            .copied()
-            .filter(|candidate| is_override_of(candidate, master))
-            .collect();
+        let related =
+            related_overrides(master, siblings).map_err(|_| QueryError::Unrepresentable)?;
         let recurring = has_recurrence(master) || !related.is_empty();
         if !recurring {
             if let Some(instance) = single_in_window(master, siblings, window, zones, budget)? {

@@ -132,6 +132,12 @@ Conflicting period lengths fail explicitly.
 Expanded tasks keep `DUE` or `DURATION` because their overlap boundaries differ under [RFC 4791 section 9.9](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.9).
 Journals keep their point or date form, and instantaneous events omit an end property.
 Filtering and recurrence limiting use the same component overlap table.
+
+Query grouping compares decoded scalar `UID` text under [RFC 5545 section 3.8.4.7](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.4.7).
+Equivalent text escapes identify one recurrence set without changing stored bytes.
+An unreadable identifier leaves a required relationship undecided, and expansion refuses an incomplete result.
+Recurrence limiting keeps unreadable overrides through its conservative retention policy.
+Known distinct identifiers keep independent occurrences.
 Recurrence limiting uses original period lengths under [RFC 4791 section 9.6.6](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.6.6).
 Project policy keeps exceptions whose original length is unreadable.
 Queries combine time ranges and property filters for detached components without a master.

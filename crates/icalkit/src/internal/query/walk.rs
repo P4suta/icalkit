@@ -241,17 +241,16 @@ impl Leaves for Units {
         use crate::internal::query::{expand, subset};
 
         if subset::is_override(component) {
-            let has_master = siblings
-                .iter()
-                .filter_map(Item::as_component)
-                .any(|master| subset::is_override_of(component, master));
-            return Ok(has_master.then_some(Match::Unmatched));
+            return Ok(match expand::override_master(component, siblings) {
+                Ok(Some(_)) => Some(Match::Unmatched),
+                Ok(None) => None,
+                Err(reason) => Some(Match::Undecided(reason)),
+            });
         }
-        let related: Vec<&Component> = siblings
-            .iter()
-            .filter_map(Item::as_component)
-            .filter(|candidate| subset::is_override_of(candidate, component))
-            .collect();
+        let related = match expand::related_overrides(component, siblings) {
+            Ok(related) => related,
+            Err(reason) => return Ok(Some(Match::Undecided(reason))),
+        };
         let recurring = expand::has_recurrence(component) || !related.is_empty();
         if !recurring {
             return Ok(None);
