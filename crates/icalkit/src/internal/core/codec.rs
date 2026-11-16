@@ -633,7 +633,7 @@ fn decode_utc_offset(bytes: &[u8]) -> Option<UtcOffset> {
     };
     let hour = field(rest, 0, 2)?;
     let minute = field(rest, 2, 4)?;
-    if hour > 23 || minute > 59 || second > 60 {
+    if hour > 23 || minute > 59 || second > 59 {
         return None;
     }
     let total = hour

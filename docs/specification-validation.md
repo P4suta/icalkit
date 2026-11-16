@@ -16,6 +16,11 @@ The nonnegative `SEQUENCE` domain follows the [counter initialized at zero](http
 Known numeric values reject incompatible or repeated `VALUE` declarations.
 Unknown value types stay opaque, and successful validation preserves the original bytes.
 
+Observance offsets follow the [UTC offset grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.14).
+Strict promotion validates both `TZOFFSETFROM` and `TZOFFSETTO`.
+The shared decoder rejects negative zero and seconds fields of 60.
+Unknown value types stay opaque during promotion and can't define inline query transitions.
+
 Date-time checks enforce the declared `VALUE` type and each property's UTC form.
 The `TZID` restrictions follow [RFC 5545 section 3.2.19](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.19).
 Related endpoints and recurrence identifiers must agree with the start's value type and floating form.

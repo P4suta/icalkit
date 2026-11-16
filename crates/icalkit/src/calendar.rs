@@ -8,7 +8,7 @@ use core::str;
 use crate::internal::core::{
     Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
     DiagnosticCode, Document, Duration, Item, Meter, Period, Property, PropertyId, TextValue,
-    ValueType,
+    UtcOffset, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -225,6 +225,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-integer"));
     }
+    if first.is_some_and(|calendar| !known_utc_offsets_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-utc-offset"));
+    }
     if first.is_some_and(|calendar| !known_date_times_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-date-time"));
     }
@@ -363,6 +366,25 @@ fn known_integer_properties_are_valid(component: &Component) -> bool {
     }) && component
         .components()
         .all(known_integer_properties_are_valid)
+}
+
+fn known_utc_offsets_are_valid(component: &Component) -> bool {
+    if component.kind().is_none() {
+        return true;
+    }
+    component.properties().all(|property| {
+        if !property.is_named(b"TZOFFSETFROM") && !property.is_named(b"TZOFFSETTO") {
+            return true;
+        }
+        if property.parameters_named(b"VALUE").nth(1).is_some() {
+            return false;
+        }
+        match property.declared_value_type() {
+            Some(Err(_)) => true,
+            None | Some(Ok(ValueType::UtcOffset)) => UtcOffset::decode_property(property).is_ok(),
+            Some(Ok(_)) => false,
+        }
+    }) && component.components().all(known_utc_offsets_are_valid)
 }
 
 fn is_text_property(property: &Property) -> bool {
