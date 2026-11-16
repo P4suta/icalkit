@@ -7,8 +7,8 @@ use core::str;
 
 use crate::internal::core::{
     Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
-    DiagnosticCode, Document, Duration, Item, Meter, Period, Property, PropertyId, TextValue,
-    UtcOffset, ValueType,
+    DiagnosticCode, Document, Duration, Item, Meter, Period, Property, PropertyId, TEXT_ESCAPES,
+    TextValue, UtcOffset, ValueType,
 };
 
 use crate::ResourcePolicy;
@@ -219,7 +219,7 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
         issues.push(Issue::error("icalkit.validation.calendar-shape"));
         return;
     }
-    if first.is_some_and(|calendar| !known_text_is_utf8(calendar)) {
+    if first.is_some_and(|calendar| !known_text_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
     if first.is_some_and(|calendar| !known_integer_properties_are_valid(calendar)) {
@@ -323,12 +323,12 @@ fn has_property(component: &Component, name: &[u8]) -> bool {
         .any(|property| property.is_named(name))
 }
 
-fn known_text_is_utf8(component: &Component) -> bool {
+fn known_text_properties_are_valid(component: &Component) -> bool {
     if component.kind().is_none() {
         return true;
     }
     for property in component.properties() {
-        if is_text_property(property) && str::from_utf8(property.value_text().as_bytes()).is_err() {
+        if is_text_property(property) && !text_property_is_valid(property) {
             return false;
         }
     }
@@ -336,7 +336,40 @@ fn known_text_is_utf8(component: &Component) -> bool {
         .items()
         .iter()
         .filter_map(Item::as_component)
-        .all(known_text_is_utf8)
+        .all(known_text_properties_are_valid)
+}
+
+fn text_property_is_valid(property: &Property) -> bool {
+    if property.parameters_named(b"VALUE").nth(1).is_some() {
+        return false;
+    }
+    match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        None | Some(Ok(ValueType::Text)) => {},
+        Some(Ok(_)) => return false,
+    }
+    let bytes = property.value_text().as_bytes();
+    if str::from_utf8(bytes).is_err() {
+        return false;
+    }
+    let list = property.is_named(b"CATEGORIES") || property.is_named(b"RESOURCES");
+    let mut octets = bytes.iter().copied();
+    while let Some(octet) = octets.next() {
+        match octet {
+            b'\\' => {
+                if !octets.next().is_some_and(|spelling| {
+                    TEXT_ESCAPES.iter().any(|(written, _)| *written == spelling)
+                }) {
+                    return false;
+                }
+            },
+            b';' => return false,
+            b',' if !list => return false,
+            _ if octet.is_ascii_control() && octet != b'\t' => return false,
+            _ => {},
+        }
+    }
+    true
 }
 
 fn known_integer_properties_are_valid(component: &Component) -> bool {
@@ -389,18 +422,23 @@ fn known_utc_offsets_are_valid(component: &Component) -> bool {
 
 fn is_text_property(property: &Property) -> bool {
     const TEXT_NAMES: &[&[u8]] = &[
+        b"ACTION",
+        b"CALSCALE",
         b"CATEGORIES",
         b"CLASS",
         b"COMMENT",
         b"CONTACT",
         b"DESCRIPTION",
         b"LOCATION",
+        b"METHOD",
         b"PRODID",
         b"RELATED-TO",
         b"RESOURCES",
         b"STATUS",
         b"SUMMARY",
         b"TRANSP",
+        b"TZID",
+        b"TZNAME",
         b"UID",
     ];
     TEXT_NAMES.iter().any(|name| property.is_named(name))

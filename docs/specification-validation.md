@@ -9,6 +9,12 @@ A calendar requires a component, and a time zone requires a standard or daylight
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
 Unrecognized components keep their content without applying known component semantics inside them.
 
+Known text properties follow the [text grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) after content-line unfolding.
+Strict promotion rejects undefined escapes, dangling backslashes, unescaped delimiters, invalid UTF-8, and incompatible or repeated `VALUE` declarations.
+`CATEGORIES` and `RESOURCES` accept comma separators under their property definitions.
+Calendar metadata and time zone text use the same checks.
+Unknown value types stay opaque, and the lossless text view keeps its existing behavior.
+
 Integer syntax follows [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.8).
 `PRIORITY` ranges from [0 through 9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.9).
 `PERCENT-COMPLETE` ranges from [0 through 100](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.8).
