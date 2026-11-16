@@ -1076,7 +1076,13 @@ fn temporal_list_is_valid(property: &Property, context: TemporalListContext) -> 
         None if freebusy => ValueType::Period,
         None => ValueType::DateTime,
     };
-    if freebusy && declared != ValueType::Period {
+    if freebusy
+        && (declared != ValueType::Period
+            || property
+                .parameters_named(b"FBTYPE")
+                .next()
+                .is_some_and(|parameter| !is_iana_token(parameter.value().as_bytes())))
+    {
         return false;
     }
     if context == TemporalListContext::Observance && declared != ValueType::DateTime {

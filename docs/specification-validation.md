@@ -115,6 +115,11 @@ The `VALARM` checks follow [RFC 5545 section 3.6.6](https://www.rfc-editor.org/r
 They enforce the properties required by each action, paired repeat intervals and counts, trigger anchors, identifiers, and acknowledgement timestamps.
 Unknown actions and value types keep their opaque data.
 
+Free busy classifications follow the [token grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.9).
+`FREEBUSY` permits at most one unquoted ASCII token for `FBTYPE`.
+Valid extension tokens keep their spelling and follow the specified `BUSY` fallback.
+Unknown value types keep opaque metadata.
+
 Recurrence identifier ranges follow [RFC 5545 section 3.2.13](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.13).
 A `DATE` or `DATE-TIME` recurrence identifier permits one unquoted `RANGE=THISANDFUTURE` parameter.
 Strict promotion rejects unsupported range values and repeated parameters before expansion or scheduling reads the scope.
