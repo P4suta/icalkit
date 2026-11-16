@@ -119,16 +119,12 @@ pub const ZONE_SLACK_SECONDS: i64 = 86_399;
 /// Placing both ends of the span through the zone separately is what turns that back into the 23 or 25 real hours the day actually had.
 const NOMINAL_DAY_SECONDS: i64 = 86_400;
 
-/// How long one instance of a component occupies, on the series' own clock.
-///
-/// The length of the period RFC 4791 section 9.9's table gives the component, handed in already computed: this unit composes windows and expands series, and the table that decides which row a component is on belongs to `overlap`.
-///
-/// Measured on the series' own wall clock rather than in elapsed seconds, because that is the timeline every other instant crossing this seam is on and because it is what makes `+P1D` a day.
-/// Both ends of the span are placed through the zone independently, so an instance that spans a transition is as long in real seconds as the zone made it.
+/// An occurrence length with calendar days distinct from elapsed time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InstanceSpan {
-    /// Seconds on the series' own wall clock, never negative.
+    /// The nominal total used to bound searches.
     seconds: i64,
+    nominal_days: i64,
 }
 
 impl InstanceSpan {
@@ -136,11 +132,15 @@ impl InstanceSpan {
     ///
     /// RFC 4791 section 9.9 gives this to a `VEVENT` whose `DTSTART` is a `DATE-TIME` with neither `DTEND` nor `DURATION`, and to a `DURATION` of zero seconds.
     /// It is the one length that changes the comparison rather than only its operand, which is why [`InstanceSpan::is_instantaneous`] is asked at both sites the two rows differ.
-    pub const INSTANT: Self = Self { seconds: 0 };
+    pub const INSTANT: Self = Self {
+        seconds: 0,
+        nominal_days: 0,
+    };
 
     /// `+P1D`, which section 9.9 gives a component whose `DTSTART` is a `DATE`.
     pub const WHOLE_DAY: Self = Self {
         seconds: NOMINAL_DAY_SECONDS,
+        nominal_days: 1,
     };
 
     /// A span of `seconds`, or `None` for a negative one.
@@ -152,11 +152,30 @@ impl InstanceSpan {
         if seconds < 0 {
             None
         } else {
-            Some(Self { seconds })
+            Some(Self {
+                seconds,
+                nominal_days: 0,
+            })
         }
     }
 
-    /// The length, in seconds on the series' own clock.
+    /// A duration with non-negative parts and a representable nominal total.
+    #[must_use]
+    pub fn of_duration(duration: Duration) -> Option<Self> {
+        if duration.days() < 0 || duration.seconds() < 0 {
+            return None;
+        }
+        let seconds = duration
+            .days()
+            .checked_mul(NOMINAL_DAY_SECONDS)?
+            .checked_add(duration.seconds())?;
+        Some(Self {
+            seconds,
+            nominal_days: duration.days(),
+        })
+    }
+
+    /// The nominal total used to bound searches.
     #[must_use]
     pub const fn seconds(self) -> i64 {
         self.seconds
@@ -166,6 +185,34 @@ impl InstanceSpan {
     #[must_use]
     pub const fn is_instantaneous(self) -> bool {
         self.seconds == 0
+    }
+
+    fn finish<'a>(
+        self,
+        nominal_start: Instant,
+        start: Instant,
+        clock: SeriesClock<'a>,
+        zones: Zones<'a>,
+    ) -> Result<Instant, Undecided> {
+        let day_seconds = self
+            .nominal_days
+            .checked_mul(NOMINAL_DAY_SECONDS)
+            .ok_or(Undecided::ValueUnreadable)?;
+        let after_days = if day_seconds == 0 {
+            start
+        } else {
+            let local_end = nominal_start
+                .checked_add_seconds(day_seconds)
+                .ok_or(Undecided::ValueUnreadable)?;
+            clock.place(local_end, zones)?
+        };
+        let elapsed = self
+            .seconds
+            .checked_sub(day_seconds)
+            .ok_or(Undecided::ValueUnreadable)?;
+        after_days
+            .checked_add_seconds(elapsed)
+            .ok_or(Undecided::ValueUnreadable)
     }
 }
 
@@ -480,14 +527,7 @@ pub(crate) fn override_impacts(
         let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
         let key = nominal_value(addressed, clock, zones)?;
         let start = clock.place(key, zones)?;
-        let end = if occupies.is_instantaneous() {
-            start
-        } else {
-            let nominal_end = key
-                .checked_add_seconds(occupies.seconds())
-                .ok_or(Undecided::ValueUnreadable)?;
-            clock.place(nominal_end, zones)?
-        };
+        let end = occupies.finish(key, start, clock, zones)?;
         Ok::<_, Undecided>((Instance::new(start, start, end), occupies))
     })();
     let original = match original {
@@ -1079,7 +1119,6 @@ fn instance_span(
     clock: SeriesClock<'_>,
     zones: Zones<'_>,
 ) -> Result<InstanceSpan, Undecided> {
-    let start = nominal_value(opening, clock, zones)?;
     let stated_end = match kind {
         ComponentKind::Event => optional(component.dtend())?,
         ComponentKind::Todo => optional(component.due())?,
@@ -1087,7 +1126,23 @@ fn instance_span(
         _ => return Err(Undecided::OverlapUndefined),
     };
     if let Some(end) = stated_end {
-        let end = nominal_value(end, clock, zones)?;
+        if matches!(
+            (opening, end),
+            (DateTimeValue::Date(_), DateTimeValue::Date(_))
+        ) {
+            let start = nominal_value(opening, clock, zones)?;
+            let end = nominal_value(end, clock, zones)?;
+            let seconds = start
+                .checked_seconds_until(end)
+                .ok_or(Undecided::ValueUnreadable)?;
+            return InstanceSpan::of_duration(Duration::new(
+                seconds.div_euclid(NOMINAL_DAY_SECONDS),
+                0,
+            ))
+            .ok_or(Undecided::ValueUnreadable);
+        }
+        let start = placed_value(opening, zones)?;
+        let end = placed_value(end, zones)?;
         let seconds = start
             .checked_seconds_until(end)
             .ok_or(Undecided::ValueUnreadable)?;
@@ -1107,12 +1162,7 @@ fn instance_span(
 
 /// A non-negative RFC 5545 duration as an instance span.
 fn duration_span(duration: Duration) -> Result<InstanceSpan, Undecided> {
-    let seconds = duration
-        .days()
-        .checked_mul(NOMINAL_DAY_SECONDS)
-        .and_then(|days| days.checked_add(duration.seconds()))
-        .ok_or(Undecided::ValueUnreadable)?;
-    InstanceSpan::of_seconds(seconds).ok_or(Undecided::ValueUnreadable)
+    InstanceSpan::of_duration(duration).ok_or(Undecided::ValueUnreadable)
 }
 
 /// Read the values section 9.9's non-recurring overlap table names.
@@ -1142,11 +1192,12 @@ fn occupancy_of<'a>(
         (Some(value), Some(span)) => {
             let clock = clock_of(value)?;
             let nominal_start = nominal_value(value, clock, zones)?;
-            let seconds = duration_span(span)?.seconds();
-            let nominal_end = nominal_start
-                .checked_add_seconds(seconds)
-                .ok_or(Undecided::ValueUnreadable)?;
-            Some(clock.place(nominal_end, zones)?)
+            Some(duration_span(span)?.finish(
+                nominal_start,
+                start.ok_or(Undecided::ValueUnreadable)?,
+                clock,
+                zones,
+            )?)
         },
         (None, _) | (_, None) => None,
     };
@@ -1463,17 +1514,7 @@ fn placed<'a>(
     } else {
         clock.place(key, zones)?
     };
-    let finishes_at = if series.occupies.is_instantaneous() {
-        happens_at
-    } else {
-        // Both ends go through the zone, so the span is as long in real seconds as the zone made that wall-clock day.
-        // The sum is checked because the span is a number a file supplies:
-        // `DURATION:P100000000W` is a value RFC 5545 section 3.3.6 can write.
-        let ends = start
-            .checked_add_seconds(series.occupies.seconds())
-            .ok_or(Undecided::ValueUnreadable)?;
-        clock.place(ends, zones)?
-    };
+    let finishes_at = series.occupies.finish(start, happens_at, clock, zones)?;
     Ok(Instance::new(addressed, happens_at, finishes_at))
 }
 
