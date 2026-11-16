@@ -8,7 +8,7 @@ use core::str;
 use crate::internal::core::{
     BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
     Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, Meter, Period, Property, PropertyId,
-    TEXT_ESCAPES, TextValue, UriValue, UtcOffset, ValueType,
+    TEXT_ESCAPES, TextValue, UriValue, UtcOffset, ValueType, is_iana_token,
 };
 
 use crate::ResourcePolicy;
@@ -222,6 +222,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
     if first.is_some_and(|calendar| !known_text_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
+    if first.is_some_and(|calendar| !known_enumerations_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-enumeration"));
+    }
     if first.is_some_and(|calendar| !known_linked_values_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-uri-or-binary"));
     }
@@ -345,6 +348,54 @@ fn known_text_properties_are_valid(component: &Component) -> bool {
         .iter()
         .filter_map(Item::as_component)
         .all(known_text_properties_are_valid)
+}
+
+fn known_enumerations_are_valid(component: &Component) -> bool {
+    let Some(kind) = component.kind() else {
+        return true;
+    };
+    component
+        .properties()
+        .all(|property| enumerated_property_is_valid(kind, property))
+        && component.components().all(known_enumerations_are_valid)
+}
+
+fn enumerated_property_is_valid(kind: ComponentKind, property: &Property) -> bool {
+    const NAMES: &[&[u8]] = &[b"STATUS", b"TRANSP", b"CALSCALE", b"CLASS", b"METHOD"];
+    if !NAMES.iter().any(|name| property.is_named(name)) {
+        return true;
+    }
+    match property.declared_value_type() {
+        Some(Err(_)) => return true,
+        None | Some(Ok(ValueType::Text)) => {},
+        Some(Ok(_)) => return false,
+    }
+    let value = property.value_text().as_bytes();
+    if property.is_named(b"CLASS") || property.is_named(b"METHOD") {
+        return is_iana_token(value);
+    }
+    let allowed: &[&[u8]] = if property.is_named(b"STATUS") {
+        match kind {
+            ComponentKind::Event => &[b"TENTATIVE", b"CONFIRMED", b"CANCELLED"],
+            ComponentKind::Todo => &[
+                b"NEEDS-ACTION",
+                b"COMPLETED",
+                b"IN-PROCESS",
+                b"CANCELLED",
+                b"PENDING",
+                b"FAILED",
+            ],
+            ComponentKind::Journal => &[b"DRAFT", b"FINAL", b"CANCELLED"],
+            _ => return true,
+        }
+    } else if property.is_named(b"TRANSP") {
+        &[b"OPAQUE", b"TRANSPARENT"]
+    } else {
+        &[b"GREGORIAN"]
+    };
+    allowed
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 fn text_property_is_valid(property: &Property) -> bool {
@@ -789,11 +840,7 @@ fn alarm_is_valid(parent: &Component, alarm: &Component) -> bool {
         return true;
     }
     let action = action.value_text().as_bytes();
-    if action.is_empty()
-        || !action
-            .iter()
-            .all(|octet| octet.is_ascii_alphanumeric() || *octet == b'-')
-    {
+    if !is_iana_token(action) {
         return false;
     }
     let valid_properties = if action.eq_ignore_ascii_case(b"AUDIO") {

@@ -542,6 +542,14 @@ impl Component {
 // The declared value type, section 3.2.20
 // ---------------------------------------------------------------------------------------
 
+#[must_use]
+pub(crate) fn is_iana_token(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && bytes
+            .iter()
+            .all(|octet| octet.is_ascii_alphanumeric() || *octet == b'-')
+}
+
 impl Property {
     /// The value type this property's `VALUE` parameter declares, RFC 5545 section 3.2.20.
     ///
@@ -555,12 +563,7 @@ impl Property {
         let mut declarations = self.parameters_named(b"VALUE");
         let declared = declarations.next()?;
         let token = declared.unquoted();
-        if declarations.next().is_some()
-            || token.is_empty()
-            || !token
-                .iter()
-                .all(|octet| octet.is_ascii_alphanumeric() || *octet == b'-')
-        {
+        if declarations.next().is_some() || !is_iana_token(token) {
             return Some(Err(DiagnosticCode::MalformedValueTypeParameter));
         }
         Some(ValueType::from_name(token).ok_or(DiagnosticCode::UnknownValueType))

@@ -6,7 +6,9 @@
 
 use core::str;
 
-use crate::internal::core::{Component, DateTimeValue, DecodeValue as _, Item, Property};
+use crate::internal::core::{
+    Component, DateTimeValue, DecodeValue as _, Item, Property, is_iana_token,
+};
 
 use crate::time::IcalDateTime;
 
@@ -18,11 +20,7 @@ impl<'a> Name<'a> {
     /// Validate a component or property name.
     #[must_use]
     pub fn new(name: &'a str) -> Option<Self> {
-        (!name.is_empty()
-            && name
-                .bytes()
-                .all(|octet| octet.is_ascii_alphanumeric() || octet == b'-'))
-        .then_some(Self(name))
+        is_iana_token(name.as_bytes()).then_some(Self(name))
     }
 
     /// The spelling retained by the calendar.

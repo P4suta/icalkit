@@ -33,6 +33,14 @@ Strict promotion rejects undefined escapes, dangling backslashes, unescaped deli
 Calendar metadata and time zone text use the same checks.
 Unknown value types stay opaque, and the lossless text view keeps its existing behavior.
 
+Enumerated text uses the vocabulary defined for each property and component.
+Task statuses include `PENDING` and `FAILED` from [RFC 10051](https://www.rfc-editor.org/rfc/rfc10051.html#section-11.2).
+The [status registry](https://www.iana.org/assignments/icalendar/icalendar.xhtml#status-values) records the supported additions.
+Transparency and calendar scale use their defined values.
+Classifications, methods, and `ACTION` values accept extension tokens under their grammars.
+Name validation and value type declarations share the same ASCII token rule.
+Enumerated values match without changing ASCII case or stored bytes.
+
 Integer syntax follows [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.8).
 `PRIORITY` ranges from [0 through 9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.9).
 `PERCENT-COMPLETE` ranges from [0 through 100](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.8).
