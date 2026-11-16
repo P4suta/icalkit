@@ -2,83 +2,56 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 4 — the component filter tree walk, and the crate's front door. RFC 4791 section 9.7.1.
+//! Unit 4 — the component filter tree walk, and the crate's front door.
+//! RFC 4791 section 9.7.1.
 //!
 //! # What this unit owns
 //!
-//! The recursive shape of a `CALDAV:filter`, and the one public entry point every caller
-//! reaches this crate through: a `CompFilter`, a parsed calendar, a [`crate::internal::query::Zones`] and a
-//! [`crate::internal::query::Budget`] in, a [`crate::internal::query::Match`] out.
+//! The recursive shape of a `CALDAV:filter`, and the one public entry point every caller reaches this crate through: a `CompFilter`, a parsed calendar, a [`crate::internal::query::Zones`] and a [`crate::internal::query::Budget`] in, a [`crate::internal::query::Match`] out.
 //!
-//! - The root `comp-filter` names `VCALENDAR` and the tests below it apply to the calendar
-//!   object. A root naming anything else matches nothing, which is section 9.7.1's own reading.
-//! - A `comp-filter` matches a component when the component's name matches **and** every test
-//!   inside the filter is satisfied: its `time-range` through `overlap`, each `prop-filter`
-//!   through `prop`, and each nested `comp-filter` against the component's own subcomponents.
-//!   Every test inside one filter has to hold, and a filter is satisfied by **any one**
-//!   subcomponent that satisfies it — which is where the conjunction over tests and the
-//!   disjunction over candidates meet, and where implementations get it wrong.
-//! - `CALDAV:is-not-defined` matches when no subcomponent of that name exists, and is exclusive
-//!   with every other test. A filter `ical-dav` reports as contradictory is
-//!   [`crate::internal::query::QueryError::Contradictory`] here rather than an answer.
-//! - Composition is [`crate::internal::query::Match::and`] and [`crate::internal::query::Match::or`] and never `bool`, so an
-//!   undecidable subtree stays undecidable through the whole walk instead of being flattened
-//!   into "no match" at the first `&&`.
+//! - The root `comp-filter` names `VCALENDAR` and the tests below it apply to the calendar object.
+//!   A root naming anything else matches nothing, which is section 9.7.1's own reading.
+//! - A `comp-filter` matches a component when the component's name matches **and** every test inside the filter is satisfied: its `time-range` through `overlap`, each `prop-filter` through `prop`, and each nested `comp-filter` against the component's own subcomponents.
+//!   Every test inside one filter has to hold, and a filter is satisfied by **any one** subcomponent that satisfies it — which is where the conjunction over tests and the disjunction over candidates meet, and where implementations get it wrong.
+//! - `CALDAV:is-not-defined` matches when no subcomponent of that name exists, and is exclusive with every other test.
+//!   A filter `ical-dav` reports as contradictory is [`crate::internal::query::QueryError::Contradictory`] here rather than an answer.
+//! - Composition is [`crate::internal::query::Match::and`] and [`crate::internal::query::Match::or`] and never `bool`, so an undecidable subtree stays undecidable through the whole walk instead of being flattened into "no match" at the first `&&`.
 //!
 //! # It must not recurse on the caller's stack
 //!
-//! `ical-dav` bounds a `CompFilter`'s height at construction against `Limits::max_xml_depth`, so
-//! a filter that exists is one that could be walked recursively — but the *calendar* it is
-//! walked against is bounded by `Limits::max_component_depth`, which is a different number, and
-//! the walk is over the product of the two. Charge `Meter::try_enter_element` per level and
-//! refuse at the bound, the way `ical-dav`'s own reader does.
+//! `ical-dav` bounds a `CompFilter`'s height at construction against `Limits::max_xml_depth`, so a filter that exists is one that could be walked recursively — but the *calendar* it is walked against is bounded by `Limits::max_component_depth`, which is a different number, and the walk is over the product of the two.
+//! Charge `Meter::try_enter_element` per level and refuse at the bound, the way `ical-dav`'s own reader does.
 //!
 //! # The prefilter seam
 //!
-//! Before expanding anything for a `time-range`, this unit calls `prefilter`. `docs/adr/0012`
-//! fixes that as the shape the crate ships whether or not the measurement has run: the prefilter
-//! defaults to "cannot exclude", so the failing branch of the measurement is an implementation
-//! of one function rather than a rewrite of this one.
+//! Before expanding anything for a `time-range`, this unit calls `prefilter`.
+//! `docs/adr/0012` fixes that as the shape the crate ships whether or not the measurement has run: the prefilter defaults to "cannot exclude", so the failing branch of the measurement is an implementation of one function rather than a rewrite of this one.
 //!
-//! It is asked once per filter node rather than once per candidate, because what it answers is a
-//! fact about the resource and the filter — `prefilter` reads the whole calendar, since a
-//! `RECURRENCE-ID` override lives in a sibling of the master it moves. The answer is kept on the
-//! frame and read for every candidate that filter is tried against.
+//! It is asked once per filter node rather than once per candidate, because what it answers is a fact about the resource and the filter — `prefilter` reads the whole calendar, since a `RECURRENCE-ID` override lives in a sibling of the master it moves.
+//! The answer is kept on the frame and read for every candidate that filter is tried against.
 //!
 //! # How the four bullets of section 9.7.1 became one rule
 //!
-//! The section states four alternatives — an empty filter, an `is-not-defined` filter, a filter
-//! with a `time-range`, and a filter with only children — and writing them as four branches is
-//! how the conjunction and the disjunction get crossed. They are one rule with two quantifiers,
+//! The section states four alternatives — an empty filter, an `is-not-defined` filter, a filter with a `time-range`, and a filter with only children — and writing them as four branches is how the conjunction and the disjunction get crossed.
+//! They are one rule with two quantifiers,
 //! and this file writes it that way:
 //!
 //! > *some* component of the scope named by the filter satisfies *every* test the filter states.
 //!
-//! The first bullet is that rule with no tests (a conjunction over nothing is satisfied, so the
-//! question is only whether a candidate exists). The third and the fourth are the same rule with
-//! the tests present, which is why the section repeats "also match the targeted calendar
-//! component" in both: the target is singular, and two components each satisfying half of the
-//! filter satisfy none of it. The second bullet is the only one that is not that rule, because
-//! it asks about the *absence* of a candidate rather than about any candidate's properties.
+//! The first bullet is that rule with no tests (a conjunction over nothing is satisfied, so the question is only whether a candidate exists).
+//! The third and the fourth are the same rule with the tests present, which is why the section repeats "also match the targeted calendar component" in both: the target is singular, and two components each satisfying half of the filter satisfy none of it.
+//! The second bullet is the only one that is not that rule, because it asks about the *absence* of a candidate rather than about any candidate's properties.
 //!
 //! # What the walk holds and what it delegates
 //!
-//! Four questions belong to other units and reach them through one private seam, so the walk
-//! can be read — and tested — without any of them: whether a filter's window can be refused for
-//! a resource without expanding it (`prefilter`), whether any recurrence instance of a component
-//! overlaps a window (`expand` over `overlap`), and whether a `prop-filter` matches a component
-//! (`prop`). The fourth is the join of the latter two for a recurring component: its time range
-//! and property filters must be true of the same effective instance after range anchors and an
-//! exact override are composed. Everything else on this page is the shape of the tree.
+//! Four questions belong to other units and reach them through one private seam, so the walk can be read — and tested — without any of them: whether a filter's window can be refused for a resource without expanding it (`prefilter`), whether any recurrence instance of a component overlaps a window (`expand` over `overlap`), and whether a `prop-filter` matches a component (`prop`).
+//! The fourth is the join of the latter two for a recurring component: its time range and property filters must be true of the same effective instance after range anchors and an exact override are composed.
+//! Everything else on this page is the shape of the tree.
 //!
 //! # Two refusals are about the query and not about the resource
 //!
-//! A contradictory filter (section 9.7.1 makes `is-not-defined` exclusive with every other test)
-//! and a collation this crate cannot compare with (section 7.5.1) are properties of the request.
-//! Both are therefore settled by a pass over the whole filter *before* the first component is
-//! looked at, so the same query cannot be refused for one resource in a collection and answered
-//! for the next — which is what a server turns into a `CALDAV:supported-collation` precondition
-//! on the `REPORT`, not into a per-resource answer.
+//! A contradictory filter (section 9.7.1 makes `is-not-defined` exclusive with every other test) and a collation this crate cannot compare with (section 7.5.1) are properties of the request.
+//! Both are therefore settled by a pass over the whole filter *before* the first component is looked at, so the same query cannot be refused for one resource in a collection and answered for the next — which is what a server turns into a `CALDAV:supported-collation` precondition on the `REPORT`, not into a per-resource answer.
 
 use core::mem;
 
@@ -94,11 +67,9 @@ use crate::internal::query::{Budget, Match, QueryError, Zones};
 
 /// What the component filter tree walk is reviewed against, one row per passage.
 ///
-/// The transcription manifest for this unit. Every rule in this file comes from one of these
-/// passages, and a reviewer checks the file by reading them in this order rather than by
-/// reconstructing which specification a branch came from. A rule with no row here is a rule
-/// somebody invented, which is the failure this crate is most exposed to: an evaluator that
-/// disagrees with a conformant server returns a different set of resources and says nothing.
+/// The transcription manifest for this unit.
+/// Every rule in this file comes from one of these passages, and a reviewer checks the file by reading them in this order rather than by reconstructing which specification a branch came from.
+/// A rule with no row here is a rule somebody invented, which is the failure this crate is most exposed to: an evaluator that disagrees with a conformant server returns a different set of resources and says nothing.
 pub const COMPONENT_FILTER_SECTIONS: &[&str] = &[
     "RFC 4791 section 9.7, CALDAV:filter",
     "RFC 4791 section 9.7.1, CALDAV:comp-filter",
@@ -109,28 +80,21 @@ pub const COMPONENT_FILTER_SECTIONS: &[&str] = &[
 
 /// The component a `CALDAV:filter`'s one child names, RFC 4791 section 9.7.1.
 ///
-/// "The scope of the `CALDAV:comp-filter` XML element is the calendar object when used as a
-/// child of the `CALDAV:filter` XML element", and RFC 5545 section 3.4 gives the calendar object
-/// exactly one type.
+/// "The scope of the `CALDAV:comp-filter` XML element is the calendar object when used as a child of the `CALDAV:filter` XML element", and RFC 5545 section 3.4 gives the calendar object exactly one type.
 const CALENDAR_OBJECT: &[u8] = b"VCALENDAR";
 
 /// Whether `calendar` satisfies `filter`, RFC 4791 sections 9.7 and 9.7.1.
 ///
-/// The door into this crate. `filter` is the single child of a `CALDAV:filter` element, and it
-/// names the calendar object; `calendar` is one calendar object resource as `ical-core` parsed
-/// it; `zones` is the caller's zone source and the zone the query's `CALDAV:timezone` stated;
-/// `budget` bounds the work, because the filter came off the wire and the resource came out of a
-/// store somebody else writes to.
+/// The door into this crate.
+/// `filter` is the single child of a `CALDAV:filter` element, and it names the calendar object; `calendar` is one calendar object resource as `ical-core` parsed it; `zones` is the caller's zone source and the zone the query's `CALDAV:timezone` stated;
+/// `budget` bounds the work, because the filter came off the wire and the resource came out of a store somebody else writes to.
 ///
-/// The answer has three values and the third one is not a failure: a resource whose comparison
-/// needed a zone nothing supplied is [`Match::Undecided`], which is a different claim from
-/// [`Match::Unmatched`] and reaches the caller as one (`docs/adr/0003`).
+/// The answer has three values and the third one is not a failure: a resource whose comparison needed a zone nothing supplied is [`Match::Undecided`], which is a different claim from [`Match::Unmatched`] and reaches the caller as one (`docs/adr/0003`).
 ///
 /// # Errors
 ///
 /// [`QueryError::Contradictory`] for a filter that states a condition and its own negation,
-/// [`QueryError::UnsupportedCollation`] for a `text-match` naming a collation section 7.5 does
-/// not define here, and [`QueryError::Limit`] when the walk crosses one of the caller's bounds.
+/// [`QueryError::UnsupportedCollation`] for a `text-match` naming a collation section 7.5 does not define here, and [`QueryError::Limit`] when the walk crosses one of the caller's bounds.
 pub fn matches(
     filter: &CompFilter,
     calendar: &Document,
@@ -142,10 +106,8 @@ pub fn matches(
 
 /// [`matches`], with the three leaf tests supplied rather than taken from the sibling units.
 ///
-/// The walk and the leaves are separable because they fail differently: a defect in the tree
-/// shape returns the wrong set of resources for every query, and a defect in a leaf returns the
-/// wrong answer for one kind of test. Splitting them here is what lets this unit's own tests
-/// state a leaf's answer and check only what section 9.7.1 does with it.
+/// The walk and the leaves are separable because they fail differently: a defect in the tree shape returns the wrong set of resources for every query, and a defect in a leaf returns the wrong answer for one kind of test.
+/// Splitting them here is what lets this unit's own tests state a leaf's answer and check only what section 9.7.1 does with it.
 fn evaluate<L: Leaves>(
     leaves: &L,
     filter: &CompFilter,
@@ -155,9 +117,8 @@ fn evaluate<L: Leaves>(
 ) -> Result<Match, QueryError> {
     refuse_impossible(filter)?;
     // Section 9.7.1's scope rule read literally: at the root the scope *is* the calendar object,
-    // so a root naming anything else is a filter about an object this resource is not. Answering
-    // its `is-not-defined` form with "matched" would make every resource in a collection match a
-    // filter whose name attribute was a typo.
+    // so a root naming anything else is a filter about an object this resource is not.
+    // Answering its `is-not-defined` form with "matched" would make every resource in a collection match a filter whose name attribute was a typo.
     if !filter.name().eq_ignore_ascii_case(CALENDAR_OBJECT) {
         return Ok(Match::Unmatched);
     }
@@ -166,17 +127,14 @@ fn evaluate<L: Leaves>(
 
 /// The four questions this unit asks and does not answer.
 ///
-/// A trait rather than three direct calls, so the tree walk above has exactly one seam with the
-/// rest of the crate and this file's tests can drive it without depending on units that are not
-/// this one. [`Units`] is the only implementation that ships.
+/// A trait rather than three direct calls, so the tree walk above has exactly one seam with the rest of the crate and this file's tests can drive it without depending on units that are not this one.
+/// [`Units`] is the only implementation that ships.
 trait Leaves {
     /// Whether `filter`'s `time-range` can be refused for `calendar` without expanding anything.
     ///
     /// Asked about the whole resource and about the filter rather than about one component,
-    /// because a `RECURRENCE-ID` override lives in a sibling of the master it moves and no
-    /// bound read off the targeted component alone accounts for it. `false` is always a sound
-    /// answer and is the default `docs/adr/0012` fixes, so a prefilter that decides nothing
-    /// costs an expansion and never an answer.
+    /// because a `RECURRENCE-ID` override lives in a sibling of the master it moves and no bound read off the targeted component alone accounts for it.
+    /// `false` is always a sound answer and is the default `docs/adr/0012` fixes, so a prefilter that decides nothing costs an expansion and never an answer.
     fn excluded(
         &self,
         calendar: &Document,
@@ -187,10 +145,8 @@ trait Leaves {
 
     /// Whether at least one recurrence instance of `component` overlaps `range`.
     ///
-    /// RFC 4791 section 9.9: "Time range tests MUST consider every recurrence instance when
-    /// testing the time range condition; if any one instance matches, then the test returns
-    /// true." `siblings` is the enclosing scope's entries, because a `RECURRENCE-ID` override is
-    /// a sibling component and a series read without its overrides is a different series.
+    /// RFC 4791 section 9.9: "Time range tests MUST consider every recurrence instance when testing the time range condition; if any one instance matches, then the test returns true."
+    /// `siblings` is the enclosing scope's entries, because a `RECURRENCE-ID` override is a sibling component and a series read without its overrides is a different series.
     fn overlaps(
         &self,
         component: &Component,
@@ -209,8 +165,8 @@ trait Leaves {
         budget: &mut Budget<'_>,
     ) -> Result<Match, QueryError>;
 
-    /// Whether one effective recurrence instance satisfies a time range and every property
-    /// filter together. `None` leaves non-recurring components on the ordinary leaf path.
+    /// Whether one effective recurrence instance satisfies a time range and every property filter together.
+    /// `None` leaves non-recurring components on the ordinary leaf path.
     fn recurring_properties(
         &self,
         _component: &Component,
@@ -226,10 +182,7 @@ trait Leaves {
 
 /// The leaves as the sibling units of this crate answer them.
 ///
-/// The only place in this file that names another unit, kept to small delegating bodies on
-/// purpose: the tree walk above is the part of this crate that a mistake in returns a wrong
-/// *set* of resources, and it is worth being able to read it without following a call into
-/// `prefilter`, `expand` or `prop`.
+/// The only place in this file that names another unit, kept to small delegating bodies on purpose: the tree walk above is the part of this crate that a mistake in returns a wrong *set* of resources, and it is worth being able to read it without following a call into `prefilter`, `expand` or `prop`.
 #[derive(Debug)]
 struct Units;
 
@@ -255,10 +208,8 @@ impl Leaves for Units {
         zones: Zones<'_>,
         budget: &mut Budget<'_>,
     ) -> Result<Match, QueryError> {
-        // `expand` owns the assembly of a component's recurrence set as well as the search over
-        // it, which is what its own documentation promises: everything above it "asks 'does this
-        // component occupy a period overlapping that range' and gets an answer; everything about
-        // how that answer is obtained is here". Diagnostics are dropped rather than routed,
+        // `expand` owns the assembly of a component's recurrence set as well as the search over it, which is what its own documentation promises: everything above it "asks 'does this component occupy a period overlapping that range' and gets an answer; everything about how that answer is obtained is here".
+        // Diagnostics are dropped rather than routed,
         // because this crate's front door takes no sink — see the note on [`matches`].
         crate::internal::query::expand::component_overlaps(
             component,
@@ -337,9 +288,7 @@ impl Leaves for Units {
 
 /// One `comp-filter` being evaluated against one scope, and how far that has got.
 ///
-/// The state a recursive walk would have kept in a stack frame, made explicit because the walk
-/// is over the product of two trees whose depths are two different caller-stated bounds, and a
-/// process that overflows its stack aborts rather than unwinds.
+/// The state a recursive walk would have kept in a stack frame, made explicit because the walk is over the product of two trees whose depths are two different caller-stated bounds, and a process that overflows its stack aborts rather than unwinds.
 #[derive(Debug)]
 struct Frame<'a> {
     /// The filter this frame answers.
@@ -362,14 +311,10 @@ struct Frame<'a> {
 
 /// Open a frame for `filter` over `scope`, asking the prefilter once for the whole frame.
 ///
-/// `docs/adr/0012` puts the expansion-free bounds in front of the expansion, and the answer is
-/// about the resource and the filter rather than about one candidate — so it is taken once here
-/// and read from the frame for every candidate the filter is then tried against, instead of
-/// being asked again per component. A filter with no `time-range` is not asked at all: there is
-/// no window to be outside of, and the prefilter would answer "cannot exclude" for it anyway.
+/// `docs/adr/0012` puts the expansion-free bounds in front of the expansion, and the answer is about the resource and the filter rather than about one candidate — so it is taken once here and read from the frame for every candidate the filter is then tried against, instead of being asked again per component.
+/// A filter with no `time-range` is not asked at all: there is no window to be outside of, and the prefilter would answer "cannot exclude" for it anyway.
 ///
-/// `any` starts unmatched because a disjunction over no candidate is unmatched, which is section
-/// 9.7.1's first bullet read backwards: a name with no component in scope does not exist there.
+/// `any` starts unmatched because a disjunction over no candidate is unmatched, which is section 9.7.1's first bullet read backwards: a name with no component in scope does not exist there.
 fn opened<'a, L: Leaves>(
     leaves: &L,
     calendar: &Document,
@@ -427,9 +372,7 @@ fn walk<'a, L: Leaves>(
                     return Ok(answer);
                 };
                 top = parent;
-                // The child filter is one of the tests the parent's current candidate has to
-                // satisfy, so it joins the conjunction — `and`, never `&&`, because an
-                // undecidable child has to survive to the top.
+                // The child filter is one of the tests the parent's current candidate has to satisfy, so it joins the conjunction — `and`, never `&&`, because an undecidable child has to survive to the top.
                 top.all = top.all.and(answer);
             },
             Advance::Continue => {},
@@ -447,20 +390,17 @@ fn advance<'a, L: Leaves>(
     let Some(candidate) = frame.current else {
         return open(leaves, frame, zones, budget);
     };
-    // Taken out of the frame before the arms write back into it: the child filters live in the
-    // filter tree rather than in the frame, so nothing here borrows what the arms mutate.
+    // Taken out of the frame before the arms write back into it: the child filters live in the filter tree rather than in the frame, so nothing here borrows what the arms mutate.
     let stated = frame.filter;
     match stated.comps().get(frame.child) {
-        // An already-unmatched conjunction cannot be rescued by anything below it, so the
-        // remaining child filters are work an attacker would otherwise be choosing for us.
+        // An already-unmatched conjunction cannot be rescued by anything below it, so the remaining child filters are work an attacker would otherwise be choosing for us.
         Some(child) if frame.all != Match::Unmatched => {
             frame.child = frame.child.saturating_add(1);
             Ok(Advance::Descend(child, candidate.items()))
         },
         _ => {
             frame.any = frame.any.or(frame.all);
-            // Section 9.7.1 is satisfied by any one component in scope, so a matched candidate
-            // decides the filter and the rest of the scope is not looked at.
+            // Section 9.7.1 is satisfied by any one component in scope, so a matched candidate decides the filter and the rest of the scope is not looked at.
             if frame.any.is_matched() {
                 return Ok(Advance::Settled(Match::Matched));
             }
@@ -478,8 +418,7 @@ fn open<'a, L: Leaves>(
     budget: &mut Budget<'_>,
 ) -> Result<Advance<'a>, QueryError> {
     let Some(candidate) = next_candidate(frame, budget)? else {
-        // Section 9.7.1's second bullet: `is-not-defined` matches exactly when no component of
-        // the name exists in scope, and the scope has now been read to the end without one.
+        // Section 9.7.1's second bullet: `is-not-defined` matches exactly when no component of the name exists in scope, and the scope has now been read to the end without one.
         // Otherwise the answer is the disjunction, which for no candidate at all is unmatched.
         let exhausted = if frame.filter.is_not_defined {
             Match::Matched
@@ -491,8 +430,7 @@ fn open<'a, L: Leaves>(
     if frame.filter.is_not_defined {
         return Ok(Advance::Settled(Match::Unmatched));
     }
-    // Answered before the frame is written to, so that the tests read a frame that still
-    // describes the candidate they are about.
+    // Answered before the frame is written to, so that the tests read a frame that still describes the candidate they are about.
     let held = own_tests(leaves, frame, candidate, zones, budget)?;
     frame.current = Some(candidate);
     frame.child = 0;
@@ -502,11 +440,9 @@ fn open<'a, L: Leaves>(
 
 /// The next component of the frame's scope carrying the filter's name.
 ///
-/// Every component the walk inspects is charged for by name, which is the charge `ical-dav`
-/// makes for the same name on the way in. The depth of the walk is bounded by the element depth;
-/// what this bounds is its *width* times its depth, which is the product the filter tree and the
-/// calendar tree make and the only dimension in which a small filter and a small calendar are
-/// still expensive together.
+/// Every component the walk inspects is charged for by name, which is the charge `ical-dav` makes for the same name on the way in.
+/// The depth of the walk is bounded by the element depth;
+/// what this bounds is its *width* times its depth, which is the product the filter tree and the calendar tree make and the only dimension in which a small filter and a small calendar are still expensive together.
 fn next_candidate<'a>(
     frame: &mut Frame<'a>,
     budget: &mut Budget<'_>,
@@ -521,9 +457,7 @@ fn next_candidate<'a>(
         budget
             .meter
             .try_charge_bytes(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
-        // RFC 5545 section 3.1 compares a component name without regard to case, which is what
-        // `Component::is_named` does; the filter's name arrived as XML character data and is
-        // compared as the octets the peer wrote.
+        // RFC 5545 section 3.1 compares a component name without regard to case, which is what `Component::is_named` does; the filter's name arrived as XML character data and is compared as the octets the peer wrote.
         if component.is_named(frame.filter.name()) {
             return Ok(Some(component));
         }
@@ -533,14 +467,11 @@ fn next_candidate<'a>(
 
 /// The tests one filter states about the candidate itself, conjoined.
 ///
-/// The child `comp-filter`s are not here: they are answered by frames of their own, because
-/// each of them opens a new scope and the walk may not recurse to do that.
+/// The child `comp-filter`s are not here: they are answered by frames of their own, because each of them opens a new scope and the walk may not recurse to do that.
 ///
-/// The `time-range` goes first and the `prop-filter`s follow, so that the one test that expands
-/// a series is the one an already-unmatched conjunction skips. `docs/adr/0012`'s ordering is
-/// upstream of both: an excluded frame answers the window without expanding anything at all,
-/// and an exclusion is [`Match::Unmatched`] rather than undecidable, because the prefilter is
-/// required to be sound — it says "excluded" only where the walk would have said unmatched.
+/// The `time-range` goes first and the `prop-filter`s follow, so that the one test that expands a series is the one an already-unmatched conjunction skips.
+/// `docs/adr/0012`'s ordering is upstream of both: an excluded frame answers the window without expanding anything at all,
+/// and an exclusion is [`Match::Unmatched`] rather than undecidable, because the prefilter is required to be sound — it says "excluded" only where the walk would have said unmatched.
 fn own_tests<L: Leaves>(
     leaves: &L,
     frame: &Frame<'_>,
@@ -579,17 +510,13 @@ fn own_tests<L: Leaves>(
 
 /// Refuse a filter no resource could answer, before any resource is looked at.
 ///
-/// A pass over the whole filter tree rather than a check at each frame, because both refusals
-/// are facts about the request: a walk that only reached a contradictory subtree for calendars
-/// that happen to hold the enclosing component would refuse the query for some resources of a
-/// collection and answer it for the rest, and a `REPORT` cannot be half a precondition.
+/// A pass over the whole filter tree rather than a check at each frame, because both refusals are facts about the request: a walk that only reached a contradictory subtree for calendars that happen to hold the enclosing component would refuse the query for some resources of a collection and answer it for the rest, and a `REPORT` cannot be half a precondition.
 fn refuse_impossible(root: &CompFilter) -> Result<(), QueryError> {
     let mut pending: Vec<&CompFilter> = Vec::new();
     pending.try_reserve(1).map_err(|_| LimitExceeded::Depth)?;
     pending.push(root);
     while let Some(filter) = pending.pop() {
-        // RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test: a
-        // component that is not there has no time range and no properties.
+        // RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test: a component that is not there has no time range and no properties.
         if filter.is_contradictory() {
             return Err(QueryError::Contradictory);
         }
@@ -621,12 +548,8 @@ fn refuse_impossible_property(filter: &PropFilter) -> Result<(), QueryError> {
 
 /// Refuse a `text-match` naming a collation this crate does not compare with.
 ///
-/// Through `collate`, which owns the mapping including RFC 4791 section 7.5's rule that the
-/// reserved `default` identifier means `i;ascii-casemap`; a second reading of it here would be a
-/// second place for that rule to drift. Section 7.5.1 gives a server the
-/// `CALDAV:supported-collation` precondition for exactly this refusal, so that it does not run
-/// the test under a collation the client did not ask for — which returns a different set of
-/// resources and says nothing about having done so.
+/// Through `collate`, which owns the mapping including RFC 4791 section 7.5's rule that the reserved `default` identifier means `i;ascii-casemap`; a second reading of it here would be a second place for that rule to drift.
+/// Section 7.5.1 gives a server the `CALDAV:supported-collation` precondition for exactly this refusal, so that it does not run the test under a collation the client did not ask for — which returns a different set of resources and says nothing about having done so.
 fn refuse_unsupported_collation(text_match: Option<&TextMatch>) -> Result<(), QueryError> {
     match text_match {
         Some(test) => crate::internal::query::collate::collator_of(&test.collation).map(|_| ()),
@@ -694,10 +617,8 @@ mod tests {
 
     /// The leaves, scripted, so that a row states what a leaf answered rather than computing it.
     ///
-    /// `property` is the one leaf rule this stub really implements, and it implements only RFC
-    /// 4791 section 9.7.2's first bullet — an empty `prop-filter` matches when a property of the
-    /// name exists — because that is the whole of what section 9.7.1's own rules need in order
-    /// to be exercised. Everything else is a value the row supplies.
+    /// `property` is the one leaf rule this stub really implements, and it implements only RFC 4791 section 9.7.2's first bullet — an empty `prop-filter` matches when a property of the name exists — because that is the whole of what section 9.7.1's own rules need in order to be exercised.
+    /// Everything else is a value the row supplies.
     #[derive(Debug)]
     struct Scripted {
         /// What an overlap test answers for a component with no `X-FLOATING` property.
@@ -1003,8 +924,7 @@ mod tests {
     #[test]
     fn a_filter_stating_a_condition_and_its_own_negation_is_refused() {
         // RFC 4791 section 9.7.1 writes `(is-not-defined | (time-range?, prop-filter*,
-        // comp-filter*))`, so the two halves are alternatives and a value holding both is one no
-        // body expresses.
+        // comp-filter*))`, so the two halves are alternatives and a value holding both is one no body expresses.
         let nested = nest(named(b"VCALENDAR"), with_range(undefined(named(b"VEVENT"))));
         let leaves = Scripted::answering(Match::Matched);
         assert_eq!(
@@ -1015,9 +935,8 @@ mod tests {
 
     #[test]
     fn a_contradiction_is_refused_for_a_resource_that_never_reaches_it() {
-        // The refusal is a fact about the request. A walk that only found the contradiction
-        // under components a particular resource happens to carry would answer the same query
-        // for half a collection and refuse it for the other half.
+        // The refusal is a fact about the request.
+        // A walk that only found the contradiction under components a particular resource happens to carry would answer the same query for half a collection and refuse it for the other half.
         let todo = nest(named(b"VTODO"), with_range(undefined(named(b"VALARM"))));
         let filter = nest(named(b"VCALENDAR"), todo);
         let leaves = Scripted::answering(Match::Matched);
@@ -1045,8 +964,7 @@ mod tests {
 
     #[test]
     fn a_collation_this_crate_does_not_compare_with_is_refused_and_never_defaulted() {
-        // RFC 4791 section 7.5.1: the server answers with the CALDAV:supported-collation
-        // precondition rather than running the test under a collation nobody asked for.
+        // RFC 4791 section 7.5.1: the server answers with the CALDAV:supported-collation precondition rather than running the test under a collation nobody asked for.
         let mut scratch = Meter::new(Limits::DEFAULT);
         let mut wanted = PropFilter::new(b"SUMMARY", Limits::DEFAULT, &mut scratch).unwrap();
         let mut test = TextMatch::new(b"meeting", &mut scratch).unwrap();
@@ -1083,8 +1001,7 @@ mod tests {
 
     #[test]
     fn nothing_is_expanded_before_the_prefilter_has_been_asked() {
-        // docs/adr/0012 fixes the ordering, and an exclusion is unmatched rather than an
-        // expansion that happened to find nothing.
+        // docs/adr/0012 fixes the ordering, and an exclusion is unmatched rather than an expansion that happened to find nothing.
         let filter = nest(named(b"VCALENDAR"), with_range(named(b"VEVENT")));
         let leaves = Scripted::excluding();
         assert_eq!(answer(&filter, WITH_EVENT, &leaves), Ok(Match::Unmatched));
@@ -1103,8 +1020,7 @@ mod tests {
 
     #[test]
     fn the_walk_refuses_at_the_element_depth_the_caller_stated() {
-        // The filter was built under one policy and is evaluated under another, which is the
-        // ordinary case: the filter came off the wire and the meter is this caller's.
+        // The filter was built under one policy and is evaluated under another, which is the ordinary case: the filter came off the wire and the meter is this caller's.
         let filter = nest(named(b"VCALENDAR"), named(b"VEVENT"));
         let tight = Limits::DEFAULT.with_max_xml_depth(1);
         let calendar = calendar_of(WITH_EVENT);
@@ -1126,8 +1042,7 @@ mod tests {
 
     #[test]
     fn the_walk_refuses_at_the_octet_budget_the_caller_stated() {
-        // The product of the two trees is charged by the name of every component inspected, so a
-        // budget smaller than one component name refuses before the first candidate is decided.
+        // The product of the two trees is charged by the name of every component inspected, so a budget smaller than one component name refuses before the first candidate is decided.
         let filter = nest(named(b"VCALENDAR"), named(b"VEVENT"));
         let calendar = calendar_of(WITH_EVENT);
         let source = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
@@ -1178,9 +1093,7 @@ mod tests {
 
     #[test]
     fn an_undecided_child_survives_a_matched_sibling_test() {
-        // Kleene, not `&&`: the conjunction of a matched property filter and an undecidable
-        // time range is undecidable, and a caller that saw "unmatched" would drop a resource it
-        // was never established to be outside the window.
+        // Kleene, not `&&`: the conjunction of a matched property filter and an undecidable time range is undecidable, and a caller that saw "unmatched" would drop a resource it was never established to be outside the window.
         let event = with_prop(with_range(named(b"VEVENT")), b"X-FLOATING");
         let filter = nest(named(b"VCALENDAR"), event);
         let leaves = Scripted::answering(Match::Matched);
@@ -1192,8 +1105,7 @@ mod tests {
 
     #[test]
     fn an_unmatched_test_beats_an_undecided_one_in_the_same_filter() {
-        // The other half of the same rule: no reading of the undecidable operand could have
-        // rescued a conjunction whose other operand is a fact.
+        // The other half of the same rule: no reading of the undecidable operand could have rescued a conjunction whose other operand is a fact.
         let event = with_prop(with_range(named(b"VEVENT")), b"X-ABSENT");
         let filter = nest(named(b"VCALENDAR"), event);
         let leaves = Scripted::answering(Match::Matched);
