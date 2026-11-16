@@ -98,7 +98,7 @@ fn mail_parts(address: &str) -> Option<(&str, &str)> {
 /// One `ORGANIZER` or `ATTENDEE` line, read as an identity.
 ///
 /// `raw` is the value's octets as the file has them, kept so that an address that did not decode is still something a caller can show a person.
-/// `address` is the identity, absent exactly when the octets were not UTF-8.
+/// `address` is the decoded identity, absent for unknown value types or unreadable values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Party<'a> {
     /// The `CAL-ADDRESS` value, as written.
@@ -122,6 +122,16 @@ impl<'a> Party<'a> {
             raw: address,
             address: readable(address),
             sent_by: sent_by.and_then(readable),
+        }
+    }
+
+    /// An unreadable party that keeps the original property value.
+    #[must_use]
+    pub(crate) const fn unreadable(raw: &'a [u8]) -> Self {
+        Self {
+            raw,
+            address: None,
+            sent_by: None,
         }
     }
 

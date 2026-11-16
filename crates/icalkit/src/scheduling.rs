@@ -20,6 +20,7 @@ use crate::internal::itip::{
 
 use crate::calendar::parse_calendar;
 use crate::failure::{Issue, IssueCode};
+use crate::internal::core::codec::decode_scalar_text_property;
 use crate::internal::query::{Budget, Match as KernelMatch, Zones, recurrence_set_contains};
 use crate::time::{Timestamp, ZoneAdapter};
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
@@ -213,7 +214,7 @@ impl Message {
         match target {
             ReviewTarget::Held(current) => {
                 let uid = message.uid().as_bytes();
-                let current_components = scheduled_components(current, uid, &message);
+                let current_components = scheduled_components(current, uid, &message)?;
                 if current_components.is_empty() {
                     self.review_initial(target, actor, &message)
                 } else {
@@ -659,20 +660,28 @@ fn scheduled_components<'a>(
     calendar: &'a Calendar,
     uid: &[u8],
     message: &ItipMessage<'_>,
-) -> Vec<(usize, &'a Component)> {
-    root_component(calendar)
+) -> Result<Vec<(usize, &'a Component)>, Rejection> {
+    let mut matches = Vec::new();
+    for (item, component) in root_component(calendar)
         .into_iter()
         .flat_map(|calendar| calendar.items().iter())
         .enumerate()
         .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
-        .filter(|(_, component)| {
-            component.kind() == Some(message.kind())
-                && component
-                    .properties()
-                    .find(|property| property.is_named(b"UID"))
-                    .is_some_and(|property| property.value_text().as_bytes() == uid)
-        })
-        .collect()
+        .filter(|(_, component)| is_scheduling_payload(component))
+    {
+        let known_uid = component
+            .properties()
+            .find(|property| property.is_named(b"UID"))
+            .and_then(decode_scalar_text_property)
+            .ok_or_else(|| Rejection::new("icalkit.scheduling.current-identity-unreadable"))?;
+        if known_uid.as_bytes() == uid {
+            if component.kind() != Some(message.kind()) {
+                return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+            }
+            matches.push((item, component));
+        }
+    }
+    Ok(matches)
 }
 
 fn message_payloads<'a>(

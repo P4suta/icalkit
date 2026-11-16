@@ -164,6 +164,14 @@ The observance reader guards declared value types for transition dates and recur
 Known observance `RDATE` values use local date-time form under [RFC 5545 section 3.6.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.5).
 The [query zone decision](adr/query-timezone-definitions.md) records source selection and supported-definition boundaries.
 
+Scheduling reads `METHOD` and `UID` through their declared `TEXT` type.
+Identifier comparison decodes [text escapes](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) once and keeps source bytes.
+Participant addresses, revisions, timestamps, and recurrence identifiers use their declared value types.
+Unknown or incompatible party values stay present as unreadable values for the existing diagnostic path.
+Review refuses held scheduling components with an unreadable `UID`, following the [scheduling identity policy](adr/0005-scheduling-apart-from-the-model.md).
+Review refuses a known `UID` associated with a different component kind.
+Calendars and imports keep opaque property values under [RFC 5545 section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
+
 Scheduling creation starts with `Message::review_creation` or `Message::review_creation_in` when the destination is absent.
 The caller must enforce absence when storing the authorized result.
 The [creation decision](adr/scheduling-creation-from-absence.md) records the API choice and its storage boundary.

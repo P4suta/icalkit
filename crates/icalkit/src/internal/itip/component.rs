@@ -13,16 +13,12 @@
 //!
 //! # Why this is a value and not a bare implementation on `Component`
 //!
-//! Two of the trait's answers are *derived* octets rather than stored ones, and both are returned by reference:
-//!
-//! - [`ScheduledComponent::property_line`] hands back a whole content line, because that is the unit [`crate::internal::core::ProposedChange::Replace`] takes.
-//!   A [`crate::internal::core::Component`] stores a name, an ordered parameter list and a value separately, with the producer's folds recorded beside them; the line as one span of octets exists nowhere in the tree.
-//! - Every parameter value handed to [`Party`] or [`Attendee`] is a **value** and not a spelling, so RFC 6868's caret encoding is resolved first.
-//!   Resolving `^'` into `"` produces octets the file does not contain.
-//!
-//! A method returning `&[u8]` can only hand back octets something already owns, and a `Component` owns neither of these.
-//! So the derivation is done once, into storage this type owns, and the borrows point into it.
-//! That is the cost the trait was introduced to make payable — `ScheduledComponent` exists precisely so that state which is not a `Component` can answer these questions — and it is charged once per component rather than once per question.
+//! Property lines, resolved parameter values, and decoded text are derived data borrowed from the view.
+//! [`ScheduledComponent::property_line`] reconstructs complete content lines for [`crate::internal::core::ProposedChange::Replace`].
+//! Parameter values resolve RFC 6868 caret encoding.
+//! `UID` and `METHOD` reads use declared `TEXT` values with their escapes decoded.
+//! Text without escapes borrows source storage.
+//! The view keeps derived buffers so later lookups return borrows without allocating.
 //!
 //! # Values, not spellings
 //!
@@ -61,13 +57,15 @@
 //! Normalizing the name closes that, and it is also what makes an occurrence found by a diff address the same line [`crate::internal::core::Component::apply_to_occurrence`] writes, since that door counts by identity.
 //! The line stays as written because ADR-0001 says the octets are the producer's.
 
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use core::mem;
 
+use crate::internal::core::codec::decode_scalar_text_property;
 use crate::internal::core::{
     CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue, Instant,
-    Property, PropertyId, RawText, decode_caret,
+    Property, PropertyId, RawText, UriValue, ValueType, decode_caret,
 };
 use crate::internal::recur::OverrideRange;
 use crate::internal::tz::nominal;
@@ -96,7 +94,13 @@ struct PartyValues {
     answered_at: Option<Instant>,
 }
 
-/// One property, with the two things a scheduling decision needs and the tree does not store.
+#[derive(Debug)]
+enum PartyReading {
+    Unreadable,
+    Known(PartyValues),
+}
+
+/// One property and its derived scheduling values.
 #[derive(Debug)]
 struct PropertyLine<'a> {
     /// The property itself, for the octets it does store.
@@ -107,7 +111,9 @@ struct PropertyLine<'a> {
     /// The whole content line, unfolded, with no terminator.
     line: RawText,
     /// The party values, present only for an `ORGANIZER` or an `ATTENDEE`.
-    values: Option<PartyValues>,
+    values: Option<PartyReading>,
+    /// Decoded scalar text for method and identifier lookups.
+    text: Option<Cow<'a, str>>,
 }
 
 impl<'a> PropertyLine<'a> {
@@ -118,6 +124,11 @@ impl<'a> PropertyLine<'a> {
             name: uppercased(property.name().as_bytes()),
             line: RawText::from_vec(content_line(property)),
             values: party_values(property),
+            text: if property.has_id(&PropertyId::UID) || property.has_id(&PropertyId::METHOD) {
+                decode_scalar_text_property(property)
+            } else {
+                None
+            },
         }
     }
 }
@@ -125,7 +136,7 @@ impl<'a> PropertyLine<'a> {
 /// One [`crate::internal::core::Component`], read as the state a scheduling message is judged against.
 ///
 /// Built once with [`ScheduledView::of`] and then only looked up.
-/// It borrows the component, so the octets a value keeps are not copied twice; what it owns is exactly what the component does not store — the reconstructed content lines and the resolved parameter values.
+/// It borrows the component and keeps derived content lines, parameter values, and decoded scalar text.
 ///
 /// A caller that holds a `Component` builds one of these and hands it to [`crate::internal::itip::evaluate_message`]; a caller whose state is a database row implements [`ScheduledComponent`] against its rows and never builds one at all.
 pub struct ScheduledView<'a> {
@@ -225,12 +236,12 @@ impl<'a> ScheduledView<'a> {
         }
     }
 
-    /// The one property of this component with the identity `id`, absent when there are two.
+    /// The source line for `id`, absent when different lines repeat the name.
     ///
     /// Two occurrences whose whole content lines are byte-identical are one statement stated twice, and answering them is not picking a winner out of two — there is one value, and a reader that refused it would report a component the caller plainly holds as one it holds nothing about.
     /// Two that differ anywhere, in a parameter as much as in a value,
     /// are two claims, and those stay `None`.
-    fn single(&self, id: &PropertyId) -> Option<&'a Property> {
+    fn single_line(&self, id: &PropertyId) -> Option<&PropertyLine<'a>> {
         let mut found = self.lines.iter().filter(|entry| entry.property.has_id(id));
         let first = found.next()?;
         for later in found {
@@ -238,24 +249,28 @@ impl<'a> ScheduledView<'a> {
                 return None;
             }
         }
-        Some(first.property)
+        Some(first)
     }
 
-    /// The value octets of the one property with the identity `id`.
-    fn single_value(&self, id: &PropertyId) -> Option<&'a [u8]> {
-        self.single(id)
-            .map(|property| property.value_text().as_bytes())
+    fn single(&self, id: &PropertyId) -> Option<&'a Property> {
+        self.single_line(id).map(|line| line.property)
+    }
+
+    fn single_text(&self, id: &PropertyId) -> Option<&[u8]> {
+        self.single_line(id)?.text.as_deref().map(str::as_bytes)
     }
 
     /// The party values of the `index`th entry of `lines`, and the address beside them.
-    fn party_at(&self, index: usize) -> Option<(Party<'_>, &PartyValues)> {
+    fn party_at(&self, index: usize) -> Option<(Party<'_>, Option<&PartyValues>)> {
         let entry = self.lines.get(index)?;
-        let values = entry.values.as_ref()?;
-        let party = Party::read(
-            entry.property.value_text().as_bytes(),
-            values.sent_by.as_ref().map(RawText::as_bytes),
-        );
-        Some((party, values))
+        let raw = entry.property.value_text().as_bytes();
+        match entry.values.as_ref()? {
+            PartyReading::Unreadable => Some((Party::unreadable(raw), None)),
+            PartyReading::Known(values) => Some((
+                Party::read(raw, values.sent_by.as_ref().map(RawText::as_bytes)),
+                Some(values),
+            )),
+        }
     }
 }
 
@@ -298,11 +313,18 @@ fn content_line(property: &Property) -> Vec<u8> {
 }
 
 /// The scheduling parameter values of an `ORGANIZER` or an `ATTENDEE`, `None` for anything else.
-fn party_values(property: &Property) -> Option<PartyValues> {
+fn party_values(property: &Property) -> Option<PartyReading> {
     if !property.has_id(&PropertyId::ORGANIZER) && !property.has_id(&PropertyId::ATTENDEE) {
         return None;
     }
-    Some(PartyValues {
+    if !matches!(
+        property.declared_value_type(),
+        None | Some(Ok(ValueType::CalAddress))
+    ) || UriValue::decode_property(property).is_err()
+    {
+        return Some(PartyReading::Unreadable);
+    }
+    Some(PartyReading::Known(PartyValues {
         sent_by: parameter_value(property, b"SENT-BY"),
         part_stat: parameter_value(property, b"PARTSTAT"),
         role: parameter_value(property, b"ROLE"),
@@ -315,12 +337,13 @@ fn party_values(property: &Property) -> Option<PartyValues> {
                 DateTimeValue::Date(_) | DateTimeValue::Zoned { .. } => None,
             }
         }),
-    })
+    }))
 }
 
 /// The value the first parameter named `name` states, unquoted and with its carets resolved.
 ///
-/// The first, because RFC 5545 section 3.2 puts no repeat limit on a parameter and none of the five read here means anything stated twice; taking the first is what every reading path in `ical-core` does.
+/// Strict calendar promotion checks the cardinality of known scheduling parameters.
+/// Raw documents keep repeated parameters, and this adapter reads the first spelling.
 ///
 /// The whole value, without splitting on `,`.
 /// RFC 5545 writes `DELEGATED-TO` as a comma-separated list of quoted addresses, and [`Attendee`] has one slot for it: splitting would let an answer to a two-delegate line write only the first delegate back, while keeping the list whole makes it match nobody — the conservative direction, and the same one [`crate::internal::itip::PartyId`] takes for an address that does not decode.
@@ -339,6 +362,12 @@ fn parameter_value(property: &Property, name: &[u8]) -> Option<RawText> {
 /// A `DATE`, and a value under a `TZID`,
 /// answer `None`: comparing one of those against a UTC `DTSTAMP` would order two different timelines against each other, and RFC 5546 section 2.1.5 breaks a tie with this number.
 fn timestamp_of(property: &Property) -> Option<Instant> {
+    if !matches!(
+        property.declared_value_type(),
+        None | Some(Ok(ValueType::DateTime))
+    ) {
+        return None;
+    }
     match property.value::<DateTimeValue<'_>>().value()? {
         DateTimeValue::Utc(stamp) | DateTimeValue::Local(stamp) => nominal(stamp),
         DateTimeValue::Date(_) | DateTimeValue::Zoned { .. } => None,
@@ -347,7 +376,21 @@ fn timestamp_of(property: &Property) -> Option<Instant> {
 
 /// The clock and the instant a `RECURRENCE-ID` states, `None` when the value does not read.
 fn instance_reading(property: &Property) -> Option<(Instant, InstanceClock)> {
+    let declared = property.declared_value_type();
+    if !matches!(
+        declared,
+        None | Some(Ok(ValueType::Date | ValueType::DateTime))
+    ) {
+        return None;
+    }
     let value = property.value::<DateTimeValue<'_>>().value()?;
+    let correct_form = match declared {
+        Some(Ok(ValueType::Date)) => matches!(value, DateTimeValue::Date(_)),
+        _ => !matches!(value, DateTimeValue::Date(_)),
+    };
+    if !correct_form {
+        return None;
+    }
     // A `DATE` loses its `TZID` on the way through the value type, so the parameter is asked directly: a whole-day override under a named zone is a wall clock like any other.
     let placed = property.parameters_named(b"TZID").next().is_some();
     match value {
@@ -405,11 +448,11 @@ impl ScheduledComponent for ScheduledView<'_> {
     }
 
     fn method(&self) -> Option<&[u8]> {
-        self.single_value(&PropertyId::METHOD)
+        self.single_text(&PropertyId::METHOD)
     }
 
     fn uid(&self) -> Option<&[u8]> {
-        self.single_value(&PropertyId::UID)
+        self.single_text(&PropertyId::UID)
     }
 
     fn sequence(&self) -> SequenceRead {
@@ -426,6 +469,12 @@ impl ScheduledComponent for ScheduledView<'_> {
         let Some(stated) = self.single(&PropertyId::SEQUENCE) else {
             return SequenceRead::Unreadable;
         };
+        if !matches!(
+            stated.declared_value_type(),
+            None | Some(Ok(ValueType::Integer))
+        ) {
+            return SequenceRead::Unreadable;
+        }
         // A negative `SEQUENCE` is an integer RFC 5545 section 3.8.7.4 does not admit, and it is no more a revision than a value that is not an integer at all.
         stated
             .value::<i32>()
@@ -465,6 +514,9 @@ impl ScheduledComponent for ScheduledView<'_> {
     fn attendee(&self, index: usize) -> Option<Attendee<'_>> {
         let (party, values) = self.party_at(*self.attendees.get(index)?)?;
         let mut who = Attendee::new(party);
+        let Some(values) = values else {
+            return Some(who);
+        };
         if let Some(stated) = values.part_stat.as_ref() {
             who = who.with_part_stat(stated.as_bytes());
         }
@@ -482,7 +534,10 @@ impl ScheduledComponent for ScheduledView<'_> {
 
     fn attendee_answered_at(&self, index: usize) -> Option<Instant> {
         let entry = self.lines.get(*self.attendees.get(index)?)?;
-        entry.values.as_ref()?.answered_at
+        match entry.values.as_ref()? {
+            PartyReading::Unreadable => None,
+            PartyReading::Known(values) => values.answered_at,
+        }
     }
 
     fn attendee_occurrence(&self, index: usize) -> Option<PropertyOccurrence> {

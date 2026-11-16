@@ -499,14 +499,12 @@ mod cases {
         );
     }
 
-    /// A `UID` is octets: RFC 5545 section 3.8.4.7 gives it no case folding and no whitespace stripping, and the direction that merges two identifiers is how a message about one meeting reaches another.
+    /// Identifier comparison preserves case and spaces under RFC 5545 sections 3.1 and 3.8.4.7.
     #[test]
     fn an_identifier_that_differs_by_case_or_by_space_is_a_different_identifier() {
         for (id, message) in [
             ("uid-upper-cased", REPLY_UID_UPPER),
             ("uid-with-a-trailing-space", REPLY_UID_SPACED),
-            // A NUL is a control character RFC 5545 section 3.1 excludes from a value, so a reader may refuse the line, keep it, or drop the octet — but no reading of it may end with the message being *about* the identifier the caller holds.
-            ("uid-with-a-trailing-nul", REPLY_UID_NUL),
         ] {
             assert_eq!(
                 judge_files(HELD_SERIES, message, BO),
@@ -514,6 +512,15 @@ mod cases {
                 "{id}"
             );
         }
+    }
+
+    /// RFC 5545 section 3.3.11 excludes NUL from `TEXT` values.
+    #[test]
+    fn an_identifier_with_nul_is_not_a_readable_text_identity() {
+        assert_eq!(
+            judge_files(HELD_SERIES, REPLY_UID_NUL, BO),
+            Answer::NotAMessage(MessageError::MissingUid)
+        );
     }
 
     /// A stored copy whose own `UID` does not read is still a component the caller holds.

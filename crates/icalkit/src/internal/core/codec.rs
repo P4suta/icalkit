@@ -952,6 +952,18 @@ fn unescape(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+#[must_use]
+pub(crate) fn decode_scalar_text_property(property: &Property) -> Option<Cow<'_, str>> {
+    if !matches!(
+        property.declared_value_type(),
+        None | Some(Ok(ValueType::Text))
+    ) || !is_text_value(property.value_text().as_bytes(), TextSyntax::Scalar)
+    {
+        return None;
+    }
+    TextValue::decode_property(property).ok()?.decode().ok()
+}
+
 impl<'a> TextValue<'a> {
     /// Resolve section 3.3.11's escapes, after asking whether the octets are text at all.
     ///
