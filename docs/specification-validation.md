@@ -152,6 +152,11 @@ Lossless imports preserve malformed range data.
 Unknown property, value type, and component semantics stay opaque.
 
 Recurrence rules use the maintained parser and the shared session meter.
+Week-numbering years follow `WKST` and the [four-day rule](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
+Their candidate extent can begin before or after January 1.
+Search bounds use the generation date extent while shorter periods keep their clock precision.
+Completed `COUNT` limits stop before another period spends resources.
+The [search bound decision](adr/recurrence-week-year-search-bounds.md) records the shared boundary and continuation requirements.
 Bounds follow the `DTSTART` conditions in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Floating starts follow the explicit condition that both times use local time.
 Observance bounds use UTC.
