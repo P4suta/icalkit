@@ -9,6 +9,11 @@ A calendar requires a component, and a time zone requires a standard or daylight
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
 Unrecognized components keep their content without applying known component semantics inside them.
 
+Component, property, and parameter names follow the [generic token grammar](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.1).
+Strict promotion checks names throughout unknown component subtrees.
+Valid extension names keep their spelling, including folded names.
+Lossless imports preserve malformed names without granting validated model views.
+
 [Value type declarations](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20) name one nonempty token formed from ASCII letters, digits, and hyphens.
 Repeated or malformed declarations produce a violation during strict promotion.
 Valid unknown tokens remain opaque and produce notes.

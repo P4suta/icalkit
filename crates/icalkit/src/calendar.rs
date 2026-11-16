@@ -219,6 +219,9 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
         issues.push(Issue::error("icalkit.validation.calendar-shape"));
         return;
     }
+    if first.is_some_and(|calendar| !names_are_valid(calendar)) {
+        issues.push(Issue::error("icalkit.validation.invalid-name"));
+    }
     if first.is_some_and(|calendar| !known_text_properties_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-text"));
     }
@@ -251,6 +254,18 @@ fn validate_document_shape(document: &Document, issues: &mut Vec<Issue>) {
         validate_alarms(calendar, issues);
         validate_time_relationships(calendar, issues);
     }
+}
+
+fn names_are_valid(component: &Component) -> bool {
+    is_iana_token(component.name().as_bytes())
+        && component.properties().all(|property| {
+            is_iana_token(property.name().as_bytes())
+                && property
+                    .parameters()
+                    .iter()
+                    .all(|parameter| is_iana_token(parameter.name().as_bytes()))
+        })
+        && component.components().all(names_are_valid)
 }
 
 fn validate_component_structure(component: &Component, issues: &mut Vec<Issue>) {
