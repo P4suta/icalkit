@@ -3967,13 +3967,7 @@ name = \"icalkit\"
 
     impl CandidateFixture {
         fn new() -> Self {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let path = std::env::temp_dir()
-                .join(format!("icalkit-candidate-{}-{serial}", std::process::id()));
-            std::fs::create_dir(&path).unwrap();
-            let fixture = Self(path);
-            fixture.git(&["init", "--quiet"]);
+            let fixture = Self::init("");
             std::fs::write(fixture.0.join("source.txt"), b"original\n").unwrap();
             fixture.git(&["add", "source.txt"]);
             let tree = fixture.git(&["write-tree"]);
@@ -3990,6 +3984,24 @@ name = \"icalkit\"
                 "test: candidate fixture",
             ]);
             fixture.git(&["update-ref", "HEAD", &commit]);
+            fixture
+        }
+
+        fn init(configuration: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("icalkit-candidate-{}-{serial}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            let fixture = Self(path);
+            fixture.git(&["init", "--quiet"]);
+            if !configuration.is_empty() {
+                let path = fixture.0.join(".git/config");
+                let mut contents = std::fs::read_to_string(&path).unwrap();
+                contents.push_str(configuration);
+                std::fs::write(path, contents).unwrap();
+            }
+            fixture.git(&["config", "--local", "core.fsmonitor", "false"]);
             fixture
         }
 
@@ -4018,6 +4030,16 @@ name = \"icalkit\"
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn candidate_fixture_turns_off_file_system_monitoring_before_index_creation() {
+        let fixture = CandidateFixture::init("\n[core]\nfsmonitor = true\n");
+        assert_eq!(
+            fixture.git(&["config", "--bool", "core.fsmonitor"]),
+            "false"
+        );
+        assert!(!fixture.0.join(".git/index").exists());
     }
 
     #[test]
