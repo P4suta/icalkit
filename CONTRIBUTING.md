@@ -89,7 +89,8 @@ The `std` and `system-tz` features activate only the documented adapter boundary
 A zone answer names its caller-supplied source, as defined in [ADR 0003](docs/adr/0003-caller-supplied-time-zones.md).
 The caller supplies the current instant, as defined in [ADR 0004](docs/adr/0004-sans-io-protocol-layer.md).
 `just purity` checks the linked package identity, so renaming a dependency key can't hide a new boundary.
-Jiff and xmlparser are the two recorded third-party boundaries.
+Jiff, xmlparser, and ICU4X form the recorded third-party boundaries.
+The [calendar conversion decision](docs/adr/calendar-conversion-at-the-jiff-boundary.md) records the private `icu_calendar` adapter and shared Rust 1.88 floor.
 Another dependency requires an architecture decision.
 
 The production crate declares `extern crate alloc;`, and `just purity` checks for the declaration.
