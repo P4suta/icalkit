@@ -9,6 +9,7 @@
 
 mod accounting;
 mod byparts;
+mod calendar;
 mod engine;
 mod grammar;
 mod input;

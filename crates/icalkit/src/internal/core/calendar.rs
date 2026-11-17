@@ -47,6 +47,27 @@ pub enum CalendarScale {
 }
 
 impl CalendarScale {
+    pub(crate) const fn ranges(self) -> CalendarRanges {
+        let (regular_months, months, month_days, year_days) = match self {
+            Self::Chinese | Self::Dangi | Self::Hebrew => (12, 13, 30, 385),
+            Self::Coptic | Self::Ethiopic | Self::EthiopicAmeteAlem => (13, 13, 30, 366),
+            Self::IslamicCivil | Self::IslamicTabular | Self::IslamicUmmAlQura => (12, 12, 30, 355),
+            Self::Gregorian
+            | Self::Buddhist
+            | Self::Indian
+            | Self::Iso8601
+            | Self::Japanese
+            | Self::Persian
+            | Self::Roc => (12, 12, 31, 366),
+        };
+        CalendarRanges {
+            regular_months,
+            months,
+            month_days,
+            year_days,
+        }
+    }
+
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         let preferred = if name.eq_ignore_ascii_case("GREGORY") {
             "GREGORIAN"
@@ -124,6 +145,14 @@ impl CalendarScale {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CalendarRanges {
+    pub(crate) regular_months: u8,
+    pub(crate) months: u8,
+    pub(crate) month_days: u8,
+    pub(crate) year_days: u16,
+}
+
 /// A regular month number or the leap month immediately following that month.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CalendarMonth {
@@ -157,6 +186,26 @@ pub(crate) struct CalendarCoordinates {
 }
 
 impl CalendarCoordinates {
+    pub(crate) fn days_from_epoch(&self) -> Option<i64> {
+        let epoch = IcuDate::try_new(1970.into(), Month::new(1), 1, Iso).ok()?;
+        self.date
+            .to_rata_die()
+            .to_i64_date()
+            .checked_sub(epoch.to_rata_die().to_i64_date())
+    }
+
+    pub(crate) fn days_in_month(&self) -> u8 {
+        self.date.days_in_month()
+    }
+
+    pub(crate) fn days_in_year(&self) -> u16 {
+        self.date.days_in_year()
+    }
+
+    pub(crate) fn months_in_year(&self) -> u8 {
+        self.date.months_in_year()
+    }
+
     pub(crate) fn new(
         scale: CalendarScale,
         year: i32,
