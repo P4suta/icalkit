@@ -174,6 +174,12 @@ Table admission charges every stored pattern to the existing observance meter.
 Explicit month selectors, default anniversaries, and yearly weekday ordinals keep their scope.
 The [month expansion decision](adr/month-day-selectors-across-all-months.md) records the bounded compilation and its storage cost.
 
+Embedded `BYMONTH` lists select nonempty sets of months from 1 through 12.
+Repeated values within a list compile once without changing the stored source spelling.
+Explicit month sets keep numeric weekday positions within each month, including a set containing all twelve months.
+Malformed values, empty entries, and repeated month parts produce an unsupported-rule diagnostic.
+The [month set decision](adr/selected-month-sets-as-annual-patterns.md) records checked parsing and annual compilation.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.

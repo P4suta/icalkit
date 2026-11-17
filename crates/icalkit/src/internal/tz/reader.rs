@@ -18,7 +18,7 @@
 //!
 //! The one place untrusted zone text becomes a model, and therefore the only place in this crate that charges a meter.
 //! Each `STANDARD` and `DAYLIGHT` subcomponent contributes its `DTSTART` anchor and explicit `RDATE` transitions.
-//! A supported `RRULE` compiles into one annual pattern or twelve month-specific patterns sharing that anchor.
+//! A supported `RRULE` compiles into at most twelve annual patterns sharing that anchor.
 //! Explicit dates and computed onsets contribute to the same transition set.
 //!
 //! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no prefix stripping, no alias lookup.
@@ -67,7 +67,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use core::num::NonZeroU8;
+use core::num::{NonZeroU8, NonZeroU16};
 use core::str;
 
 use crate::internal::core::{
@@ -349,9 +349,37 @@ fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilD
 }
 
 #[derive(Clone, Copy, Debug)]
+struct MonthSet(NonZeroU16);
+
+impl MonthSet {
+    fn parse(text: &[u8]) -> Option<Self> {
+        let mut bits = 0_u16;
+        for field in text.split(|octet| *octet == b',') {
+            let month = month_number(field)?;
+            let shift = u32::from(month.checked_sub(1)?);
+            bits |= 1_u16.checked_shl(shift)?;
+        }
+        NonZeroU16::new(bits).map(Self)
+    }
+
+    fn contains(self, month: u8) -> bool {
+        month
+            .checked_sub(1)
+            .and_then(|shift| 1_u16.checked_shl(u32::from(shift)))
+            .is_some_and(|bit| self.0.get() & bit != 0)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 enum YearlyRules {
     Single(YearlyRule),
     AllMonths {
+        day: RuleDay,
+        at: CivilTime,
+        through: Option<CivilDate>,
+    },
+    SelectedMonths {
+        months: MonthSet,
         day: RuleDay,
         at: CivilTime,
         through: Option<CivilDate>,
@@ -362,11 +390,23 @@ impl YearlyRules {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
         let count = match self {
             Self::Single(_) => 1,
-            Self::AllMonths { .. } => 12,
+            Self::AllMonths { .. } | Self::SelectedMonths { .. } => 12,
         };
         (1..=count).filter_map(move |month| match self {
             Self::Single(rule) => Some(rule),
             Self::AllMonths { day, at, through } => YearlyRule::new(month, day, at, through),
+            Self::SelectedMonths {
+                months,
+                day,
+                at,
+                through,
+            } => {
+                if months.contains(month) {
+                    YearlyRule::new(month, day, at, through)
+                } else {
+                    None
+                }
+            },
         })
     }
 }
@@ -429,18 +469,22 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
         )));
     }
     let day = day_form(parts, start.date())?;
-    if parts.month.is_none() && parts.month_days.count != 0 {
+    if let Some(months) = parts.month {
+        return Some(YearlyRules::SelectedMonths {
+            months,
+            day,
+            at: start.time(),
+            through: parts.until,
+        });
+    }
+    if parts.month_days.count != 0 {
         return Some(YearlyRules::AllMonths {
             day,
             at: start.time(),
             through: parts.until,
         });
     }
-    let month = match parts.month {
-        Some(stated) => stated,
-        None => start.date().month(),
-    };
-    YearlyRule::new(month, day, start.time(), parts.until).map(YearlyRules::Single)
+    YearlyRule::new(start.date().month(), day, start.time(), parts.until).map(YearlyRules::Single)
 }
 
 /// What a `RECUR` value said, as far as this crate reads one.
@@ -449,8 +493,8 @@ struct RuleParts {
     /// Whether `FREQ=YEARLY` was stated.
     /// Nothing else is a transition rule.
     yearly: bool,
-    /// The one `BYMONTH` value, absent when the rule states none.
-    month: Option<u8>,
+    /// The explicit `BYMONTH` set, absent when the rule states none.
+    month: Option<MonthSet>,
     /// The one `BYDAY` entry, absent when the rule states none.
     weekday: Option<WeekdayTerm>,
     /// The `BYMONTHDAY` values, in the order they were written.
@@ -554,7 +598,10 @@ fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcO
         return true;
     }
     if name.eq_ignore_ascii_case(b"BYMONTH") {
-        parts.month = month_number(value);
+        if parts.month.is_some() {
+            return false;
+        }
+        parts.month = MonthSet::parse(value);
         return parts.month.is_some();
     }
     if name.eq_ignore_ascii_case(b"BYDAY") {
@@ -658,8 +705,11 @@ fn until_date(value: &[u8], offset_from: UtcOffset) -> Option<CivilDate> {
     }
 }
 
-/// One `BYMONTH` value, `1` through `12`.
+/// One unsigned `BYMONTH` value, `1` through `12`.
 fn month_number(value: &[u8]) -> Option<u8> {
+    if !value.first().is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
     let number = signed_number(value)?;
     if !(1..=12).contains(&number) {
         return None;
@@ -1320,7 +1370,7 @@ END:VTIMEZONE
             "FREQ=MONTHLY;BYMONTHDAY=1",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=1",
-            "FREQ=YEARLY;BYMONTH=3,10;BYDAY=-1SU",
+            "FREQ=YEARLY;BYMONTH=3,13;BYDAY=-1SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
             "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-1SU",
