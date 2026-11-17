@@ -117,6 +117,7 @@ The candidate workflow also runs Windows and macOS tests and the declared source
 
 An earlier local suite reported one [leaky test](https://nexte.st/docs/features/leaky-tests/) without naming it in failure-only output.
 [Issue 67](https://github.com/P4suta/icalkit/issues/67) tracks the unidentified test and subprocess.
+The maintained test recipes show leak status lines even with failure-only environment settings.
 The cause remains unresolved, and a cleanup change requires a failing reproduction.
 
 Every package remains at `0.0.0`.

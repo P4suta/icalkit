@@ -83,7 +83,7 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
     }
     let core = recipe_body(justfile, "test-core");
     for command in [
-        "cargo nextest run --locked --profile ci -p icalkit --no-default-features",
+        "cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features",
         "cargo test --locked -p icalkit --doc --no-default-features",
     ] {
         if !core.contains(&command) {
@@ -126,7 +126,7 @@ test: test-core
 test-ci: test-core
 
 test-core:
-    cargo nextest run --locked --profile ci -p icalkit --no-default-features
+    cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features
     cargo test --locked -p icalkit --doc --no-default-features
 ";
 
@@ -218,7 +218,7 @@ test-core:
     #[test]
     fn removing_either_standalone_test_command_is_refused() {
         for command in [
-            "cargo nextest run --locked --profile ci -p icalkit --no-default-features",
+            "cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features",
             "cargo test --locked -p icalkit --doc --no-default-features",
         ] {
             let broken = TEST_RECIPES.replace(command, "");

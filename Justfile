@@ -33,17 +33,17 @@ lint:
 
 # Run workspace tests and doctests, including standalone core coverage.
 test: test-core
-    cargo nextest run --locked --workspace --all-features
+    cargo nextest run --locked --status-level leak --workspace --all-features
     cargo test --locked --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
 
 # Exercise the standalone core without workspace feature unification.
 test-core:
-    cargo nextest run --locked --profile ci -p icalkit --no-default-features
+    cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features
     cargo test --locked -p icalkit --doc --no-default-features
 
 # Run the complete test suite with the non-fail-fast CI profile.
 test-ci: test-core
-    cargo nextest run --locked --profile ci --workspace --all-features
+    cargo nextest run --locked --status-level leak --profile ci --workspace --all-features
     cargo test --locked --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
 
 # Check allocation ceilings in a dedicated process.

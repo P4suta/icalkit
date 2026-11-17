@@ -248,6 +248,8 @@ mod ci;
 mod development;
 #[cfg(test)]
 mod hook_scope;
+#[cfg(test)]
+mod nextest_output;
 mod public_api;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,

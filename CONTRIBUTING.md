@@ -26,6 +26,8 @@ The pre-push hook runs `just check`, matching the ordinary Linux CI inventory.
 The ordinary gate includes workspace tests and doctests, allocation and documentation checks, strict linting, dependency policy, and repository checks.
 `just test-core` also runs the standalone library tests and doctests without default features.
 Both `just test` and `just test-ci` include `test-core`, so workspace feature unification can't hide a dependency on the default adapters.
+The maintained test recipes explicitly select Nextest's `leak` status level.
+They show [leaky test names](https://nexte.st/docs/features/leaky-tests/) even when `NEXTEST_STATUS_LEVEL` requests failure-only output.
 Clippy checks the standalone library without default features in its own invocation.
 Build, lint, test, and documentation recipes use [Cargo's `--locked` option](https://doc.rust-lang.org/cargo/commands/cargo-test.html#manifest-options) to reject a missing or stale `Cargo.lock`.
 Review dependency updates and their lockfile diff together.
