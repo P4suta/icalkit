@@ -165,11 +165,13 @@ Unknown `VALUE` types stop typed decoding and produce notes, as required by [sec
 
 Calendar controls follow [RFC 7529](https://www.rfc-editor.org/rfc/rfc7529.html#section-4.1).
 The native engine admits the [Gregorian names](https://raw.githubusercontent.com/unicode-org/cldr/main/common/bcp47/calendar.xml) with absent or `OMIT` skipping.
-Gregorian `BACKWARD` and `FORWARD` handle default month days and `BYMONTHDAY`.
+Gregorian `BACKWARD` and `FORWARD` handle default month days, `BYMONTHDAY`, and `BYYEARDAY`.
 Month selection precedes correction, and weekday, clock, and period position selection follow it.
+Year day and month day constraints intersect before correction.
+Year day candidate bounds follow the corrected date when a missing day crosses a year boundary.
 The search orders and deduplicates overlapping period candidates before counting.
 Continuation preserves pending candidates and unconsumed rule offers beside `RDATE` additions.
-Other calendars, leap month selectors, and non-`OMIT` rules with `BYYEARDAY` or `BYWEEKNO` produce `unsupported-recurrence-semantics`.
+Other calendars, leap month selectors, and non-`OMIT` rules with `BYWEEKNO` produce `unsupported-recurrence-semantics`.
 Malformed or repeated controls fail typed construction, including `SKIP` without `RSCALE`.
 Both typed decoders resolve `FREQ` independent of written order, following [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Public rule errors keep the kernel diagnostics.
@@ -179,7 +181,8 @@ The allocation gate bounds heap use for resource refusals independently of input
 Imports preserve original bytes, and unrelated unknown parts keep their notes.
 The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
 The [month day decision](adr/gregorian-month-day-adjustments.md) extends the native subset.
-Calendar conversion, leap month selection, year day and week number correction, and CalDAV capability negotiation remain open.
+The [year day decision](adr/gregorian-year-day-correction-order.md) records the source constraints and shared date arithmetic.
+Calendar conversion, leap month selection, week number correction, and CalDAV capability negotiation remain open.
 
 `RDATE` and `EXDATE` lists follow [RFC 5545 section 3.8.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5).
 Each field must match its declared type.

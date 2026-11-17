@@ -136,8 +136,16 @@ impl CandidateSet {
 pub(super) fn candidate_lower_bound(period: Period, rule: &RecurrenceRule) -> CivilDateTime {
     let anchor = period.anchor();
     let (mut date, _) = day_extent(rule, rule.parts_present(), anchor.date());
-    // January holds every admitted month day, so these corrections can't leave a year.
-    // Monthly lower bounds use the same resolver as candidate generation.
+    if rule.skip() != Skip::Omit && expands_year_days(rule, rule.parts_present()) {
+        date = rule
+            .by_year_day()
+            .as_slice()
+            .iter()
+            .filter_map(|value| resolve_year_day(anchor.date().year(), *value, rule.skip()))
+            .min()
+            .unwrap_or(date);
+    }
+    // Both bounds use the same signed date resolver as candidate generation.
     if rule.skip() == Skip::Backward && rule.freq() == Freq::Monthly {
         date = rule
             .by_month_day()
@@ -367,15 +375,10 @@ fn apply_date_parts<S: DiagnosticSink + ?Sized>(
         if action == PartEffect::NotApplicable {
             continue;
         }
-        if part == RulePart::MonthDay && action.expands() && rule.skip() != Skip::Omit {
-            *days = corrected_month_days(
-                days,
-                rule.by_month_day().as_slice(),
-                rule.skip(),
-                anchor,
-                meter,
-                sink,
-            )?;
+        if action.expands()
+            && rule.skip() != Skip::Omit
+            && correct_date_part(days, part, rule, present, anchor, meter, sink)?
+        {
             continue;
         }
         if action.expands() {
@@ -385,6 +388,115 @@ fn apply_date_parts<S: DiagnosticSink + ?Sized>(
         days.retain(|date| date_part_matches(part, *date, rule, scope));
     }
     Ok(())
+}
+
+/// Whether year days generate dates rather than filter the period's fixed date.
+fn expands_year_days(rule: &RecurrenceRule, present: PartsPresent) -> bool {
+    rule.has_part(RulePart::YearDay) && effect(rule.freq(), RulePart::YearDay, present).expands()
+}
+
+/// Apply an expanding day selector with explicit Gregorian corrections.
+fn correct_date_part<S: DiagnosticSink + ?Sized>(
+    days: &mut Vec<CivilDate>,
+    part: RulePart,
+    rule: &RecurrenceRule,
+    present: PartsPresent,
+    anchor: CivilDateTime,
+    meter: &mut Meter,
+    sink: &mut S,
+) -> Result<bool, LimitExceeded> {
+    match part {
+        RulePart::YearDay => *days = corrected_year_days(days, rule, anchor, meter, sink)?,
+        RulePart::MonthDay if expands_year_days(rule, present) => {
+            days.retain(|date| month_day_matches(*date, rule.by_month_day().as_slice()));
+        },
+        RulePart::MonthDay => {
+            *days = corrected_month_days(
+                days,
+                rule.by_month_day().as_slice(),
+                rule.skip(),
+                anchor,
+                meter,
+                sink,
+            )?;
+        },
+        RulePart::Month
+        | RulePart::WeekNo
+        | RulePart::Day
+        | RulePart::Hour
+        | RulePart::Minute
+        | RulePart::Second
+        | RulePart::SetPos => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// A source date's selection result before weekday filters.
+enum DateSelection {
+    /// A valid source day or its explicit correction.
+    Candidate(CivilDate),
+    /// Another calendar date selector excludes the source day.
+    Filtered,
+    /// The source day has no representable correction.
+    Nonexistent,
+}
+
+/// Select source year days before correcting the surviving missing dates.
+fn corrected_year_days<S: DiagnosticSink + ?Sized>(
+    days: &[CivilDate],
+    rule: &RecurrenceRule,
+    anchor: CivilDateTime,
+    meter: &mut Meter,
+    sink: &mut S,
+) -> Result<Vec<CivilDate>, LimitExceeded> {
+    let mut corrected = Vec::new();
+    for year in distinct_years(days) {
+        for value in rule.by_year_day().as_slice() {
+            match select_year_day(days, year, *value, rule) {
+                DateSelection::Candidate(date) => {
+                    meter.try_charge_candidate()?;
+                    corrected.push(date);
+                },
+                DateSelection::Filtered => meter.try_charge_candidate()?,
+                DateSelection::Nonexistent => report_absent(anchor, meter, sink)?,
+            }
+        }
+    }
+    corrected.sort_unstable();
+    corrected.dedup();
+    Ok(corrected)
+}
+
+/// Match month and month day constraints on the source date, before correction.
+fn select_year_day(
+    days: &[CivilDate],
+    year: u16,
+    value: i16,
+    rule: &RecurrenceRule,
+) -> DateSelection {
+    let Some(first) = CivilDate::from_ymd(year, 1, 1) else {
+        return DateSelection::Nonexistent;
+    };
+    let Some(last) = CivilDate::from_ymd(year, 12, 31) else {
+        return DateSelection::Nonexistent;
+    };
+    let source = resolve_year_day(year, value, Skip::Omit);
+    let boundary = if value.is_negative() { first } else { last };
+    if days.binary_search(&source.unwrap_or(boundary)).is_err() {
+        return DateSelection::Filtered;
+    }
+    if let Some(source) = source {
+        return DateSelection::Candidate(source);
+    }
+    // A missing year day falls before January 1 or after December 31.
+    // No admitted month day matches that source coordinate before correction.
+    if rule.has_part(RulePart::MonthDay) {
+        return DateSelection::Filtered;
+    }
+    match resolve_year_day(year, value, rule.skip()) {
+        Some(date) => DateSelection::Candidate(date),
+        None => DateSelection::Nonexistent,
+    }
 }
 
 /// The scope a `BYDAY` ordinal counts within for this rule, or `None` when it counts in none.
@@ -782,11 +894,28 @@ fn resolve_month_day(year: u16, month: u8, value: i8, skip: Skip) -> Option<Civi
         return None;
     }
     let length = CivilDate::days_in_month(year, month)?;
-    if let Some(position) = position_named(i32::from(value), u32::from(length)) {
-        return CivilDate::from_ymd(year, month, u8::try_from(position).ok()?);
-    }
     let first = CivilDate::from_ymd(year, month, 1)?;
-    let last = CivilDate::from_ymd(year, month, length)?;
+    resolve_span_day(first, u16::from(length), i32::from(value), skip)
+}
+
+/// Resolve one signed day in a Gregorian year.
+fn resolve_year_day(year: u16, value: i16, skip: Skip) -> Option<CivilDate> {
+    if value == 0 || !(-366..=366).contains(&value) {
+        return None;
+    }
+    let first = CivilDate::from_ymd(year, 1, 1)?;
+    resolve_span_day(first, days_in_year(year), i32::from(value), skip)
+}
+
+/// Resolve a signed day within a span, correcting only to an adjacent valid boundary.
+fn resolve_span_day(first: CivilDate, length: u16, value: i32, skip: Skip) -> Option<CivilDate> {
+    if value == 0 {
+        return None;
+    }
+    if let Some(position) = position_named(value, u32::from(length)) {
+        return first.checked_add_days(i64::from(position).checked_sub(1)?);
+    }
+    let last = first.checked_add_days(i64::from(length).checked_sub(1)?)?;
     match (skip, value.is_positive()) {
         (Skip::Omit, _) => None,
         (Skip::Backward, true) => Some(last),

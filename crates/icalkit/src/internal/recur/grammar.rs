@@ -474,16 +474,14 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
     let mut scale: Option<&[u8]> = None;
     let mut skip: Option<&[u8]> = None;
     let mut leap_month = false;
-    let mut unsupported_days = false;
+    let mut unsupported_weeks = false;
     for part in parts(value_text) {
         let destination = if equals_ignoring_case(part.name(), b"RSCALE") {
             &mut scale
         } else if equals_ignoring_case(part.name(), b"SKIP") {
             &mut skip
         } else {
-            unsupported_days |= [b"BYYEARDAY".as_slice(), b"BYWEEKNO"]
-                .iter()
-                .any(|name| equals_ignoring_case(part.name(), name));
+            unsupported_weeks |= equals_ignoring_case(part.name(), b"BYWEEKNO");
             if equals_ignoring_case(part.name(), b"BYMONTH") {
                 leap_month |= part.value().split(|octet| *octet == b',').any(|month| {
                     month
@@ -523,7 +521,7 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
         Some(mode) if equals_ignoring_case(mode, b"FORWARD") => Skip::Forward,
         Some(_) | None => Skip::Omit,
     };
-    if !gregorian || leap_month || (policy != Skip::Omit && unsupported_days) {
+    if !gregorian || leap_month || (policy != Skip::Omit && unsupported_weeks) {
         return Err(RuleError::UnsupportedCalendarSemantics);
     }
     Ok(policy)

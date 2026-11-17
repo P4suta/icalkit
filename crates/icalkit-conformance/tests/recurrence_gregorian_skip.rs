@@ -38,15 +38,15 @@ fn strict_and_recovering_readers_keep_skipping_independent_of_part_order() {
 }
 
 #[test]
-fn native_builders_refuse_unimplemented_skipping_combinations() {
+fn native_builders_keep_year_days_and_refuse_unimplemented_week_numbers() {
     for skip in [Skip::Backward, Skip::Forward] {
         let builder = RecurrenceRuleBuilder::new(Freq::Yearly).skip(skip);
-        assert_eq!(
+        assert!(
             builder
                 .clone()
                 .by_year_day(ByList::from_slice(&[366]))
-                .build(),
-            Err(RuleError::UnsupportedCalendarSemantics),
+                .build()
+                .is_ok(),
         );
         assert_eq!(
             builder.by_week_no(ByList::from_slice(&[53])).build(),
@@ -225,4 +225,140 @@ fn a_completed_backward_count_does_not_expand_the_next_year() {
     assert_eq!(occurrence.start(), instant(2021, 12, 31));
     assert!(search.next().is_none());
     assert_eq!(search.outcome(), SearchOutcome::RuleEnded);
+}
+
+#[test]
+fn both_readers_preserve_signed_year_day_correction() {
+    for mode in ["BACKWARD", "FORWARD"] {
+        let text = format!("RSCALE=GREGORIAN;SKIP={mode};BYYEARDAY=-366,366;FREQ=YEARLY");
+        let strict = RecurrenceRule::decode_value(text.as_bytes()).unwrap();
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let recovered = parse_recur(text.as_bytes(), &mut meter, &mut IgnoreDiagnostics).unwrap();
+        assert_eq!(strict, recovered);
+        assert_eq!(strict.by_year_day().as_slice(), [-366, 366]);
+        assert_ne!(strict.skip(), Skip::Omit);
+    }
+}
+
+#[test]
+fn a_forward_year_day_count_needs_no_extra_year_expansion() {
+    let mut meter = Meter::with_budget(Limits::DEFAULT, 737);
+    let rule = RecurrenceRule::decode_value(
+        b"FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYYEARDAY=366;COUNT=2",
+    )
+    .unwrap();
+    let input = RecurrenceInput::new(
+        instant(2020, 12, 31),
+        ValueKind::DateTime,
+        Some(&rule),
+        &[],
+        &[],
+        OverrideSet::empty(),
+        &mut meter,
+    )
+    .unwrap();
+    let bounds = NativeWindow::new(instant(2020, 1, 1), instant(2025, 1, 1)).unwrap();
+    let mut sink = IgnoreDiagnostics;
+    let mut search = input.search(bounds, &mut meter, &mut sink);
+    for expected in [instant(2020, 12, 31), instant(2022, 1, 1)] {
+        let Some(SearchStep::Occurrence(occurrence)) = search.next() else {
+            panic!("spent a year day count's budget on a later year");
+        };
+        assert_eq!(occurrence.start(), expected);
+    }
+    assert!(search.next().is_none());
+    assert_eq!(search.outcome(), SearchOutcome::RuleEnded);
+}
+
+#[test]
+fn a_year_day_limit_does_not_generate_an_absent_day() {
+    for mode in ["BACKWARD", "FORWARD"] {
+        let text = format!("FREQ=HOURLY;RSCALE=GREGORIAN;SKIP={mode};BYYEARDAY=366;COUNT=1");
+        let rule = RecurrenceRule::decode_value(text.as_bytes()).unwrap();
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let input = RecurrenceInput::new(
+            instant(2021, 12, 31),
+            ValueKind::DateTime,
+            Some(&rule),
+            &[],
+            &[],
+            OverrideSet::empty(),
+            &mut meter,
+        )
+        .unwrap();
+        let bounds = NativeWindow::new(instant(2021, 12, 31), instant(2022, 1, 2)).unwrap();
+        let mut sink = IgnoreDiagnostics;
+        let mut search = input.search(bounds, &mut meter, &mut sink);
+        assert!(search.next().is_none());
+        assert_eq!(search.outcome(), SearchOutcome::WindowEnded);
+    }
+}
+
+#[test]
+fn a_year_day_correction_never_saturates_at_the_calendar_end() {
+    let rule = RecurrenceRule::decode_value(
+        b"FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYYEARDAY=366;COUNT=1",
+    )
+    .unwrap();
+    let mut meter = Meter::new(Limits::DEFAULT);
+    let input = RecurrenceInput::new(
+        instant(9999, 1, 1),
+        ValueKind::DateTime,
+        Some(&rule),
+        &[],
+        &[],
+        OverrideSet::empty(),
+        &mut meter,
+    )
+    .unwrap();
+    let bounds = NativeWindow::new(instant(9999, 12, 30), instant(9999, 12, 31)).unwrap();
+    let mut sink = IgnoreDiagnostics;
+    let mut search = input.search(bounds, &mut meter, &mut sink);
+    assert!(search.next().is_none());
+    assert_eq!(search.outcome(), SearchOutcome::CalendarEnded);
+}
+
+#[test]
+fn signed_date_ordinals_correct_at_both_year_boundaries() {
+    for (mode, ordinal, first, second) in [
+        ("FORWARD", "366", instant(2020, 12, 31), instant(2022, 1, 1)),
+        (
+            "BACKWARD",
+            "366",
+            instant(2020, 12, 31),
+            instant(2021, 12, 31),
+        ),
+        ("FORWARD", "-366", instant(2020, 1, 1), instant(2021, 1, 1)),
+        (
+            "BACKWARD",
+            "-366",
+            instant(2020, 1, 1),
+            instant(2020, 12, 31),
+        ),
+    ] {
+        let text = format!("FREQ=YEARLY;RSCALE=GREGORIAN;SKIP={mode};BYYEARDAY={ordinal};COUNT=2");
+        let rule = RecurrenceRule::decode_value(text.as_bytes()).unwrap();
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let input = RecurrenceInput::new(
+            first,
+            ValueKind::Date,
+            Some(&rule),
+            &[],
+            &[],
+            OverrideSet::empty(),
+            &mut meter,
+        )
+        .unwrap();
+        let bounds = NativeWindow::new(instant(2020, 1, 1), instant(2024, 1, 1)).unwrap();
+        let mut sink = IgnoreDiagnostics;
+        let mut search = input.search(bounds, &mut meter, &mut sink);
+        for expected in [first, second] {
+            let Some(SearchStep::Occurrence(occurrence)) = search.next() else {
+                panic!("missing corrected Gregorian year day");
+            };
+            assert_eq!(occurrence.start(), expected);
+        }
+        assert!(search.next().is_none());
+        assert_eq!(search.outcome(), SearchOutcome::RuleEnded);
+    }
 }

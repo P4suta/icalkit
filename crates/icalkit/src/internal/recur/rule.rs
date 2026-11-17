@@ -11,7 +11,8 @@
 //! An expansion engine that had to re-check any of those would be a second opinion about the same question, and the two would eventually disagree.
 //!
 //! What is *not* established here is anything a period would answer.
-//! `BYMONTHDAY=31` is a legal rule that names no day of February, and RFC 5545 section 3.3.10 says such an instance is ignored rather than moved; that is the expansion's answer per candidate, not a construction error, and `docs/adr/0011` makes the distinction binding.
+//! `BYMONTHDAY=31` is legal even when the period is February.
+//! Expansion omits missing dates under RFC 5545 section 3.3.10 or corrects them under an explicit RFC 7529 `SKIP` policy.
 //! Values that are out of range outright — `BYMONTHDAY=32`, which names no day of any month — are dropped by the decoder with a diagnostic and never reach a builder at all, because `docs/adr/0001` forbids discarding a component over one bad part.
 
 use alloc::vec::Vec;
@@ -379,7 +380,7 @@ impl Display for RuleError {
 
 impl Error for RuleError {}
 
-/// Policy for missing Gregorian month days under RFC 7529 section 4.1.
+/// Policy for missing Gregorian dates under RFC 7529 section 4.1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Skip {
     /// Discard missing dates, including rules without `RSCALE`.
@@ -455,7 +456,7 @@ impl RecurrenceRule {
         self.wkst
     }
 
-    /// Missing Gregorian month day policy.
+    /// Missing Gregorian date policy.
     #[must_use]
     pub const fn skip(&self) -> Skip {
         self.skip
@@ -622,7 +623,7 @@ impl RecurrenceRuleBuilder {
         self
     }
 
-    /// Set the missing Gregorian month day policy.
+    /// Set the missing Gregorian date policy.
     #[must_use]
     pub fn skip(mut self, skip: Skip) -> Self {
         self.rule.skip = skip;
@@ -696,9 +697,7 @@ impl RecurrenceRuleBuilder {
     ///
     /// Refuse unsupported calendar combinations and `BYSETPOS` without another `BYxxx` part.
     pub fn build(self) -> Result<RecurrenceRule, RuleError> {
-        if self.rule.skip != Skip::Omit
-            && (!self.rule.by_year_day.is_empty() || !self.rule.by_week_no.is_empty())
-        {
+        if self.rule.skip != Skip::Omit && !self.rule.by_week_no.is_empty() {
             return Err(RuleError::UnsupportedCalendarSemantics);
         }
         if !self.rule.by_set_pos.is_empty() && !self.rule.has_selectable_part() {
