@@ -415,6 +415,13 @@ The observance reader guards declared value types for transition dates and recur
 Known observance `RDATE` values use local date-time form under [RFC 5545 section 3.6.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.5).
 The [query zone decision](adr/query-timezone-definitions.md) records source selection and supported-definition boundaries.
 
+Time zone definition identifiers use the scalar `TEXT` type from [RFC 5545 section 3.8.3.1](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.3.1).
+The shared decoder resolves text escapes once and preserves literal quotes.
+Lookup, duplicate detection, and refused-definition tracking use the decoded identifier.
+Parameter references keep their separate quoting rules.
+The reader refuses unreadable identities and preserves source bytes.
+The [definition identifier decision](adr/decoded-time-zone-definition-identifiers.md) records the encoding boundary.
+
 Scheduling reads `METHOD` and `UID` through their declared `TEXT` type.
 Identifier comparison decodes [text escapes](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11) once and keeps source bytes.
 Participant addresses, revisions, timestamps, and recurrence identifiers use their declared value types.

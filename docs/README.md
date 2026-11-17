@@ -127,6 +127,8 @@ It uses the session's zone database and budget, returns effective-start order, a
 ## Embedded time zone rules
 
 CalDAV query timezone payloads accept supported Gregorian `FREQ=YEARLY` rules from one `VTIMEZONE` definition.
+The definition's [`TZID`](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.3.1) uses decoded `TEXT`, with literal quotes preserved.
+References use parameter quoting, while source calendar bytes stay unchanged.
 The compiler accepts `BYMONTH`, `BYMONTHDAY`, `BYYEARDAY`, `BYDAY`, `BYWEEKNO`, and `BYSETPOS` date selectors.
 Intervals follow the source calendar year, or its week-numbering year with `BYWEEKNO`.
 `WKST` defines the start of numbered weeks.

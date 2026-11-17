@@ -21,8 +21,8 @@
 //! A supported `RRULE` compiles into at most 366 calendar patterns or 372 week patterns sharing that anchor.
 //! Explicit dates and computed onsets contribute to the same transition set.
 //!
-//! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no prefix stripping, no alias lookup.
-//! `docs/adr/0003` makes mapping a vendor identifier onto an IANA one the caller's visible step, and a reader that quietly normalized here would take it back.
+//! Definition identifiers use decoded `TEXT` values with literal quotes preserved.
+//! `docs/adr/0003` leaves vendor mapping to callers, so lookup preserves case and prefixes.
 //!
 //! Codes this unit owns, and no other unit may emit:
 //!
@@ -70,6 +70,7 @@ use alloc::vec::Vec;
 use core::num::{NonZeroU8, NonZeroU32};
 use core::str;
 
+use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
     DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject, UtcOffset,
@@ -190,30 +191,10 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
     Some(tzid)
 }
 
-/// The identifier a `VTIMEZONE` answers to, or `None` when it has none this crate can file.
-///
-/// `None` for an absent, empty, repeated or non-UTF-8 `TZID`.
-/// The last is forced rather than chosen: [`ObservanceReader::read_vtimezone`] answers with a `Box<str>`, and octets that are not text cannot become one.
-/// The repeated case is `None` for the reason [`crate::internal::core::Component::get`] refuses a duplicate — two identities is not one of them, and picking the first would file a zone under a name the file does not unambiguously give it.
+/// The definition's nonempty scalar `TEXT` identifier, decoded once.
 fn identifier(component: &Component) -> Option<Box<str>> {
-    let wanted = PropertyId::TZID;
-    let mut written = component.properties_named(&wanted);
-    let first = written.next()?;
-    if written.next().is_some() {
-        return None;
-    }
-    let text = str::from_utf8(unquoted(first.value_text().as_bytes())).ok()?;
-    (!text.is_empty()).then(|| Box::from(text))
-}
-
-/// `text` with a matched RFC 5545 section 3.2 `DQUOTE` pair removed, and nothing else done.
-///
-/// The rule [`crate::internal::core::Parameter::unquoted`] applies on the other side of the comparison.
-/// The two sides have to strip alike, or a producer that quoted one of them would declare a zone that no lookup could ever reach.
-fn unquoted(text: &[u8]) -> &[u8] {
-    text.strip_prefix(b"\"")
-        .and_then(|inside| inside.strip_suffix(b"\""))
-        .unwrap_or(text)
+    let text = decode_single_scalar_text(component, &PropertyId::TZID)?;
+    (!text.is_empty()).then(|| text.into_owned().into_boxed_str())
 }
 
 /// Read one `STANDARD` or `DAYLIGHT` subcomponent into `out`, reporting one that yields nothing.
@@ -1613,7 +1594,7 @@ END:VTIMEZONE
 
     /// A `TZID` is not an IANA identifier and this reader does not pretend otherwise.
     #[test]
-    fn an_identifier_is_filed_exactly_as_it_was_written() {
+    fn an_identifier_keeps_its_literal_characters() {
         let written = [
             "America/New_York",
             "W. Europe Standard Time",
@@ -1625,7 +1606,7 @@ END:VTIMEZONE
         for tzid in written {
             let (zones, reported) = read(&definition(tzid));
             assert!(codes(&reported).is_empty(), "{tzid}");
-            let filed = tzid.trim_matches('"');
+            let filed = tzid;
             assert!(
                 zones.table(filed).is_some(),
                 "{tzid} should be filed under {filed}"
