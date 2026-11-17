@@ -151,6 +151,12 @@ Strict promotion rejects unsupported range values and repeated parameters before
 Lossless imports preserve malformed range data.
 Unknown property, value type, and component semantics stay opaque.
 
+Embedded `VTIMEZONE` rules follow [verified erratum 1913](https://errata.rfc-editor.org/eid1913) for weekday ordinal scope.
+A numeric `BYDAY` counts within the stated month when `BYMONTH` is present.
+Without `BYMONTH`, its ordinal counts from the start or end of the year.
+Nonexistent ordinal positions produce no computed date.
+The [weekday ordinal decision](adr/weekday-ordinals-in-embedded-time-zones.md) records bounded arithmetic and observance boundaries.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.

@@ -376,9 +376,23 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 
 /// One observance `RRULE`, read as the closed form or not at all.
 ///
-/// The month and the day fall back to `DTSTART`'s own, which is what RFC 5545 section 3.3.10 says an unstated `BYMONTH` or `BYMONTHDAY` means, and the transition time is `DTSTART`'s because section 3.6.5 gives an observance no other place to write one.
+/// Numeric `BYDAY` without `BYMONTH` counts within the year.
+/// An omitted day selector uses `DTSTART`'s day.
+/// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRule> {
     let parts = collect_parts(text, offset_from)?;
+    if parts.month.is_none()
+        && parts.month_days.count == 0
+        && let Some(term) = parts.weekday
+        && let Some(ordinal) = term.ordinal
+    {
+        return Some(YearlyRule::for_year_weekday(
+            term.weekday,
+            NthWeek::from_ordinal(ordinal)?,
+            start.time(),
+            parts.until,
+        ));
+    }
     let month = match parts.month {
         Some(stated) => stated,
         None => start.date().month(),
@@ -543,16 +557,7 @@ fn day_form(parts: RuleParts, start: CivilDate) -> Option<RuleDay> {
 
 /// `BYDAY=2SU` and `BYDAY=-1SU`, which name one weekday of the month outright.
 fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
-    let week = match term.ordinal? {
-        1 => NthWeek::First,
-        2 => NthWeek::Second,
-        3 => NthWeek::Third,
-        4 => NthWeek::Fourth,
-        5 => NthWeek::Fifth,
-        -1 => NthWeek::Last,
-        // `-2SU` and the rest are legal `RECUR` and name no transition any zone database generates, so they are a reported gap rather than a form guessed at.
-        _ => return None,
-    };
+    let week = NthWeek::from_ordinal(term.ordinal?)?;
     Some(RuleDay::Nth {
         weekday: term.weekday,
         week,
@@ -1281,7 +1286,7 @@ END:VTIMEZONE
             "FREQ=YEARLY;BYMONTH=3,10;BYDAY=-1SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
             "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-1SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,10",
             "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=13",
             "BYMONTH=3;BYDAY=2SU",
@@ -1352,7 +1357,7 @@ END:VTIMEZONE
             let observance = *zones.table("Z").unwrap().observances().first().unwrap();
             let rule = observance.rule().unwrap();
             assert_eq!(rule.day(), expected, "{written}");
-            assert_eq!(rule.month(), month, "{written}");
+            assert_eq!(rule.month(), Some(month), "{written}");
             assert_eq!(
                 rule.at(),
                 CivilTime::from_hms(2, 0, 0).unwrap(),
