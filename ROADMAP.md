@@ -2,7 +2,7 @@
 
 ## Maintained implementation
 
-The status describes the maintained workspace on November 17, 2026.
+The status describes the maintained workspace on November 18, 2026.
 The milestone names keep their original scope, while `icalkit` contains the production implementation.
 The [private kernel decision](docs/adr/0014-private-kernel-and-conformance-isolation.md) defines the package graph and dependency boundaries.
 Git history retains the earlier milestone narrative and defect investigations.
@@ -43,12 +43,24 @@ Searches preserve Gregorian recurrence identities and continuation state.
 The [calendar selection decision](docs/adr/recurrence-selection-in-calendar-coordinates.md) records the shared selector pipeline and bounded metadata.
 Ambiguous calendar algorithms and non-`OMIT` rules with `BYWEEKNO` remain unsupported.
 
+Yearly week rules align intervals with the week-numbering year containing `DTSTART`.
+Explicit week extents preserve candidates across calendar years and at the civil endpoints.
+Weekly periods keep their original seven-day boundary when it begins before year zero.
+The [week-year decision](docs/adr/week-year-periods-carry-their-date-extents.md) and [weekly extent decision](docs/adr/weekly-periods-preserve-the-unclipped-origin.md) record source alignment, position selection, and indexed continuation.
+
 ## M2 time zones
 
 The library reads embedded `VTIMEZONE` definitions and resolves local times through caller-supplied sources.
 Resolution values expose gaps, folds, source identity, and continuation beyond known transitions.
 Zoned endpoint ordering requires zone-aware evaluation.
 Strict parsing preserves the identifiers without imposing wall-clock order across transitions.
+
+Embedded Gregorian `FREQ=YEARLY` rules compile into bounded calendar-month patterns.
+The supported controls are `INTERVAL`, `COUNT`, `UNTIL`, and `WKST`.
+Date selection supports `BYMONTH`, `BYMONTHDAY`, `BYYEARDAY`, `BYDAY`, `BYWEEKNO`, and `BYSETPOS`.
+Transition clocks come from `DTSTART`, and explicit `RDATE` onsets remain independent.
+UTC `UNTIL` must name the final generated onset.
+The [specification validation guide](docs/specification-validation.md) records selector combinations, numeric limits, resource charges, and lookup bounds.
 
 An unresolved zone can prevent placement of an exclusion or recurrence identity.
 Repeated local times can identify two instants, so workflows must preserve the reported ambiguity rather than choose an unstated instant.
@@ -102,6 +114,10 @@ The [capture intake](crates/icalkit-conformance/CAPTURE.md) defines provenance, 
 Run `mise x -- just ci` for the maintained local checks.
 The command covers formatting, linting, tests, documentation, resource limits, feature combinations, target builds, public API snapshots, dependency policy, and Rust 1.88 compatibility.
 The candidate workflow also runs Windows and macOS tests and the declared source proofs for one complete commit ID.
+
+An earlier local suite reported one [leaky test](https://nexte.st/docs/features/leaky-tests/) without naming it in failure-only output.
+[Issue 67](https://github.com/P4suta/icalkit/issues/67) tracks the unidentified test and subprocess.
+The cause remains unresolved, and a cleanup change requires a failing reproduction.
 
 Every package remains at `0.0.0`.
 Publication requires a separate release instruction and candidate qualification.

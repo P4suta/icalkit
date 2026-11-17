@@ -124,6 +124,22 @@ while let Some(occurrence) = occurrences.try_next()? {
 For a validated calendar, `Calendar::occurrences` selects a master by `UID` and composes its `RRULE`, `RDATE`, `EXDATE`, and detached overrides.
 It uses the session's zone database and budget, returns effective-start order, and resumes through the same opaque `Cursor` type.
 
+## Embedded time zone rules
+
+CalDAV query timezone payloads accept supported Gregorian `FREQ=YEARLY` rules from one `VTIMEZONE` definition.
+The compiler accepts `BYMONTH`, `BYMONTHDAY`, `BYYEARDAY`, `BYDAY`, `BYWEEKNO`, and `BYSETPOS` date selectors.
+Intervals follow the source calendar year, or its week-numbering year with `BYWEEKNO`.
+`WKST` defines the start of numbered weeks.
+Numeric `BYDAY` terms can't combine with `BYWEEKNO`.
+
+`COUNT` bounds all onsets of the rule, including `DTSTART`.
+Explicit `RDATE` onsets keep their independent dates and clocks.
+`UNTIL` must use UTC and name the final generated onset.
+Transition clocks come from the observance's `DTSTART`.
+Explicit `BYHOUR`, `BYMINUTE`, and `BYSECOND` selectors and nonannual frequencies remain unsupported.
+Unsupported query timezone rules return `icalkit.caldav.query-timezone-unsupported`.
+The [specification validation guide](specification-validation.md) records the supported combinations, resource charges, and bounded lookup behavior.
+
 ## iTIP scheduling
 
 Inbound messages pass through a borrowed `read`-`review`-`authorize`-`apply` flow.

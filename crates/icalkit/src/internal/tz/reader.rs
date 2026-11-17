@@ -461,9 +461,10 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 
 /// One observance `RRULE`, compiled into annual patterns or refused as a whole.
 ///
-/// Numeric `BYDAY` without `BYMONTH` counts within the year.
+/// Numeric `BYDAY` selects positions within the named month or calendar year.
+/// `BYWEEKNO` accepts only nonnumeric weekday terms.
 /// A supported `BYMONTHDAY` without `BYMONTH` expands across all months.
-/// An omitted day selector uses `DTSTART`'s day.
+/// Day defaults use `DTSTART`'s weekday with `BYWEEKNO` and its month day otherwise.
 /// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
