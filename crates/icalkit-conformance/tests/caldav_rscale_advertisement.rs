@@ -104,7 +104,7 @@ fn raw_write(rule: &str) -> WireRequest {
 #[test]
 fn unsupported_calendar_names_return_the_named_precondition_after_authorization() {
     let mut operation = Server::new()
-        .handle(raw_write("RRULE:FREQ=YEARLY;RSCALE=CHINESE"))
+        .handle(raw_write("RRULE:FREQ=YEARLY;RSCALE=ISLAMIC"))
         .unwrap();
     assert_eq!(operation.next_need().unwrap().code(), "caldav.authorize");
     operation.supply(ServerAnswer::authorized(true)).unwrap();

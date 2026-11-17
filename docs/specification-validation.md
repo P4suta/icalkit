@@ -164,14 +164,17 @@ Standalone timestamp searches require UTC date-time bounds.
 Unknown `VALUE` types stop typed decoding and produce notes, as required by [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
 
 Calendar controls follow [RFC 7529](https://www.rfc-editor.org/rfc/rfc7529.html#section-4.1).
-The native engine admits the [Gregorian names](https://raw.githubusercontent.com/unicode-org/cldr/main/common/bcp47/calendar.xml) with absent or `OMIT` skipping.
-Gregorian `BACKWARD` and `FORWARD` handle default month days, `BYMONTHDAY`, and `BYYEARDAY`.
-Month selection precedes correction, and weekday, clock, and period position selection follow it.
+The native engine admits the sixteen registered calendar algorithms supported by the conversion adapter, including their [registered aliases](https://raw.githubusercontent.com/unicode-org/cldr/main/common/bcp47/calendar.xml).
+Numeric selector limits follow the selected calendar, including Hebrew year days up to 385 and Ethiopic month 13.
+Regular and leap month selectors preserve their distinct identities.
+`BACKWARD` and `FORWARD` handle missing months, default month days, `BYMONTHDAY`, and `BYYEARDAY`.
+The recurrence engine corrects missing months before missing days.
+Weekday, clock, and period position selection follow the corrections.
 Year day and month day constraints intersect before correction.
 Year day candidate bounds follow the corrected date when a missing day crosses a year boundary.
 The search orders and deduplicates overlapping period candidates before counting.
 Continuation preserves pending candidates and unconsumed rule offers beside `RDATE` additions.
-Other calendars, leap month selectors, and non-`OMIT` rules with `BYWEEKNO` produce `unsupported-recurrence-semantics`.
+Ambiguous calendar algorithms, unknown calendars, and non-`OMIT` rules with `BYWEEKNO` produce `unsupported-recurrence-semantics`.
 Malformed or repeated controls fail typed construction, including `SKIP` without `RSCALE`.
 Both typed decoders resolve `FREQ` independent of written order, following [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Public rule errors keep the kernel diagnostics.
@@ -182,7 +185,8 @@ Imports preserve original bytes, and unrelated unknown parts keep their notes.
 The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
 The [month day decision](adr/gregorian-month-day-adjustments.md) extends the native subset.
 The [year day decision](adr/gregorian-year-day-correction-order.md) records the source constraints and shared date arithmetic.
-Non-Gregorian recurrence expansion, leap month selection, and week number correction remain open.
+The [calendar selection decision](adr/recurrence-selection-in-calendar-coordinates.md) extends the shared selector pipeline across registered calendars.
+Week number correction remains open.
 
 Calendar date conversion follows [RFC 7529 section 3](https://www.rfc-editor.org/rfc/rfc7529.html#section-3).
 `recurrence::CalendarScale` selects a registered calendar algorithm through explicit names and aliases.
@@ -196,18 +200,22 @@ Missing months and days fail without clamping.
 The adapter refuses the unqualified `ISLAMIC` and observational `ISLAMIC-RGSA` names because they lack an unambiguous mapping.
 Explicit `ISLAMIC-CIVIL`, `ISLAMIC-TBLA`, and `ISLAMIC-UMALQURA` algorithms remain distinct.
 The [conversion decision](adr/calendar-conversion-at-the-jiff-boundary.md) records the dependency and compiler boundary.
-Conversion alone doesn't enable non-Gregorian recurrence expansion.
+Recurrence selection uses calendar fields and spans from the same conversion adapter.
+Year metadata has a fixed four-entry cache, and Gregorian fields use native civil arithmetic.
+Gregorian month fields use civil coordinates without computing unused spans.
+Calendar arithmetic failures remain distinct from exhausted resource budgets and complete search outcomes.
 
 The private period walker uses the selected calendar for monthly and yearly anchors.
 Resumed indices derive their first anchor from normalized coordinates, while sequential walks reuse calendar boundaries.
 Both paths preserve leap month progression and interval spacing.
 The [period arithmetic decision](adr/calendar-coordinates-for-recurrence-periods.md) records shared calendar coordinates and Gregorian range boundaries.
-Date selection and missing date correction still gate non-Gregorian rule admission.
+Recurrence identities, additions, exclusions, and detached override keys remain Gregorian.
 
 CalDAV recurrence scale negotiation follows [RFC 7529 section 10](https://www.rfc-editor.org/rfc/rfc7529.html#section-10).
 `Client::supported_rscales` explicitly requests `CALDAV:supported-rscale-set` at Depth 0 from a calendar collection or calendar home.
 An absent advertisement differs from an advertised set without calendar names.
-Named sets keep unknown names and compare supported names without case sensitivity, including the supported Gregorian aliases.
+Named sets keep unknown names and compare supported names without case sensitivity.
+Calendar name comparison resolves the aliases supported by the conversion adapter.
 `Client::conditional_write` refuses interpreted `RSCALE` rules without negotiation.
 `Client::conditional_write_with_rscales` probes the associated collection or home URI selected by the caller before offering the conditional `PUT`.
 The request keeps the original calendar bytes and revision headers.
@@ -219,6 +227,7 @@ Servers advertise support through explicit `Discovery::with_supported_rscales` c
 The protected property appears in explicit property requests and `allprop` requests with an explicit `include` selection.
 Ordinary `allprop` responses omit it.
 Unsupported calendar names receive `403` with the `CALDAV:supported-rscale` precondition after authorization, without a storage request.
+Rules in supported calendars reach storage after authorization, and negotiated writes preserve the original bytes and revision headers.
 The [advertisement decision](adr/advertised-recurrence-scales-before-caldav-writes.md) records the caller and transport boundaries.
 
 `RDATE` and `EXDATE` lists follow [RFC 5545 section 3.8.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5).

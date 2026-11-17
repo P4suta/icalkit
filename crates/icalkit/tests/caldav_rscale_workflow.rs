@@ -23,7 +23,7 @@ fn calendar(property: &str, component: &str) -> Calendar {
 
 #[test]
 fn interpreted_scales_require_a_server_advertisement_before_storage() {
-    for name in ["GREGORIAN", "gregory"] {
+    for name in ["GREGORIAN", "gregory", "CHINESE", "HEBREW", "ETHIOPIC"] {
         let calendar = calendar(&format!("RRULE:FREQ=DAILY;RSCALE={name};COUNT=2\r\n"), "");
         let revision = Revision::absent("/calendars/work/scale.ics").unwrap();
         let Err(error) = Client::new().conditional_write(&revision, &calendar) else {
@@ -169,6 +169,52 @@ fn a_probe_releases_the_write_only_after_successful_scale_support() {
                 .unwrap();
             assert_eq!(operation.finish().unwrap().etag(), Some("\"stored\""));
         }
+    }
+}
+
+#[test]
+fn registered_calendar_writes_reach_storage_after_matching_advertisements() {
+    for (requested, advertised) in [
+        ("CHINESE", "chinese"),
+        ("DANGI", "DANGI"),
+        ("HEBREW", "HEBREW"),
+        ("ETHIOPIC", "ETHIOPIC"),
+        ("ETHIOAA", "ethiopic-amete-alem"),
+        ("ISLAMIC-CIVIL", "islamicc"),
+        ("ISLAMIC-TBLA", "ISLAMIC-TBLA"),
+        ("ISLAMIC-UMALQURA", "ISLAMIC-UMALQURA"),
+        ("COPTIC", "COPTIC"),
+        ("INDIAN", "INDIAN"),
+        ("BUDDHIST", "BUDDHIST"),
+        ("JAPANESE", "JAPANESE"),
+        ("PERSIAN", "PERSIAN"),
+        ("ROC", "ROC"),
+        ("ISO8601", "ISO8601"),
+    ] {
+        let calendar = calendar(
+            &format!("RRULE:RSCALE={requested};FREQ=YEARLY;COUNT=2\r\n"),
+            "",
+        );
+        let revision = Revision::absent("/calendars/work/scale.ics").unwrap();
+        let mut client = Client::new()
+            .conditional_write_with_rscales("/calendars/work/", &revision, &calendar)
+            .unwrap();
+        client.accept(reply(&listed(&[advertised]), 200)).unwrap();
+        let request = client.next_request().unwrap();
+        assert_eq!(request.method(), "PUT", "{requested}");
+        let mut server = Server::new().handle(request.clone()).unwrap();
+        server.supply(ServerAnswer::authorized(true)).unwrap();
+        let write = server
+            .next_need()
+            .unwrap_or_else(|| panic!("{requested}: storage was not offered"));
+        assert_eq!(write.code(), "caldav.resource.write", "{requested}");
+        assert_eq!(write.calendar().unwrap().to_bytes(), calendar.to_bytes());
+        let stored = Revision::stored(revision.uri(), "\"scaled\"").unwrap();
+        server
+            .supply(ServerAnswer::written(Some(stored.clone())))
+            .unwrap();
+        client.accept(server.finish().unwrap()).unwrap();
+        assert_eq!(client.finish().unwrap(), stored);
     }
 }
 

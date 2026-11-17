@@ -13,8 +13,8 @@ use super::{
     WireRequest, WireResponse, XmlEvent, XmlPull, XmlReader, XmlWriter, propfind_request,
     read_multistatus_metered, validate_uri,
 };
-use crate::internal::core::{ContentLineReader, Document, ValueType, is_iana_token};
-use crate::internal::recur::{is_gregorian_scale, parts};
+use crate::internal::core::{CalendarScale, ContentLineReader, Document, ValueType, is_iana_token};
+use crate::internal::recur::parts;
 use crate::{Calendar, Error, ResourcePolicy};
 
 fn invalid() -> Error {
@@ -103,7 +103,10 @@ impl Discovery {
 
 fn names_match(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
-        || (is_gregorian_scale(left.as_bytes()) && is_gregorian_scale(right.as_bytes()))
+        || matches!(
+            (CalendarScale::from_name(left), CalendarScale::from_name(right)),
+            (Some(left), Some(right)) if left == right
+        )
 }
 
 pub(super) fn required_scales(
@@ -162,7 +165,7 @@ pub(super) fn unsupported_scale_body(bytes: &[u8], policy: ResourcePolicy) -> Re
     let names = scales_in_document(&document, policy, &mut meter)?;
     Ok(names
         .iter()
-        .any(|name| !is_gregorian_scale(name.as_bytes())))
+        .any(|name| CalendarScale::from_name(name).is_none()))
 }
 
 pub(super) fn unsupported_put_operation(

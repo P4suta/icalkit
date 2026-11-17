@@ -37,7 +37,11 @@ Regular month numbers and leap month identifiers remain distinct, including cale
 The [conversion decision](docs/adr/calendar-conversion-at-the-jiff-boundary.md) records the private ICU4X adapter and Rust 1.88 floor.
 The private period walker advances month and year anchors in the selected calendar, including leap months and thirteen-month years.
 The [period arithmetic decision](docs/adr/calendar-coordinates-for-recurrence-periods.md) records interval spacing, index resumption, and Gregorian boundary handling.
-Non-Gregorian recurrence expansion still requires every date selector and period step to use the converted coordinates.
+The recurrence engine applies date selectors in all sixteen registered calendars supported by the conversion adapter.
+Missing month correction precedes missing day correction.
+Searches preserve Gregorian recurrence identities and continuation state.
+The [calendar selection decision](docs/adr/recurrence-selection-in-calendar-coordinates.md) records the shared selector pipeline and bounded metadata.
+Ambiguous calendar algorithms and non-`OMIT` rules with `BYWEEKNO` remain unsupported.
 
 ## M2 time zones
 
