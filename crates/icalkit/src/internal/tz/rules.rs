@@ -360,7 +360,9 @@ mod tests {
         check("the ends of the month", edges);
     }
 
-    /// The bound direction, including the two cases `on_or_before` commits to in its own doc comment: a bound past the end of the month is satisfied by the whole month and names its last such weekday, which is what a producer writing `BYMONTHDAY=25,26,27,28,29,30,31` means in February, and a bound too early for one names nothing rather than reaching back into the previous month.
+    /// A bound past the month's end selects its last matching weekday.
+    /// A bound before the first matching weekday produces no date.
+    /// A separate month-day selector can impose a lower bound that the primitive does not represent.
     #[test]
     fn the_last_weekday_on_or_before_a_day_stays_inside_its_month_at_both_ends() {
         let run_form: &[Case] = &[

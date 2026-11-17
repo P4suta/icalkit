@@ -157,6 +157,11 @@ Without `BYMONTH`, its ordinal counts from the start or end of the year.
 Nonexistent ordinal positions produce no computed date.
 The [weekday ordinal decision](adr/weekday-ordinals-in-embedded-time-zones.md) records bounded arithmetic and observance boundaries.
 
+Embedded rules with `BYMONTH` preserve the intersection of `BYDAY` with supported seven-day `BYMONTHDAY` windows.
+Positive windows keep their lower bound, so February can have no matching transition when the stated days run from 25 through 31.
+The negative window from `-7` through `-1` instead selects the month's last matching weekday.
+The [month-day intersection decision](adr/month-day-intersections-in-embedded-time-zones.md) records the arithmetic and short-month behavior.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.

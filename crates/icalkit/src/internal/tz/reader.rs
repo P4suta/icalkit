@@ -566,9 +566,9 @@ fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
 
 /// `BYDAY=SU;BYMONTHDAY=8,..,14` and its two siblings, a weekday inside a window of a week.
 ///
-/// A window of seven consecutive days holds exactly one of each weekday, so the pair names one date.
-/// A window ending at the last day a month can have is read as [`RuleDay::OnOrBefore`] rather than [`RuleDay::OnOrAfter`], which is the spelling the model documents for it; the two agree in every month, because a window a short month clips is clipped at that same end either way.
-/// A window of negative days ending at `-1` is the last such weekday, which [`NthWeek::Last`] already says exactly and in every month length.
+/// Positive windows keep their lower bound through [`RuleDay::OnOrAfter`].
+/// Its weekday shift is at most six days, and date construction rejects results outside the month.
+/// Negative days `-7` through `-1` select the month's last matching weekday.
 fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
     if term.ordinal.is_some() || month_days.count != RUN_LENGTH {
         return None;
@@ -582,12 +582,6 @@ fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
     }
     if low < 1 {
         return None;
-    }
-    if highest == 31 {
-        return Some(RuleDay::OnOrBefore {
-            weekday: term.weekday,
-            day: 31,
-        });
     }
     Some(RuleDay::OnOrAfter {
         weekday: term.weekday,
@@ -1319,9 +1313,9 @@ END:VTIMEZONE
             (
                 "FREQ=YEARLY;BYMONTH=10;BYDAY=SU;BYMONTHDAY=25,26,27,28,29,30,31",
                 10_u8,
-                RuleDay::OnOrBefore {
+                RuleDay::OnOrAfter {
                     weekday: Weekday::Sunday,
-                    day: 31,
+                    day: 25,
                 },
             ),
             (

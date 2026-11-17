@@ -115,7 +115,7 @@ pub enum RuleDay {
         /// The earliest day of the month it may fall on.
         day: u8,
     },
-    /// The last given weekday falling on or before a day, as `BYDAY=SU;BYMONTHDAY=25,..,31` writes one.
+    /// The last given weekday falling on or before a month-day bound.
     OnOrBefore {
         /// The weekday.
         weekday: Weekday,
