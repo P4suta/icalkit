@@ -452,7 +452,7 @@ impl TransitionTable {
         let mut kept = observances;
         // The whole observance breaks the tie, so two beginning at one instant are ordered by what they say rather than by where they were written.
         kept.sort_unstable_by_key(|observance| OrderedObservance::new(*observance));
-        let admitted = admitted_count(kept.len(), meter);
+        let (admitted, breach) = admitted_count(kept.len(), meter);
         let truncated = admitted < kept.len();
         kept.truncate(admitted);
         if truncated {
@@ -460,7 +460,11 @@ impl TransitionTable {
                 sink,
                 meter,
                 Diagnostic::new(
-                    DiagnosticCode::VtimezoneObservancesTruncated,
+                    if matches!(breach, Some(LimitExceeded::Exhausted)) {
+                        DiagnosticCode::ResourceBudgetExhausted
+                    } else {
+                        DiagnosticCode::VtimezoneObservancesTruncated
+                    },
                     Severity::LimitReached,
                     Location::NOWHERE,
                 ),
@@ -550,15 +554,15 @@ impl TransitionTable {
 ///
 /// Charged one at a time rather than as a block, because the answer wanted here is *where* the bound falls and a block charge only says that it does.
 /// The loop is bounded by the offered count, which is itself bounded by the parse that produced it.
-fn admitted_count(offered: usize, meter: &mut Meter) -> usize {
+fn admitted_count(offered: usize, meter: &mut Meter) -> (usize, Option<LimitExceeded>) {
     let mut admitted = 0_usize;
     while admitted < offered {
-        if meter.try_charge_vtimezone_observances(1).is_err() {
-            break;
+        if let Err(breach) = meter.try_charge_vtimezone_observances(1) {
+            return (admitted, Some(breach));
         }
         admitted = admitted.saturating_add(1);
     }
-    admitted
+    (admitted, None)
 }
 
 /// The instant an observance's own `DTSTART` names, which is the order a table is kept in.
@@ -644,6 +648,8 @@ fn sides_of(observances: &[Observance]) -> [Side; 2] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ZoneSetError {
+    /// A prior resource refusal prevented this table's admission.
+    Exhausted(TransitionTable),
     /// The set already holds as many zones as the caller's policy admits.
     TooMany(TransitionTable, LimitExceeded),
 }
@@ -653,7 +659,7 @@ impl ZoneSetError {
     #[must_use]
     pub const fn table(&self) -> &TransitionTable {
         match self {
-            Self::TooMany(table, _) => table,
+            Self::Exhausted(table) | Self::TooMany(table, _) => table,
         }
     }
 
@@ -665,7 +671,15 @@ impl ZoneSetError {
     #[must_use]
     pub const fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
-            Self::TooMany(_, _) => DiagnosticCode::VtimezoneComponentsTruncated,
+            Self::Exhausted(_) => DiagnosticCode::ResourceBudgetExhausted,
+            Self::TooMany(_, breach) => Self::code_for_limit(*breach),
+        }
+    }
+
+    pub(super) const fn code_for_limit(breach: LimitExceeded) -> DiagnosticCode {
+        match breach {
+            LimitExceeded::Exhausted => DiagnosticCode::ResourceBudgetExhausted,
+            _ => DiagnosticCode::VtimezoneComponentsTruncated,
         }
     }
 }
@@ -704,6 +718,8 @@ pub struct VtimezoneSet {
     tables: Vec<TransitionTable>,
 }
 
+pub(super) struct ZoneReservation(());
+
 impl VtimezoneSet {
     /// A set holding nothing.
     #[must_use]
@@ -722,9 +738,24 @@ impl VtimezoneSet {
         table: TransitionTable,
         meter: &mut Meter,
     ) -> Result<ZoneAdmission, ZoneSetError> {
-        if let Err(breach) = meter.try_charge_vtimezone_component() {
-            return Err(ZoneSetError::TooMany(table, breach));
-        }
+        let reservation = match Self::reserve(meter) {
+            Ok(reservation) => reservation,
+            Err(LimitExceeded::Exhausted) => return Err(ZoneSetError::Exhausted(table)),
+            Err(breach) => return Err(ZoneSetError::TooMany(table, breach)),
+        };
+        Ok(self.insert_reserved(table, reservation))
+    }
+
+    pub(super) fn reserve(meter: &mut Meter) -> Result<ZoneReservation, LimitExceeded> {
+        meter.try_charge_vtimezone_component()?;
+        Ok(ZoneReservation(()))
+    }
+
+    pub(super) fn insert_reserved(
+        &mut self,
+        table: TransitionTable,
+        _: ZoneReservation,
+    ) -> ZoneAdmission {
         let held = self.definitions(table.tzid().as_str()).len();
         let admission = if held == 0 {
             ZoneAdmission::Sole
@@ -736,7 +767,7 @@ impl VtimezoneSet {
             .tables
             .partition_point(|held| held.tzid().as_str() <= table.tzid().as_str());
         self.tables.insert(index, table);
-        Ok(admission)
+        admission
     }
 
     /// The definition for `tzid` a lookup answers with, compared by exact bytes.

@@ -70,6 +70,7 @@ Resource failures use the channels defined by the diagnostic and allocation deci
 | missing-required-property | A component did not carry a property RFC 5545 section 3.6 requires of it. | Violation | M0 |
 | property-not-allowed-here | A component carried a property RFC 5545 section 3.6 does not define for it. | Violation | M0 |
 | mutually-exclusive-properties | A component carried two properties RFC 5545 section 3.6 does not allow together. | Violation | M0 |
+| resource-budget-exhausted | An earlier resource refusal prevented further admission. | LimitReached | M2 |
 | recurrence-budget-exhausted | A recurrence search stopped at the candidate budget rather than at the rule's end. | LimitReached | M1 |
 | recurrence-calendar-ended | A recurrence search reached the end of the calendar RFC 5545 section 3.3.4 can write while the rule it was expanding had reached neither its `COUNT` nor its `UNTIL`. | Note | M1 |
 | nonexistent-recurrence-instance | A recurrence rule generated an instance whose date does not exist, so it was filtered per RFC 5545 section 3.3.10 rather than moved to a nearby one. | Note | M1 |

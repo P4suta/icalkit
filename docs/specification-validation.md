@@ -11,6 +11,14 @@ The byte ledger keeps the attempted total up to `u64::MAX` and marks exhaustion 
 Zero-sized charges remain valid at an exact ceiling before exhaustion.
 Depth cleanup and diagnostic statistics keep their saturating behavior.
 
+Every meter refusal latches shared exhaustion across resource kinds.
+The first refusal names its own dimension.
+Later charges return distinct exhausted errors without changing admitted counters, including zero-sized charges.
+Cleanup and diagnostic accounting remain available after refusal.
+XML failure responses still charge output and require an available meter.
+Streaming writers can finish at the response ceiling before a refusal or accept an explicit independent output budget.
+The [shared exhaustion decision](adr/latched-admission-with-reserved-finalization.md) records admission and finalization boundaries.
+
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
@@ -179,6 +187,10 @@ The reader compiles month-specific annual patterns with the original anchor, off
 The reader stores each explicit date once.
 Table admission charges every stored pattern to the existing observance meter.
 Before admission, the reader keeps only the earliest candidates within the remaining limit and one overflow witness.
+Zone components reserve their slots before observance construction.
+Insertion consumes a private reservation so an admitted partial table survives later exhaustion without another charge.
+Definitions refused after exhaustion remain known when reporting undefined identifiers.
+The `resource-budget-exhausted` diagnostic distinguishes prior exhaustion from a local zone or observance limit.
 Staging and table sorting share the UTC onset and complete-value ordering key.
 Truncation stays visible, and a valid discarded candidate isn't reported as unreadable.
 Admitted observances use a slice without spare capacity.

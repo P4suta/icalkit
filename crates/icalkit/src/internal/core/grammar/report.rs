@@ -125,6 +125,8 @@ pub enum DiagnosticCode {
     ///
     /// An entailment between two names rather than a count of one, which is why it is a code of its own: `DTEND` and `DURATION` are each permitted once in a `VEVENT` and forbidden as a pair, so a reading stated per name has nothing to report about the pair.
     MutuallyExclusiveProperties,
+    /// An earlier resource refusal prevented further admission.
+    ResourceBudgetExhausted,
     /// A recurrence search stopped at the candidate budget rather than at the rule's end.
     ///
     /// Reported so that "cut short at the limit" and "the rule ended at `UNTIL`" are different answers; the second would otherwise arrive dressed as the first.
@@ -434,6 +436,7 @@ impl DiagnosticCode {
             Self::MissingRequiredProperty => "missing-required-property",
             Self::PropertyNotAllowedHere => "property-not-allowed-here",
             Self::MutuallyExclusiveProperties => "mutually-exclusive-properties",
+            Self::ResourceBudgetExhausted => "resource-budget-exhausted",
             Self::RecurrenceBudgetExhausted => "recurrence-budget-exhausted",
             Self::RecurrenceCalendarEnded => "recurrence-calendar-ended",
             Self::NonexistentRecurrenceInstance => "nonexistent-recurrence-instance",

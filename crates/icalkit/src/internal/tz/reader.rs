@@ -85,6 +85,7 @@ use crate::internal::tz::annual_positions::AnnualPositions;
 use crate::internal::tz::earliest_observances::EarliestObservances;
 use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
+    ZoneSetError,
 };
 use crate::internal::tz::month_days::MonthDaySet;
 use crate::internal::tz::week_years::{WeekNumbers, WeekYearMasks};
@@ -119,31 +120,33 @@ pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
         if !component.is_named(b"VTIMEZONE") {
             continue;
         }
-        let mut observances = Vec::new();
-        let Some(tzid) = read_definition(component, meter, sink, &mut observances) else {
+        let Some(tzid) = identifier(component) else {
             continue;
         };
+        let reservation = match VtimezoneSet::reserve(meter) {
+            Ok(reservation) => reservation,
+            Err(breach) => {
+                let named = Subject::new(tzid.as_bytes());
+                refused.insert(tzid);
+                report(
+                    sink,
+                    meter,
+                    ZoneSetError::code_for_limit(breach),
+                    Severity::LimitReached,
+                    Some(named),
+                );
+                continue;
+            },
+        };
+        let mut observances = Vec::new();
+        read_observances(component, meter, sink, &mut observances, &tzid);
         let table = TransitionTable::new(tzid, observances, meter, sink);
         // Taken before the table is moved into the set, so that every code below can name the zone it is about.
         // A diagnostic saying a definition was refused and not which one is a diagnostic a caller cannot act on.
         let named = Subject::new(table.tzid().as_str().as_bytes());
-        match zones.insert(table, meter) {
-            Ok(admission) => {
-                if let Some(code) = admission.diagnostic_code() {
-                    report(sink, meter, code, Severity::Violation, Some(named));
-                }
-            },
-            Err(turned_back) => {
-                // The identifier is remembered rather than the definition, because what the refusal costs downstream is the walk below deciding that this calendar never defined a zone that the caller's own policy refused.
-                refused.insert(Box::from(turned_back.table().tzid().as_str()));
-                report(
-                    sink,
-                    meter,
-                    turned_back.diagnostic_code(),
-                    Severity::LimitReached,
-                    Some(named),
-                );
-            },
+        let admission = zones.insert_reserved(table, reservation);
+        if let Some(code) = admission.diagnostic_code() {
+            report(sink, meter, code, Severity::Violation, Some(named));
         }
     }
     report_undefined(calendar, &zones, &refused, meter, sink);
@@ -172,6 +175,17 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
     out: &mut Vec<Observance>,
 ) -> Option<Box<str>> {
     let tzid = identifier(component)?;
+    read_observances(component, meter, sink, out, &tzid);
+    Some(tzid)
+}
+
+fn read_observances<S: DiagnosticSink + ?Sized>(
+    component: &Component,
+    meter: &mut Meter,
+    sink: &mut S,
+    out: &mut Vec<Observance>,
+    tzid: &str,
+) {
     let mut staged = EarliestObservances::new(meter);
     let mut declared = 0_usize;
     for inner in component.components() {
@@ -193,7 +207,6 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
         );
     }
     out.extend(staged.into_observances());
-    Some(tzid)
 }
 
 /// The definition's nonempty scalar `TEXT` identifier, decoded once.

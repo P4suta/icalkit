@@ -5,21 +5,16 @@
 //! The sweep in `tests/sweep.rs`, attacked as an artifact rather than used as one.
 //!
 //! `docs/adr/0001` states four claims — a byte-identical round trip (P1), a fixed point (P2),
-//! mutation locality (P3), and a diagnostic that costs no octet (P4) — and this milestone
-//! landed `sweep.rs` as the evidence for them, replacing measurements that were run once and
-//! discarded. A sweep is only evidence for what it examines, so this file examines the sweep.
+//! mutation locality (P3), and a diagnostic that costs no octet (P4) — and this milestone landed `sweep.rs` as the evidence for them, replacing measurements that were run once and discarded.
+//! A sweep is only evidence for what it examines, so this file examines the sweep.
 //!
 //! Three things are asked of it and each is answered by running it rather than by reading it.
-//! Does its refusal predicate confirm bounds that were really crossed, or does it accuse the
-//! reader of a defect the reader does not have? Does it reach the claims it is cited for, or
-//! only two of the four? And is it wide enough that a defect has somewhere to show up — which
-//! is asked by widening it, and by putting the two claims it never reaches under the same
-//! generative pressure it puts P1 and P2 under.
+//! Does its refusal predicate confirm bounds that were really crossed, or does it accuse the reader of a defect the reader does not have?
+//! Does it reach the claims it is cited for, or only two of the four?
+//! And is it wide enough that a defect has somewhere to show up — which is asked by widening it, and by putting the two claims it never reaches under the same generative pressure it puts P1 and P2 under.
 //!
-//! The generator, the octet alphabet and the `examine` / `crossed` pair below are the ones
-//! `sweep.rs` committed, reproduced here because an integration test cannot call into a sibling
-//! test binary. Where a constant differs it is because this file is deliberately wider, and the
-//! difference is named at the constant.
+//! The generator, the octet alphabet and the `examine` / `crossed` pair below are the ones `sweep.rs` committed, reproduced here because an integration test cannot call into a sibling test binary.
+//! Where a constant differs it is because this file is deliberately wider, and the difference is named at the constant.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -32,13 +27,12 @@ use icalkit_conformance::internal::core::{
 
 /// A calendar whose one property arrived below a fold at octet zero of its content line.
 ///
-/// RFC 5545 section 3.1 folds at octets and says nothing about what they spell, so a fold
-/// followed by `SP` and then `HTAB` unfolds to a content line whose first octet is `HTAB` —
-/// which is to say, to a property whose *name* begins with whitespace. The file round trips.
+/// RFC 5545 section 3.1 folds at octets and says nothing about what they spell, so a fold followed by `SP` and then `HTAB` unfolds to a content line whose first octet is `HTAB` —
+/// which is to say, to a property whose *name* begins with whitespace.
+/// The file round trips.
 const FOLD_AT_OFFSET_ZERO: &[u8] = include_bytes!("fixtures/break_sweeps/fold_at_offset_zero.ics");
 
-/// A calendar whose `END` names another component, which section 3.6 recovery keeps as a
-/// property.
+/// A calendar whose `END` names another component, which section 3.6 recovery keeps as a property.
 const MISMATCHED_END: &[u8] =
     include_bytes!("fixtures/break_sweeps/mismatched_end_kept_as_property.ics");
 
@@ -51,8 +45,7 @@ const ALPHABET: &[u8] = b":;,\"\\^\r\n \tA\xE9";
 
 /// The seed this file's own draws start from, which is not `sweep.rs`'s.
 ///
-/// A different constant on purpose: a sweep that reuses another sweep's seed covers the inputs
-/// that one already covered and reports that they are still fine.
+/// A different constant on purpose: a sweep that reuses another sweep's seed covers the inputs that one already covered and reports that they are still fine.
 const SEED: u64 = 0x5EED_0000_B4EA_C001;
 
 /// The evidence M0-alpha reported for the exhaustive leg and did not commit.
@@ -128,6 +121,7 @@ fn examine(octets: &[u8], limits: Limits) -> Result<Verdict, String> {
 fn crossed(octets: &[u8], refusal: ParseError) -> bool {
     let held = as_units(octets.len());
     match refusal {
+        ParseError::Exhausted => false,
         ParseError::InputTooLarge { limit } => held > limit,
         ParseError::ValueTooLarge { limit } | ParseError::HeaderTooLarge { limit } => {
             held > u64::from(limit)
@@ -135,8 +129,7 @@ fn crossed(octets: &[u8], refusal: ParseError) -> bool {
         ParseError::TooManyParameters { limit } => count_octet(octets, b';') > u64::from(limit),
         ParseError::TooManyFolds { limit } => continuations(octets) > u64::from(limit),
         ParseError::TooManyItems { limit } => segments(octets) > u64::from(limit),
-        // Counted after the folds are taken out: `BEG\r\n IN:VEVENT` opens a component and
-        // carries no `BEGIN`, which is the arm this file found unsound in `sweep.rs`.
+        // Counted after the folds are taken out: `BEG\r\n IN:VEVENT` opens a component and carries no `BEGIN`, which is the arm this file found unsound in `sweep.rs`.
         ParseError::TooDeep { limit } => {
             keyword_count(&unfolded(octets), b"BEGIN") > u64::from(limit)
         },
@@ -345,8 +338,7 @@ fn append_line(stream: &mut Stream, out: &mut Vec<u8>) {
         assembled.push(b':');
     }
     extend(&mut assembled, stream.pick(VALUES));
-    // Up to two folds rather than `sweep.rs`'s one, because a second fold is what puts one at
-    // octet zero often enough for the shape to be drawn rather than only constructed.
+    // Up to two folds rather than `sweep.rs`'s one, because a second fold is what puts one at octet zero often enough for the shape to be drawn rather than only constructed.
     for _ in 0..stream.below(3) {
         let at = stream.below(assembled.len().saturating_add(1));
         let fold = stream.pick(FOLDS).copied().unwrap_or(b"\r\n ");
@@ -445,9 +437,8 @@ fn constant(source: &str, name: &str) -> Option<u64> {
 
 /// One node of a document, as the octets it holds rather than as a pointer into a tree.
 ///
-/// A scoped write is supposed to reach one of these and no other, so the check that it did is a
-/// comparison of two of these lists. Rendering to text rather than comparing nodes is what lets
-/// a failure say which node moved and what it became.
+/// A scoped write is supposed to reach one of these and no other, so the check that it did is a comparison of two of these lists.
+/// Rendering to text rather than comparing nodes is what lets a failure say which node moved and what it became.
 fn outline_property(depth: usize, property: &Property, out: &mut Vec<String>) {
     let mut row = format!("{depth} property {} ", render(property.name().as_bytes()));
     for parameter in property.parameters() {
@@ -519,9 +510,8 @@ fn first_identity(component: &Component) -> Option<PropertyId> {
 
 /// Read `octets`, write `value` into one property of the first component, and read back.
 ///
-/// `named` selects the property; `None` takes the first one the component holds. Returns the
-/// octets that were written and the two outlines to compare, or nothing where the input holds
-/// no component with a property to name.
+/// `named` selects the property; `None` takes the first one the component holds.
+/// Returns the octets that were written and the two outlines to compare, or nothing where the input holds no component with a property to name.
 fn write_one_value(
     octets: &[u8],
     named: Option<&PropertyId>,
@@ -564,10 +554,8 @@ fn p3_a_write_below_a_fold_at_octet_zero_stays_below_it() {
     assert_eq!(moved(&before, &after), 1, "{before:?} became {after:?}");
 }
 
-/// The write is refused, which is the other answer the break named and the one that is
-/// available: there is no octet string that stores `END:VEVENT` as a property and reads back as
-/// one, so a door that wrote it would be choosing between losing the property and losing the
-/// caller's value. The property keeps every octet it arrived with and stays reachable.
+/// The write is refused, which is the other answer the break named and the one that is available: there is no octet string that stores `END:VEVENT` as a property and reads back as one, so a door that wrote it would be choosing between losing the property and losing the caller's value.
+/// The property keeps every octet it arrived with and stays reachable.
 #[test]
 fn p3_a_write_to_a_property_does_not_turn_it_into_a_component_boundary() {
     assert_eq!(
@@ -670,8 +658,7 @@ fn the_sweep_reaches_the_two_claims_it_is_cited_for_and_not_only_two() {
         !source.is_empty(),
         "sweep.rs is where this milestone put it"
     );
-    // Spelled narrowly enough that `octets.get_mut(at)` in the mutation helper is not mistaken
-    // for the tree's own door: what is being asked is whether the sweep ever writes a property.
+    // Spelled narrowly enough that `octets.get_mut(at)` in the mutation helper is not mistaken for the tree's own door: what is being asked is whether the sweep ever writes a property.
     let doors = [
         "get_mut::<",
         "set_raw",
@@ -777,11 +764,8 @@ fn a_parameter_edit_reaches_one_property_across_a_generated_corpus() {
         else {
             continue;
         };
-        // A change is addressed to an identity rather than to an occurrence, so a component
-        // carrying that identity twice has two nodes a parameter edit may reach — and both, or
-        // the caller is left with the property it addressed carrying two different parameter
-        // sets. What P3 forbids is a node outside that set moving, which is what a count
-        // against the occurrences measures and a count against one does not.
+        // A change is addressed to an identity rather than to an occurrence, so a component carrying that identity twice has two nodes a parameter edit may reach — and both, or the caller is left with the property it addressed carrying two different parameter sets.
+        // What P3 forbids is a node outside that set moving, which is what a count against the occurrences measures and a count against one does not.
         let occurrences = component
             .items()
             .iter()

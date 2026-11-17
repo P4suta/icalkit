@@ -4,25 +4,22 @@
 
 //! The channel for "nothing could be built at all".
 //!
-//! [`ParseError`] is deliberately small, and every variant of it is a caller-stated bound
-//! that guards memory rather than a judgment about the calendar. A specification violation
-//! never travels here; it is a [`Diagnostic`](crate::Diagnostic) attached to the item it
-//! concerns, because a parser that returns an error for a malformed `DTSTART` is a parser
-//! that threw away the rest of the file (`docs/adr/0009`).
+//! [`ParseError`] is deliberately small, and every variant of it is a caller-stated bound that guards memory rather than a judgment about the calendar.
+//! A specification violation never travels here; it is a [`Diagnostic`](crate::Diagnostic) attached to the item it concerns, because a parser that returns an error for a malformed `DTSTART` is a parser that threw away the rest of the file (`docs/adr/0009`).
 //!
-//! Both types implement [`core::error::Error`] by hand. The core crates declare no
-//! dependency, so a derive is not available, and `core::error::Error` is implemented
-//! unconditionally so that error interoperability does not wait on the `std` feature.
+//! Both types implement [`core::error::Error`] by hand.
+//! The core crates declare no dependency, so a derive is not available, and `core::error::Error` is implemented unconditionally so that error interoperability does not wait on the `std` feature.
 
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 
 /// A refusal to build anything, always because a caller-stated bound was crossed.
 ///
-/// The bound is reported with the limit that was crossed rather than the value that crossed
-/// it: the limit is the number the caller can act on, and the value is attacker-controlled.
+/// The bound is reported with the limit that was crossed rather than the value that crossed it: the limit is the number the caller can act on, and the value is attacker-controlled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ParseError {
+    /// A previous resource refusal prevents further admission.
+    Exhausted,
     /// The input was longer than `limit` octets, or its parse charged more than that.
     InputTooLarge {
         /// The budget in octets, as the caller set it.
@@ -30,9 +27,8 @@ pub enum ParseError {
     },
     /// One property value exceeded `limit` octets.
     ///
-    /// This is fatal rather than a truncation on purpose. Truncating writes back fewer
-    /// octets than were read, which contradicts the round-trip guarantee directly, and a
-    /// truncated value is indistinguishable from a preserved one at the serializer.
+    /// This is fatal rather than a truncation on purpose.
+    /// Truncating writes back fewer octets than were read, which contradicts the round-trip guarantee directly, and a truncated value is indistinguishable from a preserved one at the serializer.
     ValueTooLarge {
         /// The per-value bound in octets.
         limit: u32,
@@ -48,18 +44,14 @@ pub enum ParseError {
     /// One content line carried more parameters than `limit`.
     ///
     /// A separate variant from `HeaderTooLarge` because the two bounds are raised separately.
-    /// Reporting a parameter count against the octet ceiling would name a number the caller
-    /// can raise without the refusal ever going away.
+    /// Reporting a parameter count against the octet ceiling would name a number the caller can raise without the refusal ever going away.
     TooManyParameters {
         /// The per-line parameter-count bound.
         limit: u32,
     },
     /// One content line was folded across more than `limit` continuation lines.
     ///
-    /// A separate variant from `InputTooLarge` because a fold is retained rather than merely
-    /// read: the position of every one of them travels with the line so the writer can put it
-    /// back, and a line of nothing but continuations is one item, one octet of value and no
-    /// header, which is to say that no other bound here counts it.
+    /// A separate variant from `InputTooLarge` because a fold is retained rather than merely read: the position of every one of them travels with the line so the writer can put it back, and a line of nothing but continuations is one item, one octet of value and no header, which is to say that no other bound here counts it.
     TooManyFolds {
         /// The per-line fold-count bound.
         limit: u32,
@@ -79,6 +71,7 @@ pub enum ParseError {
 impl Display for ParseError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match *self {
+            Self::Exhausted => formatter.write_str("resource budget is already exhausted"),
             Self::InputTooLarge { limit } => {
                 write!(formatter, "input exceeds the {limit} octet budget")
             },
@@ -114,13 +107,13 @@ impl Error for ParseError {}
 
 /// Which bound a charge against the shared ledger crossed.
 ///
-/// The dimension is named rather than left field-free because a caller tunes a policy per
-/// dimension: `ical-dav` distinguishes a body that was too long from a nesting that was too
-/// deep from an `href` that was too long, and "some bound was crossed" is not something any
-/// of those three can be raised or lowered from. A discriminant costs no allocation.
+/// The dimension is named rather than left field-free because a caller tunes a policy per dimension: `ical-dav` distinguishes a body that was too long from a nesting that was too deep from an `href` that was too long, and "some bound was crossed" is not something any of those three can be raised or lowered from.
+/// A discriminant costs no allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum LimitExceeded {
+    /// A previous resource refusal prevents further admission.
+    Exhausted,
     /// The octet budget for the whole operation.
     Budget,
     /// The number of items — properties and components — in one document.
@@ -160,6 +153,7 @@ pub enum LimitExceeded {
 impl Display for LimitExceeded {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         let dimension = match *self {
+            Self::Exhausted => return formatter.write_str("resource budget is already exhausted"),
             Self::Budget => "octet budget",
             Self::Items => "item count",
             Self::Depth => "nesting depth",

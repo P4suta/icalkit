@@ -701,7 +701,7 @@ pub struct Meter {
     freebusy_periods: u32,
     /// Diagnostics a sink refused, saturating.
     dropped: u32,
-    /// Whether the octet budget has been crossed.
+    /// Whether a resource refusal has latched exhaustion.
     exhausted: bool,
 }
 
@@ -749,19 +749,18 @@ impl Meter {
         }
         let Some(next) = self.spent.checked_add(units) else {
             self.spent = u64::MAX;
-            self.exhausted = true;
-            return false;
+            return self.refuse(false);
         };
         self.spent = next;
         if self.spent > self.budget {
-            self.exhausted = true;
-            return false;
+            return self.refuse(false);
         }
         true
     }
 
     /// Charge `units` octets, as a `Result`.
     pub fn try_charge(&mut self, units: u64) -> Result<(), LimitExceeded> {
+        self.available()?;
         if self.charge(units) {
             Ok(())
         } else {
@@ -771,6 +770,7 @@ impl Meter {
 
     /// Charge `count` octets, as the failure a reader cannot continue past.
     pub fn charge_bytes(&mut self, count: u64) -> Result<(), ParseError> {
+        self.available().map_err(|_| ParseError::Exhausted)?;
         if self.charge(count) {
             Ok(())
         } else {
@@ -785,14 +785,15 @@ impl Meter {
 
     /// Charge one item — one property or one component.
     pub fn charge_item(&mut self) -> Result<(), ParseError> {
+        self.available().map_err(|_| ParseError::Exhausted)?;
         let Some(next) = self
             .items
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_items)
         else {
-            return Err(ParseError::TooManyItems {
+            return Err(self.refuse(ParseError::TooManyItems {
                 limit: self.limits.max_items,
-            });
+            }));
         };
         self.items = next;
         Ok(())
@@ -800,12 +801,13 @@ impl Meter {
 
     /// Charge one XML element against the shared ledger.
     pub fn try_charge_element(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .elements
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_xml_elements)
         else {
-            return Err(LimitExceeded::Elements);
+            return Err(self.refuse(LimitExceeded::Elements));
         };
         self.elements = next;
         Ok(())
@@ -816,14 +818,15 @@ impl Meter {
     ///
     /// The depth is not restored on refusal, because a reader that has been told it is too deep has nothing left to close.
     pub fn enter(&mut self) -> Result<(), ParseError> {
+        self.available().map_err(|_| ParseError::Exhausted)?;
         let Some(next) = self
             .depth
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_component_depth)
         else {
-            return Err(ParseError::TooDeep {
+            return Err(self.refuse(ParseError::TooDeep {
                 limit: self.limits.max_component_depth,
-            });
+            }));
         };
         self.depth = next;
         Ok(())
@@ -839,12 +842,13 @@ impl Meter {
     /// Open one XML element.
     /// Paired with [`Meter::leave_element`].
     pub fn try_enter_element(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .element_depth
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_xml_depth)
         else {
-            return Err(LimitExceeded::Depth);
+            return Err(self.refuse(LimitExceeded::Depth));
         };
         self.element_depth = next;
         Ok(())
@@ -860,12 +864,13 @@ impl Meter {
     /// Counted here as well as capped at the collection that holds them, because the reader that most needs the bound builds no collection at all: a caller draining responses one at a time retains one and would otherwise have nothing counting how many arrived.
     /// The count runs across bodies rather than being reset per body, which is the aggregate posture `docs/adr/0010` exists for — a caller wanting each exchange bounded on its own gives each its own ledger.
     pub fn try_charge_response(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .responses
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_responses)
         else {
-            return Err(LimitExceeded::Responses);
+            return Err(self.refuse(LimitExceeded::Responses));
         };
         self.responses = next;
         Ok(())
@@ -875,8 +880,9 @@ impl Meter {
     ///
     /// Two bounds cross here, for the reason [`Limits::max_xml_text_bytes`] gives: the per-element ceiling refuses one enormous `calendar-data`, and the shared octet budget below it refuses a body of ten thousand merely large ones.
     pub fn try_charge_text(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        self.available()?;
         if count > self.limits.max_xml_text_bytes {
-            return Err(LimitExceeded::Text);
+            return Err(self.refuse(LimitExceeded::Text));
         }
         self.try_charge(u64::from(count))
     }
@@ -887,12 +893,13 @@ impl Meter {
     /// Live bindings rather than declarations seen: a binding costs memory for as long as its element is open and nothing after that, so a document that declares one prefix per element at depth two is not the attack this bounds.
     /// One element carrying a thousand `xmlns:` attributes is, and no depth or element count sees it.
     pub fn try_bind_prefix(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .bindings
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_prefix_bindings)
         else {
-            return Err(LimitExceeded::PrefixBindings);
+            return Err(self.refuse(LimitExceeded::PrefixBindings));
         };
         self.bindings = next;
         Ok(())
@@ -932,16 +939,16 @@ impl Meter {
     /// The shared ledger below it is never reset, so a rule that matches rarely and walks years between hits spends the caller's whole budget rather than one period's, which is the case a bound charged per *emitted* occurrence never sees at all.
     /// The refusal latches, for the reason the type's own documentation gives: a search stopped by the per-period ceiling has produced a truncated answer, and a ledger still reading clean beside one is the report `docs/adr/0002` promised and did not deliver.
     pub fn try_charge_candidate(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .candidates
             .checked_add(1)
             .filter(|next| *next <= self.limits.candidates_per_period)
         else {
-            self.exhausted = true;
-            return Err(LimitExceeded::Candidates);
+            return Err(self.refuse(LimitExceeded::Candidates));
         };
-        self.candidates = next;
         self.try_charge(1)?;
+        self.candidates = next;
         self.candidates_charged = self.candidates_charged.saturating_add(1);
         Ok(())
     }
@@ -950,13 +957,13 @@ impl Meter {
     ///
     /// Latching for the same reason [`Meter::try_charge_candidate`] does: a search cut off at `Limits::occurrences_per_search` answered less than it was asked, and the caller's ledger is the report of that which survives being collected through an adapter.
     pub fn try_charge_occurrence(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .occurrences
             .checked_add(1)
             .filter(|next| *next <= self.limits.occurrences_per_search)
         else {
-            self.exhausted = true;
-            return Err(LimitExceeded::Occurrences);
+            return Err(self.refuse(LimitExceeded::Occurrences));
         };
         self.occurrences = next;
         Ok(())
@@ -964,12 +971,13 @@ impl Meter {
 
     /// Charge `count` `RDATE` instants.
     pub fn try_charge_rdate_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .rdates
             .checked_add(count)
             .filter(|next| *next <= self.limits.rdate_entries)
         else {
-            return Err(LimitExceeded::RdateEntries);
+            return Err(self.refuse(LimitExceeded::RdateEntries));
         };
         self.rdates = next;
         Ok(())
@@ -977,12 +985,13 @@ impl Meter {
 
     /// Charge `count` `EXDATE` instants.
     pub fn try_charge_exdate_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .exdates
             .checked_add(count)
             .filter(|next| *next <= self.limits.exdate_entries)
         else {
-            return Err(LimitExceeded::ExdateEntries);
+            return Err(self.refuse(LimitExceeded::ExdateEntries));
         };
         self.exdates = next;
         Ok(())
@@ -990,12 +999,13 @@ impl Meter {
 
     /// Charge `count` `RECURRENCE-ID` overrides.
     pub fn try_charge_override_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .overrides
             .checked_add(count)
             .filter(|next| *next <= self.limits.override_entries)
         else {
-            return Err(LimitExceeded::OverrideEntries);
+            return Err(self.refuse(LimitExceeded::OverrideEntries));
         };
         self.overrides = next;
         Ok(())
@@ -1006,12 +1016,13 @@ impl Meter {
     /// Charged where the observances are admitted into a transition table rather than on the lookup path: after construction the table is finite and its rules are evaluated in closed form, so the only unbounded quantity a zone has is how many transitions a file declares.
     /// A `VTIMEZONE` carrying a million `RDATE` lines is a file somebody can write.
     pub fn try_charge_vtimezone_observances(&mut self, count: u32) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .observances
             .checked_add(count)
             .filter(|next| *next <= self.limits.max_vtimezone_observances)
         else {
-            return Err(LimitExceeded::VtimezoneObservances);
+            return Err(self.refuse(LimitExceeded::VtimezoneObservances));
         };
         self.observances = next;
         Ok(())
@@ -1021,12 +1032,13 @@ impl Meter {
     ///
     /// Counted apart from the observances inside it because the two bound different costs: a calendar declaring ten thousand zones of one observance each crosses no observance bound at all.
     pub fn try_charge_vtimezone_component(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .zones
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_vtimezone_components)
         else {
-            return Err(LimitExceeded::VtimezoneComponents);
+            return Err(self.refuse(LimitExceeded::VtimezoneComponents));
         };
         self.zones = next;
         Ok(())
@@ -1049,13 +1061,13 @@ impl Meter {
     /// Latching, for the reason [`Meter::try_charge_occurrence`] latches: a report cut off at `Limits::max_freebusy_periods` states less busy time than the collection holds, and a caller reading it as "free" would double-book somebody.
     /// The ledger reading exhausted is the report of that which survives being handed on as a plain list of periods.
     pub fn try_charge_freebusy_period(&mut self) -> Result<(), LimitExceeded> {
+        self.available()?;
         let Some(next) = self
             .freebusy_periods
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_freebusy_periods)
         else {
-            self.exhausted = true;
-            return Err(LimitExceeded::FreeBusyPeriods);
+            return Err(self.refuse(LimitExceeded::FreeBusyPeriods));
         };
         self.freebusy_periods = next;
         Ok(())
@@ -1105,11 +1117,23 @@ impl Meter {
 
     /// Whether any bound this ledger keeps has refused a charge.
     ///
-    /// The octet budget, the per-period recurrence ceiling, and the per-search occurrence ceiling all latch it.
-    /// One flag rather than three because what a caller asks this question for is "is what I am holding the whole answer", and every one of the three answers that question the same way.
+    /// Every resource refusal latches the ledger until the caller creates another meter.
     #[must_use]
     pub const fn is_exhausted(&self) -> bool {
         self.exhausted
+    }
+
+    fn available(&self) -> Result<(), LimitExceeded> {
+        if self.exhausted {
+            Err(LimitExceeded::Exhausted)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn refuse<E>(&mut self, error: E) -> E {
+        self.exhausted = true;
+        error
     }
 
     /// Octets charged so far.
@@ -1366,12 +1390,14 @@ mod tests {
     fn one_accounting_is_reported_in_three_shapes() {
         let mut meter = Meter::with_budget(Limits::DEFAULT, 4);
         assert_eq!(meter.try_charge(8), Err(LimitExceeded::Budget));
-        assert_eq!(
-            meter.charge_bytes(1),
-            Err(ParseError::InputTooLarge { limit: 4 })
-        );
+        assert_eq!(meter.charge_bytes(1), Err(ParseError::Exhausted));
         assert!(!meter.charge(1));
         assert_eq!(meter.spent(), 8, "one ledger, whichever shape charged it");
+        let mut fresh = Meter::with_budget(Limits::DEFAULT, 4);
+        assert_eq!(
+            fresh.charge_bytes(8),
+            Err(ParseError::InputTooLarge { limit: 4 })
+        );
     }
 
     #[test]
@@ -1435,7 +1461,7 @@ mod tests {
         meter.open_period();
         assert_eq!(
             meter.try_charge_candidate(),
-            Err(LimitExceeded::Budget),
+            Err(LimitExceeded::Exhausted),
             "and the latch outlives the period, against a ledger with octets to spare"
         );
     }
@@ -1455,7 +1481,7 @@ mod tests {
 
     /// Each recurrence list is refused under its own name.
     #[test]
-    fn the_three_recurrence_lists_are_bounded_separately() {
+    fn each_recurrence_list_names_its_first_refusal() {
         let limits = Limits::DEFAULT
             .with_rdate_entries(1)
             .with_exdate_entries(1)
@@ -1467,15 +1493,21 @@ mod tests {
             meter.try_charge_rdate_entries(1),
             Err(LimitExceeded::RdateEntries)
         );
+        assert!(meter.is_exhausted());
+        let mut meter = Meter::new(limits);
         assert_eq!(
             meter.try_charge_exdate_entries(2),
             Err(LimitExceeded::ExdateEntries),
             "a list is refused as a whole rather than admitted up to the bound"
         );
+        assert!(meter.is_exhausted());
+        let mut meter = Meter::new(limits);
         assert_eq!(
             meter.try_charge_override_entries(9),
             Err(LimitExceeded::OverrideEntries)
         );
+        assert!(meter.is_exhausted());
+        let mut meter = Meter::new(limits);
         assert_eq!(meter.try_charge_occurrence(), Ok(()));
         assert_eq!(
             meter.try_charge_occurrence(),
@@ -1516,11 +1548,14 @@ mod tests {
         let mut meter = Meter::with_budget(Limits::DEFAULT, u64::MAX);
         assert!(meter.charge(u64::MAX));
         assert_eq!(meter.try_charge_bytes(1), Err(LimitExceeded::Budget));
+        assert_eq!(meter.charge_bytes(1), Err(ParseError::Exhausted));
+        assert_eq!(meter.try_charge_text(1), Err(LimitExceeded::Exhausted));
+        let mut fresh = Meter::with_budget(Limits::DEFAULT, u64::MAX);
+        assert!(fresh.charge(u64::MAX));
         assert_eq!(
-            meter.charge_bytes(1),
+            fresh.charge_bytes(1),
             Err(ParseError::InputTooLarge { limit: u64::MAX })
         );
-        assert_eq!(meter.try_charge_text(1), Err(LimitExceeded::Budget));
     }
 
     fn check_bulk_boundary(
@@ -1682,8 +1717,8 @@ mod tests {
         assert_eq!(meter.enter(), Err(ParseError::TooDeep { limit: u16::MAX }));
         assert_eq!(meter.depth(), u16::MAX);
         meter.leave();
-        assert_eq!(meter.enter(), Ok(()));
-        assert_eq!(meter.depth(), u16::MAX);
+        assert_eq!(meter.enter(), Err(ParseError::Exhausted));
+        assert_eq!(meter.depth(), u16::MAX - 1);
     }
 
     #[test]
@@ -1695,8 +1730,8 @@ mod tests {
         assert_eq!(meter.try_enter_element(), Err(LimitExceeded::Depth));
         assert_eq!(meter.element_depth, u16::MAX);
         meter.leave_element();
-        assert_eq!(meter.try_enter_element(), Ok(()));
-        assert_eq!(meter.element_depth, u16::MAX);
+        assert_eq!(meter.try_enter_element(), Err(LimitExceeded::Exhausted));
+        assert_eq!(meter.element_depth, u16::MAX - 1);
     }
 
     #[test]
@@ -1708,8 +1743,8 @@ mod tests {
         assert_eq!(meter.try_bind_prefix(), Err(LimitExceeded::PrefixBindings));
         assert_eq!(meter.live_prefix_bindings(), u16::MAX);
         meter.unbind_prefix();
-        assert_eq!(meter.try_bind_prefix(), Ok(()));
-        assert_eq!(meter.live_prefix_bindings(), u16::MAX);
+        assert_eq!(meter.try_bind_prefix(), Err(LimitExceeded::Exhausted));
+        assert_eq!(meter.live_prefix_bindings(), u16::MAX - 1);
     }
 
     #[test]
