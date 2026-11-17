@@ -409,6 +409,9 @@ An exclusion can remove `DTSTART` without a recurrence rule.
 Query time zone definitions follow [RFC 4791 section 9.8](https://www.rfc-editor.org/rfc/rfc4791.html#section-9.8).
 Dates and floating values use the query's bounded transition definition.
 Values with an explicit `TZID` use the caller's `ZoneDatabase`.
+Calendar workflows use the whole-second precision of [RFC 5545 section 3.3.12](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.12).
+The zone adapter rejects fractional exact or fold candidates before offset lookup.
+Recurrence and projection refuse unresolved placements, while query matching reports an undecided result.
 Query parsing rejects malformed definitions, unsupported observance rules, and opaque transition values.
 Opaque metadata stays uninterpreted.
 The observance reader guards declared value types for transition dates and recurrence rules.

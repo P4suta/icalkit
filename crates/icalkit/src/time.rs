@@ -160,6 +160,7 @@ impl OffsetResolution {
 /// The only application-implementable service in the public API.
 pub trait ZoneDatabase: Send + Sync {
     /// Resolve a local wall clock in `tzid`.
+    /// Calendar workflows refuse fractional instants in the answer.
     fn resolve_local(&self, tzid: &str, local: DateTime) -> Option<ZoneResolution>;
 
     /// Find the UTC offset in force at `instant` in `tzid`.
@@ -176,6 +177,9 @@ impl<'a> ZoneAdapter<'a> {
     }
 
     fn reading(&self, tzid: &str, timestamp: Timestamp) -> Option<Reading> {
+        if timestamp.subsec_nanosecond() != 0 {
+            return None;
+        }
         let database = self.0?;
         let offset = database.offset_at(tzid, timestamp)?;
         Some(Reading::new(
@@ -210,8 +214,7 @@ impl ZoneSource for ZoneAdapter<'_> {
                 earlier: self.reading(tzid, answer.earlier()?)?,
                 later: self.reading(tzid, answer.later()?)?,
             },
-            // The public port deliberately does not invent transition bounds and before/after
-            // offsets that the internal representation requires for a gap.
+            // The public port deliberately does not invent transition bounds and before/after offsets that the internal representation requires for a gap.
             LocalKind::Gap => LocalResolution::Undetermined,
         };
         Some(ZoneAnswer::new(
@@ -343,9 +346,9 @@ impl IcalDateTime {
 
     /// Mark that this value was spelled with second `:60`.
     ///
-    /// Jiff follows the Unix convention and cannot carry a leap second directly. The stored
-    /// value is therefore the preceding `:59` second and this witness preserves the
-    /// iCalendar spelling. DATE values and values not exactly on `:59` are refused.
+    /// Jiff follows the Unix convention and cannot carry a leap second directly.
+    /// The stored value is therefore the preceding `:59` second and this witness preserves the iCalendar spelling.
+    /// DATE values and values not exactly on `:59` are refused.
     #[must_use]
     pub fn with_leap_second(mut self) -> Option<Self> {
         let represents_preceding_second = match self.representation {
@@ -453,5 +456,133 @@ fn with_core_leap_second(value: IcalDateTime, source: CivilDateTime) -> Option<I
         value.with_leap_second()
     } else {
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{DateTime, OffsetResolution, Timestamp, ZoneAdapter, ZoneDatabase, ZoneResolution};
+    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime};
+    use crate::internal::tz::{LocalResolution, ZoneSource};
+
+    struct AnswerDatabase {
+        answer: ZoneResolution,
+        offset_calls: AtomicUsize,
+    }
+
+    impl AnswerDatabase {
+        fn new(answer: ZoneResolution) -> Self {
+            Self {
+                answer,
+                offset_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ZoneDatabase for AnswerDatabase {
+        fn resolve_local(&self, _tzid: &str, _local: DateTime) -> Option<ZoneResolution> {
+            Some(self.answer.clone())
+        }
+
+        fn offset_at(&self, _tzid: &str, instant: Timestamp) -> Option<OffsetResolution> {
+            self.offset_calls.fetch_add(1, Ordering::Relaxed);
+            let offset = if self.answer.later() == Some(instant) {
+                -3600
+            } else {
+                0
+            };
+            OffsetResolution::new(offset, "precision-fixture", true)
+        }
+    }
+
+    fn local() -> CivilDateTime {
+        CivilDateTime::new(
+            CivilDate::from_ymd(2024, 1, 2).unwrap(),
+            CivilTime::from_hms(9, 0, 0).unwrap(),
+        )
+    }
+
+    fn timestamp(text: &str) -> Timestamp {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn fractional_exact_answers_cannot_become_internal_readings() {
+        for text in [
+            "2024-01-02T09:00:00.000000001Z",
+            "2024-01-02T09:00:00.999999999Z",
+            "1969-12-31T23:59:59.000000001Z",
+            "1969-12-31T23:59:59.999999999Z",
+        ] {
+            let database = AnswerDatabase::new(ZoneResolution::exact(
+                timestamp(text),
+                "precision-fixture",
+                true,
+            ));
+            let answer = ZoneAdapter::new(Some(&database)).resolve("Test/Precision", local());
+            assert!(answer.is_none(), "rounded {text}: {answer:?}");
+        }
+    }
+
+    #[test]
+    fn fractional_fold_candidates_cannot_become_internal_readings() {
+        for (earlier, later) in [
+            ("2024-01-02T09:00:00.5Z", "2024-01-02T10:00:00Z"),
+            ("2024-01-02T09:00:00Z", "2024-01-02T10:00:00.5Z"),
+            ("2024-01-02T09:00:00.25Z", "2024-01-02T09:00:00.75Z"),
+        ] {
+            let database = AnswerDatabase::new(
+                ZoneResolution::fold(
+                    timestamp(earlier),
+                    timestamp(later),
+                    "precision-fixture",
+                    true,
+                )
+                .unwrap(),
+            );
+            let answer = ZoneAdapter::new(Some(&database)).resolve("Test/Precision", local());
+            assert!(
+                answer.is_none(),
+                "rounded fold {earlier} / {later}: {answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_precision_is_refused_before_offset_lookup() {
+        let database = AnswerDatabase::new(ZoneResolution::exact(
+            timestamp("2024-01-02T09:00:00.5Z"),
+            "precision-fixture",
+            true,
+        ));
+        let _ = ZoneAdapter::new(Some(&database)).resolve("Test/Precision", local());
+        assert_eq!(database.offset_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn whole_second_answers_preserve_exact_and_fold_instants() {
+        let earlier = timestamp("2024-01-02T09:00:00Z");
+        let later = timestamp("2024-01-02T10:00:00Z");
+        let exact = AnswerDatabase::new(ZoneResolution::exact(earlier, "precision-fixture", true));
+        let answer = ZoneAdapter::new(Some(&exact))
+            .resolve("Test/Precision", local())
+            .unwrap();
+        assert!(
+            matches!(answer.resolution, LocalResolution::Unique { reading } if reading.instant.unix_seconds() == earlier.as_second())
+        );
+        let fold = AnswerDatabase::new(
+            ZoneResolution::fold(earlier, later, "precision-fixture", true).unwrap(),
+        );
+        let answer = ZoneAdapter::new(Some(&fold))
+            .resolve("Test/Precision", local())
+            .unwrap();
+        assert!(
+            matches!(answer.resolution, LocalResolution::Ambiguous { earlier: first, later: second }
+            if first.instant.unix_seconds() == earlier.as_second()
+                && second.instant.unix_seconds() == later.as_second()
+                && first.offset != second.offset)
+        );
     }
 }
