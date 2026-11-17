@@ -80,6 +80,7 @@ use crate::internal::core::{
 use crate::internal::tz::annual_counts::{CountEnd, counted_end};
 use crate::internal::tz::annual_dates::{DateSelectors, MonthSet, YearDateMasks};
 use crate::internal::tz::annual_positions::AnnualPositions;
+use crate::internal::tz::earliest_observances::EarliestObservances;
 use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
 };
@@ -169,13 +170,14 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
     out: &mut Vec<Observance>,
 ) -> Option<Box<str>> {
     let tzid = identifier(component)?;
+    let mut staged = EarliestObservances::new(meter);
     let mut declared = 0_usize;
     for inner in component.components() {
         if !inner.is_named(b"STANDARD") && !inner.is_named(b"DAYLIGHT") {
             continue;
         }
         declared = declared.saturating_add(1);
-        read_observance(inner, meter, sink, out);
+        read_observance(inner, meter, sink, &mut staged);
     }
     // Counted over the subcomponents rather than over what they yielded.
     // The code says "carried neither a STANDARD nor a DAYLIGHT subcomponent"; a definition whose one observance was unreadable did carry one, and reporting that under this code would put a second meaning on a frozen one.
@@ -188,6 +190,7 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
             Some(Subject::new(tzid.as_bytes())),
         );
     }
+    out.extend(staged.into_observances());
     Some(tzid)
 }
 
@@ -207,11 +210,9 @@ fn read_observance<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
     sink: &mut S,
-    out: &mut Vec<Observance>,
+    out: &mut EarliestObservances,
 ) {
-    let before = out.len();
-    read_transitions(component, meter, sink, out);
-    if out.len() == before && states_every_required_property(component) {
+    if !read_transitions(component, meter, sink, out) && states_every_required_property(component) {
         report(
             sink,
             meter,
@@ -241,34 +242,36 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
     sink: &mut S,
-    out: &mut Vec<Observance>,
-) {
+    out: &mut EarliestObservances,
+) -> bool {
     // The classification is the subcomponent's own name, per RFC 5545 section 3.6.5, and never a comparison of the two offsets: a zone whose daylight offset is the smaller of the pair exists, and inferring the flag from arithmetic gets it backwards there.
     let daylight = component.is_named(b"DAYLIGHT");
     let Some(offset_from) = component
         .get::<UtcOffset>(&PropertyId::TZOFFSETFROM)
         .value()
     else {
-        return;
+        return false;
     };
     let Some(offset_to) = component.get::<UtcOffset>(&PropertyId::TZOFFSETTO).value() else {
-        return;
+        return false;
     };
     // The rule rides on the `DTSTART` observance and on no other: an `RDATE` names one transition and states no cadence, and repeating the rule on each explicit date would declare the same yearly series once per date.
-    if let Some(start) = component
+    let start = component
         .dtstart()
         .value()
-        .and_then(|value| wall_clock(value, offset_from))
-    {
-        let before = out.len();
-        if let Some(rules) = read_rule(component, start, offset_from, meter, sink) {
+        .and_then(|value| wall_clock(value, offset_from));
+    if let Some(start) = start {
+        let mut rules = read_rule(component, start, offset_from, meter, sink)
+            .into_iter()
+            .flat_map(YearlyRules::into_rules)
+            .peekable();
+        if rules.peek().is_some() {
             out.extend(
-                rules.into_rules().map(|rule| {
+                rules.map(|rule| {
                     Observance::new(start, offset_from, offset_to, daylight, Some(rule))
                 }),
             );
-        }
-        if out.len() == before {
+        } else {
             out.push(Observance::new(
                 start,
                 offset_from,
@@ -278,7 +281,8 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
             ));
         }
     }
-    push_dated_transitions(component, offset_from, offset_to, daylight, out);
+    let dated = push_dated_transitions(component, offset_from, offset_to, daylight, out);
+    start.is_some() || dated
 }
 
 /// Append one observance per `RDATE` value of `component`.
@@ -290,8 +294,9 @@ fn push_dated_transitions(
     offset_from: UtcOffset,
     offset_to: UtcOffset,
     daylight: bool,
-    out: &mut Vec<Observance>,
-) {
+    out: &mut EarliestObservances,
+) -> bool {
+    let mut readable = false;
     let wanted = PropertyId::RDATE;
     for property in component.properties_named(&wanted) {
         for field in property
@@ -305,6 +310,7 @@ fn push_dated_transitions(
             let Some(start) = wall_clock(value, offset_from) else {
                 continue;
             };
+            readable = true;
             out.push(Observance::new(
                 start,
                 offset_from,
@@ -314,6 +320,7 @@ fn push_dated_transitions(
             ));
         }
     }
+    readable
 }
 
 /// The wall clock `value` names on the clock running before a transition.

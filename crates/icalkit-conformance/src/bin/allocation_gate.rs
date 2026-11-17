@@ -11,10 +11,14 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use icalkit::recurrence::Rule;
-use icalkit_conformance::internal::core::{Diagnostic, Document, Limits, Meter};
+use icalkit_conformance::internal::core::{
+    CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, Document, Limits, Meter,
+    UtcOffset,
+};
 use icalkit_conformance::internal::dav::{
     DecodeContext, MultiStatus, MultiStatusReader, XmlPull, XmlReader,
 };
+use icalkit_conformance::internal::tz::{Observance, TransitionTable, read_calendar_zones};
 
 #[path = "allocation_gate/arithmetic.rs"]
 mod arithmetic;
@@ -33,6 +37,8 @@ const MAX_PEAK_BYTES_PER_XML_ELEMENT: u64 = 384;
 const MAX_COMMENT_PEAK_BYTES: u64 = 256 * 1024;
 // A resource refusal keeps a fixed error, so its heap ceiling is independent of input size.
 const MAX_REFUSED_RULE_BYTES: u64 = 1_024;
+const RDATE_OBSERVANCES: usize = 10_000;
+const MAX_OBSERVANCE_STAGING_BYTES: u64 = 64 * 1024;
 
 struct CountingAllocator;
 
@@ -212,6 +218,84 @@ fn check_rule_refusal() -> Result<(usize, Allocation), Box<dyn std::error::Error
     Ok((input.len(), allocation))
 }
 
+fn check_observance_staging() -> Result<(usize, Allocation), Box<dyn std::error::Error>> {
+    let mut input = String::from(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit staging gate//EN\r\n\
+         BEGIN:VTIMEZONE\r\nTZID:Test/Staging\r\nBEGIN:STANDARD\r\n\
+         DTSTART:20240101T000000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0100\r\n\
+         RDATE:",
+    );
+    for index in 0..RDATE_OBSERVANCES {
+        if index != 0 {
+            input.push(',');
+            if index.is_multiple_of(4) {
+                input.push_str("\r\n ");
+            }
+        }
+        input.push_str("20240102T000000");
+    }
+    input.push_str("\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n");
+    let document = Document::parse(input.as_bytes(), Limits::GENEROUS, &mut Vec::new())?;
+    let root = document
+        .components()
+        .next()
+        .ok_or("missing staging fixture root")?;
+    let ((zones, meter, diagnostics), allocation) = measure(|| {
+        let mut meter = Meter::new(Limits::DEFAULT.with_max_vtimezone_observances(1));
+        let mut diagnostics = Vec::new();
+        let zones = read_calendar_zones(root, &mut meter, &mut diagnostics);
+        (zones, meter, diagnostics)
+    });
+    assert!(
+        allocation.peak <= MAX_OBSERVANCE_STAGING_BYTES
+            && allocation.retained <= MAX_OBSERVANCE_STAGING_BYTES,
+        "observance staging exceeded {MAX_OBSERVANCE_STAGING_BYTES} bytes with a one-observance budget: {allocation:?}"
+    );
+    let table = zones.tables().first().ok_or("missing staged zone")?;
+    assert_eq!(table.observances().len(), 1);
+    assert!(table.is_truncated());
+    assert_eq!(meter.vtimezone_observances(), 1);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].code(),
+        DiagnosticCode::VtimezoneObservancesTruncated
+    );
+    Ok((input.len(), allocation))
+}
+
+fn check_supplied_observance_retention() -> Result<Allocation, Box<dyn std::error::Error>> {
+    let start = CivilDateTime::new(
+        CivilDate::from_ymd(2024, 1, 1).ok_or("invalid fixed observance date")?,
+        CivilTime::MIDNIGHT,
+    );
+    let observance = Observance::new(start, UtcOffset::UTC, UtcOffset::UTC, false, None);
+    let ((table, meter, diagnostics), allocation) = measure(|| {
+        let offered = vec![observance; RDATE_OBSERVANCES];
+        let mut meter = Meter::new(Limits::DEFAULT.with_max_vtimezone_observances(1));
+        let mut diagnostics = Vec::new();
+        let table = TransitionTable::new(
+            "Test/Supplied".into(),
+            offered,
+            &mut meter,
+            &mut diagnostics,
+        );
+        (table, meter, diagnostics)
+    });
+    assert!(
+        allocation.retained <= MAX_OBSERVANCE_STAGING_BYTES,
+        "a supplied observance vector retained more than {MAX_OBSERVANCE_STAGING_BYTES} bytes with a one-observance budget: {allocation:?}"
+    );
+    assert_eq!(table.observances().len(), 1);
+    assert!(table.is_truncated());
+    assert_eq!(meter.vtimezone_observances(), 1);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].code(),
+        DiagnosticCode::VtimezoneObservancesTruncated
+    );
+    Ok(allocation)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calendar_bytes = calendar_input();
     let (calendar, property_allocation) = measure(|| {
@@ -293,9 +377,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let (rule_input_bytes, rule_allocation) = check_rule_refusal()?;
+    let (staging_input_bytes, staging_allocation) = check_observance_staging()?;
+    let supplied_allocation = check_supplied_observance_retention()?;
 
     println!(
-        "allocation gate: properties={{count:{PROPERTIES},input:{},retained:{},peak:{},allocated:{},retained_per_item:{property_retained},peak_per_item:{property_peak}}}; xml={{elements:{XML_ELEMENTS},input:{},retained:{},peak:{},allocated:{},retained_per_element:{xml_retained},peak_per_element:{xml_peak}}}; comment={{input:{},peak:{}}}; rule_refusal={{input:{},peak:{},allocated:{}}}",
+        "allocation gate: properties={{count:{PROPERTIES},input:{},retained:{},peak:{},allocated:{},retained_per_item:{property_retained},peak_per_item:{property_peak}}}; xml={{elements:{XML_ELEMENTS},input:{},retained:{},peak:{},allocated:{},retained_per_element:{xml_retained},peak_per_element:{xml_peak}}}; comment={{input:{},peak:{}}}; rule_refusal={{input:{},peak:{},allocated:{}}}; observance_staging={{rdates:{RDATE_OBSERVANCES},input:{},retained:{},peak:{}}}; supplied_observances={{offered:{RDATE_OBSERVANCES},retained:{}}}",
         calendar_bytes.len(),
         property_allocation.retained,
         property_allocation.peak,
@@ -309,6 +395,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rule_input_bytes,
         rule_allocation.peak,
         rule_allocation.allocated,
+        staging_input_bytes,
+        staging_allocation.retained,
+        staging_allocation.peak,
+        supplied_allocation.retained,
     );
     Ok(())
 }

@@ -171,6 +171,11 @@ Without `BYMONTH`, supported `BYMONTHDAY` selectors expand across all twelve mon
 The reader compiles month-specific annual patterns with the original anchor, offsets, clock, and inclusive end bound.
 The reader stores each explicit date once.
 Table admission charges every stored pattern to the existing observance meter.
+Before admission, the reader keeps only the earliest candidates within the remaining limit and one overflow witness.
+Staging and table sorting share the UTC onset and complete-value ordering key.
+Truncation stays visible, and a valid discarded candidate isn't reported as unreadable.
+Admitted observances use a slice without spare capacity.
+The [bounded staging decision](adr/earliest-observances-with-bounded-staging.md) records storage and diagnostic behavior.
 Explicit month selectors, default anniversaries, and yearly weekday ordinals keep their scope.
 The [month expansion decision](adr/month-day-selectors-across-all-months.md) records the bounded compilation and its storage cost.
 

@@ -12,6 +12,7 @@ mod annual_dates;
 mod annual_positions;
 mod answer;
 mod combine;
+mod earliest_observances;
 mod exclusions;
 mod ident;
 mod model;

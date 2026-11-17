@@ -410,7 +410,7 @@ pub struct TransitionTable {
     /// The identifier this table answers to, compared by exact bytes.
     tzid: Box<str>,
     /// The observances, ascending by the instant they begin.
-    observances: Vec<Observance>,
+    observances: Box<[Observance]>,
     /// The observances that repeat by a rule, in the same order.
     ///
     /// A second list rather than a filter at every lookup.
@@ -446,7 +446,7 @@ impl TransitionTable {
     ) -> Self {
         let mut kept = observances;
         // The whole observance breaks the tie, so two beginning at one instant are ordered by what they say rather than by where they were written.
-        kept.sort_unstable_by_key(|observance| (onset_of(*observance), *observance));
+        kept.sort_unstable_by_key(|observance| OrderedObservance::new(*observance));
         let admitted = admitted_count(kept.len(), meter);
         let truncated = admitted < kept.len();
         kept.truncate(admitted);
@@ -470,7 +470,7 @@ impl TransitionTable {
             .collect();
         Self {
             tzid,
-            observances: kept,
+            observances: kept.into_boxed_slice(),
             rules,
             truncated,
             coverage_end,
@@ -562,6 +562,25 @@ fn admitted_count(offered: usize, meter: &mut Meter) -> usize {
 /// `None` for a wall clock whose instant the timeline cannot express, which sorts before every observance that has one — the same place a date before the timeline would sort.
 fn onset_of(observance: Observance) -> Option<Instant> {
     observance.start().at_offset(observance.offset_from())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct OrderedObservance {
+    onset: Option<Instant>,
+    observance: Observance,
+}
+
+impl OrderedObservance {
+    pub(super) fn new(observance: Observance) -> Self {
+        Self {
+            onset: onset_of(observance),
+            observance,
+        }
+    }
+
+    pub(super) const fn into_observance(self) -> Observance {
+        self.observance
+    }
 }
 
 /// The last date `observances` are backed by real data for.
