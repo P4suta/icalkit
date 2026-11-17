@@ -306,7 +306,7 @@ fn day_extent(
     period: Period,
     frame: &mut CalendarFrame,
 ) -> Result<DateSpan, CalendarArithmeticError> {
-    if let Some(extent) = period.week_extent() {
+    if let Some(extent) = period.date_extent() {
         return Ok(extent);
     }
     let anchor = period.anchor().date();
@@ -314,17 +314,7 @@ fn day_extent(
     match Span::of(rule.freq()) {
         Span::Year => Ok(fields.year_span),
         Span::Month => Ok(fields.month_span),
-        Span::Week => {
-            let offset = i64::from(calendar::week_offset(
-                anchor.weekday().ok_or(CalendarArithmeticError)?,
-                rule.wkst(),
-            ));
-            let first = anchor
-                .days_from_epoch()
-                .and_then(|day| day.checked_sub(offset))
-                .ok_or(CalendarArithmeticError)?;
-            DateSpan::new(first, 7)
-        },
+        Span::Week => Err(CalendarArithmeticError),
         Span::Day => DateSpan::new(anchor.days_from_epoch().ok_or(CalendarArithmeticError)?, 1),
     }
 }

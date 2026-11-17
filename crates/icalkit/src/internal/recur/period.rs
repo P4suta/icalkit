@@ -72,16 +72,16 @@ const fn cadence(freq: Freq) -> Cadence {
     }
 }
 
-/// One cadence period with a writable anchor and any explicit week-year extent.
+/// One cadence period with a writable anchor and any explicit date extent.
 ///
-/// Week periods carry their full extent because clipping can move the anchor to another numbered year.
+/// Explicit date extents keep writable clipping separate from period placement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Period(PeriodDomain);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum PeriodDomain {
     Civil(CivilDateTime),
-    WeekYear {
+    DateExtent {
         anchor: CivilDateTime,
         extent: DateSpan,
     },
@@ -92,14 +92,14 @@ impl Period {
     #[must_use]
     pub const fn anchor(self) -> CivilDateTime {
         match self.0 {
-            PeriodDomain::Civil(anchor) | PeriodDomain::WeekYear { anchor, .. } => anchor,
+            PeriodDomain::Civil(anchor) | PeriodDomain::DateExtent { anchor, .. } => anchor,
         }
     }
 
-    pub(super) const fn week_extent(self) -> Option<DateSpan> {
+    pub(super) const fn date_extent(self) -> Option<DateSpan> {
         match self.0 {
             PeriodDomain::Civil(_) => None,
-            PeriodDomain::WeekYear { extent, .. } => Some(extent),
+            PeriodDomain::DateExtent { extent, .. } => Some(extent),
         }
     }
 
@@ -107,9 +107,9 @@ impl Period {
         Self(PeriodDomain::Civil(anchor))
     }
 
-    fn week_year(extent: DateSpan) -> Option<Self> {
+    fn spanning(extent: DateSpan) -> Option<Self> {
         let (first, _) = extent.writable().ok()??;
-        Some(Self(PeriodDomain::WeekYear {
+        Some(Self(PeriodDomain::DateExtent {
             anchor: midnight(first),
             extent,
         }))
@@ -153,7 +153,9 @@ impl PeriodWalk {
         index: u64,
     ) -> Self {
         let freq = rule.freq();
-        let origin = if freq == Freq::Yearly && rule.has_part(RulePart::WeekNo) {
+        let origin = if freq == Freq::Weekly {
+            week_origin(dtstart.date(), rule.wkst()).map(Origin::Weeks)
+        } else if freq == Freq::Yearly && rule.has_part(RulePart::WeekNo) {
             CalendarFrame::new(calendar)
                 .week_of(dtstart.date(), rule.wkst())
                 .ok()
@@ -168,7 +170,7 @@ impl PeriodWalk {
             calendar_origin(dtstart.date(), freq, calendar)
                 .map(|date| Origin::Calendar { date, position: 0 })
         } else {
-            period_start(dtstart, freq, rule.wkst()).map(Origin::Civil)
+            period_start(dtstart, freq).map(Origin::Civil)
         };
         Self {
             origin,
@@ -213,6 +215,7 @@ impl PeriodWalk {
 #[derive(Clone, Debug)]
 enum Origin {
     Civil(CivilDateTime),
+    Weeks(i64),
     Calendar {
         date: CalendarCoordinates,
         position: i64,
@@ -228,6 +231,14 @@ impl Origin {
     fn at(&mut self, cadence: Cadence, steps: i64) -> Option<Period> {
         match self {
             Self::Civil(origin) => advance(*origin, cadence, steps).map(Period::civil),
+            Self::Weeks(first) => {
+                if cadence != Cadence::Days(DAYS_PER_WEEK) {
+                    return None;
+                }
+                let first = first.checked_add(steps.checked_mul(DAYS_PER_WEEK)?)?;
+                let extent = DateSpan::new(first, u16::try_from(DAYS_PER_WEEK).ok()?).ok()?;
+                Period::spanning(extent)
+            },
             Self::Calendar { date, position } => {
                 let count = i32::try_from(steps.checked_sub(*position)?).ok()?;
                 let following = match cadence {
@@ -261,7 +272,7 @@ impl Origin {
                 let extent = CalendarFrame::new(*calendar)
                     .week_year_span(year, *start)
                     .ok()?;
-                Period::week_year(extent)
+                Period::spanning(extent)
             },
         }
     }
@@ -309,7 +320,7 @@ impl Iterator for PeriodWalk {
 impl FusedIterator for PeriodWalk {}
 
 /// Normalize a civil origin to its cadence boundary within the writable calendar.
-fn period_start(dtstart: CivilDateTime, freq: Freq, wkst: Weekday) -> Option<CivilDateTime> {
+fn period_start(dtstart: CivilDateTime, freq: Freq) -> Option<CivilDateTime> {
     let date = dtstart.date();
     let clock = dtstart.time();
     match freq {
@@ -323,20 +334,18 @@ fn period_start(dtstart: CivilDateTime, freq: Freq, wkst: Weekday) -> Option<Civ
         Freq::Minutely => at_time(date, clock.hour(), clock.minute(), 0),
         Freq::Hourly => at_time(date, clock.hour(), 0, 0),
         Freq::Daily => Some(midnight(date)),
-        Freq::Weekly => Some(midnight(week_origin(date, wkst)?)),
+        Freq::Weekly => None,
         Freq::Monthly => Some(midnight(CivilDate::from_ymd(date.year(), date.month(), 1)?)),
         Freq::Yearly => Some(midnight(CivilDate::from_ymd(date.year(), 1, 1)?)),
     }
 }
 
-/// The most recent `wkst` on or before `date`, or `None` when it falls before the first date RFC 5545 section 3.3.4 can write.
-///
-/// RFC 5545 section 3.3.10 gives `WKST` for exactly this: a `FREQ=WEEKLY` period is the week `WKST` starts, not the seven days following `DTSTART`, and the two differ for every rule whose `DTSTART` is not already on its week's first day.
-fn week_origin(date: CivilDate, wkst: Weekday) -> Option<CivilDate> {
+/// The epoch day of the `wkst` boundary on or before `date`.
+fn week_origin(date: CivilDate, wkst: Weekday) -> Option<i64> {
     let elapsed = i64::from(date.weekday()?.index())
         .checked_sub(i64::from(wkst.index()))?
         .rem_euclid(DAYS_PER_WEEK);
-    date.checked_add_days(elapsed.checked_neg()?)
+    date.days_from_epoch()?.checked_sub(elapsed)
 }
 
 /// Midnight on `date`, where every period a day or longer begins.
@@ -702,15 +711,15 @@ mod tests {
         }
     }
 
-    /// The other end.
-    /// 0000-01-01 is a Saturday, so a Monday-start week begins five days before the first date this calendar has and the walk is empty, while a Saturday-start week begins on the day itself.
+    /// A source week can begin before the writable calendar and still hold writable dates.
     #[test]
-    fn a_week_origin_before_the_first_writable_day_is_an_empty_walk() {
+    fn a_week_origin_before_year_zero_keeps_its_writable_dates() {
         let dtstart = at(0, 1, 1, 0, 0, 0);
         let from_monday = walk_rule(Freq::Weekly, 1, Weekday::Monday);
-        let mut empty = PeriodWalk::new(dtstart, &from_monday);
-        assert_eq!(empty.next(), None);
-        assert_eq!(empty.next(), None);
+        assert_eq!(
+            anchors_of(dtstart, &from_monday, 2),
+            vec![day_start(0, 1, 1), day_start(0, 1, 3)]
+        );
 
         let from_saturday = walk_rule(Freq::Weekly, 1, Weekday::Saturday);
         assert_eq!(

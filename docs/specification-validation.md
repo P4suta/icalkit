@@ -284,6 +284,12 @@ Indexed resumes reconstruct the same extent without changing counts, additions, 
 The [week period decision](adr/week-year-periods-carry-their-date-extents.md) records explicit extent storage and source alignment.
 Independent four-day boundaries cover every supported calendar and week start.
 Regression tests also cover interval phases and indexed continuation.
+Weekly origins use signed epoch days even when `WKST` places the boundary before Gregorian year zero.
+Intervals and resumed indices advance the original week boundary.
+Each seven-day extent supplies its writable dates to filtering, clock expansion, position selection, and counting.
+The final week can also keep dates before Gregorian year 10000.
+The [weekly extent decision](adr/weekly-periods-preserve-the-unclipped-origin.md) records origin storage and clipping order.
+Independent day enumeration and public workflows cover week starts, calendar defaults, selectors, limits, continuation, and budget exhaustion.
 Bounds follow the `DTSTART` conditions in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Floating starts follow the explicit condition that both times use local time.
 Observance bounds use UTC.
