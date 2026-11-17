@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A shared session does not restart admission after recurrence exhaustion.
+//! A shared session does not restart admission after resource exhaustion.
 
 #![cfg(test)]
 
@@ -45,4 +45,68 @@ fn parsing_import_and_query_admission_stay_failed_until_a_fresh_session() {
     assert!(fresh.import(CALENDAR).is_ok());
     assert!(fresh.validate(&import).is_ok());
     assert!(fresh.query(QUERY).is_ok());
+}
+
+fn parser_refusal_stops_later_admissions(bytes: &[u8]) {
+    let engine = Engine::builder().build();
+    let import = Import::read(CALENDAR).unwrap();
+    let mut session = engine.session();
+    assert!(session.parse(CALENDAR).is_ok());
+    assert_eq!(
+        session.parse(bytes).unwrap_err().code().as_str(),
+        "icalkit.parse.resource-limit"
+    );
+    assert!(session.parse(CALENDAR).is_err());
+    assert!(session.import(CALENDAR).is_err());
+    assert!(session.validate(&import).is_err());
+    assert!(session.query(QUERY).is_err());
+    let mut fresh = engine.session();
+    assert!(fresh.parse(CALENDAR).is_ok());
+    assert!(fresh.import(CALENDAR).is_ok());
+    assert!(fresh.validate(&import).is_ok());
+    assert!(fresh.query(QUERY).is_ok());
+}
+
+#[test]
+fn a_header_refusal_stops_the_shared_session() {
+    let mut bytes = vec![b'X'; 4097];
+    bytes.extend_from_slice(b":v\r\n");
+    parser_refusal_stops_later_admissions(&bytes);
+}
+
+#[test]
+fn a_parameter_refusal_stops_the_shared_session() {
+    let mut bytes = b"X".to_vec();
+    bytes.extend_from_slice(&b";P=v".repeat(65));
+    bytes.extend_from_slice(b":v\r\n");
+    parser_refusal_stops_later_admissions(&bytes);
+}
+
+#[test]
+fn a_fold_refusal_stops_the_shared_session() {
+    let mut bytes = b"X:v".to_vec();
+    bytes.extend_from_slice(&b"\r\n x".repeat(16_385));
+    bytes.extend_from_slice(b"\r\n");
+    parser_refusal_stops_later_admissions(&bytes);
+}
+
+#[test]
+fn a_value_refusal_stops_the_shared_session() {
+    let mut bytes = b"X:".to_vec();
+    bytes.resize(2 + 1_048_577, b'x');
+    bytes.extend_from_slice(b"\r\n");
+    parser_refusal_stops_later_admissions(&bytes);
+}
+
+#[test]
+fn a_calendar_violation_does_not_exhaust_the_session() {
+    let engine = Engine::builder().build();
+    let mut session = engine.session();
+    assert_eq!(
+        session.parse(b"X:v\r\n").unwrap_err().code().as_str(),
+        "icalkit.validation.failed"
+    );
+    assert!(session.parse(CALENDAR).is_ok());
+    assert!(session.import(CALENDAR).is_ok());
+    assert!(session.query(QUERY).is_ok());
 }

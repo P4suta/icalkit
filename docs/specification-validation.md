@@ -15,6 +15,9 @@ Every meter refusal latches shared exhaustion across resource kinds.
 The first refusal names its own dimension.
 Later charges return distinct exhausted errors without changing admitted counters, including zero-sized charges.
 Cleanup and diagnostic accounting remain available after refusal.
+Document admission latches both token-source refusals and value-limit failures while preserving their errors.
+An exhausted meter prevents token-source polling, including for empty sources.
+Calendar violations alone don't exhaust the ledger.
 XML failure responses still charge output and require an available meter.
 Streaming writers can finish at the response ceiling before a refusal or accept an explicit independent output budget.
 The [shared exhaustion decision](adr/latched-admission-with-reserved-finalization.md) records admission and finalization boundaries.

@@ -791,7 +791,7 @@ impl Meter {
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_items)
         else {
-            return Err(self.refuse(ParseError::TooManyItems {
+            return Err(self.refuse_parse(ParseError::TooManyItems {
                 limit: self.limits.max_items,
             }));
         };
@@ -824,7 +824,7 @@ impl Meter {
             .checked_add(1)
             .filter(|next| *next <= self.limits.max_component_depth)
         else {
-            return Err(self.refuse(ParseError::TooDeep {
+            return Err(self.refuse_parse(ParseError::TooDeep {
                 limit: self.limits.max_component_depth,
             }));
         };
@@ -1121,6 +1121,10 @@ impl Meter {
     #[must_use]
     pub const fn is_exhausted(&self) -> bool {
         self.exhausted
+    }
+
+    pub(crate) fn refuse_parse(&mut self, error: ParseError) -> ParseError {
+        self.refuse(error)
     }
 
     fn available(&self) -> Result<(), LimitExceeded> {
