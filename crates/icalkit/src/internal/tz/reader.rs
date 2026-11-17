@@ -76,10 +76,12 @@ use crate::internal::core::{
     Weekday, report_diagnostic,
 };
 
+use crate::internal::tz::annual_dates::{DateSelectors, MonthDateMasks};
 use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
 };
 use crate::internal::tz::month_days::MonthDaySet;
+use crate::internal::tz::weekdays::{WeekdayScope, WeekdaySet, WeekdayTerm};
 
 /// How many `BYMONTHDAY` values the window forms are written with.
 ///
@@ -376,10 +378,10 @@ enum YearlyRules {
         at: CivilTime,
         through: Option<CivilDate>,
     },
-    MonthDays {
+    DaySets {
         months: Option<MonthSet>,
-        days: MonthDaySet,
-        weekday: Option<Weekday>,
+        selectors: DateSelectors,
+        scope: WeekdayScope,
         at: CivilTime,
         through: Option<CivilDate>,
     },
@@ -389,15 +391,19 @@ impl YearlyRules {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
         let (count, months) = match self {
             Self::Single(_) => (1, None),
-            Self::Months { months, .. } | Self::MonthDays { months, .. } => (12, months),
+            Self::Months { months, .. } | Self::DaySets { months, .. } => (12, months),
         };
         (1..=count)
             .filter(move |month| months.is_none_or(|selected| selected.contains(*month)))
             .flat_map(move |month| {
+                let masks = match self {
+                    Self::DaySets {
+                        selectors, scope, ..
+                    } => MonthDateMasks::compile(month, selectors, scope),
+                    Self::Single(_) | Self::Months { .. } => None,
+                };
                 let positions = match self {
-                    Self::MonthDays { days, weekday, .. } => {
-                        days.max_positions(month, weekday).unwrap_or(0)
-                    },
+                    Self::DaySets { .. } => masks.map_or(0, MonthDateMasks::max_positions),
                     Self::Single(_) | Self::Months { .. } => 1,
                 };
                 (1..=positions).filter_map(move |position| match self {
@@ -405,15 +411,9 @@ impl YearlyRules {
                     Self::Months {
                         day, at, through, ..
                     } => YearlyRule::new(month, day, at, through),
-                    Self::MonthDays {
-                        days,
-                        weekday,
-                        at,
-                        through,
-                        ..
-                    } => YearlyRule::new(
+                    Self::DaySets { at, through, .. } => YearlyRule::new(
                         month,
-                        RuleDay::MonthDaySet(days.select(position, weekday)?),
+                        RuleDay::SelectedDates(masks?.select(position)?),
                         at,
                         through,
                     ),
@@ -469,34 +469,32 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
     let parts = collect_parts(text, offset_from)?;
     if parts.month.is_none()
         && parts.month_days.is_none()
-        && let Some(term) = parts.weekday
-        && let Some(ordinal) = term.ordinal
+        && let Some(term) = parts.weekdays.and_then(WeekdaySet::single)
+        && let Some(ordinal) = term.ordinal()
     {
         return Some(YearlyRules::Single(YearlyRule::for_year_weekday(
-            term.weekday,
-            NthWeek::from_ordinal(ordinal)?,
+            term.weekday(),
+            ordinal,
             start.time(),
             parts.until,
         )));
     }
     let day = day_form(parts, start.date());
-    if day.is_none()
-        && let Some(days) = parts.month_days
-    {
-        let weekday = match parts.weekday {
-            None => None,
-            Some(WeekdayTerm {
-                ordinal: None,
-                weekday,
-            }) => Some(weekday),
-            Some(WeekdayTerm {
-                ordinal: Some(_), ..
-            }) => return None,
+    if day.is_none() {
+        let selectors = match (parts.month_days, parts.weekdays) {
+            (Some(days), weekdays) => DateSelectors::MonthDays { days, weekdays },
+            (None, Some(weekdays)) => DateSelectors::Weekdays(weekdays),
+            (None, None) => return None,
         };
-        return Some(YearlyRules::MonthDays {
+        let scope = if parts.month.is_some() {
+            WeekdayScope::Month
+        } else {
+            WeekdayScope::Year
+        };
+        return Some(YearlyRules::DaySets {
             months: parts.month,
-            days,
-            weekday,
+            selectors,
+            scope,
             at: start.time(),
             through: parts.until,
         });
@@ -521,8 +519,8 @@ struct RuleParts {
     yearly: bool,
     /// The explicit `BYMONTH` set, absent when the rule states none.
     month: Option<MonthSet>,
-    /// The one `BYDAY` entry, absent when the rule states none.
-    weekday: Option<WeekdayTerm>,
+    /// The nonempty `BYDAY` set, absent when the rule states none.
+    weekdays: Option<WeekdaySet>,
     /// The nonempty `BYMONTHDAY` set, absent when the rule states none.
     month_days: Option<MonthDaySet>,
     /// The last date the rule applies to, from `UNTIL`.
@@ -534,19 +532,10 @@ impl RuleParts {
     const EMPTY: Self = Self {
         yearly: false,
         month: None,
-        weekday: None,
+        weekdays: None,
         month_days: None,
         until: None,
     };
-}
-
-/// One `BYDAY` entry: an optional ordinal and the weekday it counts.
-#[derive(Clone, Copy, Debug)]
-struct WeekdayTerm {
-    /// Which occurrence, as `2SU` and `-1SU` write one; absent for a bare `SU`.
-    ordinal: Option<i8>,
-    /// The weekday.
-    weekday: Weekday,
 }
 
 /// Read every `name=value` term of a `RECUR` value, or refuse the whole of it.
@@ -587,8 +576,11 @@ fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcO
         return parts.month.is_some();
     }
     if name.eq_ignore_ascii_case(b"BYDAY") {
-        parts.weekday = weekday_term(value);
-        return parts.weekday.is_some();
+        if parts.weekdays.is_some() {
+            return false;
+        }
+        parts.weekdays = read_weekdays(value);
+        return parts.weekdays.is_some();
     }
     if name.eq_ignore_ascii_case(b"BYMONTHDAY") {
         if parts.month_days.is_some() {
@@ -617,41 +609,58 @@ fn read_month_days(value: &[u8]) -> Option<MonthDaySet> {
     days
 }
 
+fn read_weekdays(value: &[u8]) -> Option<WeekdaySet> {
+    let mut weekdays: Option<WeekdaySet> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let term = weekday_term(field)?;
+        weekdays = Some(match weekdays {
+            None => WeekdaySet::singleton(term)?,
+            Some(weekdays) => weekdays.with_term(term)?,
+        });
+    }
+    weekdays
+}
+
 /// Which day of its month a rule names, or `None` for a shape this crate does not evaluate.
 fn day_form(parts: RuleParts, start: CivilDate) -> Option<RuleDay> {
-    match (parts.weekday, parts.month_days) {
-        (Some(term), None) => nth_form(term),
-        (Some(term), Some(days)) => window_form(term, days),
+    if let Some(weekdays) = parts.weekdays {
+        let term = weekdays.single()?;
+        return match parts.month_days {
+            None => nth_form(term),
+            Some(days) => window_form(term, days),
+        };
+    }
+    match parts.month_days {
         // No day part at all: RFC 5545 section 3.3.10 takes the day from `DTSTART`.
         // A rule anchored on the 29th of February names nothing in three years of four, which the evaluation answers `None` to rather than moving to a nearby date.
-        (None, None) => Some(RuleDay::DayOfMonth(start.day())),
-        (None, Some(days)) if days.len() == 1 => fixed_form(days),
-        (None, Some(_)) => None,
+        None => Some(RuleDay::DayOfMonth(start.day())),
+        Some(days) if days.len() == 1 => fixed_form(days),
+        Some(_) => None,
     }
 }
 
 /// `BYDAY=2SU` and `BYDAY=-1SU`, which name one weekday of the month outright.
 fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
-    let week = NthWeek::from_ordinal(term.ordinal?)?;
+    let week = term.ordinal()?;
     Some(RuleDay::Nth {
-        weekday: term.weekday,
+        weekday: term.weekday(),
         week,
     })
 }
 
-/// `BYDAY=SU;BYMONTHDAY=8,..,14` and its two siblings, a weekday inside a window of a week.
+/// One weekday inside a contiguous seven-day month-day window.
 ///
 /// Positive windows keep their lower bound through [`RuleDay::OnOrAfter`].
 /// Its weekday shift is at most six days, and date construction rejects results outside the month.
 /// Negative days `-7` through `-1` select the month's last matching weekday.
 fn window_form(term: WeekdayTerm, month_days: MonthDaySet) -> Option<RuleDay> {
-    if term.ordinal.is_some() || month_days.len() != RUN_LENGTH {
+    if term.ordinal().is_some() || month_days.len() != RUN_LENGTH {
         return None;
     }
     let (low, highest) = month_days.contiguous_run()?;
     if highest == -1 {
         return Some(RuleDay::Nth {
-            weekday: term.weekday,
+            weekday: term.weekday(),
             week: NthWeek::Last,
         });
     }
@@ -659,7 +668,7 @@ fn window_form(term: WeekdayTerm, month_days: MonthDaySet) -> Option<RuleDay> {
         return None;
     }
     Some(RuleDay::OnOrAfter {
-        weekday: term.weekday,
+        weekday: term.weekday(),
         day: u8::try_from(low).ok()?,
     })
 }
@@ -709,23 +718,15 @@ fn month_day_number(value: &[u8]) -> Option<i8> {
     (-31..=31).contains(&number).then_some(number)
 }
 
-/// One `BYDAY` entry.
-///
-/// A list — `BYDAY=SA,SU` — is refused here rather than by a check of its own: whatever precedes the two-letter name has to be a number, and `SA,` is not one.
+/// One optional ordinal and its two-letter weekday.
 fn weekday_term(value: &[u8]) -> Option<WeekdayTerm> {
     let split = value.len().checked_sub(2)?;
     let (prefix, name) = value.split_at_checked(split)?;
     let weekday = weekday_of(name)?;
     if prefix.is_empty() {
-        return Some(WeekdayTerm {
-            ordinal: None,
-            weekday,
-        });
+        return WeekdayTerm::new(weekday, None);
     }
-    Some(WeekdayTerm {
-        ordinal: Some(signed_number(prefix)?),
-        weekday,
-    })
+    WeekdayTerm::new(weekday, Some(signed_number(prefix)?))
 }
 
 /// The weekday RFC 5545 section 3.3.10 spells `name`, compared as that section compares one.
@@ -1354,12 +1355,12 @@ END:VTIMEZONE
     fn a_rule_this_crate_does_not_evaluate_is_a_note_and_the_dtstart_still_stands() {
         let refused = [
             "FREQ=MONTHLY;BYMONTHDAY=1",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=SU",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=SUX",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=1",
             "FREQ=YEARLY;BYMONTH=3,13;BYDAY=-1SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
             "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-1SU",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-54SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,32",
             "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=13",
             "BYMONTH=3;BYDAY=2SU",

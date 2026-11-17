@@ -7,6 +7,7 @@
 //! The unpublished conformance helper also compiles these files to exercise the low-level adversarial corpus.
 //! The unified crate always includes VTIMEZONE support.
 
+mod annual_dates;
 mod answer;
 mod combine;
 mod exclusions;
@@ -19,6 +20,7 @@ mod resolve;
 mod rules;
 pub mod seam;
 mod series;
+mod weekdays;
 
 pub use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Duration, Instant, Limits, Meter, MonthAddOutcome,

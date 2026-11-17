@@ -181,13 +181,22 @@ Malformed values, empty entries, and repeated month parts produce an unsupported
 The [month set decision](adr/selected-month-sets-as-annual-patterns.md) records checked parsing and annual compilation.
 
 Embedded `BYMONTHDAY` lists combine positive and negative positions in the selected months.
-One nonnumeric `BYDAY` can intersect the resulting dates.
+`BYDAY` lists can intersect the resulting dates.
 Repeated values and coincident positive and negative positions produce one computed onset per date.
 Missing dates produce no computed onset, while the original anchor remains available.
 The reader retains compact scalar and seven-day window patterns and compiles other sets into at most 366 annual patterns.
 Every stored pattern consumes the existing observance budget.
 Malformed lists and repeated month-day parts produce an unsupported-rule diagnostic.
 The [month-day set decision](adr/month-day-sets-as-ranked-annual-patterns.md) records rank selection, duplicate handling, and storage bounds.
+
+Embedded yearly `BYDAY` lists combine nonnumeric weekdays and signed positions from `-53` through `-1` or `1` through `53`.
+Numeric positions keep their month or year scope before intersection with `BYMONTHDAY`.
+The date filter doesn't renumber weekday positions.
+Repeated terms and coincident dates produce one computed onset, and a nonnumeric weekday includes its numbered forms.
+Malformed lists and repeated weekday parts produce an unsupported-rule diagnostic.
+General date patterns compile into fourteen Gregorian year layouts while compact single patterns remain available.
+Each compiled mask retains its month binding.
+The [weekday set decision](adr/weekday-sets-as-calendar-year-masks.md) records compilation, lookup, and verification boundaries.
 
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).

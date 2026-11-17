@@ -278,8 +278,8 @@ fn unsupported_selectors_keep_one_anchor_and_one_note() {
         "BYMONTHDAY=1;COUNT=4",
         "BYMONTHDAY=1;INTERVAL=2",
         "BYMONTH=1,13;BYMONTHDAY=1",
-        "BYDAY=1MO;BYMONTHDAY=1",
-        "BYDAY=SU",
+        "BYDAY=54MO;BYMONTHDAY=1",
+        "BYDAY=SX",
         "RSCALE=CHINESE;BYMONTHDAY=1",
     ] {
         let (zones, meter, diagnostics) = read(parts, "20240101T020000", "", Limits::DEFAULT);

@@ -2,14 +2,9 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Resolve signed month-day sets into distinct dates before selecting an annual pattern.
+//! Store checked positive and negative month-day positions without duplicates.
 
-use core::num::{NonZeroU8, NonZeroU64};
-
-use crate::internal::core::{CivilDate, Weekday};
-use crate::internal::tz::rules::days_forward;
-
-const WEEKDAY_BITS: u32 = 0x1020_4081;
+use core::num::NonZeroU64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct MonthDaySet(NonZeroU64);
@@ -46,38 +41,7 @@ impl MonthDaySet {
         Some((first, last))
     }
 
-    pub(super) fn max_positions(self, month: u8, weekday: Option<Weekday>) -> Option<u8> {
-        let mut count = 0;
-        for year in [0, 1] {
-            let bits = self.for_length(CivilDate::days_in_month(year, month)?)?;
-            if weekday.is_some() {
-                for shift in 0..7 {
-                    let matching = bits & WEEKDAY_BITS.checked_shl(shift)?;
-                    count = count.max(matching.count_ones());
-                }
-            } else {
-                count = count.max(bits.count_ones());
-            }
-        }
-        u8::try_from(count).ok()
-    }
-
-    pub(super) fn select(
-        self,
-        position: u8,
-        weekday: Option<Weekday>,
-    ) -> Option<MonthDaySelection> {
-        if position > 31 {
-            return None;
-        }
-        Some(MonthDaySelection {
-            days: self,
-            position: NonZeroU8::new(position)?,
-            weekday,
-        })
-    }
-
-    fn for_length(self, length: u8) -> Option<u32> {
+    pub(super) fn for_length(self, length: u8) -> Option<u32> {
         if !(1..=31).contains(&length) {
             return None;
         }
@@ -89,35 +53,6 @@ impl MonthDaySet {
             .checked_shr(shift)?;
         let valid = u32::MAX.checked_shr(shift)?;
         Some((positive | negative) & valid)
-    }
-}
-
-/// One rank of a month-day set after an optional weekday restriction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MonthDaySelection {
-    days: MonthDaySet,
-    position: NonZeroU8,
-    weekday: Option<Weekday>,
-}
-
-impl MonthDaySelection {
-    pub(super) fn in_month(self, year: u16, month: u8) -> Option<CivilDate> {
-        let mut candidates = self
-            .days
-            .for_length(CivilDate::days_in_month(year, month)?)?;
-        if let Some(weekday) = self.weekday {
-            let first = CivilDate::from_ymd(year, month, 1)?.weekday()?;
-            let shift = u32::from(days_forward(first, weekday));
-            candidates &= WEEKDAY_BITS.checked_shl(shift)?;
-        }
-        for _ in 1..self.position.get() {
-            candidates &= candidates.checked_sub(1)?;
-        }
-        if candidates == 0 {
-            return None;
-        }
-        let day = u8::try_from(candidates.trailing_zeros().checked_add(1)?).ok()?;
-        CivilDate::from_ymd(year, month, day)
     }
 }
 

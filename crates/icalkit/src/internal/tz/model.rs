@@ -36,8 +36,8 @@ use crate::internal::core::{
     LimitExceeded, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
 
+use crate::internal::tz::annual_dates::AnnualDateSelection;
 use crate::internal::tz::ident::Tzid;
-use crate::internal::tz::month_days::MonthDaySelection;
 
 /// A signed weekday occurrence within the selected month or year.
 ///
@@ -125,8 +125,8 @@ pub enum RuleDay {
     },
     /// A day counted backward from the month's final day, with position one naming that day.
     FromMonthEnd(NonZeroU8),
-    /// A distinct date selected from signed month-day positions and an optional weekday.
-    MonthDaySet(MonthDaySelection),
+    /// A distinct date selected from a compiled Gregorian year layout.
+    SelectedDates(AnnualDateSelection),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -149,6 +149,7 @@ pub struct YearlyRule {
 
 impl YearlyRule {
     /// A rule for `month`, or `None` when there is no such month.
+    /// Compiled date masks must carry the same month.
     #[must_use]
     pub const fn new(
         month: u8,
@@ -157,6 +158,11 @@ impl YearlyRule {
         through: Option<CivilDate>,
     ) -> Option<Self> {
         if month == 0 || month > 12 {
+            return None;
+        }
+        if let RuleDay::SelectedDates(selection) = day
+            && selection.month() != month
+        {
             return None;
         }
         Some(Self {
@@ -183,7 +189,7 @@ impl YearlyRule {
         self.date
     }
 
-    /// The selected month, absent when the weekday ordinal counts within the year.
+    /// The compiled pattern's month, absent for a direct yearly weekday ordinal.
     #[must_use]
     pub const fn month(self) -> Option<u8> {
         match self.date {

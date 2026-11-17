@@ -135,7 +135,7 @@ fn unsupported_ordinals_keep_the_anchor_and_diagnostic() {
         "BYDAY=-54SU",
         "BYMONTH=3;BYDAY=54SU",
         "BYMONTH=3;BYDAY=-54SU",
-        "BYMONTH=3;BYDAY=-2SU,-1SU",
+        "BYMONTH=3;BYDAY=-2SU,-54SU",
         "BYMONTH=3;BYDAY=-2SU;COUNT=5",
     ] {
         let (observance, diagnostics) = read(parts, "20200322T020000");

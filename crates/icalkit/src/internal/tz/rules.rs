@@ -102,7 +102,7 @@ fn day_in_month(year: u16, month: u8, form: RuleDay) -> Option<CivilDate> {
                 .checked_sub(position.get())?;
             CivilDate::from_ymd(year, month, day)
         },
-        RuleDay::MonthDaySet(selection) => selection.in_month(year, month),
+        RuleDay::SelectedDates(selection) => selection.in_year(year),
     }
 }
 
@@ -117,7 +117,7 @@ fn nth_weekday_in(year: u16, month: u8, weekday: Weekday, week: NthWeek) -> Opti
     )
 }
 
-fn nth_weekday_between(
+pub(super) fn nth_weekday_between(
     first: CivilDate,
     last: CivilDate,
     weekday: Weekday,

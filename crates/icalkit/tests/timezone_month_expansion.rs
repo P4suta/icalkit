@@ -399,3 +399,133 @@ fn month_day_sets_intersect_weekdays_in_negative_windows() {
         ]
     );
 }
+
+#[test]
+fn bare_weekday_lists_apply_each_stated_weekday() {
+    let timezone = timezone(
+        "20240101T020000",
+        "BYDAY=MO,TH",
+        "20240102T030000",
+        "BYDAY=TU,FR",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20240605T090000",
+            "20240605T000000Z",
+            "20240608T000000Z"
+        ),
+        [
+            at("2024-06-05T09:00:00Z"),
+            at("2024-06-06T08:00:00Z"),
+            at("2024-06-07T09:00:00Z")
+        ]
+    );
+}
+
+fn alternating_weekday_ordinals() -> String {
+    timezone(
+        "20240107T020000",
+        "BYMONTH=1,2,3,4,5,6,7,8,9,10,11,12;BYDAY=1SU,3SU",
+        "20240114T030000",
+        "BYMONTH=1,2,3,4,5,6,7,8,9,10,11,12;BYDAY=2SU,4SU",
+    )
+}
+
+#[test]
+fn ordinal_weekday_lists_apply_later_month_transitions() {
+    assert_eq!(
+        starts(
+            &alternating_weekday_ordinals(),
+            "20240615T090000",
+            "20240615T000000Z",
+            "20240618T000000Z"
+        ),
+        [
+            at("2024-06-15T09:00:00Z"),
+            at("2024-06-16T08:00:00Z"),
+            at("2024-06-17T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn ordinal_weekday_lists_apply_later_standard_transitions() {
+    assert_eq!(
+        starts(
+            &alternating_weekday_ordinals(),
+            "20240622T090000",
+            "20240622T000000Z",
+            "20240625T000000Z"
+        ),
+        [
+            at("2024-06-22T08:00:00Z"),
+            at("2024-06-23T09:00:00Z"),
+            at("2024-06-24T09:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn year_scoped_weekday_lists_apply_later_ordinals() {
+    let timezone = timezone(
+        "20240101T020000",
+        "BYDAY=1MO,20MO",
+        "20240304T030000",
+        "BYDAY=10MO,30MO",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20240512T090000",
+            "20240512T000000Z",
+            "20240515T000000Z"
+        ),
+        [
+            at("2024-05-12T09:00:00Z"),
+            at("2024-05-13T08:00:00Z"),
+            at("2024-05-14T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn numeric_weekdays_intersect_the_stated_month_days() {
+    let timezone = timezone(
+        "20240303T020000",
+        "BYMONTH=3,9;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=1SU",
+        "20240407T030000",
+        "BYMONTH=4,10;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=1SU",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20240831T090000",
+            "20240831T000000Z",
+            "20240903T000000Z"
+        ),
+        [
+            at("2024-08-31T09:00:00Z"),
+            at("2024-09-01T08:00:00Z"),
+            at("2024-09-02T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn queries_use_later_weekdays_in_a_list() {
+    let calendar = calendar("20240616T090000");
+    let engine = Engine::builder().zone_database(NoExternalZones).build();
+    let mut session = engine.session();
+    for (start, end, expected) in [
+        ("20240616T075500Z", "20240616T080500Z", Match::Matched),
+        ("20240616T085500Z", "20240616T090500Z", Match::Unmatched),
+    ] {
+        assert_eq!(
+            query(&alternating_weekday_ordinals(), start, end)
+                .matches(&mut session, &calendar)
+                .unwrap(),
+            expected
+        );
+    }
+}
