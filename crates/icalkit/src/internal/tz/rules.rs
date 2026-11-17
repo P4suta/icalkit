@@ -66,7 +66,7 @@ impl Observance {
     /// Resolving it against an offset is the caller's step and not this one's.
     ///
     /// A date-driven observance — one `RDATE` out of a table — transitions in its own year and in no other, which is how a table running out becomes visible here as a plain `None` rather than as the final state quietly continuing.
-    /// Rule-driven onsets use interval years counted from `DTSTART` and exclude dates before that anchor.
+    /// Rule-driven onsets align their generating years with `DTSTART` and exclude earlier dates.
     /// Missing dates don't shift the interval.
     #[must_use]
     pub fn transition_in(self, year: u16) -> Option<CivilDateTime> {
@@ -75,10 +75,7 @@ impl Observance {
         let Some(rule) = self.rule() else {
             return anchor;
         };
-        if !rule
-            .year_interval()
-            .contains(self.start().date().year(), year)
-        {
+        if !rule.aligned_in(self.start().date(), year) {
             return anchor;
         }
         let Some(date) = rule.occurrence_in(year) else {

@@ -39,6 +39,7 @@ use crate::internal::core::{
 use crate::internal::tz::annual_dates::AnnualDateSelection;
 use crate::internal::tz::ident::Tzid;
 use crate::internal::tz::year_intervals::YearInterval;
+use crate::internal::tz::year_layouts::YearOffset;
 
 /// A signed weekday occurrence within the selected month or year.
 ///
@@ -200,6 +201,81 @@ impl YearlyRule {
 
     pub(super) const fn year_interval(self) -> YearInterval {
         self.interval
+    }
+
+    pub(super) fn first_year(self, anchor: CivilDate) -> Option<i32> {
+        match self.date {
+            RuleDate::Month {
+                day: RuleDay::SelectedDates(dates),
+                ..
+            } => dates.first_year(anchor),
+            RuleDate::Month { .. } | RuleDate::YearWeekday { .. } => Some(i32::from(anchor.year())),
+        }
+    }
+
+    fn period_year(self, calendar: u16) -> Option<i32> {
+        match self.date {
+            RuleDate::Month {
+                day: RuleDay::SelectedDates(dates),
+                ..
+            } => dates.period_year(calendar),
+            RuleDate::Month { .. } | RuleDate::YearWeekday { .. } => Some(i32::from(calendar)),
+        }
+    }
+
+    fn calendar_year(self, period: i32) -> Option<u16> {
+        match self.date {
+            RuleDate::Month {
+                day: RuleDay::SelectedDates(dates),
+                ..
+            } => dates.calendar_year(period),
+            RuleDate::Month { .. } | RuleDate::YearWeekday { .. } => {
+                YearOffset::Same.calendar_year(period)
+            },
+        }
+    }
+
+    pub(super) fn aligned_in(self, anchor: CivilDate, calendar: u16) -> bool {
+        self.first_year(anchor)
+            .zip(self.period_year(calendar))
+            .is_some_and(|(first, year)| self.year_interval().contains(first, year))
+    }
+
+    pub(super) fn prior_calendar_years(
+        self,
+        anchor: CivilDate,
+        limit: u16,
+    ) -> impl Iterator<Item = u16> {
+        self.first_year(anchor)
+            .zip(self.period_year(limit))
+            .into_iter()
+            .flat_map(move |(first, last)| self.interval.prior_years(first, last))
+            .filter_map(move |year| self.calendar_year(year))
+    }
+
+    pub(super) fn boundary_calendar_years(
+        self,
+        anchor: CivilDate,
+        limit: u16,
+    ) -> impl Iterator<Item = u16> {
+        let bounds = self.first_year(anchor).zip(self.period_year(limit));
+        let years = match self.date {
+            RuleDate::Month {
+                day: RuleDay::SelectedDates(dates),
+                ..
+            } => dates.boundary_years(),
+            RuleDate::Month { .. } | RuleDate::YearWeekday { .. } => None,
+        };
+        years
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter(move |year| {
+                bounds.is_some_and(|(first, last)| {
+                    *year >= first && *year <= last && self.interval.contains(first, *year)
+                })
+            })
+            .filter_map(move |year| self.calendar_year(year))
     }
 
     /// The compiled pattern's month, absent for a direct yearly weekday ordinal.

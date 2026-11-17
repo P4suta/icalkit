@@ -7,16 +7,17 @@
 use alloc::boxed::Box;
 use core::num::{NonZeroU8, NonZeroU16};
 
-use crate::internal::core::{CivilDate, CivilTime};
+use crate::internal::core::{CivilDate, CivilTime, Weekday};
+use crate::internal::tz::annual_counts::AnnualCandidates;
 use crate::internal::tz::annual_positions::AnnualPositions;
 use crate::internal::tz::model::{RuleDay, YearlyRule};
 use crate::internal::tz::month_days::MonthDaySet;
 use crate::internal::tz::weekdays::{WeekdayScope, WeekdaySet};
 use crate::internal::tz::year_intervals::YearInterval;
-
-const YEAR_LAYOUTS: [u16; 14] = [
-    2001, 2002, 2003, 2009, 2010, 2005, 2006, 2024, 2008, 2020, 2004, 2016, 2000, 2012,
-];
+use crate::internal::tz::year_layouts::{
+    BOUNDARY_YEARS, WEEK_LAYOUTS, YEAR_LAYOUTS, YearOffset, calendar_layout as year_layout,
+    week_layout, week_year,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DateSelectors {
@@ -117,6 +118,13 @@ impl YearDateMasks {
         Some(Self { layouts })
     }
 
+    pub(super) fn contains(&self, date: CivilDate) -> Option<bool> {
+        let row = self.layouts.get(year_layout(date.year())?)?;
+        let mask = row.get(usize::from(date.month().checked_sub(1)?))?;
+        let bit = 1_u32.checked_shl(u32::from(date.day().checked_sub(1)?))?;
+        Some(mask & bit != 0)
+    }
+
     pub(super) fn year_count(&self, year: u16) -> Option<u32> {
         self.layouts
             .get(year_layout(year)?)?
@@ -173,12 +181,13 @@ impl YearDateMasks {
         };
         // Four hundred aligned periods cover every reachable Gregorian layout.
         for period in 0..=final_period.min(400) {
-            kept.include_year(self, interval.year_at(first.year(), period)?, first, last)?;
+            let year = u16::try_from(interval.year_at(first.year(), period)?).ok()?;
+            kept.include_year(self, year, first, last)?;
         }
         if final_period > 400 {
             kept.include_year(
                 self,
-                interval.year_at(first.year(), final_period)?,
+                u16::try_from(interval.year_at(first.year(), final_period)?).ok()?,
                 first,
                 last,
             )?;
@@ -254,11 +263,38 @@ impl YearDateMasks {
     }
 }
 
+impl AnnualCandidates for YearDateMasks {
+    fn first_year(&self, start: CivilDate) -> Option<i32> {
+        Some(i32::from(start.year()))
+    }
+    fn last_year(&self) -> i32 {
+        9999
+    }
+    fn periodic_range(&self) -> (i32, i32) {
+        (0, 9999)
+    }
+    fn year_count(&self, year: i32) -> Option<u32> {
+        YearDateMasks::year_count(self, u16::try_from(year).ok()?)
+    }
+    fn count_through(&self, year: i32, date: CivilDate) -> Option<u32> {
+        if year != i32::from(date.year()) {
+            return None;
+        }
+        YearDateMasks::count_through(self, date)
+    }
+    fn date_at(&self, year: i32, position: u32) -> Option<CivilDate> {
+        YearDateMasks::date_at(self, u16::try_from(year).ok()?, position)
+    }
+}
+
 fn through_day(day: u8) -> Option<u32> {
     1_u32.checked_shl(u32::from(day))?.checked_sub(1)
 }
 
-fn select_positions(dates: &mut [u32; 12], positions: AnnualPositions) -> Option<()> {
+pub(super) fn select_positions<const N: usize>(
+    dates: &mut [u32; N],
+    positions: AnnualPositions,
+) -> Option<()> {
     let extent = dates.iter().try_fold(0_u16, |total, mask| {
         total.checked_add(u16::try_from(mask.count_ones()).ok()?)
     })?;
@@ -296,40 +332,114 @@ impl MonthDateMasks {
         if position > self.max_positions() {
             return None;
         }
-        Some(AnnualDateSelection {
+        Some(AnnualDateSelection(SelectedLayouts::Calendar {
             dates: self,
             position: NonZeroU8::new(u8::try_from(position).ok()?)?,
-        })
+        }))
     }
 }
 
 /// One distinct date in a compiled month across Gregorian year layouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AnnualDateSelection {
-    dates: MonthDateMasks,
-    position: NonZeroU8,
+pub struct AnnualDateSelection(SelectedLayouts);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum SelectedLayouts {
+    Calendar {
+        dates: MonthDateMasks,
+        position: NonZeroU8,
+    },
+    WeekYear {
+        month: NonZeroU8,
+        offset: YearOffset,
+        start: Weekday,
+        position: NonZeroU8,
+        days: [u8; WEEK_LAYOUTS],
+    },
 }
 
 impl AnnualDateSelection {
     pub(super) const fn month(self) -> u8 {
-        self.dates.month.get()
+        match self.0 {
+            SelectedLayouts::Calendar { dates, .. } => dates.month.get(),
+            SelectedLayouts::WeekYear { month, .. } => month.get(),
+        }
     }
 
     pub(super) fn in_year(self, year: u16) -> Option<CivilDate> {
-        let mut candidates = *self.dates.masks.get(year_layout(year)?)?;
-        for _ in 1..self.position.get() {
-            candidates &= candidates.checked_sub(1)?;
-        }
-        if candidates == 0 {
+        let day = match self.0 {
+            SelectedLayouts::Calendar { dates, position } => {
+                selected_day(*dates.masks.get(year_layout(year)?)?, position.get())?
+            },
+            SelectedLayouts::WeekYear { offset, days, .. } => {
+                *days.get(week_layout(offset.period_year(year)?)?)?
+            },
+        };
+        CivilDate::from_ymd(year, self.month(), day)
+    }
+
+    pub(super) fn for_week_dates(
+        month: u8,
+        offset: YearOffset,
+        start: Weekday,
+        position: u32,
+        masks: [u32; WEEK_LAYOUTS],
+    ) -> Option<Self> {
+        if !(1..=12).contains(&month) {
             return None;
         }
-        let day = u8::try_from(candidates.trailing_zeros().checked_add(1)?).ok()?;
-        CivilDate::from_ymd(year, self.month(), day)
+        let position = NonZeroU8::new(u8::try_from(position).ok()?)?;
+        let mut days = [0; WEEK_LAYOUTS];
+        for (index, mask) in masks.into_iter().enumerate() {
+            *days.get_mut(index)? = selected_day(mask, position.get()).unwrap_or(0);
+        }
+        if days.iter().all(|day| *day == 0) {
+            return None;
+        }
+        Some(Self(SelectedLayouts::WeekYear {
+            month: NonZeroU8::new(month)?,
+            offset,
+            start,
+            position,
+            days,
+        }))
+    }
+
+    pub(super) fn first_year(self, anchor: CivilDate) -> Option<i32> {
+        match self.0 {
+            SelectedLayouts::Calendar { .. } => Some(i32::from(anchor.year())),
+            SelectedLayouts::WeekYear { start, .. } => week_year(anchor, start),
+        }
+    }
+
+    pub(super) fn period_year(self, calendar: u16) -> Option<i32> {
+        match self.0 {
+            SelectedLayouts::Calendar { .. } => Some(i32::from(calendar)),
+            SelectedLayouts::WeekYear { offset, .. } => offset.period_year(calendar),
+        }
+    }
+
+    pub(super) fn calendar_year(self, period: i32) -> Option<u16> {
+        match self.0 {
+            SelectedLayouts::Calendar { .. } => YearOffset::Same.calendar_year(period),
+            SelectedLayouts::WeekYear { offset, .. } => offset.calendar_year(period),
+        }
+    }
+
+    pub(super) const fn boundary_years(self) -> Option<[i32; 4]> {
+        match self.0 {
+            SelectedLayouts::Calendar { .. } => None,
+            SelectedLayouts::WeekYear { .. } => Some(BOUNDARY_YEARS),
+        }
     }
 }
 
-fn year_layout(year: u16) -> Option<usize> {
-    let weekday = usize::from(CivilDate::from_ymd(year, 1, 1)?.weekday()?.index());
-    let leap = CivilDate::days_in_month(year, 2)? == 29;
-    weekday.checked_add(if leap { 7 } else { 0 })
+fn selected_day(mut candidates: u32, position: u8) -> Option<u8> {
+    for _ in 1..position {
+        candidates &= candidates.checked_sub(1)?;
+    }
+    if candidates == 0 {
+        return None;
+    }
+    u8::try_from(candidates.trailing_zeros().checked_add(1)?).ok()
 }

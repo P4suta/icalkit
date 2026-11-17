@@ -207,7 +207,7 @@ Explicit dates remain separate from recurrence position selection.
 Malformed lists and repeated year-day or set-position parts produce an unsupported-rule diagnostic while preserving the anchor.
 Signed positions accept one to three digits without changing the original source spelling.
 Compiled patterns keep month bindings, clocks, offsets, and resource charges.
-Week numbers and nonannual frequencies remain outside the embedded compiler's supported subset.
+Nonannual frequencies and explicit time selectors remain outside the embedded compiler's supported subset.
 The [annual selection decision](adr/annual-selection-before-month-patterns.md) records full-year compilation and bounded lookup.
 
 Embedded recurrence rules require unique part names under [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
@@ -224,10 +224,10 @@ Matching ends compile to inclusive wall dates without changing pattern charges o
 Malformed or repeated controls refuse the whole rule and preserve its anchor and explicit dates.
 
 Embedded yearly intervals use the shared positive decimal decoder and accept values from `1` through `4294967295`.
-Every compiled pattern counts interval years from the original `DTSTART` year.
+Calendar patterns count interval years from the original `DTSTART` calendar year.
 Missing dates don't restart the interval.
 `BYSETPOS` continues to select within one calendar year, and explicit dates keep their stated years.
-Lookup skips directly between aligned years and examines at most 403 years per pattern.
+Calendar pattern lookup skips directly between aligned years and examines at most 403 years per pattern.
 The Gregorian calendar cycle and UTC year boundaries define the search ceiling.
 Stored patterns keep their existing resource charges.
 The [year alignment decision](adr/year-aligned-embedded-transitions.md) records the search bound and independent enumeration checks.
@@ -243,6 +243,22 @@ Representable ends keep only patterns with future dates between the anchor and f
 A singleton count stores one source anchor without unused recurrence patterns.
 The [counted onset decision](adr/counted-onsets-as-date-bounds.md) records the storage and admission tradeoffs.
 Independent date enumeration and public CalDAV tests cover global counts, aliases, sparse intervals, explicit dates, numeric bounds, and civil boundaries.
+
+Embedded yearly `BYWEEKNO` lists accept signed positions from `-53` through `-1` or `1` through `53`.
+Week one contains at least four days of its numbered year, starting on `WKST` or Monday by default.
+Missing day selectors use the source weekday.
+Month, year-day, month-day, and nonnumeric weekday filters intersect within the complete week-numbering year before `BYSETPOS`.
+The compiler refuses numeric weekday terms even when another term would hide them during normalization.
+Intervals start in the week-numbering year containing `DTSTART`.
+Compiled calendar-month patterns keep the generating-year offset, while lookup returns actual calendar dates.
+Twenty-eight Gregorian layouts distinguish January weekdays and neighboring leap years.
+Four civil-boundary periods exclude unwritable dates before position selection.
+Count summaries skip only periodic years and inspect boundary periods with their actual candidate counts.
+UTC ends must match the selected date, clock, and generating-year phase.
+Source anchors and explicit dates keep their independent onsets and resource charges.
+One week-numbered rule stores at most 372 patterns, with at most 407 lookup probes per pattern.
+The [week projection decision](adr/week-numbered-observances-as-calendar-patterns.md) records the layout and lookup bounds.
+Forward enumeration and CalDAV wire tests cover Gregorian cycles, every week start, signed aliases, source-week boundaries, count limits, and civil endpoints.
 
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).

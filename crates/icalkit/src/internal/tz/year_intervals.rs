@@ -24,29 +24,37 @@ impl YearInterval {
         self.0
     }
 
-    pub(super) fn periods_through(self, first: u16, last: u16) -> Option<u32> {
-        u32::from(last.checked_sub(first)?).checked_div(self.0.get())
+    pub(super) fn periods_through(
+        self,
+        first: impl Into<i32>,
+        last: impl Into<i32>,
+    ) -> Option<u32> {
+        u32::try_from(last.into().checked_sub(first.into())?)
+            .ok()?
+            .checked_div(self.0.get())
     }
 
-    pub(super) fn year_at(self, first: u16, period: u32) -> Option<u16> {
+    pub(super) fn year_at(self, first: impl Into<i32>, period: u32) -> Option<i32> {
         let distance = period.checked_mul(self.0.get())?;
-        u16::try_from(u32::from(first).checked_add(distance)?).ok()
+        i32::try_from(i64::from(first.into()).checked_add(i64::from(distance))?).ok()
     }
 
-    pub(super) fn contains(self, first: u16, year: u16) -> bool {
-        year.checked_sub(first)
-            .and_then(|distance| u32::from(distance).checked_rem(self.0.get()))
+    pub(super) fn contains(self, first: impl Into<i32>, year: impl Into<i32>) -> bool {
+        year.into()
+            .checked_sub(first.into())
+            .and_then(|distance| u32::try_from(distance).ok())
+            .and_then(|distance| distance.checked_rem(self.0.get()))
             .is_some_and(|remainder| remainder == 0)
     }
 
-    pub(super) fn prior_years(self, first: u16, limit: u16) -> impl Iterator<Item = u16> {
+    pub(super) fn prior_years(self, first: i32, limit: i32) -> impl Iterator<Item = i32> {
         let current = self
             .periods_through(first, limit)
             .and_then(|period| self.year_at(first, period));
         core::iter::successors(current, move |year| {
-            u32::from(*year)
-                .checked_sub(self.0.get())
-                .and_then(|year| u16::try_from(year).ok())
+            i64::from(*year)
+                .checked_sub(i64::from(self.0.get()))
+                .and_then(|year| i32::try_from(year).ok())
                 .filter(|year| *year >= first)
         })
         .take(MAX_PROBES)

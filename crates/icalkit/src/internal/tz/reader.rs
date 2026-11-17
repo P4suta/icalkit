@@ -18,7 +18,7 @@
 //!
 //! The one place untrusted zone text becomes a model, and therefore the only place in this crate that charges a meter.
 //! Each `STANDARD` and `DAYLIGHT` subcomponent contributes its `DTSTART` anchor and explicit `RDATE` transitions.
-//! A supported `RRULE` compiles into at most 366 annual patterns sharing that anchor.
+//! A supported `RRULE` compiles into at most 366 calendar patterns or 372 week patterns sharing that anchor.
 //! Explicit dates and computed onsets contribute to the same transition set.
 //!
 //! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no prefix stripping, no alias lookup.
@@ -54,7 +54,7 @@
 //!
 //! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`].
 //! The input byte ceiling bounds source components and explicit dates.
-//! Each accepted rule emits at most 366 stored annual patterns before table admission.
+//! Calendar rules emit at most 366 stored patterns and week-numbered rules at most 372 before table admission.
 //! The table sorts all patterns and explicit dates before enforcing the observance bound.
 //! Cutting the list short before the table sees it would move the truncation point off the sorted order the table truncates in, which is how a table acquires a hole in the middle instead of an earlier end.
 //!
@@ -83,6 +83,7 @@ use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
 };
 use crate::internal::tz::month_days::MonthDaySet;
+use crate::internal::tz::week_years::{WeekNumbers, WeekYearMasks};
 use crate::internal::tz::weekdays::{WeekdayScope, WeekdaySet, WeekdayTerm};
 use crate::internal::tz::year_intervals::YearInterval;
 
@@ -379,19 +380,27 @@ enum YearlyPatterns {
         at: CivilTime,
         through: Option<CivilDate>,
     },
+    WeekDates {
+        dates: Box<WeekYearMasks>,
+        at: CivilTime,
+        through: Option<CivilDate>,
+    },
 }
 
 impl YearlyPatterns {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
-        let (single, monthly, compiled) = match self {
-            Self::Single(rule) => (Some(rule), None, None),
+        let (single, monthly, compiled, weeks) = match self {
+            Self::Single(rule) => (Some(rule), None, None, None),
             Self::Months {
                 months,
                 day,
                 at,
                 through,
-            } => (None, Some((months, day, at, through)), None),
-            Self::DaySets { dates, at, through } => (None, None, Some((dates, at, through))),
+            } => (None, Some((months, day, at, through)), None, None),
+            Self::DaySets { dates, at, through } => (None, None, Some((dates, at, through)), None),
+            Self::WeekDates { dates, at, through } => {
+                (None, None, None, Some((dates, at, through)))
+            },
         };
         single
             .into_iter()
@@ -402,6 +411,11 @@ impl YearlyPatterns {
             }))
             .chain(
                 compiled
+                    .into_iter()
+                    .flat_map(|(dates, at, through)| dates.into_rules(at, through)),
+            )
+            .chain(
+                weeks
                     .into_iter()
                     .flat_map(|(dates, at, through)| dates.into_rules(at, through)),
             )
@@ -466,11 +480,20 @@ fn validate_until(parts: &RuleParts, start: CivilDateTime, offset_from: UtcOffse
         return Some(());
     };
     let expected = CivilDateTime::new(last.date(), start.time());
-    if expected < start
-        || expected.at_offset(offset_from)? != last.at_offset(offset_from)?
-        || !parts
-            .interval
-            .contains(start.date().year(), last.date().year())
+    if expected < start || expected.at_offset(offset_from)? != last.at_offset(offset_from)? {
+        return None;
+    }
+    if parts.week_numbers.is_some() {
+        let dates = compile_week_masks(parts, start)?;
+        return (parts.interval.contains(
+            dates.period_year(start.date())?,
+            dates.period_year(last.date())?,
+        ) && dates.contains(last.date())?)
+        .then_some(());
+    }
+    if !parts
+        .interval
+        .contains(start.date().year(), last.date().year())
     {
         return None;
     }
@@ -480,6 +503,9 @@ fn validate_until(parts: &RuleParts, start: CivilDateTime, offset_from: UtcOffse
 }
 
 fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    if parts.week_numbers.is_some() {
+        return compile_week_patterns(parts, start);
+    }
     if let RuleEnd::Count(count) = parts.end {
         return compile_counted(parts, start, count);
     }
@@ -513,6 +539,49 @@ fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPat
     }
     YearlyRule::new(start.date().month(), day, start.time(), parts.end.until())
         .map(YearlyPatterns::Single)
+}
+
+fn compile_week_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    let mut dates = compile_week_masks(parts, start)?;
+    let through = if let RuleEnd::Count(count) = parts.end {
+        match counted_end(&dates, start.date(), parts.interval, count)? {
+            CountEnd::Within(last) => {
+                dates.retain_after(start.date(), last, parts.interval)?;
+                Some(last)
+            },
+            CountEnd::BeyondCivilRange => None,
+        }
+    } else {
+        parts.end.until()
+    };
+    Some(YearlyPatterns::WeekDates {
+        dates: Box::new(dates),
+        at: start.time(),
+        through,
+    })
+}
+
+fn compile_week_masks(parts: &RuleParts, start: CivilDateTime) -> Option<WeekYearMasks> {
+    if parts.numeric_weekdays {
+        return None;
+    }
+    let default = DateSelectors::Weekdays(WeekdaySet::singleton(WeekdayTerm::new(
+        start.date().weekday()?,
+        None,
+    )?)?);
+    let selectors = date_selectors(parts, default);
+    let scope = if parts.month.is_some() {
+        WeekdayScope::Month
+    } else {
+        WeekdayScope::Year
+    };
+    let filters = YearDateMasks::compile(parts.month, selectors, scope, None)?;
+    WeekYearMasks::compile(
+        &filters,
+        parts.week_numbers?,
+        parts.week_start,
+        parts.set_positions,
+    )
 }
 
 fn compile_counted(
@@ -554,7 +623,21 @@ fn compile_date_masks(parts: &RuleParts, start: CivilDateTime) -> Option<YearDat
     } else {
         parts.month
     };
-    let selectors = if let Some(days) = parts.year_days {
+    let default = DateSelectors::MonthDays {
+        days: MonthDaySet::singleton(i8::try_from(start.date().day()).ok()?)?,
+        weekdays: None,
+    };
+    let selectors = date_selectors(parts, default);
+    let scope = if parts.month.is_some() {
+        WeekdayScope::Month
+    } else {
+        WeekdayScope::Year
+    };
+    YearDateMasks::compile(months, selectors, scope, parts.set_positions)
+}
+
+fn date_selectors(parts: &RuleParts, default: DateSelectors) -> DateSelectors {
+    if let Some(days) = parts.year_days {
         DateSelectors::YearDays {
             days,
             month_days: parts.month_days,
@@ -564,18 +647,9 @@ fn compile_date_masks(parts: &RuleParts, start: CivilDateTime) -> Option<YearDat
         match (parts.month_days, parts.weekdays) {
             (Some(days), weekdays) => DateSelectors::MonthDays { days, weekdays },
             (None, Some(weekdays)) => DateSelectors::Weekdays(weekdays),
-            (None, None) => DateSelectors::MonthDays {
-                days: MonthDaySet::singleton(i8::try_from(start.date().day()).ok()?)?,
-                weekdays: None,
-            },
+            (None, None) => default,
         }
-    };
-    let scope = if parts.month.is_some() {
-        WeekdayScope::Month
-    } else {
-        WeekdayScope::Year
-    };
-    YearDateMasks::compile(months, selectors, scope, parts.set_positions)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -614,10 +688,13 @@ struct RuleParts {
     /// Nothing else is a transition rule.
     yearly: bool,
     interval: YearInterval,
+    week_start: Weekday,
+    week_numbers: Option<WeekNumbers>,
     /// The explicit `BYMONTH` set, absent when the rule states none.
     month: Option<MonthSet>,
     /// The nonempty `BYDAY` set, absent when the rule states none.
     weekdays: Option<WeekdaySet>,
+    numeric_weekdays: bool,
     /// The nonempty `BYMONTHDAY` set, absent when the rule states none.
     month_days: Option<MonthDaySet>,
     /// The nonempty `BYYEARDAY` set, absent when the rule states none.
@@ -632,8 +709,11 @@ impl RuleParts {
     const EMPTY: Self = Self {
         yearly: false,
         interval: YearInterval::YEARLY,
+        week_start: Weekday::Monday,
+        week_numbers: None,
         month: None,
         weekdays: None,
+        numeric_weekdays: false,
         month_days: None,
         year_days: None,
         set_positions: None,
@@ -646,6 +726,7 @@ enum RulePartName {
     Frequency,
     Interval,
     WeekStart,
+    WeekNumber,
     Month,
     Weekday,
     MonthDay,
@@ -656,10 +737,11 @@ enum RulePartName {
 }
 
 impl RulePartName {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Frequency,
         Self::Interval,
         Self::WeekStart,
+        Self::WeekNumber,
         Self::Month,
         Self::Weekday,
         Self::MonthDay,
@@ -681,6 +763,7 @@ impl RulePartName {
             Self::Frequency => b"FREQ",
             Self::Interval => b"INTERVAL",
             Self::WeekStart => b"WKST",
+            Self::WeekNumber => b"BYWEEKNO",
             Self::Month => b"BYMONTH",
             Self::Weekday => b"BYDAY",
             Self::MonthDay => b"BYMONTHDAY",
@@ -729,14 +812,28 @@ fn take_part(
             },
             Err(_) => false,
         },
-        RulePartName::WeekStart => weekday_of(value).is_some(),
+        RulePartName::WeekStart => match weekday_of(value) {
+            Some(start) => {
+                parts.week_start = start;
+                true
+            },
+            None => false,
+        },
+        RulePartName::WeekNumber => {
+            parts.week_numbers = read_week_numbers(value);
+            parts.week_numbers.is_some()
+        },
         RulePartName::Month => {
             parts.month = read_months(value);
             parts.month.is_some()
         },
-        RulePartName::Weekday => {
-            parts.weekdays = read_weekdays(value);
-            parts.weekdays.is_some()
+        RulePartName::Weekday => match read_weekdays(value) {
+            Some(reading) => {
+                parts.weekdays = Some(reading.days);
+                parts.numeric_weekdays = reading.numeric;
+                true
+            },
+            None => false,
         },
         RulePartName::MonthDay => {
             parts.month_days = read_month_days(value);
@@ -798,16 +895,38 @@ fn read_month_days(value: &[u8]) -> Option<MonthDaySet> {
     days
 }
 
-fn read_weekdays(value: &[u8]) -> Option<WeekdaySet> {
+fn read_week_numbers(value: &[u8]) -> Option<WeekNumbers> {
+    let mut weeks: Option<WeekNumbers> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let number = signed_number::<2>(field)?;
+        weeks = Some(match weeks {
+            None => WeekNumbers::singleton(number)?,
+            Some(weeks) => weeks.with_number(number)?,
+        });
+    }
+    weeks
+}
+
+struct WeekdayReading {
+    days: WeekdaySet,
+    numeric: bool,
+}
+
+fn read_weekdays(value: &[u8]) -> Option<WeekdayReading> {
     let mut weekdays: Option<WeekdaySet> = None;
+    let mut numeric = false;
     for field in value.split(|octet| *octet == b',') {
         let term = weekday_term(field)?;
+        numeric |= term.ordinal().is_some();
         weekdays = Some(match weekdays {
             None => WeekdaySet::singleton(term)?,
             Some(weekdays) => weekdays.with_term(term)?,
         });
     }
-    weekdays
+    Some(WeekdayReading {
+        days: weekdays?,
+        numeric,
+    })
 }
 
 /// Which day of its month a rule names, or `None` for a shape this crate does not evaluate.
@@ -1550,7 +1669,7 @@ END:VTIMEZONE
             "FREQ=YEARLY;INTERVAL=0;BYMONTH=3;BYDAY=2SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-54SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,32",
-            "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=13",
+            "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=0",
             "BYMONTH=3;BYDAY=2SU",
         ];
         for rule in refused {

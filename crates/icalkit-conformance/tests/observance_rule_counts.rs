@@ -364,6 +364,22 @@ fn finite_cutoffs_keep_the_anchor_years_remaining_candidates() {
 }
 
 #[test]
+fn empty_date_patterns_keep_their_source_at_the_civil_endpoint() {
+    for parts in [
+        "COUNT=2;BYMONTH=2;BYMONTHDAY=30",
+        "COUNT=2;INTERVAL=400;BYMONTH=2;BYMONTHDAY=29",
+    ] {
+        let zones = admitted(parts, "99990101T023000");
+        assert_eq!(
+            zones.table(TZID).unwrap().coverage_end(),
+            Some(date(9999, 1, 1)),
+            "{parts}"
+        );
+        assert_eq!(zones.table(TZID).unwrap().rules(), []);
+    }
+}
+
+#[test]
 fn counted_ends_distinguish_civil_boundaries_from_unrepresentable_ends() {
     for (start, parts, last, future) in [
         ("00000229T023000", "COUNT=2", date(4, 2, 29), false),
@@ -443,7 +459,7 @@ fn malformed_counts_and_incompatible_bounds_refuse_the_whole_rule() {
         "COUNT=2;BYSETPOS=1",
         "COUNT=2;INTERVAL=3;WKST=SU;BYSETPOS=1",
         "COUNT=2;BYMONTH=3;BYHOUR=2",
-        "COUNT=2;BYWEEKNO=1",
+        "COUNT=2;BYWEEKNO=0",
     ] {
         let (zones, meter, diagnostics) = read(
             parts,

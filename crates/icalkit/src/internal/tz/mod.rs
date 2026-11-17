@@ -22,8 +22,10 @@ mod resolve;
 mod rules;
 pub mod seam;
 mod series;
+mod week_years;
 mod weekdays;
 mod year_intervals;
+mod year_layouts;
 
 pub use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Duration, Instant, Limits, Meter, MonthAddOutcome,

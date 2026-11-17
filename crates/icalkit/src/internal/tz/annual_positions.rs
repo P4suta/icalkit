@@ -21,7 +21,7 @@ impl AnnualPositions {
     }
 
     pub(super) fn matches(self, position: u16, extent: u16) -> bool {
-        if position == 0 || position > extent || extent > 366 {
+        if position == 0 || position > extent || extent > 371 {
             return false;
         }
         if let Ok(forward) = i16::try_from(position)

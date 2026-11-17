@@ -389,8 +389,8 @@ fn began_by(observance: Observance, instant: Instant) -> bool {
 /// The table's binary search supplies the original anchor.
 fn latest_rule_onset(observance: Observance, instant: Instant) -> Option<Instant> {
     let from = probe_year(observance, instant)?;
-    let interval = observance.rule()?.year_interval();
-    for year in interval.prior_years(observance.start().date().year(), from) {
+    let rule = observance.rule()?;
+    for year in rule.prior_calendar_years(observance.start().date(), from) {
         let asked = observance
             .transition_in(year)
             .and_then(|local| local.at_offset(observance.offset_from()));
@@ -398,7 +398,11 @@ fn latest_rule_onset(observance: Observance, instant: Instant) -> Option<Instant
             return Some(onset);
         }
     }
-    None
+    rule.boundary_calendar_years(observance.start().date(), from)
+        .filter_map(|year| observance.transition_in(year))
+        .filter_map(|local| local.at_offset(observance.offset_from()))
+        .filter(|found| *found <= instant)
+        .max()
 }
 
 /// Append every onset `observance`'s rule has after `from` and at or before `to`.
