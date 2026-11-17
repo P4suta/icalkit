@@ -67,6 +67,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::num::NonZeroU8;
 use core::str;
 
 use crate::internal::core::{
@@ -630,14 +631,15 @@ fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
     })
 }
 
-/// `BYMONTHDAY=15` and `BYMONTHDAY=-1` with no `BYDAY` beside them.
+/// One positive or negative `BYMONTHDAY` position with no `BYDAY` beside it.
 fn fixed_form(month_days: MonthDays) -> Option<RuleDay> {
     let (day, _) = month_days.contiguous_run()?;
     if day == -1 {
         return Some(RuleDay::LastDayOfMonth);
     }
-    // Only the last day counts backwards.
-    // `-2` names the day before the last one, which the model has no form for and which no zone definition writes.
+    if day.is_negative() {
+        return NonZeroU8::new(day.unsigned_abs()).map(RuleDay::FromMonthEnd);
+    }
     u8::try_from(day).ok().map(RuleDay::DayOfMonth)
 }
 

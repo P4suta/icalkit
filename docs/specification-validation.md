@@ -157,6 +157,11 @@ Without `BYMONTH`, its ordinal counts from the start or end of the year.
 Nonexistent ordinal positions produce no computed date.
 The [weekday ordinal decision](adr/weekday-ordinals-in-embedded-time-zones.md) records bounded arithmetic and observance boundaries.
 
+Embedded scalar `BYMONTHDAY` rules accept negative positions from `-31` through `-1`.
+Each position counts backward from the month's final day.
+Positions missing from a short month produce no computed date.
+The [month-end position decision](adr/month-days-counted-from-the-end.md) records checked subtraction and the annual lookup boundary.
+
 Embedded rules with `BYMONTH` preserve the intersection of `BYDAY` with supported seven-day `BYMONTHDAY` windows.
 Positive windows keep their lower bound, so February can have no matching transition when the stated days run from 25 through 31.
 The negative window from `-7` through `-1` instead selects the month's last matching weekday.

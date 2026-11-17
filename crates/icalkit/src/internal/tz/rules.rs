@@ -96,6 +96,12 @@ fn day_in_month(year: u16, month: u8, form: RuleDay) -> Option<CivilDate> {
         RuleDay::Nth { weekday, week } => nth_weekday_in(year, month, weekday, week),
         RuleDay::OnOrAfter { weekday, day } => on_or_after(year, month, weekday, day),
         RuleDay::OnOrBefore { weekday, day } => on_or_before(year, month, weekday, day),
+        RuleDay::FromMonthEnd(position) => {
+            let day = CivilDate::days_in_month(year, month)?
+                .checked_add(1)?
+                .checked_sub(position.get())?;
+            CivilDate::from_ymd(year, month, day)
+        },
     }
 }
 

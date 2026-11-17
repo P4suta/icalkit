@@ -107,7 +107,7 @@ fn unrestricted_month_days_include_every_month() {
 
 #[test]
 fn every_admitted_fixed_day_matches_independent_date_enumeration() {
-    for day in (-1_i8..=31).filter(|value| *value != 0) {
+    for day in (-31_i8..=31).filter(|value| *value != 0) {
         let expected = expected_dates(2000, &[day], None);
         let start = anchor(*expected.first().unwrap());
         let zones = admitted(&format!("BYMONTHDAY={day}"), &start);
@@ -271,6 +271,9 @@ fn every_stored_pattern_is_charged_to_the_existing_observance_bound() {
 #[test]
 fn unsupported_selectors_keep_one_anchor_and_one_note() {
     for parts in [
+        "BYMONTHDAY=-0",
+        "BYMONTHDAY=-32",
+        "BYMONTHDAY=-003",
         "BYMONTHDAY=1,15",
         "BYMONTHDAY=1;COUNT=4",
         "BYMONTHDAY=1;INTERVAL=2",
@@ -293,5 +296,97 @@ fn unsupported_selectors_keep_one_anchor_and_one_note() {
             [DiagnosticCode::VtimezoneRuleUnsupported],
             "{parts}"
         );
+    }
+}
+
+#[test]
+fn negative_positions_in_explicit_months_match_independent_enumeration() {
+    for month in 1..=12 {
+        for day in -31_i8..=-1 {
+            let initial = expected_dates(2000, &[day], None)
+                .into_iter()
+                .find(|value| value.month() == month)
+                .unwrap_or(date(2000, 1, 1));
+            let parts = format!("BYMONTH={month};BYMONTHDAY={day}");
+            let zones = admitted(&parts, &anchor(initial));
+            assert_eq!(
+                zones.table("Test/Months").unwrap().rules().len(),
+                1,
+                "{parts}"
+            );
+            for year in [0, 1, 1900, 2000, 2024, 2100, 9999] {
+                let expected = expected_dates(year, &[day], None)
+                    .into_iter()
+                    .filter(|value| value.month() == month)
+                    .collect();
+                assert_eq!(
+                    compiled_dates(&zones, year),
+                    expected,
+                    "{parts}, year={year}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn negative_day_positions_follow_the_rfc_example_dates() {
+    let zones = admitted("BYMONTHDAY=-3", "19970928T020000");
+    let onsets: BTreeSet<_> = zones
+        .table("Test/Months")
+        .unwrap()
+        .rules()
+        .iter()
+        .filter_map(|observance| observance.transition_in(1997).map(CivilDateTime::date))
+        .collect();
+    assert_eq!(
+        onsets,
+        [
+            date(1997, 9, 28),
+            date(1997, 10, 29),
+            date(1997, 11, 28),
+            date(1997, 12, 29)
+        ]
+        .into_iter()
+        .collect()
+    );
+    let following = compiled_dates(&zones, 1998);
+    assert!(following.contains(&date(1998, 1, 29)));
+    assert!(following.contains(&date(1998, 2, 26)));
+}
+
+#[test]
+fn negative_positions_keep_clocks_anchors_and_inclusive_end_bounds() {
+    for (until, expected) in [
+        ("20250226T020000Z", None),
+        ("20250227T020000Z", Some(date(2025, 2, 27))),
+    ] {
+        let zones = admitted(
+            &format!("BYMONTH=2;BYMONTHDAY=-2;UNTIL={until}"),
+            "20240228T020000",
+        );
+        let observance = *zones
+            .table("Test/Months")
+            .unwrap()
+            .observances()
+            .first()
+            .unwrap();
+        let clock = CivilTime::from_hms(2, 0, 0).unwrap();
+        assert_eq!(
+            observance.start(),
+            CivilDateTime::new(date(2024, 2, 28), clock)
+        );
+        assert_eq!(observance.offset_from(), UtcOffset::UTC);
+        assert_eq!(
+            observance.offset_to(),
+            UtcOffset::from_seconds(3600).unwrap()
+        );
+        assert_eq!(observance.transition_in(2023), None);
+        assert_eq!(observance.transition_in(2024), Some(observance.start()));
+        assert_eq!(
+            observance.transition_in(2025),
+            expected.map(|value| CivilDateTime::new(value, clock))
+        );
+        assert_eq!(observance.transition_in(2026), None);
     }
 }

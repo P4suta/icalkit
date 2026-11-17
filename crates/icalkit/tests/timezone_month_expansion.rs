@@ -164,3 +164,70 @@ fn weekday_windows_apply_in_each_month() {
         ]
     );
 }
+
+fn negative_annual_zone() -> String {
+    timezone(
+        "20240228T020000",
+        "BYMONTH=2;BYMONTHDAY=-2",
+        "20241030T030000",
+        "BYMONTH=10;BYMONTHDAY=-2",
+    )
+}
+
+#[test]
+fn negative_month_days_place_the_nonleap_february_transition() {
+    assert_eq!(
+        starts(
+            &negative_annual_zone(),
+            "20250226T090000",
+            "20250226T000000Z",
+            "20250301T000000Z"
+        ),
+        [
+            at("2025-02-26T09:00:00Z"),
+            at("2025-02-27T08:00:00Z"),
+            at("2025-02-28T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn unrestricted_negative_month_days_apply_in_each_month() {
+    let timezone = timezone(
+        "20240130T020000",
+        "BYMONTHDAY=-2",
+        "20240115T030000",
+        "BYMONTHDAY=15",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20250428T090000",
+            "20250428T000000Z",
+            "20250501T000000Z"
+        ),
+        [
+            at("2025-04-28T09:00:00Z"),
+            at("2025-04-29T08:00:00Z"),
+            at("2025-04-30T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn queries_follow_negative_month_day_transitions() {
+    let calendar = calendar("20250226T090000");
+    let engine = Engine::builder().zone_database(NoExternalZones).build();
+    let mut session = engine.session();
+    for (start, end, expected) in [
+        ("20250227T075500Z", "20250227T080500Z", Match::Matched),
+        ("20250227T085500Z", "20250227T090500Z", Match::Unmatched),
+    ] {
+        assert_eq!(
+            query(&negative_annual_zone(), start, end)
+                .matches(&mut session, &calendar)
+                .unwrap(),
+            expected
+        );
+    }
+}

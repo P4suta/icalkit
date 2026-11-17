@@ -29,7 +29,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::num::NonZeroI8;
+use core::num::{NonZeroI8, NonZeroU8};
 
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant,
@@ -122,6 +122,8 @@ pub enum RuleDay {
         /// The latest day of the month it may fall on.
         day: u8,
     },
+    /// A day counted backward from the month's final day, with position one naming that day.
+    FromMonthEnd(NonZeroU8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
