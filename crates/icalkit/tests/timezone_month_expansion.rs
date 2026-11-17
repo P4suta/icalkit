@@ -529,3 +529,156 @@ fn queries_use_later_weekdays_in_a_list() {
         );
     }
 }
+
+fn annual_day_transitions() -> String {
+    timezone(
+        "20240409T020000",
+        "BYYEARDAY=100,200",
+        "20240529T030000",
+        "BYYEARDAY=150,250",
+    )
+}
+
+#[test]
+fn year_day_lists_apply_transitions_in_common_and_leap_years() {
+    for (start, from, until, expected) in [
+        (
+            "20240717T090000",
+            "20240717T000000Z",
+            "20240720T000000Z",
+            [
+                "2024-07-17T09:00:00Z",
+                "2024-07-18T08:00:00Z",
+                "2024-07-19T08:00:00Z",
+            ],
+        ),
+        (
+            "20250718T090000",
+            "20250718T000000Z",
+            "20250721T000000Z",
+            [
+                "2025-07-18T09:00:00Z",
+                "2025-07-19T08:00:00Z",
+                "2025-07-20T08:00:00Z",
+            ],
+        ),
+    ] {
+        assert_eq!(
+            starts(&annual_day_transitions(), start, from, until),
+            expected.map(at)
+        );
+    }
+}
+
+#[test]
+fn negative_year_days_count_from_the_end_of_the_year() {
+    let timezone = timezone(
+        "20241222T020000",
+        "BYYEARDAY=-10",
+        "20241227T030000",
+        "BYYEARDAY=-5",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20251221T090000",
+            "20251221T000000Z",
+            "20251224T000000Z"
+        ),
+        [
+            at("2025-12-21T09:00:00Z"),
+            at("2025-12-22T08:00:00Z"),
+            at("2025-12-23T08:00:00Z")
+        ]
+    );
+}
+
+fn selected_annual_sundays() -> String {
+    timezone(
+        "20240303T020000",
+        "BYMONTH=3,9;BYDAY=SU;BYSETPOS=1,-1",
+        "20240407T030000",
+        "BYMONTH=4,10;BYDAY=SU;BYSETPOS=1,-1",
+    )
+}
+
+#[test]
+fn set_positions_select_across_the_year_instead_of_each_month() {
+    assert_eq!(
+        starts(
+            &selected_annual_sundays(),
+            "20240928T090000",
+            "20240928T000000Z",
+            "20241001T000000Z"
+        ),
+        [
+            at("2024-09-28T09:00:00Z"),
+            at("2024-09-29T08:00:00Z"),
+            at("2024-09-30T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn default_days_skip_absent_leap_dates_before_set_positions() {
+    let timezone = timezone(
+        "20240229T020000",
+        "BYMONTH=2,4;BYSETPOS=1",
+        "20241029T030000",
+        "BYMONTH=5,10;BYSETPOS=-1",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20250428T090000",
+            "20250428T000000Z",
+            "20250501T000000Z"
+        ),
+        [
+            at("2025-04-28T09:00:00Z"),
+            at("2025-04-29T08:00:00Z"),
+            at("2025-04-30T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn queries_match_the_selected_annual_transition() {
+    let calendar = calendar("20240929T090000");
+    let engine = Engine::builder().zone_database(NoExternalZones).build();
+    let mut session = engine.session();
+    for (start, end, expected) in [
+        ("20240929T075500Z", "20240929T080500Z", Match::Matched),
+        ("20240929T085500Z", "20240929T090500Z", Match::Unmatched),
+    ] {
+        assert_eq!(
+            query(&selected_annual_sundays(), start, end)
+                .matches(&mut session, &calendar)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn year_day_positions_exclude_unselected_candidates() {
+    let timezone = timezone(
+        "20240409T020000",
+        "BYYEARDAY=100,200,-1;BYSETPOS=1,2",
+        "20240529T030000",
+        "BYYEARDAY=150,250",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20241230T090000",
+            "20241230T000000Z",
+            "20250102T000000Z"
+        ),
+        [
+            at("2024-12-30T09:00:00Z"),
+            at("2024-12-31T09:00:00Z"),
+            at("2025-01-01T09:00:00Z")
+        ]
+    );
+}

@@ -67,7 +67,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use core::num::{NonZeroU8, NonZeroU16};
+use core::num::NonZeroU8;
 use core::str;
 
 use crate::internal::core::{
@@ -76,7 +76,8 @@ use crate::internal::core::{
     Weekday, report_diagnostic,
 };
 
-use crate::internal::tz::annual_dates::{DateSelectors, MonthDateMasks};
+use crate::internal::tz::annual_dates::{DateSelectors, MonthSet, YearDateMasks};
+use crate::internal::tz::annual_positions::AnnualPositions;
 use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
 };
@@ -347,29 +348,7 @@ fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilD
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct MonthSet(NonZeroU16);
-
-impl MonthSet {
-    fn parse(text: &[u8]) -> Option<Self> {
-        let mut bits = 0_u16;
-        for field in text.split(|octet| *octet == b',') {
-            let month = month_number(field)?;
-            let shift = u32::from(month.checked_sub(1)?);
-            bits |= 1_u16.checked_shl(shift)?;
-        }
-        NonZeroU16::new(bits).map(Self)
-    }
-
-    fn contains(self, month: u8) -> bool {
-        month
-            .checked_sub(1)
-            .and_then(|shift| 1_u16.checked_shl(u32::from(shift)))
-            .is_some_and(|bit| self.0.get() & bit != 0)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum YearlyRules {
     Single(YearlyRule),
     Months {
@@ -379,9 +358,7 @@ enum YearlyRules {
         through: Option<CivilDate>,
     },
     DaySets {
-        months: Option<MonthSet>,
-        selectors: DateSelectors,
-        scope: WeekdayScope,
+        dates: Box<YearDateMasks>,
         at: CivilTime,
         through: Option<CivilDate>,
     },
@@ -389,36 +366,28 @@ enum YearlyRules {
 
 impl YearlyRules {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
-        let (count, months) = match self {
-            Self::Single(_) => (1, None),
-            Self::Months { months, .. } | Self::DaySets { months, .. } => (12, months),
+        let (single, monthly, compiled) = match self {
+            Self::Single(rule) => (Some(rule), None, None),
+            Self::Months {
+                months,
+                day,
+                at,
+                through,
+            } => (None, Some((months, day, at, through)), None),
+            Self::DaySets { dates, at, through } => (None, None, Some((dates, at, through))),
         };
-        (1..=count)
-            .filter(move |month| months.is_none_or(|selected| selected.contains(*month)))
-            .flat_map(move |month| {
-                let masks = match self {
-                    Self::DaySets {
-                        selectors, scope, ..
-                    } => MonthDateMasks::compile(month, selectors, scope),
-                    Self::Single(_) | Self::Months { .. } => None,
-                };
-                let positions = match self {
-                    Self::DaySets { .. } => masks.map_or(0, MonthDateMasks::max_positions),
-                    Self::Single(_) | Self::Months { .. } => 1,
-                };
-                (1..=positions).filter_map(move |position| match self {
-                    Self::Single(rule) => Some(rule),
-                    Self::Months {
-                        day, at, through, ..
-                    } => YearlyRule::new(month, day, at, through),
-                    Self::DaySets { at, through, .. } => YearlyRule::new(
-                        month,
-                        RuleDay::SelectedDates(masks?.select(position)?),
-                        at,
-                        through,
-                    ),
-                })
-            })
+        single
+            .into_iter()
+            .chain(monthly.into_iter().flat_map(|(months, day, at, through)| {
+                (1..=12)
+                    .filter(move |month| months.is_none_or(|selected| selected.contains(*month)))
+                    .filter_map(move |month| YearlyRule::new(month, day, at, through))
+            }))
+            .chain(
+                compiled
+                    .into_iter()
+                    .flat_map(|(dates, at, through)| dates.into_rules(at, through)),
+            )
     }
 }
 
@@ -467,6 +436,9 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 /// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
+    if parts.year_days.is_some() || parts.set_positions.is_some() {
+        return compile_date_sets(&parts, start);
+    }
     if parts.month.is_none()
         && parts.month_days.is_none()
         && let Some(term) = parts.weekdays.and_then(WeekdaySet::single)
@@ -479,25 +451,9 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
             parts.until,
         )));
     }
-    let day = day_form(parts, start.date());
+    let day = day_form(&parts, start.date());
     if day.is_none() {
-        let selectors = match (parts.month_days, parts.weekdays) {
-            (Some(days), weekdays) => DateSelectors::MonthDays { days, weekdays },
-            (None, Some(weekdays)) => DateSelectors::Weekdays(weekdays),
-            (None, None) => return None,
-        };
-        let scope = if parts.month.is_some() {
-            WeekdayScope::Month
-        } else {
-            WeekdayScope::Year
-        };
-        return Some(YearlyRules::DaySets {
-            months: parts.month,
-            selectors,
-            scope,
-            at: start.time(),
-            through: parts.until,
-        });
+        return compile_date_sets(&parts, start);
     }
     let day = day?;
     if parts.month.is_some() || parts.month_days.is_some() {
@@ -509,6 +465,37 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
         });
     }
     YearlyRule::new(start.date().month(), day, start.time(), parts.until).map(YearlyRules::Single)
+}
+
+fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyRules> {
+    let selectors = if let Some(days) = parts.year_days {
+        DateSelectors::YearDays {
+            days,
+            month_days: parts.month_days,
+            weekdays: parts.weekdays,
+        }
+    } else {
+        match (parts.month_days, parts.weekdays) {
+            (Some(days), weekdays) => DateSelectors::MonthDays { days, weekdays },
+            (None, Some(weekdays)) => DateSelectors::Weekdays(weekdays),
+            (None, None) if parts.month.is_some() => DateSelectors::MonthDays {
+                days: MonthDaySet::singleton(i8::try_from(start.date().day()).ok()?)?,
+                weekdays: None,
+            },
+            (None, None) => return None,
+        }
+    };
+    let scope = if parts.month.is_some() {
+        WeekdayScope::Month
+    } else {
+        WeekdayScope::Year
+    };
+    let dates = YearDateMasks::compile(parts.month, selectors, scope, parts.set_positions)?;
+    Some(YearlyRules::DaySets {
+        dates: Box::new(dates),
+        at: start.time(),
+        through: parts.until,
+    })
 }
 
 /// What a `RECUR` value said, as far as this crate reads one.
@@ -523,6 +510,10 @@ struct RuleParts {
     weekdays: Option<WeekdaySet>,
     /// The nonempty `BYMONTHDAY` set, absent when the rule states none.
     month_days: Option<MonthDaySet>,
+    /// The nonempty `BYYEARDAY` set, absent when the rule states none.
+    year_days: Option<AnnualPositions>,
+    /// Positions within the complete yearly candidate set.
+    set_positions: Option<AnnualPositions>,
     /// The last date the rule applies to, from `UNTIL`.
     until: Option<CivilDate>,
 }
@@ -534,13 +525,13 @@ impl RuleParts {
         month: None,
         weekdays: None,
         month_days: None,
+        year_days: None,
+        set_positions: None,
         until: None,
     };
 }
 
-/// Read every `name=value` term of a `RECUR` value, or refuse the whole of it.
-///
-/// Refusing at the first unrecognized term rather than reading around it is the difference between a rule this crate evaluates and one it half evaluates: a `BYSETPOS` nobody read changes which day the rule names, and a transition on the wrong day is worse than none.
+/// Refuse unknown parts rather than evaluating only part of a recurrence rule.
 fn collect_parts(text: &[u8], offset_from: UtcOffset) -> Option<RuleParts> {
     let mut parts = RuleParts::EMPTY;
     for term in text.split(|octet| *octet == b';') {
@@ -572,7 +563,7 @@ fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcO
         if parts.month.is_some() {
             return false;
         }
-        parts.month = MonthSet::parse(value);
+        parts.month = read_months(value);
         return parts.month.is_some();
     }
     if name.eq_ignore_ascii_case(b"BYDAY") {
@@ -589,11 +580,49 @@ fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcO
         parts.month_days = read_month_days(value);
         return parts.month_days.is_some();
     }
+    if name.eq_ignore_ascii_case(b"BYYEARDAY") {
+        if parts.year_days.is_some() {
+            return false;
+        }
+        parts.year_days = read_annual_positions(value);
+        return parts.year_days.is_some();
+    }
+    if name.eq_ignore_ascii_case(b"BYSETPOS") {
+        if parts.set_positions.is_some() {
+            return false;
+        }
+        parts.set_positions = read_annual_positions(value);
+        return parts.set_positions.is_some();
+    }
     if name.eq_ignore_ascii_case(b"UNTIL") {
         parts.until = until_date(value, offset_from);
         return parts.until.is_some();
     }
     false
+}
+
+fn read_months(value: &[u8]) -> Option<MonthSet> {
+    let mut months: Option<MonthSet> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let month = month_number(field)?;
+        months = Some(match months {
+            None => MonthSet::singleton(month)?,
+            Some(months) => months.with_month(month)?,
+        });
+    }
+    months
+}
+
+fn read_annual_positions(value: &[u8]) -> Option<AnnualPositions> {
+    let mut positions: Option<AnnualPositions> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let number = signed_number::<3>(field)?;
+        positions = Some(match positions {
+            None => AnnualPositions::singleton(number)?,
+            Some(positions) => positions.with_position(number)?,
+        });
+    }
+    positions
 }
 
 /// Read a nonempty `BYMONTHDAY` set without retaining repeated spellings.
@@ -622,7 +651,7 @@ fn read_weekdays(value: &[u8]) -> Option<WeekdaySet> {
 }
 
 /// Which day of its month a rule names, or `None` for a shape this crate does not evaluate.
-fn day_form(parts: RuleParts, start: CivilDate) -> Option<RuleDay> {
+fn day_form(parts: &RuleParts, start: CivilDate) -> Option<RuleDay> {
     if let Some(weekdays) = parts.weekdays {
         let term = weekdays.single()?;
         return match parts.month_days {
@@ -705,7 +734,7 @@ fn month_number(value: &[u8]) -> Option<u8> {
     if !value.first().is_some_and(u8::is_ascii_digit) {
         return None;
     }
-    let number = signed_number(value)?;
+    let number = signed_number::<2>(value)?;
     if !(1..=12).contains(&number) {
         return None;
     }
@@ -714,8 +743,11 @@ fn month_number(value: &[u8]) -> Option<u8> {
 
 /// One `BYMONTHDAY` value, `1` through `31` or `-31` through `-1`.
 fn month_day_number(value: &[u8]) -> Option<i8> {
-    let number = signed_number(value)?;
-    (-31..=31).contains(&number).then_some(number)
+    let number = signed_number::<2>(value)?;
+    if !(-31..=31).contains(&number) {
+        return None;
+    }
+    i8::try_from(number).ok()
 }
 
 /// One optional ordinal and its two-letter weekday.
@@ -726,7 +758,10 @@ fn weekday_term(value: &[u8]) -> Option<WeekdayTerm> {
     if prefix.is_empty() {
         return WeekdayTerm::new(weekday, None);
     }
-    WeekdayTerm::new(weekday, Some(signed_number(prefix)?))
+    WeekdayTerm::new(
+        weekday,
+        Some(i8::try_from(signed_number::<2>(prefix)?).ok()?),
+    )
 }
 
 /// The weekday RFC 5545 section 3.3.10 spells `name`, compared as that section compares one.
@@ -736,21 +771,19 @@ fn weekday_of(name: &[u8]) -> Option<Weekday> {
         .find(|day| name.eq_ignore_ascii_case(day.as_bytes()))
 }
 
-/// One optionally signed one- or two-digit number, never zero.
-///
-/// Zero is refused because every part this reads for excludes it: RFC 5545 section 3.3.10 has no month zero, no month day zero and no `0SU`.
-fn signed_number(bytes: &[u8]) -> Option<i8> {
+/// One optionally signed nonzero decimal within the declared digit width.
+fn signed_number<const DIGITS: usize>(bytes: &[u8]) -> Option<i16> {
     let (negative, digits) = match bytes.split_first() {
         Some((&b'-', tail)) => (true, tail),
         Some((&b'+', tail)) => (false, tail),
         _ => (false, bytes),
     };
-    if digits.is_empty() || digits.len() > 2 || !digits.iter().all(u8::is_ascii_digit) {
+    if digits.is_empty() || digits.len() > DIGITS || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let mut total: i8 = 0;
+    let mut total: i16 = 0;
     for octet in digits {
-        let place = i8::try_from(octet.wrapping_sub(b'0')).ok()?;
+        let place = i16::from(octet.wrapping_sub(b'0'));
         total = total.checked_mul(10)?.checked_add(place)?;
     }
     if total == 0 {
@@ -1356,7 +1389,7 @@ END:VTIMEZONE
         let refused = [
             "FREQ=MONTHLY;BYMONTHDAY=1",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SUX",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=1",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=0",
             "FREQ=YEARLY;BYMONTH=3,13;BYDAY=-1SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
             "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",

@@ -198,6 +198,18 @@ General date patterns compile into fourteen Gregorian year layouts while compact
 Each compiled mask retains its month binding.
 The [weekday set decision](adr/weekday-sets-as-calendar-year-masks.md) records compilation, lookup, and verification boundaries.
 
+Embedded yearly `BYYEARDAY` lists select signed positions from `-366` through `-1` or `1` through `366`.
+Year-day, month, month-day, and weekday constraints intersect before `BYSETPOS` selects from the complete year's candidates.
+Set positions use the same signed range and require another supported date selector.
+Positions count distinct existing dates after filtering and before anchor or inclusive end clipping.
+Without an explicit day selector, selected months use the anchor's day and exclude missing dates before counting positions.
+Explicit dates remain separate from recurrence position selection.
+Malformed lists and repeated year-day or set-position parts produce an unsupported-rule diagnostic while preserving the anchor.
+Signed positions accept one to three digits without changing the original source spelling.
+Compiled patterns keep month bindings, clocks, offsets, and resource charges.
+Week numbers, nonannual frequencies, intervals greater than one, and count limits remain outside the embedded compiler's supported subset.
+The [annual selection decision](adr/annual-selection-before-month-patterns.md) records full-year compilation and bounded lookup.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.
