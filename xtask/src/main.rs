@@ -141,8 +141,11 @@ const RETIRED_IMPLEMENTATION: &[&str] = &[
 ///
 /// This is intentionally keyed by both owner and package.
 /// Adding an external dependency to another core crate, or adding another package to `icalkit`, remains a gate failure until the architecture records the new boundary explicitly.
-const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] =
-    &[("icalkit", "jiff"), ("icalkit", "xmlparser")];
+const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[
+    ("icalkit", "jiff"),
+    ("icalkit", "xmlparser"),
+    ("icalkit", "icu_calendar"),
+];
 
 /// Private tools isolated from the production API and release graph.
 ///
@@ -251,12 +254,12 @@ use ci::{
 };
 
 fn ci_results(phase: CiPhase, arguments: &[String]) -> Option<CiResults> {
-    let mut pairs = arguments.chunks_exact(2);
-    if !pairs.remainder().is_empty() || pairs.len() != phase.jobs().len() {
+    let (pairs, remainder) = arguments.as_chunks::<2>();
+    if !remainder.is_empty() || pairs.len() != phase.jobs().len() {
         return None;
     }
     let observations: Option<Vec<_>> = pairs
-        .by_ref()
+        .iter()
         .map(|pair| {
             Some(ObservedJob {
                 job: CiJob::parse(pair.first()?.as_str())?,
@@ -1254,12 +1257,10 @@ fn table_keys(document: &str, table: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == wanted;
-        } else if inside {
-            if let Some((key, _)) = line.split_once('=') {
-                let key = key.trim();
-                if !key.is_empty() {
-                    keys.push(key.to_owned());
-                }
+        } else if inside && let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() {
+                keys.push(key.to_owned());
             }
         }
     }
@@ -1490,13 +1491,13 @@ fn match_arm_violations(label: &str, source: &str) -> Vec<String> {
             }
         }
         let line = code.trim();
-        if let Some(block) = open.last_mut() {
-            if depth == block.arms {
-                let pattern = line.split("=>").next().unwrap_or(line).trim();
-                block.guarded |= names_path(pattern, &format!("{GUARDED_ENUM}::"));
-                if is_wildcard(pattern) {
-                    block.wildcards.push(number);
-                }
+        if let Some(block) = open.last_mut()
+            && depth == block.arms
+        {
+            let pattern = line.split("=>").next().unwrap_or(line).trim();
+            block.guarded |= names_path(pattern, &format!("{GUARDED_ENUM}::"));
+            if is_wildcard(pattern) {
+                block.wildcards.push(number);
             }
         }
 
@@ -1694,11 +1695,9 @@ fn release_packages(config: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == "[[package]]";
-        } else if inside {
-            if let Some(name) = quoted_after(line, "name") {
-                packages.push(name.to_owned());
-                inside = false;
-            }
+        } else if inside && let Some(name) = quoted_after(line, "name") {
+            packages.push(name.to_owned());
+            inside = false;
         }
     }
     packages
@@ -1711,10 +1710,8 @@ fn package_name(manifest: &str) -> Option<String> {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == "[package]";
-        } else if inside {
-            if let Some(name) = quoted_after(line, "name") {
-                return Some(name.to_owned());
-            }
+        } else if inside && let Some(name) = quoted_after(line, "name") {
+            return Some(name.to_owned());
         }
     }
     None
@@ -2280,10 +2277,8 @@ fn declared_dependencies(manifest: &str) -> Vec<Declared> {
                 completed_inline_table = true;
             }
         }
-        if completed_inline_table {
-            if let Some((key, spec)) = inline_table.take() {
-                declared.push(Declared::read(&key, &spec));
-            }
+        if completed_inline_table && let Some((key, spec)) = inline_table.take() {
+            declared.push(Declared::read(&key, &spec));
         }
         if continuing_inline_table {
             continue;
@@ -2310,15 +2305,13 @@ fn declared_dependencies(manifest: &str) -> Vec<Declared> {
 
         if let Some((_, body)) = subtable.as_mut() {
             body.push(line.to_owned());
-        } else if inside_dependency_table {
-            if let Some((key, spec)) = line.split_once('=') {
-                let key = key.trim().trim_matches('"');
-                if !key.is_empty() {
-                    if spec.trim_start().starts_with('{') && !inline_table_is_complete(spec) {
-                        inline_table = Some((key.to_owned(), spec.trim().to_owned()));
-                    } else {
-                        declared.push(Declared::read(key, spec));
-                    }
+        } else if inside_dependency_table && let Some((key, spec)) = line.split_once('=') {
+            let key = key.trim().trim_matches('"');
+            if !key.is_empty() {
+                if spec.trim_start().starts_with('{') && !inline_table_is_complete(spec) {
+                    inline_table = Some((key.to_owned(), spec.trim().to_owned()));
+                } else {
+                    declared.push(Declared::read(key, spec));
                 }
             }
         }
@@ -2941,6 +2934,7 @@ name = "icalkit"
 [dependencies]
 jiff = { version = "0.2.35", default-features = false }
 xmlparser = { version = "0.13.6", default-features = false }
+icu_calendar = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 "#;
         assert_eq!(
             manifest_violations("icalkit", manifest),
@@ -2998,6 +2992,19 @@ xmlparser = { version = "0.13.6", default-features = false }
                 .iter()
                 .any(|line| line.contains("xmlparser")),
             "an isolation tool must record its dependency independently"
+        );
+    }
+
+    #[test]
+    fn only_the_facade_may_own_calendar_conversion() {
+        let manifest = r#"
+[dependencies]
+icu_calendar = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+"#;
+        assert!(
+            manifest_violations("icalkit-conformance", manifest)
+                .iter()
+                .any(|line| line.contains("icu_calendar")),
         );
     }
 

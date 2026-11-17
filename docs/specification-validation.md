@@ -182,7 +182,21 @@ Imports preserve original bytes, and unrelated unknown parts keep their notes.
 The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
 The [month day decision](adr/gregorian-month-day-adjustments.md) extends the native subset.
 The [year day decision](adr/gregorian-year-day-correction-order.md) records the source constraints and shared date arithmetic.
-Calendar conversion, leap month selection, and week number correction remain open.
+Non-Gregorian recurrence expansion, leap month selection, and week number correction remain open.
+
+Calendar date conversion follows [RFC 7529 section 3](https://www.rfc-editor.org/rfc/rfc7529.html#section-3).
+`recurrence::CalendarScale` selects a registered calendar algorithm through explicit names and aliases.
+`recurrence::CalendarMonth` distinguishes regular month numbers from leap months without using their ordinal position in a year.
+`recurrence::CalendarDate` converts between validated calendar coordinates and Jiff Gregorian dates.
+The adapter uses [ICU4X 2.4](https://docs.rs/icu_calendar/2.4.0/icu_calendar/) privately and requires Rust 1.88.
+Calendar years use ICU4X extended year numbering consistently in both directions.
+Chinese years use the related Gregorian year, so the RFC example's Chinese year 4650 corresponds to extended year 2013.
+Gregorian results must fit years 0000 through 9999, while other calendar year numbers can exceed 9999.
+Missing months and days fail without clamping.
+The adapter refuses the unqualified `ISLAMIC` and observational `ISLAMIC-RGSA` names because they lack an unambiguous mapping.
+Explicit `ISLAMIC-CIVIL`, `ISLAMIC-TBLA`, and `ISLAMIC-UMALQURA` algorithms remain distinct.
+The [conversion decision](adr/calendar-conversion-at-the-jiff-boundary.md) records the dependency and compiler boundary.
+Conversion alone doesn't enable non-Gregorian recurrence expansion.
 
 CalDAV recurrence scale negotiation follows [RFC 7529 section 10](https://www.rfc-editor.org/rfc/rfc7529.html#section-10).
 `Client::supported_rscales` explicitly requests `CALDAV:supported-rscale-set` at Depth 0 from a calendar collection or calendar home.

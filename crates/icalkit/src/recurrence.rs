@@ -4,6 +4,10 @@
 
 //! Bounded recurrence workflows over the public Jiff time boundary.
 
+mod calendar;
+
+pub use calendar::{CalendarDate, CalendarMonth, CalendarScale};
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 

@@ -1151,7 +1151,7 @@ impl BinaryValue<'_> {
             return Err(DiagnosticCode::MalformedBinary);
         }
         let mut out = Vec::with_capacity(decoded_len(text.len()));
-        for quantum in text.chunks_exact(QUANTUM_LEN) {
+        for quantum in text.as_chunks::<QUANTUM_LEN>().0 {
             let (stands_for, filled) =
                 quantum_octets(quantum).ok_or(DiagnosticCode::MalformedBinary)?;
             out.extend_from_slice(

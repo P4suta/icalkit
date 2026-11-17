@@ -513,13 +513,12 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
     if !is_iana_token(scale) {
         return Err(RuleError::MalformedCalendarControls);
     }
-    if let Some(mode) = skip {
-        if ![b"OMIT".as_slice(), b"BACKWARD", b"FORWARD"]
+    if let Some(mode) = skip
+        && ![b"OMIT".as_slice(), b"BACKWARD", b"FORWARD"]
             .iter()
             .any(|allowed| equals_ignoring_case(mode, allowed))
-        {
-            return Err(RuleError::MalformedCalendarControls);
-        }
+    {
+        return Err(RuleError::MalformedCalendarControls);
     }
     let gregorian = is_gregorian_scale(scale);
     let policy = match skip {

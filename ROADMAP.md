@@ -2,7 +2,7 @@
 
 ## Maintained implementation
 
-The status describes the maintained workspace on November 16, 2026.
+The status describes the maintained workspace on November 17, 2026.
 The milestone names keep their original scope, while `icalkit` contains the production implementation.
 The [private kernel decision](docs/adr/0014-private-kernel-and-conformance-isolation.md) defines the package graph and dependency boundaries.
 Git history retains the earlier milestone narrative and defect investigations.
@@ -31,6 +31,11 @@ Searches use caller-supplied windows, charge generated candidates, and expose re
 Public occurrences follow effective start order.
 The corpus includes the 42 recurrence examples in [RFC 5545 section 3.8.5.3](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5.3).
 The [bounded recurrence decision](docs/adr/0002-bounded-lazy-recurrence.md) defines iterator and budget behavior.
+
+The recurrence module converts registered calendar coordinates to and from Jiff Gregorian dates.
+Regular month numbers and leap month identifiers remain distinct, including calendars with thirteen regular months.
+The [conversion decision](docs/adr/calendar-conversion-at-the-jiff-boundary.md) records the private ICU4X adapter and Rust 1.88 floor.
+Non-Gregorian recurrence expansion still requires every date selector and period step to use the converted coordinates.
 
 ## M2 time zones
 
@@ -89,7 +94,7 @@ The [capture intake](crates/icalkit-conformance/CAPTURE.md) defines provenance, 
 ## Verification and publication
 
 Run `mise x -- just ci` for the maintained local checks.
-The command covers formatting, linting, tests, documentation, resource limits, feature combinations, target builds, public API snapshots, dependency policy, and Rust 1.85 compatibility.
+The command covers formatting, linting, tests, documentation, resource limits, feature combinations, target builds, public API snapshots, dependency policy, and Rust 1.88 compatibility.
 The candidate workflow also runs Windows and macOS tests and the declared source proofs for one complete commit ID.
 
 Every package remains at `0.0.0`.

@@ -27,6 +27,9 @@ system-tz = [
 ]
 
 [dependencies]
+icu_calendar = { version = "2.4.0", default-features = false, features = [
+  "compiled_data",
+] }
 jiff = { version = "0.2.35", default-features = false, features = [
   "alloc",
   "tz-fat",

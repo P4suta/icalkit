@@ -387,10 +387,9 @@ impl<'a> InstanceDurations<'a> {
             .components
             .iter()
             .find(|component| component.key == key)
+            && exact.range == OverrideRange::ThisOnly
         {
-            if exact.range == OverrideRange::ThisOnly {
-                return exact.stated.unwrap_or(base);
-            }
+            return exact.stated.unwrap_or(base);
         }
         self.components
             .iter()
@@ -1045,10 +1044,10 @@ where
         ValueKind::DateTime
     };
     let mut rule = recurrence_rule(master).map_err(|_| QueryError::Unrepresentable)?;
-    if let Some(parsed) = rule.as_mut() {
-        if let Err(reason) = project_rule_limit(parsed, clock, zones) {
-            return Ok(Match::Undecided(reason));
-        }
+    if let Some(parsed) = rule.as_mut()
+        && let Err(reason) = project_rule_limit(parsed, clock, zones)
+    {
+        return Ok(Match::Undecided(reason));
     }
     let mut rdates = instant_list(master, &ids::RDATE, clock, zones)?;
     let mut exdates = instant_list(master, &ids::EXDATE, clock, zones)?;
@@ -1603,10 +1602,10 @@ fn instance_span(
             .ok_or(Undecided::ValueUnreadable)?;
         return InstanceSpan::of_seconds(seconds).ok_or(Undecided::ValueUnreadable);
     }
-    if !matches!(kind, ComponentKind::Journal) {
-        if let Some(duration) = optional(component.duration())? {
-            return duration_span(duration);
-        }
+    if !matches!(kind, ComponentKind::Journal)
+        && let Some(duration) = optional(component.duration())?
+    {
+        return duration_span(duration);
     }
     Ok(if matches!(opening, DateTimeValue::Date(_)) {
         InstanceSpan::WHOLE_DAY

@@ -298,11 +298,9 @@ impl<'a> RuleStream<'a> {
                         .peeked
                         .is_none_or(|(_, bound, _)| *key < bound)
                 });
-            if ready {
-                if let Some((key, origin)) = self.adjusted.pending.pop_first() {
-                    self.adjusted.offered_period = Some(origin);
-                    return Ok(key);
-                }
+            if ready && let Some((key, origin)) = self.adjusted.pending.pop_first() {
+                self.adjusted.offered_period = Some(origin);
+                return Ok(key);
             }
             let Some((period, bound, origin)) = self.adjusted.peeked.take() else {
                 return Err(self.adjusted.stop.unwrap_or(RuleKey::RuleEnded));

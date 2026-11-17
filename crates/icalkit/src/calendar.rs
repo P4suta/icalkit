@@ -548,10 +548,10 @@ fn relationship_is_valid(property: &Property) -> bool {
         return false;
     }
     let mut gaps = property.parameters_named(b"GAP");
-    if let Some(gap) = gaps.next() {
-        if gaps.next().is_some() || decode_duration_parameter(gap.value().as_bytes()).is_none() {
-            return false;
-        }
+    if let Some(gap) = gaps.next()
+        && (gaps.next().is_some() || decode_duration_parameter(gap.value().as_bytes()).is_none())
+    {
+        return false;
     }
     if !uri {
         return true;
@@ -595,13 +595,12 @@ fn validate_descriptive_parameters(
                 continue;
             }
             let mut names = property.parameters_named(b"CN");
-            if let Some(name) = names.next() {
-                if names.next().is_some()
+            if let Some(name) = names.next()
+                && (names.next().is_some()
                     || !common_name_is_allowed(property, kind)
-                    || !common_name_is_valid(name)
-                {
-                    issues.push(Issue::error("icalkit.validation.invalid-common-name"));
-                }
+                    || !common_name_is_valid(name))
+            {
+                issues.push(Issue::error("icalkit.validation.invalid-common-name"));
             }
         } else if ![
             b"CATEGORIES".as_slice(),
@@ -624,13 +623,12 @@ fn validate_descriptive_parameters(
             continue;
         }
         let mut languages = property.parameters_named(b"LANGUAGE");
-        if let Some(language) = languages.next() {
-            if languages.next().is_some()
+        if let Some(language) = languages.next()
+            && (languages.next().is_some()
                 || !language.has_value()
-                || !is_language_tag(language.value().as_bytes(), meter)?
-            {
-                issues.push(Issue::error("icalkit.validation.invalid-language"));
-            }
+                || !is_language_tag(language.value().as_bytes(), meter)?)
+        {
+            issues.push(Issue::error("icalkit.validation.invalid-language"));
         }
     }
     for child in component.components() {
@@ -1380,14 +1378,14 @@ fn validate_time_relationships(component: &Component, issues: &mut Vec<Issue>) {
         return;
     }
     let start = read_date_time(component, b"DTSTART");
-    if component.is_named(b"VEVENT") || component.is_named(b"VTODO") {
-        if let Some(duration) = first_property(component, b"DURATION") {
-            let uses_clock_units = matches!(start, Some(DateTimeValue::Date(_)))
-                && !matches!(duration.declared_value_type(), Some(Err(_)))
-                && duration.value_text().as_bytes().contains(&b'T');
-            if !positive_duration(duration) || uses_clock_units {
-                issues.push(Issue::error("icalkit.validation.invalid-duration"));
-            }
+    if (component.is_named(b"VEVENT") || component.is_named(b"VTODO"))
+        && let Some(duration) = first_property(component, b"DURATION")
+    {
+        let uses_clock_units = matches!(start, Some(DateTimeValue::Date(_)))
+            && !matches!(duration.declared_value_type(), Some(Err(_)))
+            && duration.value_text().as_bytes().contains(&b'T');
+        if !positive_duration(duration) || uses_clock_units {
+            issues.push(Issue::error("icalkit.validation.invalid-duration"));
         }
     }
     if let Some(start) = start {

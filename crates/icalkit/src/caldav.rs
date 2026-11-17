@@ -2064,18 +2064,18 @@ fn query_response(
         let mut response = DavResponse::with_propstats(href, policy.limits);
         let mut properties = PropStat::new(Status::OK, policy.limits);
         for name in query.query.props.names() {
-            if matches!(name, PropName::Known(ElementName::Getetag)) {
-                if let Some(etag) = resource.etag.as_ref() {
-                    properties
-                        .push(
-                            DavProperty {
-                                name: name.clone(),
-                                value: PropValue::Entity(etag.clone()),
-                            },
-                            &mut meter,
-                        )
-                        .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
-                }
+            if matches!(name, PropName::Known(ElementName::Getetag))
+                && let Some(etag) = resource.etag.as_ref()
+            {
+                properties
+                    .push(
+                        DavProperty {
+                            name: name.clone(),
+                            value: PropValue::Entity(etag.clone()),
+                        },
+                        &mut meter,
+                    )
+                    .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
             }
         }
         if query.query.props.calendar_data.is_some() {
@@ -3017,10 +3017,10 @@ impl ServerOperation {
             .responder
             .take()
             .ok_or_else(|| crate::Error::single("icalkit.caldav.unexpected-answer"))?;
-        if let ServerAnswerKind::Bytes(body) = &answer.kind {
-            if u64::try_from(body.len()).unwrap_or(u64::MAX) > self.max_answer_bytes {
-                return Err(crate::Error::single("icalkit.caldav.answer-too-large"));
-            }
+        if let ServerAnswerKind::Bytes(body) = &answer.kind
+            && u64::try_from(body.len()).unwrap_or(u64::MAX) > self.max_answer_bytes
+        {
+            return Err(crate::Error::single("icalkit.caldav.answer-too-large"));
         }
         match responder(answer)? {
             ServerStep::Need(need, responder) => {

@@ -15,8 +15,8 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-# Floor imposed by edition 2024.
-rust-version = "1.85"
+# The calendar adapter requires Rust 1.88.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["Yasunobu Sakashita <crates.tank733@slmails.com>"]
 repository = "https://github.com/P4suta/icalkit"

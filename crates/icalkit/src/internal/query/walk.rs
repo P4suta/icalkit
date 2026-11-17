@@ -474,17 +474,18 @@ fn own_tests<L: Leaves>(
 ) -> Result<Match, QueryError> {
     let mut held = Match::Matched;
     if let Some(range) = frame.filter.time_range {
-        if !frame.excluded && !frame.filter.props().is_empty() {
-            if let Some(joined) = leaves.recurring_properties(
+        if !frame.excluded
+            && !frame.filter.props().is_empty()
+            && let Some(joined) = leaves.recurring_properties(
                 candidate,
                 frame.scope,
                 range,
                 frame.filter.props(),
                 zones,
                 budget,
-            )? {
-                return Ok(joined);
-            }
+            )?
+        {
+            return Ok(joined);
         }
         held = held.and(if frame.excluded {
             Match::Unmatched
