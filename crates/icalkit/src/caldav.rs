@@ -34,7 +34,6 @@ use crate::internal::tz::{
     OffsetAnswer, VtimezoneSet, ZoneAnswer, ZoneSource, read_calendar_zones,
 };
 use crate::scheduling::Message;
-use crate::time::ZoneAdapter;
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// A CalDAV calendar-query with its XML vocabulary kept private.
@@ -99,15 +98,17 @@ impl Query {
         let Some(filter) = self.query.filter.as_ref() else {
             return Ok(Match::Matched);
         };
-        let source = ZoneAdapter::new(session.engine.zone_database());
-        let mut zones = Zones::new(&source);
-        if let Some(query_zone) = self.query_zone.as_ref() {
-            zones = zones.with_query_zone_source(&query_zone.tzid, query_zone);
-        }
-        let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-        query::matches(filter, &calendar.document, zones, &mut budget)
-            .map(Match::from_kernel)
-            .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))
+        let limits = session.engine.policy.limits;
+        session.with_zone_source(|source, meter, _| {
+            let mut zones = Zones::new(source);
+            if let Some(query_zone) = self.query_zone.as_ref() {
+                zones = zones.with_query_zone_source(&query_zone.tzid, query_zone);
+            }
+            let mut budget = Budget::new(limits, meter);
+            query::matches(filter, &calendar.document, zones, &mut budget)
+                .map(Match::from_kernel)
+                .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))
+        })
     }
 
     /// Apply this query's `calendar-data` selection without turning partial data into a persistable [`Calendar`].
@@ -132,29 +133,31 @@ fn project_calendar_data(
     calendar: &Calendar,
     query_zone: Option<&QueryZoneDefinition>,
 ) -> Result<ProjectedCalendar, Error> {
-    let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
-    let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-    if let Some(window) = request.expand.or(request.limit_recurrence_set) {
-        let zone_adapter = ZoneAdapter::new(session.engine.zone_database());
-        let mut zones = Zones::new(&zone_adapter);
-        if let Some(zone) = query_zone {
-            zones = zones.with_query_zone_source(&zone.tzid, zone);
-        }
-        source = if request.expand.is_some() {
-            query::expand_calendar(&source, window, zones, &mut budget)
-        } else {
-            query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
-        }
-        .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
-    }
-    let mut selected = query::select(&source, request.comp.as_ref(), &mut budget)
-        .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
-    if let Some(window) = request.limit_freebusy_set {
-        selected = query::limit_freebusy_set(&selected, window, &mut budget)
+    let limits = session.engine.policy.limits;
+    session.with_zone_source(|zone_source, meter, _| {
+        let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
+        let mut budget = Budget::new(limits, meter);
+        if let Some(window) = request.expand.or(request.limit_recurrence_set) {
+            let mut zones = Zones::new(zone_source);
+            if let Some(zone) = query_zone {
+                zones = zones.with_query_zone_source(&zone.tzid, zone);
+            }
+            source = if request.expand.is_some() {
+                query::expand_calendar(&source, window, zones, &mut budget)
+            } else {
+                query::limit_recurrence_set_in_window(&source, window, zones, &mut budget)
+            }
             .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
-    }
-    Ok(ProjectedCalendar {
-        bytes: selected.calendar().to_bytes().into_boxed_slice(),
+        }
+        let mut selected = query::select(&source, request.comp.as_ref(), &mut budget)
+            .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+        if let Some(window) = request.limit_freebusy_set {
+            selected = query::limit_freebusy_set(&selected, window, &mut budget)
+                .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+        }
+        Ok(ProjectedCalendar {
+            bytes: selected.calendar().to_bytes().into_boxed_slice(),
+        })
     })
 }
 

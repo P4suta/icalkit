@@ -100,6 +100,7 @@ Resource failures use the channels defined by the diagnostic and allocation deci
 | override-matches-no-instance | A `RECURRENCE-ID` named an instant the series does not generate, so the override modified nothing. | Violation | M2 |
 | time-zone-without-transitions | A zone source recognized a `TZID` and holds no transition for it, so no wall clock names an instant under it. | Violation | M2 |
 | time-zone-before-known-transitions | A zone was asked about a time earlier than the first transition it knows, so the answer continues the offset in force before it. | Note | M2 |
+| time-zone-coverage-unasserted | A zone provider returned an answer without claiming complete coverage for the requested time. | Note | M2 |
 | vtimezone-components-truncated | A calendar declared more `VTIMEZONE` components than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M2 |
 | vtimezone-observance-unreadable | An observance's required value was present and unreadable, so it stated no transition at all. | Violation | M2 |
 | exdate-zone-unknown | An `EXDATE` written in UTC named no cadence key because no source recognized the series' zone, so it excluded nothing. | Violation | M2 |

@@ -412,6 +412,16 @@ Values with an explicit `TZID` use the caller's `ZoneDatabase`.
 Calendar workflows use the whole-second precision of [RFC 5545 section 3.3.12](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.12).
 The zone adapter rejects fractional exact or fold candidates before offset lookup.
 Recurrence and projection refuse unresolved placements, while query matching reports an undecided result.
+
+Provider coverage claims remain separate from transition bounds.
+Local resolution combines its coverage claim with every offset answer it uses.
+An offset lookup keeps its own coverage claim, and a gap supplies no invented transition date.
+Usable answers without asserted coverage produce `time-zone-coverage-unasserted` through `Session::issues()`.
+The session keeps one informational note across recurrence, matching, projection, and scheduling, including failed operations.
+The note describes the session's work without identifying individual occurrences.
+Independent sessions keep independent notes.
+The [provider coverage decision](adr/provider-coverage-without-invented-bounds.md) records the reporting boundary.
+
 Query parsing rejects malformed definitions, unsupported observance rules, and opaque transition values.
 Opaque metadata stays uninterpreted.
 The observance reader guards declared value types for transition dates and recurrence rules.

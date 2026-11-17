@@ -396,6 +396,7 @@ pub fn icalkit::ResourcePolicy::default() -> Self
 pub struct icalkit::Session<'a>
 impl icalkit::Session<'_>
 pub fn icalkit::Session<'_>::import(&mut self, &[u8]) -> core::result::Result<icalkit::interop::Import, icalkit::Error>
+pub fn icalkit::Session<'_>::issues(&self) -> &[icalkit::Issue]
 pub fn icalkit::Session<'_>::parse(&mut self, &[u8]) -> core::result::Result<icalkit::Calendar, icalkit::Error>
 pub fn icalkit::Session<'_>::query(&mut self, &[u8]) -> core::result::Result<icalkit::caldav::Query, icalkit::Error>
 pub fn icalkit::Session<'_>::validate(&mut self, &icalkit::interop::Import) -> core::result::Result<icalkit::Calendar, icalkit::Error>

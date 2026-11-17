@@ -103,6 +103,14 @@ Jiff's `Date`, `DateTime`, `Time`, `Weekday`, `Timestamp`, and `SignedDuration` 
 `IcalDateTime` adds the iCalendar-only `DATE`/floating/UTC/zoned distinctions and leap-second evidence.
 Calendar-aware query and scheduling workflows resolve each local wall time through the engine's `ZoneDatabase`, so gaps, folds, provenance, and coverage remain explicit.
 
+`Session::issues()` reports `time-zone-coverage-unasserted` when a workflow uses an answer whose provider doesn't claim complete coverage.
+Local resolution combines its own claim with every offset answer it uses.
+Usable answers keep their results.
+The note stays available after failed operations.
+The session keeps one coverage note across recurrence, queries, projection, and scheduling.
+The note identifies neither a boundary date nor an individual occurrence.
+A fresh session starts without notes.
+
 The standalone recurrence stream is lazy, requires a half-open window, and reports budget exhaustion as an error rather than pretending the stream ended:
 
 ```rust

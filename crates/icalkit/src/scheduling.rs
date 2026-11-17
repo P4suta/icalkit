@@ -24,7 +24,7 @@ use crate::calendar::parse_calendar;
 use crate::failure::{Issue, IssueCode};
 use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::query::{Budget, Match as KernelMatch, Zones, recurrence_set_contains};
-use crate::time::{Timestamp, ZoneAdapter};
+use crate::time::Timestamp;
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// An owned scheduling message that has passed strict calendar and iTIP validation.
@@ -367,17 +367,13 @@ impl Message {
                 PartyId::new(actor.as_str()),
             )
             .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
-            let zone_source = ZoneAdapter::new(session.engine.zone_database());
-            let zones = Zones::new(&zone_source);
-            let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-            let membership = recurrence_set_contains(
-                master_component,
-                payload,
-                zones,
-                &mut budget,
-                &mut session.recurrence_diagnostics,
-            )
-            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+            let limits = session.engine.policy.limits;
+            let membership = session.with_zone_source(|source, meter, diagnostics| {
+                let zones = Zones::new(source);
+                let mut budget = Budget::new(limits, meter);
+                recurrence_set_contains(master_component, payload, zones, &mut budget, diagnostics)
+                    .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))
+            })?;
             if membership != KernelMatch::Matched {
                 return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
             }

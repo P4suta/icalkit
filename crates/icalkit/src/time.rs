@@ -176,17 +176,28 @@ impl<'a> ZoneAdapter<'a> {
         Self(database)
     }
 
-    fn reading(&self, tzid: &str, timestamp: Timestamp) -> Option<Reading> {
+    fn reading(&self, tzid: &str, timestamp: Timestamp) -> Option<(Reading, bool)> {
         if timestamp.subsec_nanosecond() != 0 {
             return None;
         }
         let database = self.0?;
         let offset = database.offset_at(tzid, timestamp)?;
-        Some(Reading::new(
-            Instant::from_unix_seconds(timestamp.as_second()),
-            UtcOffset::from_seconds(offset.seconds())?,
-            false,
+        Some((
+            Reading::new(
+                Instant::from_unix_seconds(timestamp.as_second()),
+                UtcOffset::from_seconds(offset.seconds())?,
+                false,
+            ),
+            offset.has_complete_coverage(),
         ))
+    }
+}
+
+fn coverage_basis(complete: bool) -> AnswerBasis {
+    if complete {
+        AnswerBasis::Computed
+    } else {
+        AnswerBasis::CoverageUnasserted
     }
 }
 
@@ -206,21 +217,26 @@ impl ZoneSource for ZoneAdapter<'_> {
         )
         .ok()?;
         let answer = database.resolve_local(tzid, local)?;
-        let resolution = match answer.kind() {
-            LocalKind::Exact => LocalResolution::Unique {
-                reading: self.reading(tzid, answer.earlier()?)?,
+        let (resolution, offsets_complete) = match answer.kind() {
+            LocalKind::Exact => {
+                let (reading, complete) = self.reading(tzid, answer.earlier()?)?;
+                (LocalResolution::Unique { reading }, complete)
             },
-            LocalKind::Fold => LocalResolution::Ambiguous {
-                earlier: self.reading(tzid, answer.earlier()?)?,
-                later: self.reading(tzid, answer.later()?)?,
+            LocalKind::Fold => {
+                let (earlier, earlier_complete) = self.reading(tzid, answer.earlier()?)?;
+                let (later, later_complete) = self.reading(tzid, answer.later()?)?;
+                (
+                    LocalResolution::Ambiguous { earlier, later },
+                    earlier_complete && later_complete,
+                )
             },
             // The public port deliberately does not invent transition bounds and before/after offsets that the internal representation requires for a gap.
-            LocalKind::Gap => LocalResolution::Undetermined,
+            LocalKind::Gap => (LocalResolution::Undetermined, true),
         };
         Some(ZoneAnswer::new(
             resolution,
             ZoneProvenance::CallerDatabase,
-            AnswerBasis::Computed,
+            coverage_basis(answer.has_complete_coverage() && offsets_complete),
         ))
     }
 
@@ -232,7 +248,7 @@ impl ZoneSource for ZoneAdapter<'_> {
             UtcOffset::from_seconds(answer.seconds())?,
             false,
             ZoneProvenance::CallerDatabase,
-            AnswerBasis::Computed,
+            coverage_basis(answer.has_complete_coverage()),
         ))
     }
 
@@ -464,12 +480,13 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{DateTime, OffsetResolution, Timestamp, ZoneAdapter, ZoneDatabase, ZoneResolution};
-    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime};
-    use crate::internal::tz::{LocalResolution, ZoneSource};
+    use crate::internal::core::{CivilDate, CivilDateTime, CivilTime, DiagnosticCode, Instant};
+    use crate::internal::tz::{AnswerBasis, LocalResolution, ZoneSource};
 
     struct AnswerDatabase {
         answer: ZoneResolution,
         offset_calls: AtomicUsize,
+        offset_coverage: [bool; 2],
     }
 
     impl AnswerDatabase {
@@ -477,6 +494,7 @@ mod tests {
             Self {
                 answer,
                 offset_calls: AtomicUsize::new(0),
+                offset_coverage: [true; 2],
             }
         }
     }
@@ -488,12 +506,13 @@ mod tests {
 
         fn offset_at(&self, _tzid: &str, instant: Timestamp) -> Option<OffsetResolution> {
             self.offset_calls.fetch_add(1, Ordering::Relaxed);
-            let offset = if self.answer.later() == Some(instant) {
-                -3600
-            } else {
-                0
-            };
-            OffsetResolution::new(offset, "precision-fixture", true)
+            let later = self.answer.later() == Some(instant);
+            let offset = if later { -3600 } else { 0 };
+            OffsetResolution::new(
+                offset,
+                "precision-fixture",
+                self.offset_coverage[usize::from(later)],
+            )
         }
     }
 
@@ -584,5 +603,89 @@ mod tests {
                 && second.instant.unix_seconds() == later.as_second()
                 && first.offset != second.offset)
         );
+    }
+
+    fn assert_coverage(basis: AnswerBasis, complete: bool) {
+        assert_eq!(basis.is_computed(), complete);
+        assert_eq!(basis.nearest_known(), None);
+        assert!(!basis.is_before_known_transitions());
+        assert!(!basis.is_beyond_known_transitions());
+        assert_eq!(
+            basis.diagnostic_code().map(DiagnosticCode::as_str),
+            (!complete).then_some("time-zone-coverage-unasserted")
+        );
+    }
+
+    #[test]
+    fn exact_coverage_includes_local_and_offset_claims() {
+        for local_complete in [false, true] {
+            for offset_complete in [false, true] {
+                let mut database = AnswerDatabase::new(ZoneResolution::exact(
+                    timestamp("2024-01-02T09:00:00Z"),
+                    "coverage-fixture",
+                    local_complete,
+                ));
+                database.offset_coverage = [offset_complete; 2];
+                let answer = ZoneAdapter::new(Some(&database))
+                    .resolve("Test/Coverage", local())
+                    .unwrap();
+                assert_coverage(answer.basis, local_complete && offset_complete);
+                assert!(matches!(answer.resolution, LocalResolution::Unique { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn fold_coverage_includes_both_offset_claims() {
+        for local_complete in [false, true] {
+            for earlier_complete in [false, true] {
+                for later_complete in [false, true] {
+                    let mut database = AnswerDatabase::new(
+                        ZoneResolution::fold(
+                            timestamp("2024-01-02T09:00:00Z"),
+                            timestamp("2024-01-02T10:00:00Z"),
+                            "coverage-fixture",
+                            local_complete,
+                        )
+                        .unwrap(),
+                    );
+                    database.offset_coverage = [earlier_complete, later_complete];
+                    let answer = ZoneAdapter::new(Some(&database))
+                        .resolve("Test/Coverage", local())
+                        .unwrap();
+                    assert_coverage(
+                        answer.basis,
+                        local_complete && earlier_complete && later_complete,
+                    );
+                    assert!(
+                        matches!(answer.resolution, LocalResolution::Ambiguous { earlier, later } if earlier.instant < later.instant)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn direct_offset_coverage_keeps_its_own_claim() {
+        for complete in [false, true] {
+            let mut database = AnswerDatabase::new(ZoneResolution::gap("coverage-fixture", false));
+            database.offset_coverage = [complete; 2];
+            let answer = ZoneAdapter::new(Some(&database))
+                .offset_at("Test/Coverage", Instant::EPOCH)
+                .unwrap();
+            assert_coverage(answer.basis, complete);
+        }
+    }
+
+    #[test]
+    fn gap_coverage_does_not_invent_transition_bounds() {
+        for complete in [false, true] {
+            let database = AnswerDatabase::new(ZoneResolution::gap("coverage-fixture", complete));
+            let answer = ZoneAdapter::new(Some(&database))
+                .resolve("Test/Coverage", local())
+                .unwrap();
+            assert_coverage(answer.basis, complete);
+            assert_eq!(answer.resolution, LocalResolution::Undetermined);
+        }
     }
 }

@@ -248,6 +248,8 @@ pub enum DiagnosticCode {
     /// [`DiagnosticCode::TimeZoneCoverageExhausted`] at the other end of the table, and a note for the same reason: a `VTIMEZONE` whose `RDATE` lines begin in 2027 is a legal file and an event in 2020 is a legal event.
     /// The offset reported is the earliest observance's own `TZOFFSETFROM`, extended backwards, which is all the file states about that era.
     TimeZoneBeforeKnownTransitions,
+    /// A zone provider returned an answer without claiming complete coverage for the requested time.
+    TimeZoneCoverageUnasserted,
     /// A calendar declared more `VTIMEZONE` components than the caller's policy admits, and the ones past the bound were dropped.
     ///
     /// The zone-count sibling of [`DiagnosticCode::VtimezoneObservancesTruncated`].
@@ -462,6 +464,7 @@ impl DiagnosticCode {
             Self::OverrideMatchesNoInstance => "override-matches-no-instance",
             Self::TimeZoneWithoutTransitions => "time-zone-without-transitions",
             Self::TimeZoneBeforeKnownTransitions => "time-zone-before-known-transitions",
+            Self::TimeZoneCoverageUnasserted => "time-zone-coverage-unasserted",
             Self::VtimezoneComponentsTruncated => "vtimezone-components-truncated",
             Self::VtimezoneObservanceUnreadable => "vtimezone-observance-unreadable",
             Self::ExdateZoneUnknown => "exdate-zone-unknown",

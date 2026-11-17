@@ -23,7 +23,7 @@ use crate::internal::recur::{
 };
 
 use crate::failure::Issue;
-use crate::time::{Timestamp, ZoneAdapter};
+use crate::time::Timestamp;
 use crate::{Calendar, Error, ResourcePolicy, Session};
 
 /// A strictly parsed recurrence rule.
@@ -314,12 +314,13 @@ fn start_calendar_occurrences<'a>(
     let (master, siblings) = recurrence_master(calendar, uid.as_bytes())?;
     let range = TimeRange::new(Some(window.inner.start()), Some(window.inner.end()))
         .map_err(|_| Error::single("icalkit.recurrence.invalid-window"))?;
-    let engine = session.engine;
-    let source = ZoneAdapter::new(engine.zone_database());
-    let zones = Zones::new(&source);
-    let mut budget = Budget::new(engine.policy.limits, &mut session.meter);
-    let expansion = expand_component(master, siblings, range, zones, &mut budget)
-        .map_err(recurrence_query_error)?;
+    let limits = session.engine.policy.limits;
+    let expansion = session.with_zone_source(|source, meter, _| {
+        let zones = Zones::new(source);
+        let mut budget = Budget::new(limits, meter);
+        expand_component(master, siblings, range, zones, &mut budget)
+            .map_err(recurrence_query_error)
+    })?;
     let terminal_error = expansion.incomplete().map(recurrence_incomplete);
     let mut occurrences: Vec<Occurrence> = expansion
         .instances()
