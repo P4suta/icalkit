@@ -18,7 +18,7 @@
 //!
 //! The one place untrusted zone text becomes a model, and therefore the only place in this crate that charges a meter.
 //! Each `STANDARD` and `DAYLIGHT` subcomponent contributes its `DTSTART` anchor and explicit `RDATE` transitions.
-//! A supported `RRULE` compiles into at most twelve annual patterns sharing that anchor.
+//! A supported `RRULE` compiles into at most 366 annual patterns sharing that anchor.
 //! Explicit dates and computed onsets contribute to the same transition set.
 //!
 //! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no prefix stripping, no alias lookup.
@@ -54,7 +54,7 @@
 //!
 //! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`].
 //! The input byte ceiling bounds source components and explicit dates.
-//! Each accepted rule emits at most twelve stored annual patterns before table admission.
+//! Each accepted rule emits at most 366 stored annual patterns before table admission.
 //! The table sorts all patterns and explicit dates before enforcing the observance bound.
 //! Cutting the list short before the table sees it would move the truncation point off the sorted order the table truncates in, which is how a table acquires a hole in the middle instead of an earlier end.
 //!
@@ -79,18 +79,13 @@ use crate::internal::core::{
 use crate::internal::tz::model::{
     NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
 };
-
-/// The most `BYMONTHDAY` values a day form is read from, which is a month's length.
-///
-/// A rule naming more days than a month has is outside this vocabulary whatever else it says,
-/// so the ceiling doubles as the refusal and no buffer on this path ever grows.
-const MAX_MONTH_DAYS: usize = 31;
+use crate::internal::tz::month_days::MonthDaySet;
 
 /// How many `BYMONTHDAY` values the window forms are written with.
 ///
 /// Seven, because the shape means "whichever day of one week falls in this window" and a week is seven days long.
 /// A shorter or longer run says something else, and this crate does not guess what.
-const RUN_LENGTH: usize = 7;
+const RUN_LENGTH: u32 = 7;
 
 /// Read every `VTIMEZONE` a calendar carries, and report the identifiers nothing defines.
 ///
@@ -278,13 +273,15 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
         .value()
         .and_then(|value| wall_clock(value, offset_from))
     {
+        let before = out.len();
         if let Some(rules) = read_rule(component, start, offset_from, meter, sink) {
             out.extend(
                 rules.into_rules().map(|rule| {
                     Observance::new(start, offset_from, offset_to, daylight, Some(rule))
                 }),
             );
-        } else {
+        }
+        if out.len() == before {
             out.push(Observance::new(
                 start,
                 offset_from,
@@ -373,14 +370,16 @@ impl MonthSet {
 #[derive(Clone, Copy, Debug)]
 enum YearlyRules {
     Single(YearlyRule),
-    AllMonths {
+    Months {
+        months: Option<MonthSet>,
         day: RuleDay,
         at: CivilTime,
         through: Option<CivilDate>,
     },
-    SelectedMonths {
-        months: MonthSet,
-        day: RuleDay,
+    MonthDays {
+        months: Option<MonthSet>,
+        days: MonthDaySet,
+        weekday: Option<Weekday>,
         at: CivilTime,
         through: Option<CivilDate>,
     },
@@ -388,26 +387,38 @@ enum YearlyRules {
 
 impl YearlyRules {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
-        let count = match self {
-            Self::Single(_) => 1,
-            Self::AllMonths { .. } | Self::SelectedMonths { .. } => 12,
+        let (count, months) = match self {
+            Self::Single(_) => (1, None),
+            Self::Months { months, .. } | Self::MonthDays { months, .. } => (12, months),
         };
-        (1..=count).filter_map(move |month| match self {
-            Self::Single(rule) => Some(rule),
-            Self::AllMonths { day, at, through } => YearlyRule::new(month, day, at, through),
-            Self::SelectedMonths {
-                months,
-                day,
-                at,
-                through,
-            } => {
-                if months.contains(month) {
-                    YearlyRule::new(month, day, at, through)
-                } else {
-                    None
-                }
-            },
-        })
+        (1..=count)
+            .filter(move |month| months.is_none_or(|selected| selected.contains(*month)))
+            .flat_map(move |month| {
+                let positions = match self {
+                    Self::MonthDays { days, weekday, .. } => {
+                        days.max_positions(month, weekday).unwrap_or(0)
+                    },
+                    Self::Single(_) | Self::Months { .. } => 1,
+                };
+                (1..=positions).filter_map(move |position| match self {
+                    Self::Single(rule) => Some(rule),
+                    Self::Months {
+                        day, at, through, ..
+                    } => YearlyRule::new(month, day, at, through),
+                    Self::MonthDays {
+                        days,
+                        weekday,
+                        at,
+                        through,
+                        ..
+                    } => YearlyRule::new(
+                        month,
+                        RuleDay::MonthDaySet(days.select(position, weekday)?),
+                        at,
+                        through,
+                    ),
+                })
+            })
     }
 }
 
@@ -457,7 +468,7 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
     if parts.month.is_none()
-        && parts.month_days.count == 0
+        && parts.month_days.is_none()
         && let Some(term) = parts.weekday
         && let Some(ordinal) = term.ordinal
     {
@@ -468,17 +479,32 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
             parts.until,
         )));
     }
-    let day = day_form(parts, start.date())?;
-    if let Some(months) = parts.month {
-        return Some(YearlyRules::SelectedMonths {
-            months,
-            day,
+    let day = day_form(parts, start.date());
+    if day.is_none()
+        && let Some(days) = parts.month_days
+    {
+        let weekday = match parts.weekday {
+            None => None,
+            Some(WeekdayTerm {
+                ordinal: None,
+                weekday,
+            }) => Some(weekday),
+            Some(WeekdayTerm {
+                ordinal: Some(_), ..
+            }) => return None,
+        };
+        return Some(YearlyRules::MonthDays {
+            months: parts.month,
+            days,
+            weekday,
             at: start.time(),
             through: parts.until,
         });
     }
-    if parts.month_days.count != 0 {
-        return Some(YearlyRules::AllMonths {
+    let day = day?;
+    if parts.month.is_some() || parts.month_days.is_some() {
+        return Some(YearlyRules::Months {
+            months: parts.month,
             day,
             at: start.time(),
             through: parts.until,
@@ -497,8 +523,8 @@ struct RuleParts {
     month: Option<MonthSet>,
     /// The one `BYDAY` entry, absent when the rule states none.
     weekday: Option<WeekdayTerm>,
-    /// The `BYMONTHDAY` values, in the order they were written.
-    month_days: MonthDays,
+    /// The nonempty `BYMONTHDAY` set, absent when the rule states none.
+    month_days: Option<MonthDaySet>,
     /// The last date the rule applies to, from `UNTIL`.
     until: Option<CivilDate>,
 }
@@ -509,7 +535,7 @@ impl RuleParts {
         yearly: false,
         month: None,
         weekday: None,
-        month_days: MonthDays::EMPTY,
+        month_days: None,
         until: None,
     };
 }
@@ -521,50 +547,6 @@ struct WeekdayTerm {
     ordinal: Option<i8>,
     /// The weekday.
     weekday: Weekday,
-}
-
-/// The `BYMONTHDAY` values of one rule, in a buffer that cannot grow.
-#[derive(Clone, Copy, Debug)]
-struct MonthDays {
-    /// The values as written, of which the first `count` are live.
-    values: [i8; MAX_MONTH_DAYS],
-    /// How many are live.
-    count: usize,
-}
-
-impl MonthDays {
-    /// No values at all.
-    const EMPTY: Self = Self {
-        values: [0; MAX_MONTH_DAYS],
-        count: 0,
-    };
-
-    /// Keep `day`, or answer `false` because there is no room and therefore no reading.
-    fn push(&mut self, day: i8) -> bool {
-        let Some(slot) = self.values.get_mut(self.count) else {
-            return false;
-        };
-        *slot = day;
-        self.count = self.count.saturating_add(1);
-        true
-    }
-
-    /// The lowest and highest value, present only when they and everything between are here.
-    ///
-    /// Sorted rather than assumed sorted: a producer writing `31,25,26,27,28,29,30` wrote the same set as one writing them in order, and what the window forms name is the set.
-    fn contiguous_run(mut self) -> Option<(i8, i8)> {
-        let used = self.values.get_mut(..self.count)?;
-        used.sort_unstable();
-        let low = *used.first()?;
-        let mut highest = low;
-        for value in used.iter().skip(1) {
-            if *value != highest.checked_add(1)? {
-                return None;
-            }
-            highest = *value;
-        }
-        Some((low, highest))
-    }
 }
 
 /// Read every `name=value` term of a `RECUR` value, or refuse the whole of it.
@@ -609,7 +591,11 @@ fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcO
         return parts.weekday.is_some();
     }
     if name.eq_ignore_ascii_case(b"BYMONTHDAY") {
-        return read_month_days(value, &mut parts.month_days);
+        if parts.month_days.is_some() {
+            return false;
+        }
+        parts.month_days = read_month_days(value);
+        return parts.month_days.is_some();
     }
     if name.eq_ignore_ascii_case(b"UNTIL") {
         parts.until = until_date(value, offset_from);
@@ -618,29 +604,29 @@ fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcO
     false
 }
 
-/// Read a `BYMONTHDAY` list into `out`.
-fn read_month_days(value: &[u8], out: &mut MonthDays) -> bool {
+/// Read a nonempty `BYMONTHDAY` set without retaining repeated spellings.
+fn read_month_days(value: &[u8]) -> Option<MonthDaySet> {
+    let mut days: Option<MonthDaySet> = None;
     for field in value.split(|octet| *octet == b',') {
-        let Some(day) = month_day_number(field) else {
-            return false;
-        };
-        if !out.push(day) {
-            return false;
-        }
+        let day = month_day_number(field)?;
+        days = Some(match days {
+            Some(selected) => selected.with_day(day)?,
+            None => MonthDaySet::singleton(day)?,
+        });
     }
-    out.count != 0
+    days
 }
 
 /// Which day of its month a rule names, or `None` for a shape this crate does not evaluate.
 fn day_form(parts: RuleParts, start: CivilDate) -> Option<RuleDay> {
-    match (parts.weekday, parts.month_days.count) {
-        (Some(term), 0) => nth_form(term),
-        (Some(term), _) => window_form(term, parts.month_days),
+    match (parts.weekday, parts.month_days) {
+        (Some(term), None) => nth_form(term),
+        (Some(term), Some(days)) => window_form(term, days),
         // No day part at all: RFC 5545 section 3.3.10 takes the day from `DTSTART`.
         // A rule anchored on the 29th of February names nothing in three years of four, which the evaluation answers `None` to rather than moving to a nearby date.
-        (None, 0) => Some(RuleDay::DayOfMonth(start.day())),
-        (None, 1) => fixed_form(parts.month_days),
-        (None, _) => None,
+        (None, None) => Some(RuleDay::DayOfMonth(start.day())),
+        (None, Some(days)) if days.len() == 1 => fixed_form(days),
+        (None, Some(_)) => None,
     }
 }
 
@@ -658,8 +644,8 @@ fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
 /// Positive windows keep their lower bound through [`RuleDay::OnOrAfter`].
 /// Its weekday shift is at most six days, and date construction rejects results outside the month.
 /// Negative days `-7` through `-1` select the month's last matching weekday.
-fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
-    if term.ordinal.is_some() || month_days.count != RUN_LENGTH {
+fn window_form(term: WeekdayTerm, month_days: MonthDaySet) -> Option<RuleDay> {
+    if term.ordinal.is_some() || month_days.len() != RUN_LENGTH {
         return None;
     }
     let (low, highest) = month_days.contiguous_run()?;
@@ -679,7 +665,7 @@ fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
 }
 
 /// One positive or negative `BYMONTHDAY` position with no `BYDAY` beside it.
-fn fixed_form(month_days: MonthDays) -> Option<RuleDay> {
+fn fixed_form(month_days: MonthDaySet) -> Option<RuleDay> {
     let (day, _) = month_days.contiguous_run()?;
     if day == -1 {
         return Some(RuleDay::LastDayOfMonth);
@@ -1374,7 +1360,7 @@ END:VTIMEZONE
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
             "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-1SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,10",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,32",
             "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=13",
             "BYMONTH=3;BYDAY=2SU",
         ];

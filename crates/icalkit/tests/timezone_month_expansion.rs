@@ -315,3 +315,87 @@ fn selected_months_apply_weekday_ordinals_within_each_month() {
         ]
     );
 }
+
+fn alternating_day_sets() -> String {
+    timezone(
+        "20240101T020000",
+        "BYMONTHDAY=1,15",
+        "20240108T030000",
+        "BYMONTHDAY=8,22",
+    )
+}
+
+#[test]
+fn month_day_sets_apply_the_second_daylight_transition() {
+    assert_eq!(
+        starts(
+            &alternating_day_sets(),
+            "20240614T090000",
+            "20240614T000000Z",
+            "20240617T000000Z"
+        ),
+        [
+            at("2024-06-14T09:00:00Z"),
+            at("2024-06-15T08:00:00Z"),
+            at("2024-06-16T08:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn month_day_sets_apply_the_second_standard_transition() {
+    assert_eq!(
+        starts(
+            &alternating_day_sets(),
+            "20240621T090000",
+            "20240621T000000Z",
+            "20240624T000000Z"
+        ),
+        [
+            at("2024-06-21T08:00:00Z"),
+            at("2024-06-22T09:00:00Z"),
+            at("2024-06-23T09:00:00Z")
+        ]
+    );
+}
+
+#[test]
+fn queries_use_later_dates_in_month_day_sets() {
+    let calendar = calendar("20240615T090000");
+    let engine = Engine::builder().zone_database(NoExternalZones).build();
+    let mut session = engine.session();
+    for (start, end, expected) in [
+        ("20240615T075500Z", "20240615T080500Z", Match::Matched),
+        ("20240615T085500Z", "20240615T090500Z", Match::Unmatched),
+    ] {
+        assert_eq!(
+            query(&alternating_day_sets(), start, end)
+                .matches(&mut session, &calendar)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn month_day_sets_intersect_weekdays_in_negative_windows() {
+    let timezone = timezone(
+        "20240324T020000",
+        "BYMONTH=3,9;BYMONTHDAY=-14,-13,-12,-11,-10,-9,-8;BYDAY=SU",
+        "20240428T030000",
+        "BYMONTH=4,10;BYDAY=-1SU",
+    );
+    assert_eq!(
+        starts(
+            &timezone,
+            "20240921T090000",
+            "20240921T000000Z",
+            "20240924T000000Z"
+        ),
+        [
+            at("2024-09-21T09:00:00Z"),
+            at("2024-09-22T08:00:00Z"),
+            at("2024-09-23T08:00:00Z")
+        ]
+    );
+}

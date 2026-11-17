@@ -102,6 +102,7 @@ fn day_in_month(year: u16, month: u8, form: RuleDay) -> Option<CivilDate> {
                 .checked_sub(position.get())?;
             CivilDate::from_ymd(year, month, day)
         },
+        RuleDay::MonthDaySet(selection) => selection.in_month(year, month),
     }
 }
 
@@ -163,7 +164,7 @@ fn on_or_before(year: u16, month: u8, weekday: Weekday, day: u8) -> Option<Civil
 ///
 /// Both indices are below seven, so the sum is below fourteen and the difference is not negative.
 /// The saturating forms are written for the bound the constructor already holds rather than for one reachable here, in the shape `ical-core`'s own arithmetic uses.
-fn days_forward(from: Weekday, to: Weekday) -> u8 {
+pub(super) fn days_forward(from: Weekday, to: Weekday) -> u8 {
     to.index()
         .saturating_add(7)
         .saturating_sub(from.index())

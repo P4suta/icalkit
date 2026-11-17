@@ -37,6 +37,7 @@ use crate::internal::core::{
 };
 
 use crate::internal::tz::ident::Tzid;
+use crate::internal::tz::month_days::MonthDaySelection;
 
 /// A signed weekday occurrence within the selected month or year.
 ///
@@ -124,6 +125,8 @@ pub enum RuleDay {
     },
     /// A day counted backward from the month's final day, with position one naming that day.
     FromMonthEnd(NonZeroU8),
+    /// A distinct date selected from signed month-day positions and an optional weekday.
+    MonthDaySet(MonthDaySelection),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -215,7 +218,7 @@ impl YearlyRule {
 
 /// One annual pattern or explicit date from a `STANDARD` or `DAYLIGHT` subcomponent.
 ///
-/// An unrestricted month-day rule compiles into one pattern per month, sharing the original anchor.
+/// Compiled annual patterns share the source observance's original anchor.
 /// An `RDATE`-driven definition becomes one of these per date, sharing the offsets its subcomponent declared and carrying no rule.
 /// That is what makes a table a flat sorted list rather than a tree, and it is why running out of `RDATE`s is visible as the list simply ending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

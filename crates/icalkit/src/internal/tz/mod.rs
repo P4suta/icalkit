@@ -4,14 +4,15 @@
 
 //! Private RFC 5545 time-zone kernel.
 //!
-//! The unpublished conformance helper also compiles these files to exercise the low-level
-//! adversarial corpus. The unified crate always includes VTIMEZONE support.
+//! The unpublished conformance helper also compiles these files to exercise the low-level adversarial corpus.
+//! The unified crate always includes VTIMEZONE support.
 
 mod answer;
 mod combine;
 mod exclusions;
 mod ident;
 mod model;
+mod month_days;
 mod overrides;
 mod reader;
 mod resolve;

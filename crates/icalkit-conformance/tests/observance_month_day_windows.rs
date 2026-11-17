@@ -117,12 +117,12 @@ fn negative_final_week_windows_still_name_the_last_weekday() {
 #[test]
 fn unsupported_windows_keep_the_anchor_and_diagnostic() {
     for days in [
-        "25,26,27,28,29,30",
-        "24,25,26,27,28,29,30,31",
-        "24,26,27,28,29,30,31",
-        "25,26,27,28,29,30,30",
-        "-8,-7,-6,-5,-4,-3,-2",
-        "-1,25,26,27,28,29,30",
+        "25,26,27,28,29,32",
+        "24,25,26,27,28,29,30,31,32",
+        "24,26,27,28,29,30,0",
+        "25,26,27,28,29,30,",
+        "-8,-7,-6,-5,-4,-3,-32",
+        "-1,25,26,27,28,29,001",
     ] {
         let parts = format!("BYMONTH=2;BYDAY=SU;BYMONTHDAY={days}");
         let (observance, diagnostics) = read(&parts, "20240225T020000");
