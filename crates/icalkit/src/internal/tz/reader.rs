@@ -531,74 +531,118 @@ impl RuleParts {
     };
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RulePartName {
+    Frequency,
+    Interval,
+    WeekStart,
+    Month,
+    Weekday,
+    MonthDay,
+    YearDay,
+    SetPosition,
+    Until,
+}
+
+impl RulePartName {
+    const ALL: [Self; 9] = [
+        Self::Frequency,
+        Self::Interval,
+        Self::WeekStart,
+        Self::Month,
+        Self::Weekday,
+        Self::MonthDay,
+        Self::YearDay,
+        Self::SetPosition,
+        Self::Until,
+    ];
+
+    fn read(name: &[u8]) -> Option<(usize, Self)> {
+        Self::ALL
+            .into_iter()
+            .enumerate()
+            .find(|(_, part)| part.as_bytes().eq_ignore_ascii_case(name))
+    }
+
+    const fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Frequency => b"FREQ",
+            Self::Interval => b"INTERVAL",
+            Self::WeekStart => b"WKST",
+            Self::Month => b"BYMONTH",
+            Self::Weekday => b"BYDAY",
+            Self::MonthDay => b"BYMONTHDAY",
+            Self::YearDay => b"BYYEARDAY",
+            Self::SetPosition => b"BYSETPOS",
+            Self::Until => b"UNTIL",
+        }
+    }
+}
+
 /// Refuse unknown parts rather than evaluating only part of a recurrence rule.
 fn collect_parts(text: &[u8], offset_from: UtcOffset) -> Option<RuleParts> {
     let mut parts = RuleParts::EMPTY;
-    for term in text.split(|octet| *octet == b';') {
-        let equals = term.iter().position(|octet| *octet == b'=')?;
-        let (name, rest) = term.split_at_checked(equals)?;
-        let value = rest.get(1..)?;
-        if !take_part(&mut parts, name, value, offset_from) {
+    let mut seen = [false; RulePartName::ALL.len()];
+    for term in crate::internal::recur::parts(text) {
+        let (index, name) = RulePartName::read(term.name())?;
+        let slot = seen.get_mut(index)?;
+        if *slot {
+            return None;
+        }
+        *slot = true;
+        if !take_part(&mut parts, name, term.value(), offset_from) {
             return None;
         }
     }
     parts.yearly.then_some(parts)
 }
 
-/// Read one `RECUR` term into `parts`, answering whether it is one this crate evaluates.
-///
-/// `WKST` is accepted and ignored because it can only change a `BYWEEKNO` reading, and a rule carrying `BYWEEKNO` falls off the end of this function anyway.
-fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcOffset) -> bool {
-    if name.eq_ignore_ascii_case(b"FREQ") {
-        parts.yearly = value.eq_ignore_ascii_case(b"YEARLY");
-        return parts.yearly;
+/// Validate one unique supported part before compiling any transition.
+fn take_part(
+    parts: &mut RuleParts,
+    name: RulePartName,
+    value: &[u8],
+    offset_from: UtcOffset,
+) -> bool {
+    match name {
+        RulePartName::Frequency => {
+            parts.yearly = value.eq_ignore_ascii_case(b"YEARLY");
+            parts.yearly
+        },
+        RulePartName::Interval => unit_interval(value),
+        RulePartName::WeekStart => weekday_of(value).is_some(),
+        RulePartName::Month => {
+            parts.month = read_months(value);
+            parts.month.is_some()
+        },
+        RulePartName::Weekday => {
+            parts.weekdays = read_weekdays(value);
+            parts.weekdays.is_some()
+        },
+        RulePartName::MonthDay => {
+            parts.month_days = read_month_days(value);
+            parts.month_days.is_some()
+        },
+        RulePartName::YearDay => {
+            parts.year_days = read_annual_positions(value);
+            parts.year_days.is_some()
+        },
+        RulePartName::SetPosition => {
+            parts.set_positions = read_annual_positions(value);
+            parts.set_positions.is_some()
+        },
+        RulePartName::Until => {
+            parts.until = until_date(value, offset_from);
+            parts.until.is_some()
+        },
     }
-    if name.eq_ignore_ascii_case(b"INTERVAL") {
-        return value == b"1";
-    }
-    if name.eq_ignore_ascii_case(b"WKST") {
-        return true;
-    }
-    if name.eq_ignore_ascii_case(b"BYMONTH") {
-        if parts.month.is_some() {
-            return false;
-        }
-        parts.month = read_months(value);
-        return parts.month.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"BYDAY") {
-        if parts.weekdays.is_some() {
-            return false;
-        }
-        parts.weekdays = read_weekdays(value);
-        return parts.weekdays.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"BYMONTHDAY") {
-        if parts.month_days.is_some() {
-            return false;
-        }
-        parts.month_days = read_month_days(value);
-        return parts.month_days.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"BYYEARDAY") {
-        if parts.year_days.is_some() {
-            return false;
-        }
-        parts.year_days = read_annual_positions(value);
-        return parts.year_days.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"BYSETPOS") {
-        if parts.set_positions.is_some() {
-            return false;
-        }
-        parts.set_positions = read_annual_positions(value);
-        return parts.set_positions.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"UNTIL") {
-        parts.until = until_date(value, offset_from);
-        return parts.until.is_some();
-    }
-    false
+}
+
+fn unit_interval(value: &[u8]) -> bool {
+    let Some((&b'1', padding)) = value.split_last() else {
+        return false;
+    };
+    padding.iter().all(|octet| *octet == b'0')
 }
 
 fn read_months(value: &[u8]) -> Option<MonthSet> {
@@ -722,10 +766,8 @@ fn fixed_form(month_days: MonthDaySet) -> Option<RuleDay> {
 fn until_date(value: &[u8], offset_from: UtcOffset) -> Option<CivilDate> {
     let written = DateTimeValue::decode_value(value).ok()?;
     match written {
-        DateTimeValue::Date(date) => Some(date),
-        DateTimeValue::Local(_) | DateTimeValue::Utc(_) | DateTimeValue::Zoned { .. } => {
-            wall_clock(written, offset_from).map(CivilDateTime::date)
-        },
+        DateTimeValue::Utc(_) => wall_clock(written, offset_from).map(CivilDateTime::date),
+        DateTimeValue::Date(_) | DateTimeValue::Local(_) | DateTimeValue::Zoned { .. } => None,
     }
 }
 

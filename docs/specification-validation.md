@@ -210,6 +210,14 @@ Compiled patterns keep month bindings, clocks, offsets, and resource charges.
 Week numbers, nonannual frequencies, intervals greater than one, and count limits remain outside the embedded compiler's supported subset.
 The [annual selection decision](adr/annual-selection-before-month-patterns.md) records full-year compilation and bounded lookup.
 
+Embedded recurrence rules require unique part names under [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
+The reader accepts supported parts in any order.
+Part names and enumerated values ignore ASCII case.
+`INTERVAL=1` accepts leading zeros without changing yearly spacing.
+`WKST` requires one weekday token even when annual patterns don't use its value.
+Observance `UNTIL` requires a UTC `DATE-TIME` before conversion through `TZOFFSETFROM` to an inclusive wall date.
+Malformed or repeated controls refuse the whole rule and preserve its anchor and explicit dates.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.
