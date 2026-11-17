@@ -66,16 +66,6 @@ use crate::internal::tz::answer::{
 };
 use crate::internal::tz::model::{Observance, TransitionTable};
 
-/// How many years back from a query a rule is asked about.
-///
-/// A yearly rule usually fires every year, and the first two probes answer for every zone a government has ever run.
-/// The bound is what a rule that fires *rarely* costs, and this vocabulary has such rules: `FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` names a fifth Sunday in February, which exists only in a leap year whose February opens on a Sunday, and the widest gap between two of those is forty years — 1892 to 1932, across a century that skipped its leap day.
-/// Sixty-four years covers every such gap this closed form can express, with the observance's own `DTSTART` stopping the scan earlier in the ordinary case.
-///
-/// M1's answer here was three, which is the number of years a rule that fires annually needs.
-/// A rule firing in 2004 and not again until 2032 is nonetheless the observance in force in 2010, and asking it only about 2008 through 2010 answered with the observance the file superseded six years earlier.
-const RULE_PROBE_YEARS: u16 = 64;
-
 /// The earliest instant a wall clock can name, as seconds from that clock's reading at UTC.
 ///
 /// RFC 5545 section 3.3.14 writes an offset as at most `+hhmmss`, so a whole day is not expressible and every reading lies strictly inside this bound.
@@ -396,17 +386,11 @@ fn began_by(observance: Observance, instant: Instant) -> bool {
 /// The latest onset `observance`'s rule has at or before `instant`.
 ///
 /// The years are walked downwards and the first that answers is the latest that can, because a yearly rule's onsets ascend with the year.
-/// Its own `DTSTART` is not consulted here: that onset is an entry of the table like any other and the binary search already placed it.
+/// The table's binary search supplies the original anchor.
 fn latest_rule_onset(observance: Observance, instant: Instant) -> Option<Instant> {
     let from = probe_year(observance, instant)?;
-    for step in 0..RULE_PROBE_YEARS {
-        let Some(year) = from.checked_sub(step) else {
-            break;
-        };
-        // RFC 5545 makes an observance's `DTSTART` its first onset, so no rule is asked about an earlier year: a year that answered would be an onset the definition does not have.
-        if year < observance.start().date().year() {
-            break;
-        }
+    let interval = observance.rule()?.year_interval();
+    for year in interval.prior_years(observance.start().date().year(), from) {
         let asked = observance
             .transition_in(year)
             .and_then(|local| local.at_offset(observance.offset_from()));

@@ -22,6 +22,7 @@ mod rules;
 pub mod seam;
 mod series;
 mod weekdays;
+mod year_intervals;
 
 pub use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Duration, Instant, Limits, Meter, MonthAddOutcome,

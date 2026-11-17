@@ -200,13 +200,11 @@ fn zero_padded_unit_intervals_keep_yearly_spacing() {
 }
 
 #[test]
-fn malformed_and_nonunit_intervals_remain_unsupported() {
+fn malformed_or_out_of_range_intervals_remain_unsupported() {
     for value in [
         "",
         "0",
         "00",
-        "2",
-        "02",
         "+1",
         "-1",
         "1.0",

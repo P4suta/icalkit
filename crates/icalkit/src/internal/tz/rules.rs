@@ -33,7 +33,7 @@ impl YearlyRule {
         }
     }
 
-    /// The date this rule names in `year`, or `None` when it names none there.
+    /// The calendar pattern's date in `year`, before alignment to its observance's start year.
     ///
     /// `None` covers three different reasons and deliberately does not distinguish them, because a caller asking for a transition date has the same thing to do about each: the rule had stopped, the month has no such day, or the date it would name falls past `UNTIL`.
     /// The distinction that matters — whether the zone still has data at all — is [`YearlyRule::applies_in`] and `TransitionTable::coverage_end`, not this.
@@ -66,7 +66,8 @@ impl Observance {
     /// Resolving it against an offset is the caller's step and not this one's.
     ///
     /// A date-driven observance — one `RDATE` out of a table — transitions in its own year and in no other, which is how a table running out becomes visible here as a plain `None` rather than as the final state quietly continuing.
-    /// A rule-driven one transitions in every year its rule names a date in, except that a date the rule would place before the `DTSTART` it is anchored at is not one: section 3.8.5.3's recurrence set begins at `DTSTART` and a rule evaluated in closed form has no memory of that on its own.
+    /// Rule-driven onsets use interval years counted from `DTSTART` and exclude dates before that anchor.
+    /// Missing dates don't shift the interval.
     #[must_use]
     pub fn transition_in(self, year: u16) -> Option<CivilDateTime> {
         // The observance's own DTSTART is an onset in its own right, so it is the answer whenever the rule has none to give in that year.
@@ -74,6 +75,12 @@ impl Observance {
         let Some(rule) = self.rule() else {
             return anchor;
         };
+        if !rule
+            .year_interval()
+            .contains(self.start().date().year(), year)
+        {
+            return anchor;
+        }
         let Some(date) = rule.occurrence_in(year) else {
             return anchor;
         };

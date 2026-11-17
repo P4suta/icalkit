@@ -83,6 +83,7 @@ use crate::internal::tz::model::{
 };
 use crate::internal::tz::month_days::MonthDaySet;
 use crate::internal::tz::weekdays::{WeekdayScope, WeekdaySet, WeekdayTerm};
+use crate::internal::tz::year_intervals::YearInterval;
 
 /// How many `BYMONTHDAY` values the window forms are written with.
 ///
@@ -349,7 +350,22 @@ fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilD
 }
 
 #[derive(Debug)]
-enum YearlyRules {
+struct YearlyRules {
+    patterns: YearlyPatterns,
+    interval: YearInterval,
+}
+
+impl YearlyRules {
+    fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
+        let Self { patterns, interval } = self;
+        patterns
+            .into_rules()
+            .map(move |rule| rule.with_year_interval(interval))
+    }
+}
+
+#[derive(Debug)]
+enum YearlyPatterns {
     Single(YearlyRule),
     Months {
         months: Option<MonthSet>,
@@ -364,7 +380,7 @@ enum YearlyRules {
     },
 }
 
-impl YearlyRules {
+impl YearlyPatterns {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
         let (single, monthly, compiled) = match self {
             Self::Single(rule) => (Some(rule), None, None),
@@ -436,38 +452,46 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 /// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
+    Some(YearlyRules {
+        patterns: compile_patterns(&parts, start)?,
+        interval: parts.interval,
+    })
+}
+
+fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
     if parts.year_days.is_some() || parts.set_positions.is_some() {
-        return compile_date_sets(&parts, start);
+        return compile_date_sets(parts, start);
     }
     if parts.month.is_none()
         && parts.month_days.is_none()
         && let Some(term) = parts.weekdays.and_then(WeekdaySet::single)
         && let Some(ordinal) = term.ordinal()
     {
-        return Some(YearlyRules::Single(YearlyRule::for_year_weekday(
+        return Some(YearlyPatterns::Single(YearlyRule::for_year_weekday(
             term.weekday(),
             ordinal,
             start.time(),
             parts.until,
         )));
     }
-    let day = day_form(&parts, start.date());
+    let day = day_form(parts, start.date());
     if day.is_none() {
-        return compile_date_sets(&parts, start);
+        return compile_date_sets(parts, start);
     }
     let day = day?;
     if parts.month.is_some() || parts.month_days.is_some() {
-        return Some(YearlyRules::Months {
+        return Some(YearlyPatterns::Months {
             months: parts.month,
             day,
             at: start.time(),
             through: parts.until,
         });
     }
-    YearlyRule::new(start.date().month(), day, start.time(), parts.until).map(YearlyRules::Single)
+    YearlyRule::new(start.date().month(), day, start.time(), parts.until)
+        .map(YearlyPatterns::Single)
 }
 
-fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyRules> {
+fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
     let selectors = if let Some(days) = parts.year_days {
         DateSelectors::YearDays {
             days,
@@ -491,7 +515,7 @@ fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyRu
         WeekdayScope::Year
     };
     let dates = YearDateMasks::compile(parts.month, selectors, scope, parts.set_positions)?;
-    Some(YearlyRules::DaySets {
+    Some(YearlyPatterns::DaySets {
         dates: Box::new(dates),
         at: start.time(),
         through: parts.until,
@@ -504,6 +528,7 @@ struct RuleParts {
     /// Whether `FREQ=YEARLY` was stated.
     /// Nothing else is a transition rule.
     yearly: bool,
+    interval: YearInterval,
     /// The explicit `BYMONTH` set, absent when the rule states none.
     month: Option<MonthSet>,
     /// The nonempty `BYDAY` set, absent when the rule states none.
@@ -522,6 +547,7 @@ impl RuleParts {
     /// A reading with nothing in it yet.
     const EMPTY: Self = Self {
         yearly: false,
+        interval: YearInterval::YEARLY,
         month: None,
         weekdays: None,
         month_days: None,
@@ -609,7 +635,13 @@ fn take_part(
             parts.yearly = value.eq_ignore_ascii_case(b"YEARLY");
             parts.yearly
         },
-        RulePartName::Interval => unit_interval(value),
+        RulePartName::Interval => match crate::internal::recur::decode_positive_decimal(value) {
+            Ok(interval) => {
+                parts.interval = YearInterval::new(interval);
+                true
+            },
+            Err(_) => false,
+        },
         RulePartName::WeekStart => weekday_of(value).is_some(),
         RulePartName::Month => {
             parts.month = read_months(value);
@@ -636,13 +668,6 @@ fn take_part(
             parts.until.is_some()
         },
     }
-}
-
-fn unit_interval(value: &[u8]) -> bool {
-    let Some((&b'1', padding)) = value.split_last() else {
-        return false;
-    };
-    padding.iter().all(|octet| *octet == b'0')
 }
 
 fn read_months(value: &[u8]) -> Option<MonthSet> {
@@ -1434,7 +1459,7 @@ END:VTIMEZONE
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=0",
             "FREQ=YEARLY;BYMONTH=3,13;BYDAY=-1SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
-            "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",
+            "FREQ=YEARLY;INTERVAL=0;BYMONTH=3;BYDAY=2SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-54SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,32",
             "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=13",

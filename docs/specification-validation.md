@@ -207,16 +207,25 @@ Explicit dates remain separate from recurrence position selection.
 Malformed lists and repeated year-day or set-position parts produce an unsupported-rule diagnostic while preserving the anchor.
 Signed positions accept one to three digits without changing the original source spelling.
 Compiled patterns keep month bindings, clocks, offsets, and resource charges.
-Week numbers, nonannual frequencies, intervals greater than one, and count limits remain outside the embedded compiler's supported subset.
+Week numbers, nonannual frequencies, and count limits remain outside the embedded compiler's supported subset.
 The [annual selection decision](adr/annual-selection-before-month-patterns.md) records full-year compilation and bounded lookup.
 
 Embedded recurrence rules require unique part names under [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 The reader accepts supported parts in any order.
 Part names and enumerated values ignore ASCII case.
-`INTERVAL=1` accepts leading zeros without changing yearly spacing.
+`INTERVAL` accepts leading zeros without changing its value.
 `WKST` requires one weekday token even when annual patterns don't use its value.
 Observance `UNTIL` requires a UTC `DATE-TIME` before conversion through `TZOFFSETFROM` to an inclusive wall date.
 Malformed or repeated controls refuse the whole rule and preserve its anchor and explicit dates.
+
+Embedded yearly intervals use the shared positive decimal decoder and accept values from `1` through `4294967295`.
+Every compiled pattern counts interval years from the original `DTSTART` year.
+Missing dates don't restart the interval.
+`BYSETPOS` continues to select within one calendar year, and explicit dates keep their stated years.
+Lookup skips directly between aligned years and examines at most 403 years per pattern.
+The Gregorian calendar cycle and UTC year boundaries define the search ceiling.
+Stored patterns keep their existing resource charges.
+The [year alignment decision](adr/year-aligned-embedded-transitions.md) records the search bound and independent enumeration checks.
 
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).

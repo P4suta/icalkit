@@ -201,6 +201,11 @@ fn decode_unsigned(bytes: &[u8]) -> Option<u32> {
     Some(total)
 }
 
+pub(crate) fn decode_positive_decimal(bytes: &[u8]) -> Result<NonZeroU32, DiagnosticCode> {
+    let number = decode_unsigned(bytes).ok_or(DiagnosticCode::MalformedRecurrenceRule)?;
+    NonZeroU32::new(number).ok_or(DiagnosticCode::RecurrenceRulePartOutOfRange)
+}
+
 /// A decimal with an optional `+` or `-`, as section 3.3.10 writes an ordinal.
 fn decode_signed<const DIGITS: usize>(bytes: &[u8]) -> Result<i32, DiagnosticCode> {
     let (negative, digits) = match bytes.split_first() {
@@ -422,17 +427,10 @@ fn apply_scalar_part(
     text: &[u8],
 ) -> Result<RecurrenceRuleBuilder, DiagnosticCode> {
     let malformed = DiagnosticCode::MalformedRecurrenceRule;
-    let range = DiagnosticCode::RecurrenceRulePartOutOfRange;
     Ok(match scalar {
         ScalarPart::Until => builder.limit(decode_until(text).ok_or(malformed)?),
-        ScalarPart::Count => {
-            let count = decode_unsigned(text).ok_or(malformed)?;
-            builder.limit(RuleLimit::Count(NonZeroU32::new(count).ok_or(range)?))
-        },
-        ScalarPart::Interval => {
-            let interval = decode_unsigned(text).ok_or(malformed)?;
-            builder.interval(NonZeroU32::new(interval).ok_or(range)?)
-        },
+        ScalarPart::Count => builder.limit(RuleLimit::Count(decode_positive_decimal(text)?)),
+        ScalarPart::Interval => builder.interval(decode_positive_decimal(text)?),
         ScalarPart::Wkst => builder.wkst(decode_weekday(text).ok_or(malformed)?),
     })
 }

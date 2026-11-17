@@ -16,7 +16,7 @@
 //! # Closed-form rules
 //!
 //! [`YearlyRule`] represents a month-scoped day selector or a weekday ordinal counted within the year.
-//! Each pattern includes a wall clock and an optional inclusive last date.
+//! Each pattern includes a wall clock, a nonzero year interval, and an optional inclusive last date.
 //! Arithmetic over the selected period answers each rule lookup without iterating candidate dates.
 //! The structural bound preserves [`ZoneSource::resolve`]'s contract without a recurrence meter.
 //!
@@ -38,6 +38,7 @@ use crate::internal::core::{
 
 use crate::internal::tz::annual_dates::AnnualDateSelection;
 use crate::internal::tz::ident::Tzid;
+use crate::internal::tz::year_intervals::YearInterval;
 
 /// A signed weekday occurrence within the selected month or year.
 ///
@@ -141,6 +142,7 @@ pub(super) enum RuleDate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct YearlyRule {
     date: RuleDate,
+    interval: YearInterval,
     /// The wall clock the transition happens at, read against `TZOFFSETFROM`.
     at: CivilTime,
     /// The last date the rule applies to, from `UNTIL`; absent when the rule runs on.
@@ -167,6 +169,7 @@ impl YearlyRule {
         }
         Some(Self {
             date: RuleDate::Month { month, day },
+            interval: YearInterval::YEARLY,
             at,
             through,
         })
@@ -180,6 +183,7 @@ impl YearlyRule {
     ) -> Self {
         Self {
             date: RuleDate::YearWeekday { weekday, week },
+            interval: YearInterval::YEARLY,
             at,
             through,
         }
@@ -187,6 +191,15 @@ impl YearlyRule {
 
     pub(super) const fn date_pattern(self) -> RuleDate {
         self.date
+    }
+
+    pub(super) const fn with_year_interval(mut self, interval: YearInterval) -> Self {
+        self.interval = interval;
+        self
+    }
+
+    pub(super) const fn year_interval(self) -> YearInterval {
+        self.interval
     }
 
     /// The compiled pattern's month, absent for a direct yearly weekday ordinal.
