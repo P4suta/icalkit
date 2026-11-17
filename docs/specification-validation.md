@@ -411,6 +411,9 @@ Dates and floating values use the query's bounded transition definition.
 Values with an explicit `TZID` use the caller's `ZoneDatabase`.
 Calendar workflows use the whole-second precision of [RFC 5545 section 3.3.12](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.12).
 The zone adapter rejects fractional exact or fold candidates before offset lookup.
+Before local zone lookup, second 60 folds onto second 59 under [RFC 5545 section 3.3.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.5).
+The conversion keeps the local date, hour, minute, and provider coverage claims.
+Stored bytes and the typed leap-second flag keep the original evidence.
 Recurrence and projection refuse unresolved placements, while query matching reports an undecided result.
 
 Provider coverage claims remain separate from transition bounds.

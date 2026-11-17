@@ -160,6 +160,7 @@ impl OffsetResolution {
 /// The only application-implementable service in the public API.
 pub trait ZoneDatabase: Send + Sync {
     /// Resolve a local wall clock in `tzid`.
+    /// Calendar workflows fold leap seconds onto second 59 before lookup.
     /// Calendar workflows refuse fractional instants in the answer.
     fn resolve_local(&self, tzid: &str, local: DateTime) -> Option<ZoneResolution>;
 
@@ -204,18 +205,7 @@ fn coverage_basis(complete: bool) -> AnswerBasis {
 impl ZoneSource for ZoneAdapter<'_> {
     fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
         let database = self.0?;
-        let date = local.date();
-        let time = local.time();
-        let local = DateTime::new(
-            i16::try_from(date.year()).ok()?,
-            i8::try_from(date.month()).ok()?,
-            i8::try_from(date.day()).ok()?,
-            i8::try_from(time.hour()).ok()?,
-            i8::try_from(time.minute()).ok()?,
-            i8::try_from(time.second()).ok()?,
-            0,
-        )
-        .ok()?;
+        let local = jiff_date_time(local)?;
         let answer = database.resolve_local(tzid, local)?;
         let (resolution, offsets_complete) = match answer.kind() {
             LocalKind::Exact => {
@@ -485,6 +475,8 @@ mod tests {
 
     struct AnswerDatabase {
         answer: ZoneResolution,
+        expected_local: Option<DateTime>,
+        resolve_calls: AtomicUsize,
         offset_calls: AtomicUsize,
         offset_coverage: [bool; 2],
     }
@@ -493,6 +485,8 @@ mod tests {
         fn new(answer: ZoneResolution) -> Self {
             Self {
                 answer,
+                expected_local: None,
+                resolve_calls: AtomicUsize::new(0),
                 offset_calls: AtomicUsize::new(0),
                 offset_coverage: [true; 2],
             }
@@ -500,7 +494,11 @@ mod tests {
     }
 
     impl ZoneDatabase for AnswerDatabase {
-        fn resolve_local(&self, _tzid: &str, _local: DateTime) -> Option<ZoneResolution> {
+        fn resolve_local(&self, _tzid: &str, local: DateTime) -> Option<ZoneResolution> {
+            self.resolve_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(expected) = self.expected_local {
+                assert_eq!(local, expected);
+            }
             Some(self.answer.clone())
         }
 
@@ -686,6 +684,61 @@ mod tests {
                 .unwrap();
             assert_coverage(answer.basis, complete);
             assert_eq!(answer.resolution, LocalResolution::Undetermined);
+        }
+    }
+
+    #[test]
+    fn zone_lookup_folds_a_leap_second_without_advancing_the_clock() {
+        let native = CivilDateTime::new(
+            CivilDate::from_ymd(1997, 6, 30).unwrap(),
+            CivilTime::from_hms(23, 59, 60).unwrap(),
+        );
+        let folded = DateTime::constant(1997, 6, 30, 23, 59, 59, 0);
+        let expected = timestamp("1997-06-30T23:59:59Z");
+        for complete in [false, true] {
+            let mut database = AnswerDatabase::new(ZoneResolution::exact(
+                expected,
+                "leap-second-fixture",
+                complete,
+            ));
+            database.expected_local = Some(folded);
+            database.offset_coverage = [complete; 2];
+            let answer = ZoneAdapter::new(Some(&database))
+                .resolve("Test/Leap", native)
+                .expect("the zone provider must receive the folded local clock");
+            assert_eq!(database.resolve_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                answer.resolution.earliest(),
+                Some(Instant::from_unix_seconds(expected.as_second()))
+            );
+            assert_coverage(answer.basis, complete);
+        }
+    }
+
+    #[test]
+    fn zone_lookup_keeps_every_ordinary_second() {
+        for second in 0_u8..60 {
+            let native = CivilDateTime::new(
+                CivilDate::from_ymd(1997, 6, 30).unwrap(),
+                CivilTime::from_hms(23, 59, second).unwrap(),
+            );
+            let local =
+                DateTime::new(1997, 6, 30, 23, 59, i8::try_from(second).unwrap(), 0).unwrap();
+            let expected: Timestamp = alloc::format!("{local}Z").parse().unwrap();
+            let mut database = AnswerDatabase::new(ZoneResolution::exact(
+                expected,
+                "ordinary-second-fixture",
+                true,
+            ));
+            database.expected_local = Some(local);
+            let answer = ZoneAdapter::new(Some(&database))
+                .resolve("Test/Leap", native)
+                .unwrap();
+            assert_eq!(database.resolve_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                answer.resolution.earliest(),
+                Some(Instant::from_unix_seconds(expected.as_second()))
+            );
         }
     }
 }
