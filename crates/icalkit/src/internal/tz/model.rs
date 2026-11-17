@@ -145,7 +145,7 @@ pub struct YearlyRule {
     interval: YearInterval,
     /// The wall clock the transition happens at, read against `TZOFFSETFROM`.
     at: CivilTime,
-    /// The last date the rule applies to, from `UNTIL`; absent when the rule runs on.
+    /// The inclusive rule end, absent when no finite end falls in the civil date range.
     through: Option<CivilDate>,
 }
 
@@ -226,9 +226,9 @@ impl YearlyRule {
         self.at
     }
 
-    /// The last date the rule applies to, absent when it runs on forever.
+    /// The last date the rule applies to within civil years 0000–9999.
     ///
-    /// A rule with no end is what makes [`TransitionTable::coverage_end`] `None`: such a zone knows the future, and no answer it gives is ever an extrapolation.
+    /// An absent bound covers unlimited rules and counted ends beyond the civil range.
     #[must_use]
     pub const fn through(self) -> Option<CivilDate> {
         self.through
@@ -311,9 +311,10 @@ impl Observance {
         self.offset_from.seconds() != self.offset_to.seconds()
     }
 
-    /// The last date this observance has real data for, absent when its rule runs on forever.
+    /// The last supported date, absent when its rule covers the remaining civil range.
     ///
-    /// A date-driven observance covers its own date and nothing after it; a rule-driven one covers up to its `UNTIL`, or the whole future when it has none.
+    /// A date-driven observance covers its own date.
+    /// A rule-driven observance uses its inclusive end from `UNTIL` or `COUNT`.
     #[must_use]
     pub fn covered_through(self) -> Option<CivilDate> {
         match self.rule {
@@ -341,7 +342,7 @@ pub struct TransitionTable {
     rules: Vec<Observance>,
     /// Whether observances were dropped to hold the caller's bound.
     truncated: bool,
-    /// The last date backed by real data, absent when every kind of observance repeats forever.
+    /// The last supported date, absent when every kind of observance covers the civil range.
     coverage_end: Option<CivilDate>,
     /// The date of the earliest transition this table records, absent when it records none.
     coverage_start: Option<CivilDate>,
@@ -431,7 +432,7 @@ impl TransitionTable {
 
     /// The last date backed by real data, absent when this zone knows the future.
     ///
-    /// `None` means every kind of observance this definition carries repeats by a rule with no `UNTIL`, so no answer this table gives is ever an extrapolation.
+    /// `None` means every kind of observance has a rule without a finite end within civil years 0000–9999.
     /// A date means every question after it is answered by continuing the final observance, and carries [`AnswerBasis::BeyondKnownTransitions`] saying so.
     ///
     /// "Every kind" is `STANDARD` against `DAYLIGHT`, and it is the correction M2 made here.
@@ -489,7 +490,7 @@ fn onset_of(observance: Observance) -> Option<Instant> {
 
 /// The last date `observances` are backed by real data for.
 ///
-/// `None` only when every *side* of the definition repeats forever, where a side is `STANDARD` against `DAYLIGHT`.
+/// `None` only when every side covers the civil range, where a side is `STANDARD` against `DAYLIGHT`.
 /// A zone knows its own future when it can say both when summer begins and when it ends; a definition with an endless daylight rule and a finite list of standard onsets knows neither past the last of those onsets, because after it the alternation the zone runs on has one half missing.
 ///
 /// Where some side does run out, the answer is the *latest* date any observance states outright, and not the earliest.

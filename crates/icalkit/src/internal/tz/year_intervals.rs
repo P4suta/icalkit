@@ -20,6 +20,19 @@ impl YearInterval {
         Self(interval)
     }
 
+    pub(super) const fn step(self) -> NonZeroU32 {
+        self.0
+    }
+
+    pub(super) fn periods_through(self, first: u16, last: u16) -> Option<u32> {
+        u32::from(last.checked_sub(first)?).checked_div(self.0.get())
+    }
+
+    pub(super) fn year_at(self, first: u16, period: u32) -> Option<u16> {
+        let distance = period.checked_mul(self.0.get())?;
+        u16::try_from(u32::from(first).checked_add(distance)?).ok()
+    }
+
     pub(super) fn contains(self, first: u16, year: u16) -> bool {
         year.checked_sub(first)
             .and_then(|distance| u32::from(distance).checked_rem(self.0.get()))
@@ -27,12 +40,9 @@ impl YearInterval {
     }
 
     pub(super) fn prior_years(self, first: u16, limit: u16) -> impl Iterator<Item = u16> {
-        let current = limit
-            .checked_sub(first)
-            .and_then(|distance| u32::from(distance).checked_div(self.0.get()))
-            .and_then(|periods| periods.checked_mul(self.0.get()))
-            .and_then(|distance| u32::from(first).checked_add(distance))
-            .and_then(|year| u16::try_from(year).ok());
+        let current = self
+            .periods_through(first, limit)
+            .and_then(|period| self.year_at(first, period));
         core::iter::successors(current, move |year| {
             u32::from(*year)
                 .checked_sub(self.0.get())

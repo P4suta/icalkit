@@ -67,7 +67,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use core::num::NonZeroU8;
+use core::num::{NonZeroU8, NonZeroU32};
 use core::str;
 
 use crate::internal::core::{
@@ -76,6 +76,7 @@ use crate::internal::core::{
     Weekday, report_diagnostic,
 };
 
+use crate::internal::tz::annual_counts::{CountEnd, counted_end};
 use crate::internal::tz::annual_dates::{DateSelectors, MonthSet, YearDateMasks};
 use crate::internal::tz::annual_positions::AnnualPositions;
 use crate::internal::tz::model::{
@@ -459,6 +460,9 @@ fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Opti
 }
 
 fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    if let RuleEnd::Count(count) = parts.end {
+        return compile_counted(parts, start, count);
+    }
     if parts.year_days.is_some() || parts.set_positions.is_some() {
         return compile_date_sets(parts, start);
     }
@@ -471,7 +475,7 @@ fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPat
             term.weekday(),
             ordinal,
             start.time(),
-            parts.until,
+            parts.end.until(),
         )));
     }
     let day = day_form(parts, start.date());
@@ -484,14 +488,52 @@ fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPat
             months: parts.month,
             day,
             at: start.time(),
-            through: parts.until,
+            through: parts.end.until(),
         });
     }
-    YearlyRule::new(start.date().month(), day, start.time(), parts.until)
+    YearlyRule::new(start.date().month(), day, start.time(), parts.end.until())
         .map(YearlyPatterns::Single)
 }
 
+fn compile_counted(
+    parts: &RuleParts,
+    start: CivilDateTime,
+    count: NonZeroU32,
+) -> Option<YearlyPatterns> {
+    let mut dates = compile_date_masks(parts, start)?;
+    let through = match counted_end(&dates, start.date(), parts.interval, count)? {
+        CountEnd::Within(last) => {
+            dates.retain_after(start.date(), last, parts.interval)?;
+            Some(last)
+        },
+        CountEnd::BeyondCivilRange => None,
+    };
+    Some(YearlyPatterns::DaySets {
+        dates: Box::new(dates),
+        at: start.time(),
+        through,
+    })
+}
+
 fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    Some(YearlyPatterns::DaySets {
+        dates: Box::new(compile_date_masks(parts, start)?),
+        at: start.time(),
+        through: parts.end.until(),
+    })
+}
+
+fn compile_date_masks(parts: &RuleParts, start: CivilDateTime) -> Option<YearDateMasks> {
+    let default_day =
+        parts.year_days.is_none() && parts.month_days.is_none() && parts.weekdays.is_none();
+    if default_day && parts.month.is_none() && parts.set_positions.is_some() {
+        return None;
+    }
+    let months = if default_day && parts.month.is_none() {
+        Some(MonthSet::singleton(start.date().month())?)
+    } else {
+        parts.month
+    };
     let selectors = if let Some(days) = parts.year_days {
         DateSelectors::YearDays {
             days,
@@ -502,11 +544,10 @@ fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPa
         match (parts.month_days, parts.weekdays) {
             (Some(days), weekdays) => DateSelectors::MonthDays { days, weekdays },
             (None, Some(weekdays)) => DateSelectors::Weekdays(weekdays),
-            (None, None) if parts.month.is_some() => DateSelectors::MonthDays {
+            (None, None) => DateSelectors::MonthDays {
                 days: MonthDaySet::singleton(i8::try_from(start.date().day()).ok()?)?,
                 weekdays: None,
             },
-            (None, None) => return None,
         }
     };
     let scope = if parts.month.is_some() {
@@ -514,12 +555,36 @@ fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPa
     } else {
         WeekdayScope::Year
     };
-    let dates = YearDateMasks::compile(parts.month, selectors, scope, parts.set_positions)?;
-    Some(YearlyPatterns::DaySets {
-        dates: Box::new(dates),
-        at: start.time(),
-        through: parts.until,
-    })
+    YearDateMasks::compile(months, selectors, scope, parts.set_positions)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RuleEnd {
+    Unlimited,
+    Until(CivilDate),
+    Count(NonZeroU32),
+}
+
+impl RuleEnd {
+    const fn until(self) -> Option<CivilDate> {
+        match self {
+            Self::Until(date) => Some(date),
+            Self::Unlimited | Self::Count(_) => None,
+        }
+    }
+
+    fn take(&mut self, end: Option<Self>) -> bool {
+        if !matches!(self, Self::Unlimited) {
+            return false;
+        }
+        match end {
+            Some(end) => {
+                *self = end;
+                true
+            },
+            None => false,
+        }
+    }
 }
 
 /// What a `RECUR` value said, as far as this crate reads one.
@@ -539,8 +604,7 @@ struct RuleParts {
     year_days: Option<AnnualPositions>,
     /// Positions within the complete yearly candidate set.
     set_positions: Option<AnnualPositions>,
-    /// The last date the rule applies to, from `UNTIL`.
-    until: Option<CivilDate>,
+    end: RuleEnd,
 }
 
 impl RuleParts {
@@ -553,7 +617,7 @@ impl RuleParts {
         month_days: None,
         year_days: None,
         set_positions: None,
-        until: None,
+        end: RuleEnd::Unlimited,
     };
 }
 
@@ -567,11 +631,12 @@ enum RulePartName {
     MonthDay,
     YearDay,
     SetPosition,
+    Count,
     Until,
 }
 
 impl RulePartName {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Frequency,
         Self::Interval,
         Self::WeekStart,
@@ -580,6 +645,7 @@ impl RulePartName {
         Self::MonthDay,
         Self::YearDay,
         Self::SetPosition,
+        Self::Count,
         Self::Until,
     ];
 
@@ -600,6 +666,7 @@ impl RulePartName {
             Self::MonthDay => b"BYMONTHDAY",
             Self::YearDay => b"BYYEARDAY",
             Self::SetPosition => b"BYSETPOS",
+            Self::Count => b"COUNT",
             Self::Until => b"UNTIL",
         }
     }
@@ -663,10 +730,14 @@ fn take_part(
             parts.set_positions = read_annual_positions(value);
             parts.set_positions.is_some()
         },
-        RulePartName::Until => {
-            parts.until = until_date(value, offset_from);
-            parts.until.is_some()
-        },
+        RulePartName::Count => parts.end.take(
+            crate::internal::recur::decode_positive_decimal(value)
+                .ok()
+                .map(RuleEnd::Count),
+        ),
+        RulePartName::Until => parts
+            .end
+            .take(until_date(value, offset_from).map(RuleEnd::Until)),
     }
 }
 
@@ -1458,7 +1529,7 @@ END:VTIMEZONE
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SUX",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=0",
             "FREQ=YEARLY;BYMONTH=3,13;BYDAY=-1SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=0",
             "FREQ=YEARLY;INTERVAL=0;BYMONTH=3;BYDAY=2SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-54SU",
             "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,32",

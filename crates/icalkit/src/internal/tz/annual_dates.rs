@@ -12,6 +12,7 @@ use crate::internal::tz::annual_positions::AnnualPositions;
 use crate::internal::tz::model::{RuleDay, YearlyRule};
 use crate::internal::tz::month_days::MonthDaySet;
 use crate::internal::tz::weekdays::{WeekdayScope, WeekdaySet};
+use crate::internal::tz::year_intervals::YearInterval;
 
 const YEAR_LAYOUTS: [u16; 14] = [
     2001, 2002, 2003, 2009, 2010, 2005, 2006, 2024, 2008, 2020, 2004, 2016, 2000, 2012,
@@ -116,6 +117,108 @@ impl YearDateMasks {
         Some(Self { layouts })
     }
 
+    pub(super) fn year_count(&self, year: u16) -> Option<u32> {
+        self.layouts
+            .get(year_layout(year)?)?
+            .iter()
+            .try_fold(0_u32, |total, mask| total.checked_add(mask.count_ones()))
+    }
+
+    pub(super) fn count_through(&self, date: CivilDate) -> Option<u32> {
+        let dates = self.layouts.get(year_layout(date.year())?)?;
+        let mut total = 0_u32;
+        for month in 1..=date.month() {
+            let mut mask = *dates.get(usize::from(month.checked_sub(1)?))?;
+            if month == date.month() {
+                mask &= through_day(date.day())?;
+            }
+            total = total.checked_add(mask.count_ones())?;
+        }
+        Some(total)
+    }
+
+    pub(super) fn date_at(&self, year: u16, mut position: u32) -> Option<CivilDate> {
+        if position == 0 {
+            return None;
+        }
+        for (index, mask) in self.layouts.get(year_layout(year)?)?.iter().enumerate() {
+            let count = mask.count_ones();
+            if position > count {
+                position = position.checked_sub(count)?;
+                continue;
+            }
+            let mut remaining = *mask;
+            for _ in 1..position {
+                remaining &= remaining.checked_sub(1)?;
+            }
+            let day = u8::try_from(remaining.trailing_zeros().checked_add(1)?).ok()?;
+            let month = u8::try_from(index.checked_add(1)?).ok()?;
+            return CivilDate::from_ymd(year, month, day);
+        }
+        None
+    }
+
+    pub(super) fn retain_after(
+        &mut self,
+        first: CivilDate,
+        last: CivilDate,
+        interval: YearInterval,
+    ) -> Option<()> {
+        if last < first {
+            return None;
+        }
+        let final_period = interval.periods_through(first.year(), last.year())?;
+        let mut kept = Self {
+            layouts: [[0; 12]; 14],
+        };
+        // Four hundred aligned periods cover every reachable Gregorian layout.
+        for period in 0..=final_period.min(400) {
+            kept.include_year(self, interval.year_at(first.year(), period)?, first, last)?;
+        }
+        if final_period > 400 {
+            kept.include_year(
+                self,
+                interval.year_at(first.year(), final_period)?,
+                first,
+                last,
+            )?;
+        }
+        *self = kept;
+        Some(())
+    }
+
+    fn include_year(
+        &mut self,
+        source: &Self,
+        year: u16,
+        first: CivilDate,
+        last: CivilDate,
+    ) -> Option<()> {
+        let layout = year_layout(year)?;
+        let dates = source.layouts.get(layout)?;
+        let kept = self.layouts.get_mut(layout)?;
+        for month in 1_u8..=12 {
+            let column = usize::from(month.checked_sub(1)?);
+            let mut mask = *dates.get(column)?;
+            if year == first.year() && month <= first.month() {
+                mask &= if month == first.month() {
+                    !through_day(first.day())?
+                } else {
+                    0
+                };
+            }
+            if year == last.year() && month >= last.month() {
+                mask &= if month == last.month() {
+                    through_day(last.day())?
+                } else {
+                    0
+                };
+            }
+            *kept.get_mut(column)? |= mask;
+        }
+        Some(())
+    }
+
     pub(super) fn into_rules(
         self: Box<Self>,
         at: CivilTime,
@@ -149,6 +252,10 @@ impl YearDateMasks {
             masks,
         })
     }
+}
+
+fn through_day(day: u8) -> Option<u32> {
+    1_u32.checked_shl(u32::from(day))?.checked_sub(1)
 }
 
 fn select_positions(dates: &mut [u32; 12], positions: AnnualPositions) -> Option<()> {

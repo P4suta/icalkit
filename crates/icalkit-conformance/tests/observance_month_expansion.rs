@@ -275,7 +275,7 @@ fn unsupported_selectors_keep_one_anchor_and_one_note() {
         "BYMONTHDAY=-32",
         "BYMONTHDAY=-003",
         "BYMONTHDAY=1,32",
-        "BYMONTHDAY=1;COUNT=4",
+        "BYMONTHDAY=1;COUNT=0",
         "BYMONTHDAY=1;INTERVAL=0",
         "BYMONTH=1,13;BYMONTHDAY=1",
         "BYDAY=54MO;BYMONTHDAY=1",

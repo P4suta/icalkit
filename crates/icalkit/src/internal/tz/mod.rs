@@ -7,6 +7,7 @@
 //! The unpublished conformance helper also compiles these files to exercise the low-level adversarial corpus.
 //! The unified crate always includes VTIMEZONE support.
 
+mod annual_counts;
 mod annual_dates;
 mod annual_positions;
 mod answer;
