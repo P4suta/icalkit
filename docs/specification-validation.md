@@ -152,6 +152,15 @@ Lossless imports preserve malformed range data.
 Unknown property, value type, and component semantics stay opaque.
 
 Recurrence rules use the maintained parser and the shared session meter.
+Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
+Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.
+Year days and set positions use one to three digits.
+Ordinal signs and leap month suffixes follow their own grammar and don't count as digits.
+Strict reading distinguishes malformed numeric spellings from values outside their calendar's range.
+Recovering reading drops the complete unusable list part and preserves its established diagnostic.
+Legal zero padding survives in the original calendar bytes.
+`COUNT` and `INTERVAL` keep their variable digit counts within the existing input and numeric limits.
+
 Week-numbering years follow `WKST` and the [four-day rule](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Their candidate extent can begin before or after January 1.
 Search bounds use the generation date extent while shorter periods keep their clock precision.

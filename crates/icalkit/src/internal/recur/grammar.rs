@@ -202,89 +202,116 @@ fn decode_unsigned(bytes: &[u8]) -> Option<u32> {
 }
 
 /// A decimal with an optional `+` or `-`, as section 3.3.10 writes an ordinal.
-fn decode_signed(bytes: &[u8]) -> Option<i32> {
+fn decode_signed<const DIGITS: usize>(bytes: &[u8]) -> Result<i32, DiagnosticCode> {
     let (negative, digits) = match bytes.split_first() {
         Some((b'-', rest)) => (true, rest),
         Some((b'+', rest)) => (false, rest),
         _ => (false, bytes),
     };
-    let magnitude = i32::try_from(decode_unsigned(digits)?).ok()?;
+    let magnitude = i32::try_from(decode_digits::<DIGITS>(digits)?)
+        .map_err(|_| DiagnosticCode::RecurrenceRulePartOutOfRange)?;
     if negative {
-        magnitude.checked_neg()
+        magnitude
+            .checked_neg()
+            .ok_or(DiagnosticCode::RecurrenceRulePartOutOfRange)
     } else {
-        Some(magnitude)
+        Ok(magnitude)
     }
 }
 
 /// A signed value within `±bound`, never zero — section 3.3.10's shape for every ordinal list.
 ///
 /// Zero is refused for the same reason the RFC excludes it: `BYMONTHDAY=0` names no day and `BYSETPOS=0` names no position, so admitting it would carry a value with no meaning into an expansion that would have to invent one.
-fn decode_ordinal(bytes: &[u8], bound: i32) -> Option<i32> {
-    let value = decode_signed(bytes)?;
-    (value != 0 && value.unsigned_abs() <= bound.unsigned_abs()).then_some(value)
+fn decode_ordinal<const DIGITS: usize>(bytes: &[u8], bound: i32) -> Result<i32, DiagnosticCode> {
+    let value = decode_signed::<DIGITS>(bytes)?;
+    if value == 0 || value.unsigned_abs() > bound.unsigned_abs() {
+        return Err(DiagnosticCode::RecurrenceRulePartOutOfRange);
+    }
+    Ok(value)
 }
 
 /// An unsigned value within `0..=bound`.
-fn decode_bounded(bytes: &[u8], bound: u32) -> Option<u32> {
-    decode_unsigned(bytes).filter(|value| *value <= bound)
+fn decode_bounded<const DIGITS: usize>(bytes: &[u8], bound: u32) -> Result<u32, DiagnosticCode> {
+    let value = decode_digits::<DIGITS>(bytes)?;
+    if value > bound {
+        return Err(DiagnosticCode::RecurrenceRulePartOutOfRange);
+    }
+    Ok(value)
+}
+
+fn decode_digits<const DIGITS: usize>(bytes: &[u8]) -> Result<u32, DiagnosticCode> {
+    if bytes.len() > DIGITS {
+        return Err(DiagnosticCode::MalformedRecurrenceRule);
+    }
+    decode_unsigned(bytes).ok_or(DiagnosticCode::MalformedRecurrenceRule)
 }
 
 /// Read a `,`-separated list, refusing the whole list when any element is refused.
 ///
 /// All or nothing per part, because a half-read `BYMONTHDAY` would silently answer a different question than the file asked, and the property's own text is still there for the caller.
-fn decode_list<T, F>(bytes: &[u8], mut element: F) -> Option<ByList<T>>
+fn decode_list<T, F>(bytes: &[u8], mut element: F) -> Result<ByList<T>, DiagnosticCode>
 where
-    F: FnMut(&[u8]) -> Option<T>,
+    F: FnMut(&[u8]) -> Result<T, DiagnosticCode>,
 {
     if bytes.is_empty() {
-        return None;
+        return Err(DiagnosticCode::MalformedRecurrenceRule);
     }
     let mut values: Vec<T> = Vec::new();
     for item in bytes.split(|octet| *octet == b',') {
         values.push(element(item)?);
     }
-    Some(ByList::from(values))
+    Ok(ByList::from(values))
 }
 
 /// Read one `BYDAY` entry: an optional ±ordinal followed by a two-letter weekday.
 fn decode_weekday_num(
     bytes: &[u8],
     scale: crate::internal::core::CalendarScale,
-) -> Option<WeekdayNum> {
-    let split = bytes.len().checked_sub(2)?;
-    let (ordinal_text, day_text) = (bytes.get(..split)?, bytes.get(split..)?);
-    let weekday = decode_weekday(day_text)?;
+) -> Result<WeekdayNum, DiagnosticCode> {
+    let malformed = DiagnosticCode::MalformedRecurrenceRule;
+    let range = DiagnosticCode::RecurrenceRulePartOutOfRange;
+    let split = bytes.len().checked_sub(2).ok_or(malformed)?;
+    let (ordinal_text, day_text) = (
+        bytes.get(..split).ok_or(malformed)?,
+        bytes.get(split..).ok_or(malformed)?,
+    );
+    let weekday = decode_weekday(day_text).ok_or(malformed)?;
     if ordinal_text.is_empty() {
-        return WeekdayNum::for_calendar(None, weekday, scale);
+        return WeekdayNum::for_calendar(None, weekday, scale).ok_or(range);
     }
-    let ordinal = decode_ordinal(
+    let ordinal = decode_ordinal::<2>(
         ordinal_text,
         i32::from(scale.ranges().year_days.div_ceil(7)),
     )?;
-    let ordinal = NonZeroI8::new(i8::try_from(ordinal).ok()?)?;
-    WeekdayNum::for_calendar(Some(ordinal), weekday, scale)
+    let ordinal = NonZeroI8::new(i8::try_from(ordinal).map_err(|_| range)?).ok_or(range)?;
+    WeekdayNum::for_calendar(Some(ordinal), weekday, scale).ok_or(range)
 }
 
 fn decode_calendar_month(
     bytes: &[u8],
     builder: &RecurrenceRuleBuilder,
-) -> Option<crate::internal::core::CalendarMonth> {
+) -> Result<crate::internal::core::CalendarMonth, DiagnosticCode> {
+    let malformed = DiagnosticCode::MalformedRecurrenceRule;
+    let range = DiagnosticCode::RecurrenceRulePartOutOfRange;
     let leap = bytes
         .last()
         .is_some_and(|octet| octet.eq_ignore_ascii_case(&b'L'));
     if leap && !builder.has_rscale() {
-        return None;
+        return Err(malformed);
     }
     let digits = if leap {
-        bytes.get(..bytes.len().checked_sub(1)?)?
+        bytes
+            .get(..bytes.len().checked_sub(1).ok_or(malformed)?)
+            .ok_or(malformed)?
     } else {
         bytes
     };
-    let number = decode_bounded(
+    let number = decode_bounded::<2>(
         digits,
         u32::from(builder.calendar_scale().ranges().regular_months),
     )?;
-    crate::internal::core::CalendarMonth::from_parts(u8::try_from(number).ok()?, leap)
+    crate::internal::core::CalendarMonth::from_parts(u8::try_from(number).map_err(|_| range)?, leap)
+        .ok_or(range)
 }
 
 /// Read an `UNTIL`, saying which clock the file wrote it on.
@@ -419,53 +446,38 @@ fn apply_by_part(
     text: &[u8],
 ) -> Result<RecurrenceRuleBuilder, DiagnosticCode> {
     let bad = DiagnosticCode::RecurrenceRulePartOutOfRange;
-    let short = |value: i32| i8::try_from(value).ok();
-    let narrow = |value: u32| u8::try_from(value).ok();
-    let wide = |value: i32| i16::try_from(value).ok();
+    let short = |value: i32| i8::try_from(value).map_err(|_| bad);
+    let narrow = |value: u32| u8::try_from(value).map_err(|_| bad);
+    let wide = |value: i32| i16::try_from(value).map_err(|_| bad);
     let scale = builder.calendar_scale();
     let limits = scale.ranges();
     Ok(match row {
-        RulePart::Second => builder.by_second(
-            decode_list(text, |item| decode_bounded(item, 60).and_then(narrow)).ok_or(bad)?,
-        ),
-        RulePart::Minute => builder.by_minute(
-            decode_list(text, |item| decode_bounded(item, 59).and_then(narrow)).ok_or(bad)?,
-        ),
-        RulePart::Hour => builder.by_hour(
-            decode_list(text, |item| decode_bounded(item, 23).and_then(narrow)).ok_or(bad)?,
-        ),
-        RulePart::Day => {
-            builder.by_day(decode_list(text, |item| decode_weekday_num(item, scale)).ok_or(bad)?)
-        },
-        RulePart::MonthDay => builder.by_month_day(
-            decode_list(text, |item| {
-                decode_ordinal(item, i32::from(limits.month_days)).and_then(short)
-            })
-            .ok_or(bad)?,
-        ),
-        RulePart::YearDay => builder.by_year_day(
-            decode_list(text, |item| {
-                decode_ordinal(item, i32::from(limits.year_days)).and_then(wide)
-            })
-            .ok_or(bad)?,
-        ),
-        RulePart::WeekNo => builder.by_week_no(
-            decode_list(text, |item| {
-                decode_ordinal(item, i32::from(limits.year_days.div_ceil(7))).and_then(short)
-            })
-            .ok_or(bad)?,
-        ),
+        RulePart::Second => builder.by_second(decode_list(text, |item| {
+            decode_bounded::<2>(item, 60).and_then(narrow)
+        })?),
+        RulePart::Minute => builder.by_minute(decode_list(text, |item| {
+            decode_bounded::<2>(item, 59).and_then(narrow)
+        })?),
+        RulePart::Hour => builder.by_hour(decode_list(text, |item| {
+            decode_bounded::<2>(item, 23).and_then(narrow)
+        })?),
+        RulePart::Day => builder.by_day(decode_list(text, |item| decode_weekday_num(item, scale))?),
+        RulePart::MonthDay => builder.by_month_day(decode_list(text, |item| {
+            decode_ordinal::<2>(item, i32::from(limits.month_days)).and_then(short)
+        })?),
+        RulePart::YearDay => builder.by_year_day(decode_list(text, |item| {
+            decode_ordinal::<3>(item, i32::from(limits.year_days)).and_then(wide)
+        })?),
+        RulePart::WeekNo => builder.by_week_no(decode_list(text, |item| {
+            decode_ordinal::<2>(item, i32::from(limits.year_days.div_ceil(7))).and_then(short)
+        })?),
         RulePart::Month => {
-            let months =
-                decode_list(text, |item| decode_calendar_month(item, &builder)).ok_or(bad)?;
+            let months = decode_list(text, |item| decode_calendar_month(item, &builder))?;
             builder.calendar_months(months)
         },
-        RulePart::SetPos => builder.by_set_pos(
-            decode_list(text, |item| {
-                decode_ordinal(item, i32::from(limits.year_days)).and_then(wide)
-            })
-            .ok_or(bad)?,
-        ),
+        RulePart::SetPos => builder.by_set_pos(decode_list(text, |item| {
+            decode_ordinal::<3>(item, i32::from(limits.year_days)).and_then(wide)
+        })?),
     })
 }
 
