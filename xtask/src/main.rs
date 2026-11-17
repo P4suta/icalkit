@@ -113,7 +113,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 /// The crates that make up the sans-I/O core.
 ///
@@ -248,6 +248,7 @@ mod ci;
 mod development;
 #[cfg(test)]
 mod hook_scope;
+mod public_api;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
     CiJob, CiPhase, CiResults, JobState, ObservedJob, REJECTING_PROBE, REQUIRED_PROOFS,
@@ -609,16 +610,7 @@ fn collect_public_api_violations() -> io::Result<Vec<String>> {
 
 /// Ask cargo-public-api for one deterministic facade surface.
 fn generate_public_api(workspace: &Path, no_default_features: bool) -> io::Result<String> {
-    let mut command = Command::new("cargo");
-    command.arg(format!("+{PUBLIC_API_TOOLCHAIN}"));
-    command.args(["public-api", "-p", "icalkit", "-sss", "--color", "never"]);
-    if no_default_features {
-        command.arg("--no-default-features");
-    }
-    let output = command
-        .current_dir(workspace)
-        .env("RUSTDOCFLAGS", "-D warnings")
-        .output()?;
+    let output = public_api::command(workspace, no_default_features)?.output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "cargo-public-api failed for {} features: {}",
