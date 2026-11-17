@@ -65,7 +65,16 @@ impl PinnedCargo {
         let path = env::join_paths(std::iter::once(self.bin.clone()).chain(inherited))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut command = Command::new(&self.executable);
-        command.args(["public-api", "-p", "icalkit", "-sss", "--color", "never"]);
+        command.args([
+            "public-api",
+            "-p",
+            "icalkit",
+            "-sss",
+            "--color",
+            "never",
+            "--cap-lints",
+            "deny",
+        ]);
         if no_default_features {
             command.arg("--no-default-features");
         }
@@ -83,7 +92,8 @@ impl PinnedCargo {
                 "RUSTDOC",
                 self.bin.join(format!("rustdoc{}", env::consts::EXE_SUFFIX)),
             )
-            .env("RUSTDOCFLAGS", "-D warnings");
+            .env("RUSTDOCFLAGS", "-D warnings")
+            .env_remove("CARGO_ENCODED_RUSTDOCFLAGS");
         Ok(command)
     }
 }
@@ -111,6 +121,9 @@ mod tests {
 
     const PROBE_CARGO: &str = "ICALKIT_API_PROBE_CARGO";
     const PROBE_PROFILE: &str = "ICALKIT_API_PROBE_PROFILE";
+    const PROBE_SOURCE: &str = "ICALKIT_API_PROBE_SOURCE";
+    const PROBE_RUSTDOC: &str = "ICALKIT_API_PROBE_RUSTDOC";
+    const PROBE_WORKSPACE: &str = "ICALKIT_API_PROBE_WORKSPACE";
     const PROBE_TEST: &str = "public_api::tests::api_command_probe";
     const FIXTURE: &str = r#"
 use std::io::{self, Write};
@@ -142,6 +155,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if std::env::var("RUSTUP_AUTO_INSTALL").as_deref() != Ok("0") {
                 eprintln!("fixture: child toolchain installation remains enabled");
                 std::process::exit(44);
+            }
+            if let Some(source) = std::env::var_os("ICALKIT_API_PROBE_SOURCE") {
+                let flags = match std::env::var("CARGO_ENCODED_RUSTDOCFLAGS") {
+                    Ok(encoded) => encoded.split('\u{1f}').map(String::from).collect::<Vec<_>>(),
+                    Err(_) => std::env::var("RUSTDOCFLAGS")?.split_whitespace().map(String::from).collect(),
+                };
+                let cap = arguments.windows(2).find_map(|pair| {
+                    (pair[0] == "--cap-lints").then_some(pair[1].as_str())
+                }).unwrap_or("warn");
+                let status = Command::new(std::env::var_os("ICALKIT_API_PROBE_RUSTDOC").ok_or("missing Rustdoc")?)
+                    .args(["--crate-name", "warning_probe", "--crate-type", "lib", "--edition=2024"])
+                    .args(flags)
+                    .args(["--cap-lints", cap])
+                    .arg("--out-dir").arg(directory.join("docs"))
+                    .arg(source).status()?;
+                std::process::exit(status.code().unwrap_or(1));
             }
             for (name, variable) in [("cargo", "CARGO"), ("rustc", "RUSTC"), ("rustdoc", "RUSTDOC")] {
                 let program = if name == "cargo" {
@@ -265,7 +294,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         let profile = std::env::var(PROBE_PROFILE).map_err(io::Error::other)?;
-        let output = super::command(Path::new("."), profile == "no-default")?.output()?;
+        let workspace =
+            std::env::var_os(PROBE_WORKSPACE).map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let output = super::command(&workspace, profile == "no-default")?.output()?;
+        if std::env::var_os(PROBE_SOURCE).is_some() {
+            assert!(
+                !output.status.success(),
+                "API generation accepted a documentation warning: {output:?}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("unresolved link to `Missing`"),
+                "API generation lost the Rustdoc diagnostic: {output:?}"
+            );
+            return Ok(());
+        }
         assert!(
             output.status.success(),
             "selected compiler command failed: {output:?}"
@@ -277,6 +319,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         );
         Ok(())
+    }
+
+    fn check_documentation_warning(encoded_flags: Option<&str>) -> io::Result<()> {
+        let fixture = ToolchainFixture::new()?;
+        let source = fixture.0.join("warning.rs");
+        fs::write(
+            &source,
+            "//! A link to [Missing] must fail documentation verification.\n\npub struct Present;\n",
+        )?;
+        let output = Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()?;
+        assert!(output.status.success(), "cannot locate Rustdoc: {output:?}");
+        let sysroot = String::from_utf8(output.stdout).map_err(io::Error::other)?;
+        let rustdoc = Path::new(sysroot.trim_end_matches(['\r', '\n']))
+            .join("bin")
+            .join(format!("rustdoc{}", std::env::consts::EXE_SUFFIX));
+        let inherited = std::env::var_os("PATH");
+        let paths = std::iter::once(fixture.0.join("pinned compiler").join("bin")).chain(
+            inherited
+                .as_deref()
+                .into_iter()
+                .flat_map(std::env::split_paths),
+        );
+        let search = std::env::join_paths(paths).map_err(io::Error::other)?;
+        for profile in ["default", "no-default"] {
+            let mut probe = Command::new(std::env::current_exe()?);
+            probe
+                .args(["--exact", PROBE_TEST, "--nocapture"])
+                .env(PROBE_CARGO, fixture.program("pinned compiler", "cargo"))
+                .env(PROBE_PROFILE, profile)
+                .env(PROBE_SOURCE, &source)
+                .env(PROBE_RUSTDOC, &rustdoc)
+                .env("PATH", &search)
+                .env_remove(PROBE_WORKSPACE)
+                .env_remove("CARGO_ENCODED_RUSTDOCFLAGS");
+            if let Some(flags) = encoded_flags {
+                probe.env("CARGO_ENCODED_RUSTDOCFLAGS", flags);
+            }
+            let output = probe.output()?;
+            assert!(
+                output.status.success(),
+                "warning policy failed for {profile}: {output:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn documentation_warnings_refuse_api_generation() -> io::Result<()> {
+        check_documentation_warning(None)
+    }
+
+    #[test]
+    fn encoded_flags_do_not_replace_api_warning_policy() -> io::Result<()> {
+        check_documentation_warning(Some("-A\u{1f}warnings"))
     }
 
     #[test]

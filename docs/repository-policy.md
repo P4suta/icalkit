@@ -34,6 +34,9 @@ It uses that toolchain's Cargo, rustc, and rustdoc for the command and child pro
 The [cargo-public-api detector](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/toolchain.rs) reads Cargo through PATH, so the selected toolchain's binary directory precedes inherited entries.
 An unavailable selected toolchain fails without selecting or installing a replacement.
 The command disables automatic installation with `RUSTUP_AUTO_INSTALL=0`, following the [Rustup environment contract](https://rust-lang.github.io/rustup/environment-variables.html).
+API generation rejects Rustdoc warnings in both feature profiles.
+The [lint cap override](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/api_source.rs) is `deny`, preserving `-D warnings`.
+The command removes inherited `CARGO_ENCODED_RUSTDOCFLAGS` values because [Cargo gives them priority](https://doc.rust-lang.org/cargo/reference/config.html#buildrustdocflags) over `RUSTDOCFLAGS`.
 
 The repository uses squash merging so one reviewed pull request becomes one linear commit.
 Repository settings prohibit merge commits and rebase merges and delete merged branches automatically.
