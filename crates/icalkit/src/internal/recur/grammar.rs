@@ -247,16 +247,44 @@ where
 }
 
 /// Read one `BYDAY` entry: an optional ±ordinal followed by a two-letter weekday.
-fn decode_weekday_num(bytes: &[u8]) -> Option<WeekdayNum> {
+fn decode_weekday_num(
+    bytes: &[u8],
+    scale: crate::internal::core::CalendarScale,
+) -> Option<WeekdayNum> {
     let split = bytes.len().checked_sub(2)?;
     let (ordinal_text, day_text) = (bytes.get(..split)?, bytes.get(split..)?);
     let weekday = decode_weekday(day_text)?;
     if ordinal_text.is_empty() {
-        return WeekdayNum::new(None, weekday);
+        return WeekdayNum::for_calendar(None, weekday, scale);
     }
-    let ordinal = decode_ordinal(ordinal_text, i32::from(WeekdayNum::MAX_ORDINAL))?;
+    let ordinal = decode_ordinal(
+        ordinal_text,
+        i32::from(scale.ranges().year_days.div_ceil(7)),
+    )?;
     let ordinal = NonZeroI8::new(i8::try_from(ordinal).ok()?)?;
-    WeekdayNum::new(Some(ordinal), weekday)
+    WeekdayNum::for_calendar(Some(ordinal), weekday, scale)
+}
+
+fn decode_calendar_month(
+    bytes: &[u8],
+    builder: &RecurrenceRuleBuilder,
+) -> Option<crate::internal::core::CalendarMonth> {
+    let leap = bytes
+        .last()
+        .is_some_and(|octet| octet.eq_ignore_ascii_case(&b'L'));
+    if leap && !builder.has_rscale() {
+        return None;
+    }
+    let digits = if leap {
+        bytes.get(..bytes.len().checked_sub(1)?)?
+    } else {
+        bytes
+    };
+    let number = decode_bounded(
+        digits,
+        u32::from(builder.calendar_scale().ranges().regular_months),
+    )?;
+    crate::internal::core::CalendarMonth::from_parts(u8::try_from(number).ok()?, leap)
 }
 
 /// Read an `UNTIL`, saying which clock the file wrote it on.
@@ -394,6 +422,8 @@ fn apply_by_part(
     let short = |value: i32| i8::try_from(value).ok();
     let narrow = |value: u32| u8::try_from(value).ok();
     let wide = |value: i32| i16::try_from(value).ok();
+    let scale = builder.calendar_scale();
+    let limits = scale.ranges();
     Ok(match row {
         RulePart::Second => builder.by_second(
             decode_list(text, |item| decode_bounded(item, 60).and_then(narrow)).ok_or(bad)?,
@@ -404,26 +434,37 @@ fn apply_by_part(
         RulePart::Hour => builder.by_hour(
             decode_list(text, |item| decode_bounded(item, 23).and_then(narrow)).ok_or(bad)?,
         ),
-        RulePart::Day => builder.by_day(decode_list(text, decode_weekday_num).ok_or(bad)?),
+        RulePart::Day => {
+            builder.by_day(decode_list(text, |item| decode_weekday_num(item, scale)).ok_or(bad)?)
+        },
         RulePart::MonthDay => builder.by_month_day(
-            decode_list(text, |item| decode_ordinal(item, 31).and_then(short)).ok_or(bad)?,
-        ),
-        RulePart::YearDay => builder.by_year_day(
-            decode_list(text, |item| decode_ordinal(item, 366).and_then(wide)).ok_or(bad)?,
-        ),
-        RulePart::WeekNo => builder.by_week_no(
-            decode_list(text, |item| decode_ordinal(item, 53).and_then(short)).ok_or(bad)?,
-        ),
-        RulePart::Month => builder.by_month(
             decode_list(text, |item| {
-                decode_bounded(item, 12)
-                    .filter(|month| *month != 0)
-                    .and_then(narrow)
+                decode_ordinal(item, i32::from(limits.month_days)).and_then(short)
             })
             .ok_or(bad)?,
         ),
+        RulePart::YearDay => builder.by_year_day(
+            decode_list(text, |item| {
+                decode_ordinal(item, i32::from(limits.year_days)).and_then(wide)
+            })
+            .ok_or(bad)?,
+        ),
+        RulePart::WeekNo => builder.by_week_no(
+            decode_list(text, |item| {
+                decode_ordinal(item, i32::from(limits.year_days.div_ceil(7))).and_then(short)
+            })
+            .ok_or(bad)?,
+        ),
+        RulePart::Month => {
+            let months =
+                decode_list(text, |item| decode_calendar_month(item, &builder)).ok_or(bad)?;
+            builder.calendar_months(months)
+        },
         RulePart::SetPos => builder.by_set_pos(
-            decode_list(text, |item| decode_ordinal(item, 366).and_then(wide)).ok_or(bad)?,
+            decode_list(text, |item| {
+                decode_ordinal(item, i32::from(limits.year_days)).and_then(wide)
+            })
+            .ok_or(bad)?,
         ),
     })
 }
@@ -436,7 +477,9 @@ const fn code_for(error: RuleError) -> DiagnosticCode {
         | RuleError::MalformedCalendarControls => DiagnosticCode::MalformedRecurrenceRule,
         RuleError::DuplicateCalendarControls => DiagnosticCode::DuplicateRecurrenceRulePart,
         RuleError::UnsupportedCalendarSemantics => DiagnosticCode::UnsupportedRecurrenceSemantics,
-        RuleError::OrdinalOutOfRange => DiagnosticCode::RecurrenceRulePartOutOfRange,
+        RuleError::OrdinalOutOfRange | RuleError::PartOutOfRange => {
+            DiagnosticCode::RecurrenceRulePartOutOfRange
+        },
         RuleError::BySetPosWithoutByRule => DiagnosticCode::BySetPosWithoutByRule,
     }
 }
@@ -448,11 +491,12 @@ impl DecodeValue<'_> for RecurrenceRule {
     /// The caller receives `View::Malformed` carrying this code beside the property with its octets intact, which is what `docs/adr/0001` asks of every value type.
     /// A caller that wants the surviving parts of a nearly-legal rule uses the lenient reading, which needs a sink this signature cannot carry.
     fn decode_value(bytes: &[u8]) -> Result<Self, DiagnosticCode> {
-        let skip = validate_calendar_controls(bytes).map_err(code_for)?;
+        let controls = validate_calendar_controls(bytes).map_err(code_for)?;
         let mut state = StrictDecode::new();
         for part in parts(bytes).filter(|part| equals_ignoring_case(part.name(), FREQ_NAME)) {
             apply(&mut state, part)?;
         }
+        state.builder = state.builder.map(|builder| controls.apply(builder));
         for part in parts(bytes) {
             if equals_ignoring_case(part.name(), FREQ_NAME) || is_calendar_control(part.name()) {
                 continue;
@@ -462,7 +506,7 @@ impl DecodeValue<'_> for RecurrenceRule {
         let builder = state
             .builder
             .ok_or(DiagnosticCode::MalformedRecurrenceRule)?;
-        builder.skip(skip).build().map_err(code_for)
+        builder.build().map_err(code_for)
     }
 }
 
@@ -478,10 +522,25 @@ pub fn is_gregorian_scale(scale: &[u8]) -> bool {
         .any(|name| equals_ignoring_case(scale, name))
 }
 
-fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
+#[derive(Clone, Copy, Debug)]
+struct CalendarControls {
+    scale: Option<crate::internal::core::CalendarScale>,
+    skip: Skip,
+}
+
+impl CalendarControls {
+    fn apply(self, builder: RecurrenceRuleBuilder) -> RecurrenceRuleBuilder {
+        let builder = builder.skip(self.skip);
+        match self.scale {
+            Some(scale) => builder.rscale(scale),
+            None => builder,
+        }
+    }
+}
+
+fn validate_calendar_controls(value_text: &[u8]) -> Result<CalendarControls, RuleError> {
     let mut scale: Option<&[u8]> = None;
     let mut skip: Option<&[u8]> = None;
-    let mut leap_month = false;
     let mut unsupported_weeks = false;
     for part in parts(value_text) {
         let destination = if equals_ignoring_case(part.name(), b"RSCALE") {
@@ -490,13 +549,6 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
             &mut skip
         } else {
             unsupported_weeks |= equals_ignoring_case(part.name(), b"BYWEEKNO");
-            if equals_ignoring_case(part.name(), b"BYMONTH") {
-                leap_month |= part.value().split(|octet| *octet == b',').any(|month| {
-                    month
-                        .last()
-                        .is_some_and(|octet| octet.eq_ignore_ascii_case(&b'L'))
-                });
-            }
             continue;
         };
         if destination.replace(part.value()).is_some() {
@@ -505,7 +557,10 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
     }
     let Some(scale) = scale else {
         return if skip.is_none() {
-            Ok(Skip::Omit)
+            Ok(CalendarControls {
+                scale: None,
+                skip: Skip::Omit,
+            })
         } else {
             Err(RuleError::MalformedCalendarControls)
         };
@@ -520,16 +575,22 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
     {
         return Err(RuleError::MalformedCalendarControls);
     }
-    let gregorian = is_gregorian_scale(scale);
+    let calendar = core::str::from_utf8(scale)
+        .ok()
+        .and_then(crate::internal::core::CalendarScale::from_name)
+        .ok_or(RuleError::UnsupportedCalendarSemantics)?;
     let policy = match skip {
         Some(mode) if equals_ignoring_case(mode, b"BACKWARD") => Skip::Backward,
         Some(mode) if equals_ignoring_case(mode, b"FORWARD") => Skip::Forward,
         Some(_) | None => Skip::Omit,
     };
-    if !gregorian || leap_month || (policy != Skip::Omit && unsupported_weeks) {
+    if policy != Skip::Omit && unsupported_weeks {
         return Err(RuleError::UnsupportedCalendarSemantics);
     }
-    Ok(policy)
+    Ok(CalendarControls {
+        scale: Some(calendar),
+        skip: policy,
+    })
 }
 
 /// Which slot of RFC 5545 section 3.3.10's grammar a part name occupies.
@@ -653,11 +714,16 @@ pub fn parse_recur<S: DiagnosticSink + ?Sized>(
     meter: &mut Meter,
     sink: &mut S,
 ) -> Result<RecurrenceRule, RuleError> {
-    let skip =
+    let controls =
         validate_calendar_controls(value_text).map_err(|error| refuse(error, meter, sink))?;
     let collected = collect_parts(value_text, meter, sink);
     let freq = resolve_freq(&collected, meter, sink)?;
-    let builder = apply_collected(freq, &collected, meter, sink).skip(skip);
+    let builder = apply_collected(
+        controls.apply(RecurrenceRuleBuilder::new(freq)),
+        &collected,
+        meter,
+        sink,
+    );
     let rule = finish(builder, meter, sink)?;
     report_forbidden_ordinals(&rule, meter, sink);
     Ok(rule)
@@ -769,12 +835,11 @@ fn refuse<S: DiagnosticSink + ?Sized>(
 
 /// Apply every collected part to a builder at `freq`, dropping and reporting what it cannot use.
 fn apply_collected<S: DiagnosticSink + ?Sized>(
-    freq: Freq,
+    mut builder: RecurrenceRuleBuilder,
     collected: &LenientParts<'_>,
     meter: &mut Meter,
     sink: &mut S,
 ) -> RecurrenceRuleBuilder {
-    let mut builder = RecurrenceRuleBuilder::new(freq);
     if collected.scalar_text(ScalarPart::Until).is_some()
         && collected.scalar_text(ScalarPart::Count).is_some()
     {
@@ -1312,7 +1377,15 @@ mod tests {
 
         let (boundary, _) = lenient(b"FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=31");
         let boundary = boundary.unwrap();
-        assert_eq!(boundary.by_month().as_slice(), &[12_u8]);
+        assert_eq!(
+            boundary
+                .by_month()
+                .as_slice()
+                .iter()
+                .map(|month| month.number())
+                .collect::<Vec<_>>(),
+            &[12_u8]
+        );
         assert_eq!(boundary.by_month_day().as_slice(), &[31_i8]);
 
         let (leap_day, _) = lenient(b"FREQ=YEARLY;UNTIL=20240229T000000Z");

@@ -20,7 +20,7 @@ use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::num::{NonZeroI8, NonZeroU32};
 
-use crate::internal::core::{Instant, Weekday};
+use crate::internal::core::{CalendarMonth, CalendarScale, Instant, Weekday};
 
 use crate::internal::recur::table::PartsPresent;
 
@@ -201,7 +201,7 @@ pub enum ValueKind {
 /// Which scope it counts within is not a property of this value — RFC 5545 section 3.3.10's Note 1 and Note 2 decide that from the frequency and from which other parts are present, and `crate::internal::recur::table` resolves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WeekdayNum {
-    /// The ordinal, within ±53 and never zero.
+    /// The calendar-valid ordinal, never zero.
     ordinal: Option<NonZeroI8>,
     /// The weekday itself.
     weekday: Weekday,
@@ -216,8 +216,16 @@ impl WeekdayNum {
     /// A `BYDAY` entry, or `None` when the ordinal is outside ±53.
     #[must_use]
     pub fn new(ordinal: Option<NonZeroI8>, weekday: Weekday) -> Option<Self> {
-        let too_far = ordinal
-            .is_some_and(|count| count.get().unsigned_abs() > Self::MAX_ORDINAL.unsigned_abs());
+        Self::for_calendar(ordinal, weekday, CalendarScale::Gregorian)
+    }
+
+    pub(super) fn for_calendar(
+        ordinal: Option<NonZeroI8>,
+        weekday: Weekday,
+        scale: CalendarScale,
+    ) -> Option<Self> {
+        let maximum = scale.ranges().year_days.div_ceil(7);
+        let too_far = ordinal.is_some_and(|count| u16::from(count.get().unsigned_abs()) > maximum);
         if too_far {
             return None;
         }
@@ -353,6 +361,8 @@ pub enum RuleError {
     UnsupportedCalendarSemantics,
     /// A `BYDAY` ordinal was outside ±53.
     OrdinalOutOfRange,
+    /// A numeric rule part was outside the selected calendar's range.
+    PartOutOfRange,
     /// `BYSETPOS` was given with no other `BYxxx` part for it to select from.
     BySetPosWithoutByRule,
 }
@@ -372,6 +382,7 @@ impl Display for RuleError {
                 "the recurrence rule needs unsupported calendar semantics"
             },
             Self::OrdinalOutOfRange => "a BYDAY ordinal was outside the range +/-53",
+            Self::PartOutOfRange => "a recurrence part was outside the calendar's range",
             Self::BySetPosWithoutByRule => "BYSETPOS was given with no other BYxxx part",
         };
         formatter.write_str(reason)
@@ -380,7 +391,7 @@ impl Display for RuleError {
 
 impl Error for RuleError {}
 
-/// Policy for missing Gregorian dates under RFC 7529 section 4.1.
+/// Policy for missing calendar dates under RFC 7529 section 4.1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Skip {
     /// Discard missing dates, including rules without `RSCALE`.
@@ -395,6 +406,8 @@ pub enum Skip {
 /// One recurrence rule, with every invariant its construction can settle already settled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecurrenceRule {
+    /// The recurrence calendar algorithm.
+    calendar: CalendarScale,
     /// The base cadence.
     freq: Freq,
     /// How many periods one step of the cadence covers.
@@ -413,19 +426,25 @@ pub struct RecurrenceRule {
     by_hour: ByList<u8>,
     /// `BYDAY`.
     by_day: ByList<WeekdayNum>,
-    /// `BYMONTHDAY`, each within ±1..=31.
+    /// `BYMONTHDAY`, within the selected calendar's month range.
     by_month_day: ByList<i8>,
-    /// `BYYEARDAY`, each within ±1..=366.
+    /// `BYYEARDAY`, within the selected calendar's year range.
     by_year_day: ByList<i16>,
-    /// `BYWEEKNO`, each within ±1..=53.
+    /// `BYWEEKNO`, within the selected calendar's week range.
     by_week_no: ByList<i8>,
-    /// `BYMONTH`, each within 1..=12.
-    by_month: ByList<u8>,
-    /// `BYSETPOS`, each within ±1..=366, and never present alone.
+    /// `BYMONTH`, with regular and leap month identities.
+    by_month: ByList<CalendarMonth>,
+    /// `BYSETPOS`, within the calendar's year range and never present alone.
     by_set_pos: ByList<i16>,
 }
 
 impl RecurrenceRule {
+    /// The selected recurrence calendar.
+    #[must_use]
+    pub const fn calendar_scale(&self) -> CalendarScale {
+        self.calendar
+    }
+
     /// The `INTERVAL` a rule that states none has, which RFC 5545 section 3.3.10 fixes at 1.
     pub const DEFAULT_INTERVAL: NonZeroU32 = NonZeroU32::MIN;
 
@@ -456,7 +475,7 @@ impl RecurrenceRule {
         self.wkst
     }
 
-    /// Missing Gregorian date policy.
+    /// Missing calendar date policy.
     #[must_use]
     pub const fn skip(&self) -> Skip {
         self.skip
@@ -506,7 +525,7 @@ impl RecurrenceRule {
 
     /// `BYMONTH`.
     #[must_use]
-    pub const fn by_month(&self) -> &ByList<u8> {
+    pub const fn by_month(&self) -> &ByList<CalendarMonth> {
         &self.by_month
     }
 
@@ -571,11 +590,13 @@ impl RecurrenceRule {
 
 /// Assembles a [`RecurrenceRule`], defaulting everything RFC 5545 section 3.3.10 defaults.
 ///
-/// A builder rather than a constructor because a rule has thirteen fields of which twelve have a specified default, and a twelve-argument constructor would exceed this workspace's own argument bound while telling a reader nothing.
+/// A builder supplies defaults while validating the selected calendar's rule parts.
 #[derive(Clone, Debug)]
 pub struct RecurrenceRuleBuilder {
-    /// The rule as assembled so far, complete at every point except for its checks.
+    /// Parts assembled before calendar and month validation completes.
     rule: RecurrenceRule,
+    calendar: Option<CalendarScale>,
+    months: Result<ByList<CalendarMonth>, RuleError>,
 }
 
 impl RecurrenceRuleBuilder {
@@ -584,6 +605,7 @@ impl RecurrenceRuleBuilder {
     pub fn new(freq: Freq) -> Self {
         Self {
             rule: RecurrenceRule {
+                calendar: CalendarScale::Gregorian,
                 skip: Skip::Omit,
                 freq,
                 interval: RecurrenceRule::DEFAULT_INTERVAL,
@@ -599,7 +621,29 @@ impl RecurrenceRuleBuilder {
                 by_month: ByList::empty(),
                 by_set_pos: ByList::empty(),
             },
+            calendar: None,
+            months: Ok(ByList::empty()),
         }
+    }
+
+    /// Set the explicit recurrence calendar.
+    #[must_use]
+    pub fn rscale(mut self, calendar: CalendarScale) -> Self {
+        self.calendar = Some(calendar);
+        self
+    }
+
+    pub(super) fn calendar_scale(&self) -> CalendarScale {
+        self.calendar.unwrap_or(CalendarScale::Gregorian)
+    }
+
+    pub(super) const fn has_rscale(&self) -> bool {
+        self.calendar.is_some()
+    }
+
+    pub(super) fn calendar_months(mut self, months: ByList<CalendarMonth>) -> Self {
+        self.months = Ok(months);
+        self
     }
 
     /// Set `INTERVAL`.
@@ -623,7 +667,7 @@ impl RecurrenceRuleBuilder {
         self
     }
 
-    /// Set the missing Gregorian date policy.
+    /// Set the missing calendar date policy.
     #[must_use]
     pub fn skip(mut self, skip: Skip) -> Self {
         self.rule.skip = skip;
@@ -682,7 +726,12 @@ impl RecurrenceRuleBuilder {
     /// Set `BYMONTH`.
     #[must_use]
     pub fn by_month(mut self, values: ByList<u8>) -> Self {
-        self.rule.by_month = values;
+        self.months = values
+            .0
+            .into_iter()
+            .map(|number| CalendarMonth::from_parts(number, false).ok_or(RuleError::PartOutOfRange))
+            .collect::<Result<Vec<_>, _>>()
+            .map(ByList::from);
         self
     }
 
@@ -696,12 +745,54 @@ impl RecurrenceRuleBuilder {
     /// Check what a whole rule can be checked for, and hand back the rule.
     ///
     /// Refuse unsupported calendar combinations and `BYSETPOS` without another `BYxxx` part.
-    pub fn build(self) -> Result<RecurrenceRule, RuleError> {
+    pub fn build(mut self) -> Result<RecurrenceRule, RuleError> {
+        self.rule.calendar = self.calendar_scale();
+        self.rule.by_month = self.months?;
         if self.rule.skip != Skip::Omit && !self.rule.by_week_no.is_empty() {
             return Err(RuleError::UnsupportedCalendarSemantics);
         }
         if !self.rule.by_set_pos.is_empty() && !self.rule.has_selectable_part() {
             return Err(RuleError::BySetPosWithoutByRule);
+        }
+        let limits = self.rule.calendar.ranges();
+        let weeks = limits.year_days.div_ceil(7);
+        let outside = self
+            .rule
+            .by_month
+            .as_slice()
+            .iter()
+            .any(|month| month.number() > limits.regular_months)
+            || self
+                .rule
+                .by_month_day
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || value.unsigned_abs() > limits.month_days)
+            || self
+                .rule
+                .by_year_day
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || value.unsigned_abs() > limits.year_days)
+            || self
+                .rule
+                .by_week_no
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || u16::from(value.unsigned_abs()) > weeks)
+            || self
+                .rule
+                .by_set_pos
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || value.unsigned_abs() > limits.year_days)
+            || self.rule.by_day.as_slice().iter().any(|value| {
+                value
+                    .ordinal()
+                    .is_some_and(|value| u16::from(value.get().unsigned_abs()) > weeks)
+            });
+        if outside {
+            return Err(RuleError::PartOutOfRange);
         }
         Ok(self.rule)
     }

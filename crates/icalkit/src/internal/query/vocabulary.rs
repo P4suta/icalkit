@@ -160,7 +160,9 @@ impl Undecided {
     /// A search that stopped at its budget did not establish that the resource has no occurrence in the window; it established that it did not find one before it ran out, and those are different claims (`docs/adr/0002`).
     #[must_use]
     pub const fn of_search(outcome: SearchOutcome) -> Option<Self> {
-        if outcome.is_complete() {
+        if matches!(outcome, SearchOutcome::CalendarArithmeticFailed) {
+            Some(Self::ValueUnreadable)
+        } else if outcome.is_complete() {
             None
         } else {
             Some(Self::SearchExhausted)

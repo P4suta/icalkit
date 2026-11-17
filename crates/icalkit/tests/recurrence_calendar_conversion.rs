@@ -272,9 +272,9 @@ fn gregorian_based_calendars_use_their_extended_years() {
 }
 
 #[test]
-fn conversion_does_not_silently_enable_foreign_recurrence_arithmetic() {
-    for name in ["CHINESE", "COPTIC", "ETHIOPIC", "HEBREW", "ISLAMIC-CIVIL"] {
-        assert!(CalendarScale::parse(name).is_ok());
+fn conversion_and_recurrence_refuse_ambiguous_calendar_algorithms() {
+    for name in ["ISLAMIC", "ISLAMIC-RGSA", "X-FUTURE"] {
+        assert!(CalendarScale::parse(name).is_err());
         let rule = format!("FREQ=YEARLY;RSCALE={name}");
         let error = icalkit::recurrence::Rule::parse(&rule).unwrap_err();
         assert!(

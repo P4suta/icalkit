@@ -280,6 +280,8 @@ pub enum SearchStep<'a> {
     /// The search stopped at the candidate budget.
     /// Nothing follows it.
     BudgetExhausted(BudgetExhausted),
+    /// Calendar arithmetic failed before the answer was complete.
+    CalendarArithmeticFailed,
 }
 
 impl<'a> SearchStep<'a> {
@@ -290,14 +292,17 @@ impl<'a> SearchStep<'a> {
     pub const fn occurrence(self) -> Option<Occurrence<'a>> {
         match self {
             Self::Occurrence(occurrence) => Some(occurrence),
-            Self::BudgetExhausted(_) => None,
+            Self::BudgetExhausted(_) | Self::CalendarArithmeticFailed => None,
         }
     }
 
     /// Whether this step is the terminal one.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::BudgetExhausted(_))
+        matches!(
+            self,
+            Self::BudgetExhausted(_) | Self::CalendarArithmeticFailed
+        )
     }
 }
 
@@ -321,8 +326,9 @@ pub enum SearchOutcome {
     /// Complete, and deliberately not [`SearchOutcome::RuleEnded`]: every instance the calendar can express was produced, and the rule nonetheless reached neither its `COUNT` nor its `UNTIL`, so a caller told "the rule ended" would be told something false about the rule.
     CalendarEnded,
     /// The candidate budget ran out.
-    /// This is the only outcome that means "incomplete".
     BudgetExhausted(BudgetExhausted),
+    /// Calendar arithmetic failed before the answer was complete.
+    CalendarArithmeticFailed,
 }
 
 impl SearchOutcome {
@@ -411,11 +417,14 @@ mod tests {
     }
 
     #[test]
-    fn only_budget_exhaustion_means_the_answer_is_incomplete() {
+    fn terminal_failures_leave_the_answer_incomplete() {
         assert!(SearchOutcome::RuleEnded.is_complete());
         assert!(SearchOutcome::WindowEnded.is_complete());
         assert!(SearchOutcome::CalendarEnded.is_complete());
         assert!(!SearchOutcome::Pending.is_complete());
+        assert!(!SearchOutcome::CalendarArithmeticFailed.is_complete());
+        assert!(SearchStep::CalendarArithmeticFailed.is_terminal());
+        assert!(SearchStep::CalendarArithmeticFailed.occurrence().is_none());
         assert!(!SearchOutcome::BudgetExhausted(BudgetExhausted::new(at(0), 1)).is_complete());
     }
 

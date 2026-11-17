@@ -63,7 +63,7 @@ use crate::internal::core::{
 };
 
 use crate::internal::recur::accounting::{Charges, generation_window};
-use crate::internal::recur::byparts::{candidate_lower_bound, expand_period};
+use crate::internal::recur::byparts::{ExpansionError, candidate_lower_bound, expand_period};
 use crate::internal::recur::input::RecurrenceInput;
 use crate::internal::recur::merge::Merge;
 use crate::internal::recur::period::{Period, PeriodWalk};
@@ -186,6 +186,7 @@ enum RuleKey {
     CalendarEnded,
     /// The candidate budget ran out.
     Exhausted,
+    CalendarArithmeticFailed,
 }
 
 /// Borrowed search state for one rule-stream step.
@@ -221,7 +222,7 @@ struct RuleStream<'a> {
     selected: Option<SelectedCandidates>,
     /// How far through those candidates this stream has read.
     position: usize,
-    /// Cross-period ordering for explicit Gregorian corrections.
+    /// Cross-period ordering for explicit calendar corrections.
     adjusted: AdjustedStream,
     /// Instances the rule has produced, which is what `COUNT` counts.
     produced: u32,
@@ -436,6 +437,7 @@ impl<'a> RuleStream<'a> {
         };
         cadence.period_cursor = RuleCursorState { period_index };
         candidate_lower_bound(period, cadence.rule)
+            .map_err(|_| RuleKey::CalendarArithmeticFailed)?
             .at_offset(UtcOffset::UTC)
             .map(|lower_bound| (period, lower_bound))
             .ok_or(RuleKey::CalendarEnded)
@@ -456,8 +458,10 @@ impl<'a> RuleStream<'a> {
         let rule = cadence.rule;
         let dtstart = cadence.dtstart;
         env.charges.open_period(&mut *env.meter);
-        let Ok(set) = expand_period(period, rule, dtstart, &mut *env.meter, &mut *env.sink) else {
-            return Some(RuleKey::Exhausted);
+        let set = match expand_period(period, rule, dtstart, &mut *env.meter, &mut *env.sink) {
+            Ok(set) => set,
+            Err(ExpansionError::Resource(_)) => return Some(RuleKey::Exhausted),
+            Err(ExpansionError::Calendar(_)) => return Some(RuleKey::CalendarArithmeticFailed),
         };
         self.selected = Some(select(&set, rule.by_set_pos()));
         self.position = 0;
@@ -495,6 +499,7 @@ enum Progress<'a> {
     Stop,
     /// The budget ran out.
     Exhausted(BudgetExhausted),
+    CalendarArithmeticFailed,
 }
 
 /// A lazy search over one series, bounded by a window and by a budget.
@@ -682,6 +687,11 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
                 self.report_calendar_end();
             },
             RuleKey::Exhausted => return Some(Progress::Exhausted(self.exhausted())),
+            RuleKey::CalendarArithmeticFailed => {
+                self.stream_done = true;
+                self.record(SearchOutcome::CalendarArithmeticFailed);
+                return Some(Progress::CalendarArithmeticFailed);
+            },
         }
         None
     }
@@ -812,6 +822,10 @@ impl<'a, S: DiagnosticSink + ?Sized> Iterator for RecurrenceSearch<'a, S> {
                     self.finished = true;
                     return Some(SearchStep::BudgetExhausted(terminal));
                 },
+                Progress::CalendarArithmeticFailed => {
+                    self.finished = true;
+                    return Some(SearchStep::CalendarArithmeticFailed);
+                },
             }
         }
     }
@@ -912,6 +926,7 @@ mod tests {
             match step {
                 SearchStep::Occurrence(occurrence) => starts.push(occurrence.start()),
                 SearchStep::BudgetExhausted(exhausted) => terminal = Some(exhausted),
+                SearchStep::CalendarArithmeticFailed => panic!("calendar arithmetic failed"),
             }
         }
         Run {

@@ -18,16 +18,13 @@ use icalkit_conformance::internal::core::{
 use icalkit_conformance::internal::recur::{RecurrenceRule, parse_recur};
 
 const UNSUPPORTED: &[&str] = &[
-    "FREQ=YEARLY;RSCALE=CHINESE",
-    "RSCALE=HEBREW;FREQ=YEARLY",
-    "FREQ=DAILY;RSCALE=JAPANESE",
-    "FREQ=YEARLY;RSCALE=ISO8601",
+    "FREQ=YEARLY;RSCALE=ISLAMIC",
+    "RSCALE=ISLAMIC-RGSA;FREQ=YEARLY",
     "FREQ=DAILY;RSCALE=X-FUTURE",
     "FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYWEEKNO=53",
     "FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=BACKWARD;BYWEEKNO=-53",
     "RSCALE=GREGORY;SKIP=FORWARD;FREQ=YEARLY;BYWEEKNO=invalid",
-    "FREQ=YEARLY;RSCALE=GREGORIAN;BYMONTH=2L",
-    "FREQ=YEARLY;RSCALE=GREGORY;BYMONTH=1,2l",
+    "FREQ=YEARLY;RSCALE=HEBREW;SKIP=FORWARD;BYWEEKNO=55",
 ];
 
 const INVALID: &[(&str, &str)] = &[
@@ -137,7 +134,14 @@ fn calendar_promotion_refuses_unsupported_semantics_without_changing_imports() {
 
 #[test]
 fn typed_kernel_reading_recognizes_native_calendar_controls() {
-    for value in NATIVE {
+    for value in NATIVE.iter().copied().chain([
+        "FREQ=YEARLY;RSCALE=CHINESE",
+        "RSCALE=HEBREW;FREQ=YEARLY;BYMONTH=5L",
+        "FREQ=DAILY;RSCALE=JAPANESE",
+        "FREQ=YEARLY;RSCALE=ISO8601",
+        "FREQ=YEARLY;RSCALE=GREGORIAN;BYMONTH=2L",
+        "FREQ=YEARLY;RSCALE=GREGORY;BYMONTH=1,2l",
+    ]) {
         assert!(
             RecurrenceRule::decode_value(value.as_bytes()).is_ok(),
             "{value}"
@@ -176,6 +180,44 @@ fn typed_kernel_reading_identifies_control_failures() {
                     && diagnostic.severity() == Severity::Violation),
             "{value}: {diagnostics:?}"
         );
+    }
+}
+
+#[test]
+fn date_selector_ranges_follow_the_registered_calendar() {
+    for (name, months, month_days, year_days, weeks) in [
+        ("GREGORIAN", 12, 31, 366, 53),
+        ("CHINESE", 12, 30, 385, 55),
+        ("DANGI", 12, 30, 385, 55),
+        ("HEBREW", 12, 30, 385, 55),
+        ("COPTIC", 13, 30, 366, 53),
+        ("ETHIOPIC", 13, 30, 366, 53),
+        ("ETHIOAA", 13, 30, 366, 53),
+        ("ISLAMIC-CIVIL", 12, 30, 355, 51),
+        ("ISLAMIC-TBLA", 12, 30, 355, 51),
+        ("ISLAMIC-UMALQURA", 12, 30, 355, 51),
+    ] {
+        for (part, maximum, suffix) in [
+            ("BYMONTH", months, ""),
+            ("BYMONTHDAY", month_days, ""),
+            ("BYYEARDAY", year_days, ""),
+            ("BYWEEKNO", weeks, ""),
+            ("BYDAY", weeks, "MO"),
+            ("BYSETPOS", year_days, ";BYDAY=MO"),
+        ] {
+            let valid = format!("FREQ=YEARLY;RSCALE={name};{part}={maximum}{suffix}");
+            assert!(Rule::parse(&valid).is_ok(), "{valid}");
+            for invalid in [0, maximum + 1] {
+                let invalid = format!("FREQ=YEARLY;RSCALE={name};{part}={invalid}{suffix}");
+                rejected_rule(&invalid, "recurrence-rule-part-out-of-range");
+            }
+            if part != "BYMONTH" {
+                let valid = format!("FREQ=YEARLY;RSCALE={name};{part}=-{maximum}{suffix}");
+                assert!(Rule::parse(&valid).is_ok(), "{valid}");
+                let invalid = format!("FREQ=YEARLY;RSCALE={name};{part}=-{}{suffix}", maximum + 1);
+                rejected_rule(&invalid, "recurrence-rule-part-out-of-range");
+            }
+        }
     }
 }
 

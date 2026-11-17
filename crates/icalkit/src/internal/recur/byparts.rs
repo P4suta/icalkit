@@ -58,10 +58,11 @@ use core::cmp::Ordering;
 use core::num::NonZeroI8;
 
 use crate::internal::core::{
-    CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, DiagnosticSink, LimitExceeded,
-    Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
+    CalendarMonth, CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, DiagnosticSink,
+    LimitExceeded, Location, Meter, Severity, UtcOffset, Weekday, report_diagnostic,
 };
 
+use crate::internal::recur::calendar::{self, CalendarArithmeticError, CalendarFrame, DateSpan};
 use crate::internal::recur::period::Period;
 use crate::internal::recur::rule::{Freq, RecurrenceRule, RulePart, Skip, WeekdayNum};
 use crate::internal::recur::table::{PartEffect, PartsPresent, WeekdayScope, effect};
@@ -132,91 +133,124 @@ impl CandidateSet {
     }
 }
 
-/// Lower bound for the period's candidate date-times.
-pub(super) fn candidate_lower_bound(period: Period, rule: &RecurrenceRule) -> CivilDateTime {
-    let anchor = period.anchor();
-    let (mut date, _) = day_extent(rule, rule.parts_present(), anchor.date());
-    if rule.skip() != Skip::Omit && expands_year_days(rule, rule.parts_present()) {
-        date = rule
-            .by_year_day()
-            .as_slice()
-            .iter()
-            .filter_map(|value| resolve_year_day(anchor.date().year(), *value, rule.skip()))
-            .min()
-            .unwrap_or(date);
+/// Candidate generation failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpansionError {
+    /// Candidate generation reached a resource limit.
+    Resource(LimitExceeded),
+    /// Calendar coordinates could not be evaluated.
+    Calendar(CalendarArithmeticError),
+}
+
+impl From<LimitExceeded> for ExpansionError {
+    fn from(error: LimitExceeded) -> Self {
+        Self::Resource(error)
     }
-    // Both bounds use the same signed date resolver as candidate generation.
-    if rule.skip() == Skip::Backward && rule.freq() == Freq::Monthly {
-        date = rule
-            .by_month_day()
-            .as_slice()
-            .iter()
-            .filter_map(|value| resolve_month_day(date.year(), date.month(), *value, rule.skip()))
-            .fold(date, core::cmp::min);
+}
+
+impl From<CalendarArithmeticError> for ExpansionError {
+    fn from(error: CalendarArithmeticError) -> Self {
+        Self::Calendar(error)
+    }
+}
+
+struct DateContext<'a, S: DiagnosticSink + ?Sized> {
+    frame: CalendarFrame,
+    rule: &'a RecurrenceRule,
+    anchor: CivilDateTime,
+    meter: &'a mut Meter,
+    sink: &'a mut S,
+}
+
+pub(super) fn candidate_lower_bound(
+    period: Period,
+    rule: &RecurrenceRule,
+) -> Result<CivilDateTime, CalendarArithmeticError> {
+    let anchor = period.anchor();
+    let mut frame = CalendarFrame::new(rule.calendar_scale());
+    let span = day_extent(rule, rule.parts_present(), anchor.date(), &mut frame)?;
+    let (mut date, _) = span.writable()?.ok_or(CalendarArithmeticError)?;
+    if rule.skip() != Skip::Omit && expands_year_days(rule, rule.parts_present()) {
+        let year = frame.fields(anchor.date())?.year;
+        let span = frame.year_span(year)?;
+        let mut earliest = None;
+        for value in rule.by_year_day().as_slice() {
+            if let Some(candidate) = span
+                .resolve(i32::from(*value), rule.skip())?
+                .and_then(CivilDate::from_days_from_epoch)
+            {
+                earliest = Some(earliest.map_or(candidate, |held: CivilDate| held.min(candidate)));
+            }
+        }
+        if let Some(earliest) = earliest {
+            date = earliest;
+        }
+    }
+    if rule.skip() == Skip::Backward && rule.has_part(RulePart::MonthDay) {
+        let span = frame.fields(date)?.month_span;
+        for value in rule.by_month_day().as_slice() {
+            if let Some(candidate) = span
+                .resolve(i32::from(*value), rule.skip())?
+                .and_then(CivilDate::from_days_from_epoch)
+            {
+                date = date.min(candidate);
+            }
+        }
     }
     let clock = if date == anchor.date() {
         anchor.time()
     } else {
         CivilTime::MIDNIGHT
     };
-    CivilDateTime::new(date, clock)
+    Ok(CivilDateTime::new(date, clock))
 }
 
-/// One period's candidate set, with every `BYxxx` part but `BYSETPOS` applied.
-///
-/// `dtstart` is an argument because RFC 5545 section 3.3.10 takes every field the rule leaves unstated from it: a `FREQ=YEARLY` rule with no `BYMONTH` recurs in `DTSTART`'s month, and a rule with no `BYHOUR` recurs at `DTSTART`'s hour.
-/// `period` is read for its anchor alone —
-/// the anchor names the year, month, week or day the period covers, and every extent this unit needs follows from that plus the frequency, so nothing here depends on where unit 2 chose to put a period's upper edge.
+/// Generate a period's candidates in selector order, before position selection.
 pub fn expand_period<S: DiagnosticSink + ?Sized>(
     period: Period,
     rule: &RecurrenceRule,
     dtstart: CivilDateTime,
     meter: &mut Meter,
     sink: &mut S,
-) -> Result<CandidateSet, LimitExceeded> {
+) -> Result<CandidateSet, ExpansionError> {
     let anchor = period.anchor();
     let present = rule.parts_present();
-    let mut days = period_days(rule, present, anchor.date(), meter)?;
-    apply_date_parts(&mut days, rule, present, anchor, meter, sink)?;
+    let mut context = DateContext {
+        frame: CalendarFrame::new(rule.calendar_scale()),
+        rule,
+        anchor,
+        meter,
+        sink,
+    };
+    let mut days = period_days(rule, present, anchor.date(), &mut context)?;
+    apply_date_parts(&mut days, present, &mut context)?;
     if !has_expanding_day_part(rule, present) {
-        // Nothing expanded at the granularity of a day, so section 3.3.10's fallback stands and the day is the one `DTSTART` names within whatever the period and the expanding span parts left free.
-        let span = effective_span(rule, present);
         apply_default_day(
             &mut days,
-            span,
+            effective_span(rule, present),
             dtstart.date(),
-            anchor,
-            rule.skip(),
-            meter,
-            sink,
+            &mut context,
         )?;
     }
-    let clocks = period_times(rule, present, anchor.time(), dtstart.time(), meter)?;
-    assemble(&days, &clocks, meter)
+    let clocks = period_times(
+        rule,
+        present,
+        anchor.time(),
+        dtstart.time(),
+        &mut *context.meter,
+    )?;
+    Ok(assemble(&days, &clocks, &mut *context.meter)?)
 }
 
-/// How much of the calendar is fixed before any `BYxxx` part is read.
-///
-/// This is the period walk's subject rather than the expand/limit table's, and it is here because section 3.3.10's fallback to `DTSTART` needs to know which field is still free: a monthly period leaves the day of the month open, a weekly one leaves the weekday open, and a yearly one leaves both the month and the day open.
-///
-/// Unrelated to `crate::internal::core::Span`, which is a range of octets in a file.
-/// This one is private to this module and never crosses it, so the two cannot meet; naming both after the same English word is the cost of that word being right for each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Span {
-    /// A whole calendar year.
     Year,
-    /// One calendar month.
     Month,
-    /// Seven days beginning on `WKST`.
     Week,
-    /// One day, which is what every frequency below `DAILY` also spans.
     Day,
 }
 
 impl Span {
-    /// How narrow this span is, larger being narrower.
-    ///
-    /// A week is narrower than a month, which is why `BYWEEKNO` beats `BYMONTH` in Note 2 and why the same ordering settles it here without a second statement of that rule.
     const fn depth(self) -> u8 {
         match self {
             Self::Year => 0,
@@ -226,18 +260,15 @@ impl Span {
         }
     }
 
-    /// The span one period of `freq` covers.
     const fn of(freq: Freq) -> Self {
         match freq {
             Freq::Yearly => Self::Year,
             Freq::Monthly => Self::Month,
             Freq::Weekly => Self::Week,
-            // A period below a day is still inside one day, and the day is what a date-level fallback would have to choose from.
             Freq::Daily | Freq::Hourly | Freq::Minutely | Freq::Secondly => Self::Day,
         }
     }
 
-    /// The narrower of the two.
     const fn narrowed_by(self, other: Self) -> Self {
         if other.depth() > self.depth() {
             other
@@ -247,10 +278,6 @@ impl Span {
     }
 }
 
-/// The span left once every expanding span-naming part has narrowed the period's own.
-///
-/// `BYMONTH` and `BYWEEKNO` name a stretch of the calendar rather than a day, so an expanding one narrows what `DTSTART` still has to fill in: `FREQ=YEARLY;BYMONTH=6,7` recurs on `DTSTART`'s day of June and of July, not on `DTSTART`'s month and day.
-/// A *limiting* `BYMONTH` narrows nothing, because a limit removes candidates rather than choosing where they sit, and that difference is read from the table rather than from the frequency.
 fn effective_span(rule: &RecurrenceRule, present: PartsPresent) -> Span {
     let mut span = Span::of(rule.freq());
     for (part, named) in [
@@ -264,108 +291,96 @@ fn effective_span(rule: &RecurrenceRule, present: PartsPresent) -> Span {
     span
 }
 
-/// Whether any part that names a day expands, which is what suppresses the `DTSTART` fallback.
 fn has_expanding_day_part(rule: &RecurrenceRule, present: PartsPresent) -> bool {
     [RulePart::YearDay, RulePart::MonthDay, RulePart::Day]
         .into_iter()
         .any(|part| rule.has_part(part) && effect(rule.freq(), part, present).expands())
 }
 
-/// Every date the period covers, charged as it is enumerated.
-///
-/// At most 371 dates, and charged one candidate each.
-/// The enumeration is deliberately not narrowed by what the rule is about to ask for: the charge is what bounds the work, so work that is done has to be charged even when the rule rejects all of it.
-fn period_days(
+fn expands_year_days(rule: &RecurrenceRule, present: PartsPresent) -> bool {
+    rule.has_part(RulePart::YearDay) && effect(rule.freq(), RulePart::YearDay, present).expands()
+}
+
+fn day_extent(
     rule: &RecurrenceRule,
     present: PartsPresent,
     anchor: CivilDate,
-    meter: &mut Meter,
-) -> Result<Vec<CivilDate>, LimitExceeded> {
-    let (start, length) = day_extent(rule, present, anchor);
-    let mut days = Vec::new();
+    frame: &mut CalendarFrame,
+) -> Result<DateSpan, CalendarArithmeticError> {
+    let fields = frame.fields(anchor)?;
+    if rule.has_part(RulePart::WeekNo) && effect(rule.freq(), RulePart::WeekNo, present).expands() {
+        return frame.week_year_span(fields.year, rule.wkst());
+    }
+    match Span::of(rule.freq()) {
+        Span::Year => Ok(fields.year_span),
+        Span::Month => Ok(fields.month_span),
+        Span::Week => {
+            let offset = i64::from(calendar::week_offset(
+                anchor.weekday().ok_or(CalendarArithmeticError)?,
+                rule.wkst(),
+            ));
+            let first = anchor
+                .days_from_epoch()
+                .and_then(|day| day.checked_sub(offset))
+                .ok_or(CalendarArithmeticError)?;
+            DateSpan::new(first, 7)
+        },
+        Span::Day => DateSpan::new(anchor.days_from_epoch().ok_or(CalendarArithmeticError)?, 1),
+    }
+}
+
+fn append_span<S: DiagnosticSink + ?Sized>(
+    days: &mut Vec<CivilDate>,
+    span: DateSpan,
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
+    let Some((first, length)) = span.writable()? else {
+        return Ok(());
+    };
     for offset in 0..length {
-        // A period at the very end of the years RFC 5545 section 3.3.4 can write runs off the end of the calendar; the days past it are not dates and are not charged for.
-        let Some(date) = start.checked_add_days(i64::from(offset)) else {
-            break;
-        };
-        meter.try_charge_candidate()?;
+        let date = first
+            .checked_add_days(i64::from(offset))
+            .ok_or(CalendarArithmeticError)?;
+        context.meter.try_charge_candidate()?;
         days.push(date);
     }
+    Ok(())
+}
+
+fn period_days<S: DiagnosticSink + ?Sized>(
+    rule: &RecurrenceRule,
+    present: PartsPresent,
+    anchor: CivilDate,
+    context: &mut DateContext<'_, S>,
+) -> Result<Vec<CivilDate>, ExpansionError> {
+    let span = day_extent(rule, present, anchor, &mut context.frame)?;
+    let mut days = Vec::new();
+    append_span(&mut days, span, context)?;
     Ok(days)
 }
 
-/// Where the days this period contributes begin, and how many there are.
-///
-/// The frequency's own span, except under an expanding `BYWEEKNO` — which the table prints for `FREQ=YEARLY` and for nothing else.
-/// There, section 3.3.10 expands the period to *the weeks of that year*, and a week-numbering year is not a calendar year: week one of 2020 begins on Monday December 30th 2019, and week 53 of 2014 runs to January 3rd 2015.
-/// Enumerating the calendar year instead attributes each of those days to the neighboring period, which is invisible at `INTERVAL=1` — the two readings partition the same union — and wrong the moment a period is skipped or a `BYSETPOS` selects within one.
-///
-/// Week-numbering years tile the timeline exactly as calendar years do, each beginning where the last ended.
-/// Explicit Gregorian corrections can move candidates outside these base extents.
-fn day_extent(rule: &RecurrenceRule, present: PartsPresent, anchor: CivilDate) -> (CivilDate, u16) {
-    let expands_weeks =
-        rule.has_part(RulePart::WeekNo) && effect(rule.freq(), RulePart::WeekNo, present).expands();
-    let named = expands_weeks
-        .then(|| week_year_extent(anchor.year(), rule.wkst()))
-        .flatten();
-    named.unwrap_or_else(|| period_extent(Span::of(rule.freq()), rule.wkst(), anchor))
-}
-
-/// Where week-numbering year `year` begins, and how many days it holds.
-///
-/// `None` at the edges of the calendar, where the week before or the week after is not a date RFC 5545 section 3.3.4 can write; the calendar year is used there, which is the same set of days give or take the three at each end that no year can number.
-fn week_year_extent(year: u16, wkst: Weekday) -> Option<(CivilDate, u16)> {
-    let start = week_one_start(year, wkst)?;
-    let weeks = weeks_in_week_year(year, wkst)?;
-    let length = u16::from(weeks).checked_mul(DAYS_PER_WEEK_U16)?;
-    Some((start, length))
-}
-
-/// The first day of week one of `year`, counting weeks from `wkst`.
-///
-/// A week belongs to the year holding four or more of its days, so week one is the week holding January 4th: whichever weekday that date falls on, the week containing it has at least four days in the year and the week before it has at most three.
-fn week_one_start(year: u16, wkst: Weekday) -> Option<CivilDate> {
-    let fourth = CivilDate::from_ymd(year, 1, 4)?;
-    let offset = i64::from(week_offset(fourth.weekday()?, wkst));
-    fourth.checked_add_days(offset.checked_neg()?)
-}
-
-/// Where the period holding `anchor` starts, and how many days it holds.
-fn period_extent(span: Span, wkst: Weekday, anchor: CivilDate) -> (CivilDate, u16) {
-    match span {
-        Span::Year => {
-            let start = CivilDate::from_ymd(anchor.year(), 1, 1).unwrap_or(anchor);
-            (start, days_in_year(anchor.year()))
-        },
-        Span::Month => {
-            let length = CivilDate::days_in_month(anchor.year(), anchor.month()).unwrap_or(1);
-            let start = CivilDate::from_ymd(anchor.year(), anchor.month(), 1).unwrap_or(anchor);
-            (start, u16::from(length))
-        },
-        Span::Week => {
-            // A week begins on `WKST` whatever weekday the anchor fell on, which is the whole of section 3.3.10's `WKST` rule part and the reason two rules differing only in it produce different days.
-            let back = anchor
-                .weekday()
-                .map_or(0, |weekday| week_offset(weekday, wkst));
-            let start = i64::from(back)
-                .checked_neg()
-                .and_then(|shift| anchor.checked_add_days(shift))
-                .unwrap_or(anchor);
-            (start, 7)
-        },
-        Span::Day => (anchor, 1),
+fn retain_dates<F>(days: &mut Vec<CivilDate>, mut keep: F) -> Result<(), CalendarArithmeticError>
+where
+    F: FnMut(CivilDate) -> Result<bool, CalendarArithmeticError>,
+{
+    let mut written = 0;
+    for index in 0..days.len() {
+        let date = *days.get(index).ok_or(CalendarArithmeticError)?;
+        if keep(date)? {
+            *days.get_mut(written).ok_or(CalendarArithmeticError)? = date;
+            written = written.checked_add(1).ok_or(CalendarArithmeticError)?;
+        }
     }
+    days.truncate(written);
+    Ok(())
 }
 
-/// Apply every date part the rule carries, in the table's row order.
 fn apply_date_parts<S: DiagnosticSink + ?Sized>(
     days: &mut Vec<CivilDate>,
-    rule: &RecurrenceRule,
     present: PartsPresent,
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
+    let rule = context.rule;
     let scope = weekday_scope(rule.freq(), present);
     for part in RulePart::ALL {
         if !DATE_PARTS.contains(&part) || !rule.has_part(part) {
@@ -375,50 +390,130 @@ fn apply_date_parts<S: DiagnosticSink + ?Sized>(
         if action == PartEffect::NotApplicable {
             continue;
         }
+        if part == RulePart::Month && action.expands() {
+            select_months(days, rule.by_month().as_slice(), context)?;
+            continue;
+        }
         if action.expands()
             && rule.skip() != Skip::Omit
-            && correct_date_part(days, part, rule, present, anchor, meter, sink)?
+            && correct_date_part(days, part, present, context)?
         {
             continue;
         }
         if action.expands() {
-            // Only a part that expands generates an instance, so only a part that expands can generate one whose date does not exist.
-            report_absent_days(days, part, rule, anchor, meter, sink)?;
+            report_absent_days(days, part, context)?;
         }
-        days.retain(|date| date_part_matches(part, *date, rule, scope));
+        retain_dates(days, |date| {
+            date_part_matches(part, date, rule, scope, &mut context.frame)
+        })?;
     }
     Ok(())
 }
 
-/// Whether year days generate dates rather than filter the period's fixed date.
-fn expands_year_days(rule: &RecurrenceRule, present: PartsPresent) -> bool {
-    rule.has_part(RulePart::YearDay) && effect(rule.freq(), RulePart::YearDay, present).expands()
+fn distinct_years(
+    days: &[CivilDate],
+    frame: &mut CalendarFrame,
+) -> Result<Vec<i32>, CalendarArithmeticError> {
+    let mut years = Vec::new();
+    for date in days {
+        let year = frame.month_fields(*date)?.year;
+        if years.last() != Some(&year) {
+            years.push(year);
+        }
+    }
+    Ok(years)
 }
 
-/// Apply an expanding day selector with explicit Gregorian corrections.
+fn distinct_months(
+    days: &[CivilDate],
+    frame: &mut CalendarFrame,
+) -> Result<Vec<(i32, CalendarMonth)>, CalendarArithmeticError> {
+    let mut months = Vec::new();
+    for date in days {
+        let fields = frame.month_fields(*date)?;
+        let key = (fields.year, fields.month);
+        if months.last() != Some(&key) {
+            months.push(key);
+        }
+    }
+    Ok(months)
+}
+
+fn select_months<S: DiagnosticSink + ?Sized>(
+    days: &mut Vec<CivilDate>,
+    values: &[CalendarMonth],
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
+    let mut wanted: Vec<DateSpan> = Vec::new();
+    let mut repairs: Vec<DateSpan> = Vec::new();
+    for year in distinct_years(days, &mut context.frame)? {
+        for value in values {
+            let exact = context.frame.month_span(year, *value)?;
+            let resolved = context
+                .frame
+                .resolve_month(year, *value, context.rule.skip())?;
+            match resolved {
+                Some(span) => {
+                    if !wanted.iter().any(|held| held.first() == span.first()) {
+                        wanted.push(span);
+                    }
+                    if exact.is_none() {
+                        context.meter.try_charge_candidate()?;
+                        if !repairs.iter().any(|held| held.first() == span.first()) {
+                            repairs.push(span);
+                        }
+                    }
+                },
+                None => report_absent(context)?,
+            }
+        }
+    }
+    retain_dates(days, |date| {
+        let day = date.days_from_epoch().ok_or(CalendarArithmeticError)?;
+        Ok(wanted
+            .iter()
+            .any(|span| day >= span.first() && day < span.end()))
+    })?;
+    let mut added = Vec::new();
+    for span in repairs {
+        let Some((first, length)) = span.writable()? else {
+            continue;
+        };
+        for offset in 0..length {
+            let date = first
+                .checked_add_days(i64::from(offset))
+                .ok_or(CalendarArithmeticError)?;
+            if days.binary_search(&date).is_err() {
+                context.meter.try_charge_candidate()?;
+                added.push(date);
+            }
+        }
+    }
+    days.extend(added);
+    days.sort_unstable();
+    days.dedup();
+    Ok(())
+}
+
 fn correct_date_part<S: DiagnosticSink + ?Sized>(
     days: &mut Vec<CivilDate>,
     part: RulePart,
-    rule: &RecurrenceRule,
     present: PartsPresent,
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<bool, LimitExceeded> {
+    context: &mut DateContext<'_, S>,
+) -> Result<bool, ExpansionError> {
     match part {
-        RulePart::YearDay => *days = corrected_year_days(days, rule, anchor, meter, sink)?,
-        RulePart::MonthDay if expands_year_days(rule, present) => {
-            days.retain(|date| month_day_matches(*date, rule.by_month_day().as_slice()));
+        RulePart::YearDay => *days = corrected_year_days(days, context)?,
+        RulePart::MonthDay if expands_year_days(context.rule, present) => {
+            retain_dates(days, |date| {
+                month_day_matches(
+                    date,
+                    context.rule.by_month_day().as_slice(),
+                    &mut context.frame,
+                )
+            })?;
         },
         RulePart::MonthDay => {
-            *days = corrected_month_days(
-                days,
-                rule.by_month_day().as_slice(),
-                rule.skip(),
-                anchor,
-                meter,
-                sink,
-            )?;
+            *days = corrected_month_days(days, context.rule.by_month_day().as_slice(), context)?;
         },
         RulePart::Month
         | RulePart::WeekNo
@@ -431,34 +526,61 @@ fn correct_date_part<S: DiagnosticSink + ?Sized>(
     Ok(true)
 }
 
-/// A source date's selection result before weekday filters.
 enum DateSelection {
-    /// A valid source day or its explicit correction.
     Candidate(CivilDate),
-    /// Another calendar date selector excludes the source day.
     Filtered,
-    /// The source day has no representable correction.
     Nonexistent,
 }
 
-/// Select source year days before correcting the surviving missing dates.
+fn select_year_day(
+    days: &[CivilDate],
+    year: i32,
+    value: i16,
+    rule: &RecurrenceRule,
+    frame: &mut CalendarFrame,
+) -> Result<DateSelection, CalendarArithmeticError> {
+    let span = frame.year_span(year)?;
+    let source = span.resolve(i32::from(value), Skip::Omit)?;
+    let boundary = if value.is_negative() {
+        span.first()
+    } else {
+        span.end().checked_sub(1).ok_or(CalendarArithmeticError)?
+    };
+    let held = CivilDate::from_days_from_epoch(source.unwrap_or(boundary));
+    if held.is_none_or(|date| days.binary_search(&date).is_err()) {
+        return Ok(DateSelection::Filtered);
+    }
+    if let Some(date) = source.and_then(CivilDate::from_days_from_epoch) {
+        return Ok(DateSelection::Candidate(date));
+    }
+    if rule.has_part(RulePart::MonthDay) {
+        return Ok(DateSelection::Filtered);
+    }
+    Ok(
+        match span
+            .resolve(i32::from(value), rule.skip())?
+            .and_then(CivilDate::from_days_from_epoch)
+        {
+            Some(date) => DateSelection::Candidate(date),
+            None => DateSelection::Nonexistent,
+        },
+    )
+}
+
 fn corrected_year_days<S: DiagnosticSink + ?Sized>(
     days: &[CivilDate],
-    rule: &RecurrenceRule,
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<Vec<CivilDate>, LimitExceeded> {
+    context: &mut DateContext<'_, S>,
+) -> Result<Vec<CivilDate>, ExpansionError> {
     let mut corrected = Vec::new();
-    for year in distinct_years(days) {
-        for value in rule.by_year_day().as_slice() {
-            match select_year_day(days, year, *value, rule) {
+    for year in distinct_years(days, &mut context.frame)? {
+        for value in context.rule.by_year_day().as_slice() {
+            match select_year_day(days, year, *value, context.rule, &mut context.frame)? {
                 DateSelection::Candidate(date) => {
-                    meter.try_charge_candidate()?;
+                    context.meter.try_charge_candidate()?;
                     corrected.push(date);
                 },
-                DateSelection::Filtered => meter.try_charge_candidate()?,
-                DateSelection::Nonexistent => report_absent(anchor, meter, sink)?,
+                DateSelection::Filtered => context.meter.try_charge_candidate()?,
+                DateSelection::Nonexistent => report_absent(context)?,
             }
         }
     }
@@ -467,48 +589,6 @@ fn corrected_year_days<S: DiagnosticSink + ?Sized>(
     Ok(corrected)
 }
 
-/// Match month and month day constraints on the source date, before correction.
-fn select_year_day(
-    days: &[CivilDate],
-    year: u16,
-    value: i16,
-    rule: &RecurrenceRule,
-) -> DateSelection {
-    let Some(first) = CivilDate::from_ymd(year, 1, 1) else {
-        return DateSelection::Nonexistent;
-    };
-    let Some(last) = CivilDate::from_ymd(year, 12, 31) else {
-        return DateSelection::Nonexistent;
-    };
-    let source = resolve_year_day(year, value, Skip::Omit);
-    let boundary = if value.is_negative() { first } else { last };
-    if days.binary_search(&source.unwrap_or(boundary)).is_err() {
-        return DateSelection::Filtered;
-    }
-    if let Some(source) = source {
-        return DateSelection::Candidate(source);
-    }
-    // A missing year day falls before January 1 or after December 31.
-    // No admitted month day matches that source coordinate before correction.
-    if rule.has_part(RulePart::MonthDay) {
-        return DateSelection::Filtered;
-    }
-    match resolve_year_day(year, value, rule.skip()) {
-        Some(date) => DateSelection::Candidate(date),
-        None => DateSelection::Nonexistent,
-    }
-}
-
-/// The scope a `BYDAY` ordinal counts within for this rule, or `None` when it counts in none.
-///
-/// The expanding cells carry their scope, because that is what Note 1 and Note 2 resolve to.
-/// The limiting ones do not: the RFC prints `Limit` for `BYDAY` exactly when a day-naming part is already present, and says nothing about what an ordinal would then mean.
-/// Rather than invent an answer, this asks the same two notes what they would have said had those parts been absent — which is the scope the RFC itself derives from the remaining parts.
-///
-/// Section 3.3.10 forbids an ordinal outright wherever `FREQ` is neither `MONTHLY` nor `YEARLY`, and one answer covers all five of those frequencies: none.
-/// An ordinal in a rule that may not carry one is ignored and its weekday kept, which is all such an entry can be read to have meant.
-/// The alternative was worse in exactly one cell — `FREQ=WEEKLY` prints `Expand` rather than `Limit`, so a scope one week wide came back from the table and resolved `BYDAY=2TU` against a run of one, silently emptying the whole series including `DTSTART` while `BYDAY=1TU` worked.
-/// Same forbidden construct, two answers, and the quiet one lost everything; the decoder reports the construct on [`DiagnosticCode::RecurrenceRulePartOutOfRange`] so it is not merely tolerated.
 fn weekday_scope(freq: Freq, present: PartsPresent) -> Option<WeekdayScope> {
     if !matches!(freq, Freq::Monthly | Freq::Yearly) {
         return None;
@@ -520,7 +600,6 @@ fn weekday_scope(freq: Freq, present: PartsPresent) -> Option<WeekdayScope> {
     }
 }
 
-/// What the two notes would give for `BYDAY` if no `BYYEARDAY` and no `BYMONTHDAY` were there.
 fn scope_without_day_parts(freq: Freq, present: PartsPresent) -> Option<WeekdayScope> {
     let reduced = RulePart::ALL
         .into_iter()
@@ -533,127 +612,141 @@ fn scope_without_day_parts(freq: Freq, present: PartsPresent) -> Option<WeekdayS
     }
 }
 
-/// Whether `date` is one of the days `part` names.
 fn date_part_matches(
     part: RulePart,
     date: CivilDate,
     rule: &RecurrenceRule,
     scope: Option<WeekdayScope>,
-) -> bool {
+    frame: &mut CalendarFrame,
+) -> Result<bool, CalendarArithmeticError> {
     match part {
-        RulePart::Month => rule.by_month().as_slice().contains(&date.month()),
-        RulePart::WeekNo => week_no_matches(date, rule.by_week_no().as_slice(), rule.wkst()),
-        RulePart::YearDay => year_day_matches(date, rule.by_year_day().as_slice()),
-        RulePart::MonthDay => month_day_matches(date, rule.by_month_day().as_slice()),
-        RulePart::Day => weekday_matches(date, rule.by_day().as_slice(), scope, rule.wkst()),
-        // The three clock rows and `BYSETPOS` say nothing about a date.
-        // The walk never offers them here, and answering "this date is not excluded" is the only honest reply if it ever did.
-        RulePart::Hour | RulePart::Minute | RulePart::Second | RulePart::SetPos => true,
+        RulePart::Month => Ok(rule
+            .by_month()
+            .as_slice()
+            .contains(&frame.month_fields(date)?.month)),
+        RulePart::WeekNo => week_no_matches(date, rule.by_week_no().as_slice(), rule.wkst(), frame),
+        RulePart::YearDay => year_day_matches(date, rule.by_year_day().as_slice(), frame),
+        RulePart::MonthDay => month_day_matches(date, rule.by_month_day().as_slice(), frame),
+        RulePart::Day => weekday_matches(date, rule.by_day().as_slice(), scope, rule.wkst(), frame),
+        RulePart::Hour | RulePart::Minute | RulePart::Second | RulePart::SetPos => Ok(true),
     }
 }
 
-/// Whether `date`'s day of the month is one of the days `BYMONTHDAY` names.
-fn month_day_matches(date: CivilDate, values: &[i8]) -> bool {
-    let Some(length) = CivilDate::days_in_month(date.year(), date.month()) else {
-        return false;
-    };
-    let wanted = u32::from(date.day());
-    values
-        .iter()
-        .any(|listed| position_named(i32::from(*listed), u32::from(length)) == Some(wanted))
+fn month_day_matches(
+    date: CivilDate,
+    values: &[i8],
+    frame: &mut CalendarFrame,
+) -> Result<bool, CalendarArithmeticError> {
+    let fields = frame.month_fields(date)?;
+    Ok(values.iter().any(|value| {
+        position_named(i32::from(*value), u32::from(fields.days)) == Some(u32::from(fields.day))
+    }))
 }
 
-/// Whether `date`'s day of the year is one of the days `BYYEARDAY` names.
-fn year_day_matches(date: CivilDate, values: &[i16]) -> bool {
-    let Some(wanted) = day_of_year(date).map(u32::from) else {
-        return false;
-    };
-    let length = u32::from(days_in_year(date.year()));
-    values
-        .iter()
-        .any(|listed| position_named(i32::from(*listed), length) == Some(wanted))
+fn year_day_matches(
+    date: CivilDate,
+    values: &[i16],
+    frame: &mut CalendarFrame,
+) -> Result<bool, CalendarArithmeticError> {
+    let fields = frame.fields(date)?;
+    Ok(values.iter().any(|value| {
+        position_named(i32::from(*value), u32::from(fields.year_span.days()))
+            == Some(u32::from(fields.year_day))
+    }))
 }
 
-/// Whether the week holding `date` is one of the weeks `BYWEEKNO` names.
-///
-/// The comparison is against the number of the week `date` belongs to, and it needs no second question about which year numbers that week: [`day_extent`] already offered this period the days of *its own* week-numbering year, so every date reaching here is numbered by the period it came from.
-/// A negative value counts back through that year's own 52 or 53 weeks, which is why the length is asked of the week year and never of the calendar one.
-fn week_no_matches(date: CivilDate, values: &[i8], wkst: Weekday) -> bool {
-    let Some((week_year, number)) = week_of(date, wkst) else {
-        return false;
-    };
-    let Some(length) = weeks_in_week_year(week_year, wkst) else {
-        return false;
-    };
-    let wanted = u32::from(number);
-    values
-        .iter()
-        .any(|listed| position_named(i32::from(*listed), u32::from(length)) == Some(wanted))
+fn week_no_matches(
+    date: CivilDate,
+    values: &[i8],
+    wkst: Weekday,
+    frame: &mut CalendarFrame,
+) -> Result<bool, CalendarArithmeticError> {
+    let (year, number) = frame.week_of(date, wkst)?;
+    let weeks = frame.week_year_span(year, wkst)?.days() / DAYS_PER_WEEK_U16;
+    Ok(values.iter().any(|value| {
+        position_named(i32::from(*value), u32::from(weeks)) == Some(u32::from(number))
+    }))
 }
 
-/// Whether `date` is one of the days `BYDAY` names.
 fn weekday_matches(
     date: CivilDate,
     values: &[WeekdayNum],
     scope: Option<WeekdayScope>,
     wkst: Weekday,
-) -> bool {
-    let Some(weekday) = date.weekday() else {
-        return false;
-    };
-    values.iter().any(|listed| {
-        listed.weekday() == weekday && ordinal_matches(date, listed.ordinal(), scope, wkst)
-    })
+    frame: &mut CalendarFrame,
+) -> Result<bool, CalendarArithmeticError> {
+    let weekday = date.weekday().ok_or(CalendarArithmeticError)?;
+    for value in values {
+        if value.weekday() == weekday && ordinal_matches(date, value.ordinal(), scope, wkst, frame)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-/// Whether `date` is the occurrence of its own weekday that `ordinal` names within `scope`.
 fn ordinal_matches(
     date: CivilDate,
     ordinal: Option<NonZeroI8>,
     scope: Option<WeekdayScope>,
     wkst: Weekday,
-) -> bool {
-    let Some(ordinal) = ordinal else {
-        return true;
+    frame: &mut CalendarFrame,
+) -> Result<bool, CalendarArithmeticError> {
+    let (Some(ordinal), Some(scope)) = (ordinal, scope) else {
+        return Ok(true);
     };
-    let Some(scope) = scope else {
-        // RFC 5545 section 3.3.10 forbids an ordinal wherever the table prints a plain `Limit`, and a file carrying one anyway is kept rather than refused: the entry names its weekday, which is all the rule can be read to have meant.
-        return true;
-    };
-    let Some((index, length)) = weekday_position(date, scope, wkst) else {
-        return false;
-    };
-    position_named(i32::from(ordinal.get()), length) == Some(index)
+    let (index, length) = weekday_position(date, scope, wkst, frame)?;
+    Ok(position_named(i32::from(ordinal.get()), length) == Some(index))
 }
 
-/// Which occurrence of its own weekday `date` is within `scope`, and how many that scope holds.
-fn weekday_position(date: CivilDate, scope: WeekdayScope, wkst: Weekday) -> Option<(u32, u32)> {
+fn weekday_position(
+    date: CivilDate,
+    scope: WeekdayScope,
+    wkst: Weekday,
+    frame: &mut CalendarFrame,
+) -> Result<(u32, u32), CalendarArithmeticError> {
     let (offset, length) = match scope {
-        WeekdayScope::Week => (u32::from(week_offset(date.weekday()?, wkst)), DAYS_PER_WEEK),
-        WeekdayScope::Month => (
-            u32::from(date.day()).checked_sub(1)?,
-            u32::from(CivilDate::days_in_month(date.year(), date.month())?),
+        WeekdayScope::Week => (
+            u32::from(calendar::week_offset(
+                date.weekday().ok_or(CalendarArithmeticError)?,
+                wkst,
+            )),
+            DAYS_PER_WEEK,
         ),
-        WeekdayScope::Year => (
-            u32::from(day_of_year(date)?).checked_sub(1)?,
-            u32::from(days_in_year(date.year())),
-        ),
+        WeekdayScope::Month => {
+            let fields = frame.month_fields(date)?;
+            (
+                u32::from(fields.day)
+                    .checked_sub(1)
+                    .ok_or(CalendarArithmeticError)?,
+                u32::from(fields.days),
+            )
+        },
+        WeekdayScope::Year => {
+            let fields = frame.fields(date)?;
+            (
+                u32::from(fields.year_day)
+                    .checked_sub(1)
+                    .ok_or(CalendarArithmeticError)?,
+                u32::from(fields.year_span.days()),
+            )
+        },
     };
-    let index = offset.div_euclid(DAYS_PER_WEEK).checked_add(1)?;
-    // Every occurrence of one weekday sits a whole number of weeks from the first, so the first is at the remainder and the count is how many strides of seven fit above it.
+    let index = offset
+        .div_euclid(DAYS_PER_WEEK)
+        .checked_add(1)
+        .ok_or(CalendarArithmeticError)?;
     let first = offset.rem_euclid(DAYS_PER_WEEK);
     let count = length
-        .checked_sub(first)?
-        .checked_sub(1)?
+        .checked_sub(first)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or(CalendarArithmeticError)?
         .div_euclid(DAYS_PER_WEEK)
-        .checked_add(1)?;
-    Some((index, count))
+        .checked_add(1)
+        .ok_or(CalendarArithmeticError)?;
+    Ok((index, count))
 }
 
-/// The position `value` names in a run of `length` positions, counting back from the end when it is negative, or `None` when the run has no such position.
-///
-/// The one place this crate turns a `BYxxx` value into a place in a calendar, so that the negative form — `BYMONTHDAY=-1`, `BYDAY=-2MO`, `BYWEEKNO=-1` — is written once.
-/// Zero names nothing: RFC 5545 section 3.3.10 excludes it from every one of those productions.
 fn position_named(value: i32, length: u32) -> Option<u32> {
     let length = i32::try_from(length).ok()?;
     let position = match value.cmp(&0) {
@@ -668,81 +761,26 @@ fn position_named(value: i32, length: u32) -> Option<u32> {
     }
 }
 
-/// How far `weekday` sits into a week beginning on `wkst`.
-fn week_offset(weekday: Weekday, wkst: Weekday) -> u8 {
-    let reached = i16::from(weekday.index());
-    let begins = i16::from(wkst.index());
-    // Both indices are under seven, so the difference is inside `i16` and the Euclidean remainder puts a weekday before the week's start at the end of it rather than below zero.
-    let offset = reached.saturating_sub(begins).rem_euclid(7);
-    u8::try_from(offset).unwrap_or(0)
-}
-
-/// The calendar year numbering the week that holds `date`, and that week's number.
-///
-/// RFC 5545 section 3.3.10 numbers weeks as ISO 8601 does but from `WKST` rather than always from Monday: a week belongs to the year holding at least four of its days, which is the year its fourth day falls in, and week one is the first such week.
-fn week_of(date: CivilDate, wkst: Weekday) -> Option<(u16, u8)> {
-    let offset = i64::from(week_offset(date.weekday()?, wkst));
-    let pivot = date.checked_add_days(3_i64.checked_sub(offset)?)?;
-    let reached = day_of_year(pivot)?;
-    let number = u32::from(reached)
-        .checked_sub(1)?
-        .div_euclid(DAYS_PER_WEEK)
-        .checked_add(1)?;
-    Some((pivot.year(), u8::try_from(number).ok()?))
-}
-
-/// How many weeks the week-numbering year `year` holds, which is 52 or 53.
-fn weeks_in_week_year(year: u16, wkst: Weekday) -> Option<u8> {
-    let last = CivilDate::from_ymd(year, 12, 31)?;
-    let (holder, number) = week_of(last, wkst)?;
-    if holder == year {
-        return Some(number);
-    }
-    // December 31st already belongs to week one of the following year, so the week before it is this year's last.
-    let earlier = last.checked_add_days(-7)?;
-    let (_, previous) = week_of(earlier, wkst)?;
-    Some(previous)
-}
-
-/// Which day of the year `date` is, counting January 1st as one.
-fn day_of_year(date: CivilDate) -> Option<u16> {
-    let start = CivilDate::from_ymd(date.year(), 1, 1)?;
-    let elapsed = date
-        .days_from_epoch()?
-        .checked_sub(start.days_from_epoch()?)?;
-    u16::try_from(elapsed.checked_add(1)?).ok()
-}
-
-/// How many days `year` holds.
-const fn days_in_year(year: u16) -> u16 {
-    if CivilDate::is_leap_year(year) {
-        366
-    } else {
-        365
-    }
-}
-
-/// Report every day an expanding part named that the calendar does not have.
-///
-/// A `BYMONTHDAY` of 31 in a 30-day month and a `BYYEARDAY` of 366 in a common year are the two shapes of that.
-/// RFC 5545 section 3.3.10 says such an instance MUST be ignored, and `docs/adr/0011` says it is nonetheless charged, because generating it is what discovered it was not there.
 fn report_absent_days<S: DiagnosticSink + ?Sized>(
     days: &[CivilDate],
     part: RulePart,
-    rule: &RecurrenceRule,
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
     match part {
         RulePart::MonthDay => {
-            report_absent_month_days(days, rule.by_month_day().as_slice(), anchor, meter, sink)
+            report_absent_month_days(days, context.rule.by_month_day().as_slice(), context)
         },
         RulePart::YearDay => {
-            report_absent_year_days(days, rule.by_year_day().as_slice(), anchor, meter, sink)
+            for year in distinct_years(days, &mut context.frame)? {
+                let length = u32::from(context.frame.year_span(year)?.days());
+                for value in context.rule.by_year_day().as_slice() {
+                    if position_named(i32::from(*value), length).is_none() {
+                        report_absent(context)?;
+                    }
+                }
+            }
+            Ok(())
         },
-        // No other part can name a day the calendar lacks.
-        // A month, a week number and a weekday each name something every period either has or does not reach, and neither is a date that failed to exist.
         RulePart::Month
         | RulePart::WeekNo
         | RulePart::Day
@@ -753,133 +791,58 @@ fn report_absent_days<S: DiagnosticSink + ?Sized>(
     }
 }
 
-/// Report each `BYMONTHDAY` value that names no day of a month the working set still holds.
 fn report_absent_month_days<S: DiagnosticSink + ?Sized>(
     days: &[CivilDate],
     values: &[i8],
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
-    for (year, month) in distinct_months(days) {
-        let Some(length) = CivilDate::days_in_month(year, month) else {
-            continue;
-        };
-        for listed in values {
-            if position_named(i32::from(*listed), u32::from(length)).is_none() {
-                report_absent(anchor, meter, sink)?;
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
+    for (year, month) in distinct_months(days, &mut context.frame)? {
+        let span = context
+            .frame
+            .month_span(year, month)?
+            .ok_or(CalendarArithmeticError)?;
+        for value in values {
+            if position_named(i32::from(*value), u32::from(span.days())).is_none() {
+                report_absent(context)?;
             }
         }
     }
     Ok(())
 }
 
-/// Report each `BYYEARDAY` value that names no day of a year the working set still holds.
-fn report_absent_year_days<S: DiagnosticSink + ?Sized>(
-    days: &[CivilDate],
-    values: &[i16],
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
-    for year in distinct_years(days) {
-        let length = u32::from(days_in_year(year));
-        for listed in values {
-            if position_named(i32::from(*listed), length).is_none() {
-                report_absent(anchor, meter, sink)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Charge one generated candidate and say that its date does not exist.
-///
-/// The instant the diagnostic carries is the *period's anchor* and never the missing instance:
-/// the whole claim is that the instance has no date, so it has no instant either, and naming one would invent exactly the nearby answer section 3.3.10 forbids.
-/// The anchor is what a caller can act on, because it says which period lost a candidate, and it is read at UTC because this layer has no zone and `docs/adr/0003` makes resolving one the caller's step.
-/// A period at the very edge of the timeline has no instant at all, and there the diagnostic carries none rather than a saturated one.
-///
-/// Reporting comes before charging so that the last candidate a budget admits is still explained rather than swallowed by its own exhaustion.
 fn report_absent<S: DiagnosticSink + ?Sized>(
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
     let code = DiagnosticCode::NonexistentRecurrenceInstance;
-    let note = match anchor.at_offset(UtcOffset::UTC) {
+    let note = match context.anchor.at_offset(UtcOffset::UTC) {
         Some(instant) => Diagnostic::at_instant(code, Severity::Note, instant),
         None => Diagnostic::new(code, Severity::Note, Location::NOWHERE),
     };
-    report_diagnostic(sink, meter, note);
-    meter.try_charge_candidate()
+    report_diagnostic(context.sink, context.meter, note);
+    Ok(context.meter.try_charge_candidate()?)
 }
 
-/// Each distinct month the working set still holds, in ascending order.
-fn distinct_months(days: &[CivilDate]) -> Vec<(u16, u8)> {
-    let mut covered: Vec<(u16, u8)> = Vec::new();
-    for date in days {
-        let reached = (date.year(), date.month());
-        // The working set is ascending, so one month's days are contiguous and the last entry is the only one a repeat can equal.
-        if covered.last() != Some(&reached) {
-            covered.push(reached);
-        }
-    }
-    covered
-}
-
-/// Each distinct year the working set still holds, in ascending order.
-fn distinct_years(days: &[CivilDate]) -> Vec<u16> {
-    let mut covered: Vec<u16> = Vec::new();
-    for date in days {
-        if covered.last() != Some(&date.year()) {
-            covered.push(date.year());
-        }
-    }
-    covered
-}
-
-/// Keep only the day of each span that `DTSTART` names, reporting the spans that lack it.
-fn apply_default_day<S: DiagnosticSink + ?Sized>(
-    days: &mut Vec<CivilDate>,
-    span: Span,
-    start: CivilDate,
-    anchor: CivilDateTime,
-    skip: Skip,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
-    if skip != Skip::Omit && matches!(span, Span::Year | Span::Month) {
-        if span == Span::Year {
-            days.retain(|date| date.month() == start.month());
-        }
-        if let Ok(day) = i8::try_from(start.day()) {
-            *days = corrected_month_days(days, &[day], skip, anchor, meter, sink)?;
-        }
-        return Ok(());
-    }
-    report_absent_default(days, span, start, anchor, meter, sink)?;
-    days.retain(|date| default_day_matches(span, *date, start));
-    Ok(())
-}
-
-/// Resolve month days after month selection and before weekday selection.
 fn corrected_month_days<S: DiagnosticSink + ?Sized>(
     days: &[CivilDate],
     values: &[i8],
-    skip: Skip,
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<Vec<CivilDate>, LimitExceeded> {
+    context: &mut DateContext<'_, S>,
+) -> Result<Vec<CivilDate>, ExpansionError> {
     let mut corrected = Vec::new();
-    for (year, month) in distinct_months(days) {
+    for (year, month) in distinct_months(days, &mut context.frame)? {
+        let span = context
+            .frame
+            .month_span(year, month)?
+            .ok_or(CalendarArithmeticError)?;
         for value in values {
-            if let Some(date) = resolve_month_day(year, month, *value, skip) {
-                meter.try_charge_candidate()?;
-                corrected.push(date);
-            } else {
-                report_absent(anchor, meter, sink)?;
+            match span
+                .resolve(i32::from(*value), context.rule.skip())?
+                .and_then(CivilDate::from_days_from_epoch)
+            {
+                Some(date) => {
+                    context.meter.try_charge_candidate()?;
+                    corrected.push(date);
+                },
+                None => report_absent(context)?,
             }
         }
     }
@@ -888,86 +851,45 @@ fn corrected_month_days<S: DiagnosticSink + ?Sized>(
     Ok(corrected)
 }
 
-/// Resolve one signed month day without normalizing an overflow by its size.
-fn resolve_month_day(year: u16, month: u8, value: i8, skip: Skip) -> Option<CivilDate> {
-    if value == 0 || !(-31..=31).contains(&value) {
-        return None;
-    }
-    let length = CivilDate::days_in_month(year, month)?;
-    let first = CivilDate::from_ymd(year, month, 1)?;
-    resolve_span_day(first, u16::from(length), i32::from(value), skip)
-}
-
-/// Resolve one signed day in a Gregorian year.
-fn resolve_year_day(year: u16, value: i16, skip: Skip) -> Option<CivilDate> {
-    if value == 0 || !(-366..=366).contains(&value) {
-        return None;
-    }
-    let first = CivilDate::from_ymd(year, 1, 1)?;
-    resolve_span_day(first, days_in_year(year), i32::from(value), skip)
-}
-
-/// Resolve a signed day within a span, correcting only to an adjacent valid boundary.
-fn resolve_span_day(first: CivilDate, length: u16, value: i32, skip: Skip) -> Option<CivilDate> {
-    if value == 0 {
-        return None;
-    }
-    if let Some(position) = position_named(value, u32::from(length)) {
-        return first.checked_add_days(i64::from(position).checked_sub(1)?);
-    }
-    let last = first.checked_add_days(i64::from(length).checked_sub(1)?)?;
-    match (skip, value.is_positive()) {
-        (Skip::Omit, _) => None,
-        (Skip::Backward, true) => Some(last),
-        (Skip::Backward, false) => first.checked_add_days(-1),
-        (Skip::Forward, true) => last.checked_add_days(1),
-        (Skip::Forward, false) => Some(first),
-    }
-}
-
-/// Report each span whose free coordinate `DTSTART` fills with a day the span does not have.
-fn report_absent_default<S: DiagnosticSink + ?Sized>(
-    days: &[CivilDate],
+fn apply_default_day<S: DiagnosticSink + ?Sized>(
+    days: &mut Vec<CivilDate>,
     span: Span,
     start: CivilDate,
-    anchor: CivilDateTime,
-    meter: &mut Meter,
-    sink: &mut S,
-) -> Result<(), LimitExceeded> {
-    match span {
-        // A month leaves the day of the month free, so a `DTSTART` on the 31st names nothing in a 30-day month and a `FREQ=MONTHLY` rule skips that month rather than moving.
-        Span::Month => {
-            // A day of the month is at most 31 and so always fits, but the conversion is the one that says so rather than a comment claiming it.
-            let Ok(named) = i8::try_from(start.day()) else {
-                return Ok(());
-            };
-            report_absent_month_days(days, &[named], anchor, meter, sink)
-        },
-        // A year leaves both the month and the day free, which is how a `DTSTART` of February 29th names nothing at all in a common year.
-        Span::Year => {
-            for year in distinct_years(days) {
-                if CivilDate::from_ymd(year, start.month(), start.day()).is_none() {
-                    report_absent(anchor, meter, sink)?;
-                }
-            }
-            Ok(())
-        },
-        // A week leaves the weekday free and holds all seven; a day leaves nothing free.
-        Span::Week | Span::Day => Ok(()),
+    context: &mut DateContext<'_, S>,
+) -> Result<(), ExpansionError> {
+    if matches!(span, Span::Year | Span::Month) {
+        let seed = context.frame.month_fields(start)?;
+        if span == Span::Year {
+            select_months(days, &[seed.month], context)?;
+        }
+        let value = i8::try_from(seed.day).map_err(|_| CalendarArithmeticError)?;
+        if context.rule.skip() == Skip::Omit {
+            report_absent_month_days(days, &[value], context)?;
+            retain_dates(days, |date| {
+                Ok(context.frame.month_fields(date)?.day == seed.day)
+            })?;
+        } else {
+            *days = corrected_month_days(days, &[value], context)?;
+        }
+    } else if span == Span::Week {
+        let weekday = start.weekday().ok_or(CalendarArithmeticError)?;
+        retain_dates(days, |date| Ok(date.weekday() == Some(weekday)))?;
     }
+    Ok(())
 }
 
-/// Whether `date` is the day `DTSTART` names within a span of this size.
-fn default_day_matches(span: Span, date: CivilDate, start: CivilDate) -> bool {
-    match span {
-        Span::Year => date.month() == start.month() && date.day() == start.day(),
-        Span::Month => date.day() == start.day(),
-        Span::Week => date.weekday() == start.weekday(),
-        Span::Day => true,
-    }
+#[cfg(test)]
+fn week_of(date: CivilDate, wkst: Weekday) -> Option<(u16, u8)> {
+    let (year, number) = CalendarFrame::new(crate::internal::core::CalendarScale::Gregorian)
+        .week_of(date, wkst)
+        .ok()?;
+    Some((u16::try_from(year).ok()?, number))
 }
 
-/// Every clock reading the period admits, with the three time parts applied in row order.
+#[cfg(test)]
+fn week_offset(weekday: Weekday, wkst: Weekday) -> u8 {
+    calendar::week_offset(weekday, wkst)
+}
 fn period_times(
     rule: &RecurrenceRule,
     present: PartsPresent,
@@ -1766,7 +1688,7 @@ mod tests {
         counted.open_period();
         assert_eq!(
             expand_period(period, &rule, start, &mut counted, &mut kept),
-            Err(LimitExceeded::Candidates)
+            Err(super::ExpansionError::Resource(LimitExceeded::Candidates))
         );
 
         let mut spent = Meter::with_budget(Limits::DEFAULT, 8);
@@ -1774,7 +1696,7 @@ mod tests {
         spent.open_period();
         assert_eq!(
             expand_period(same, &rule, start, &mut spent, &mut kept),
-            Err(LimitExceeded::Budget)
+            Err(super::ExpansionError::Resource(LimitExceeded::Budget))
         );
         assert!(spent.is_exhausted(), "the shared ledger latches");
     }

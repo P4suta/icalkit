@@ -238,6 +238,9 @@ impl Occurrences<'_> {
                 Some(SearchStep::BudgetExhausted(_)) => {
                     Err(Error::single("icalkit.recurrence.budget-exhausted"))
                 },
+                Some(SearchStep::CalendarArithmeticFailed) => {
+                    Err(Error::single("icalkit.recurrence.calendar-arithmetic"))
+                },
                 None => Ok(None),
             },
             OccurrenceSource::Calendar {

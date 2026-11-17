@@ -150,7 +150,7 @@ impl PeriodWalk {
     ///
     /// `dtstart` is still required rather than a stored anchor, because an anchor alone cannot say which week `WKST` began or which day of a month `DTSTART` sat in, and a resumed walk that guessed either would drift away from the walk it claims to continue.
     pub fn resume_at(dtstart: CivilDateTime, rule: &RecurrenceRule, index: u64) -> Self {
-        Self::resume_in_calendar(dtstart, rule, CalendarScale::Gregorian, index)
+        Self::resume_in_calendar(dtstart, rule, rule.calendar_scale(), index)
     }
 
     /// The index of the period the next call to [`Iterator::next`] will produce.
