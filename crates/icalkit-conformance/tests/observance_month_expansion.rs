@@ -1,0 +1,297 @@
+// SPDX-FileCopyrightText: 2026 icalkit contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Month expansion follows [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
+//! Date enumeration checks compiled patterns separately from original anchors.
+
+#![cfg(test)]
+
+use std::collections::BTreeSet;
+
+use icalkit_conformance::internal::core::{
+    CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, Document, IgnoreDiagnostics,
+    Limits, Meter, Severity, UtcOffset, Weekday,
+};
+use icalkit_conformance::internal::tz::{VtimezoneSet, read_calendar_zones};
+
+fn date(year: u16, month: u8, day: u8) -> CivilDate {
+    CivilDate::from_ymd(year, month, day).unwrap()
+}
+
+fn read(
+    parts: &str,
+    start: &str,
+    extra: &str,
+    limits: Limits,
+) -> (VtimezoneSet, Meter, Vec<Diagnostic>) {
+    let suffix = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(";{parts}")
+    };
+    let text = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit month expansion//EN\r\n\
+         BEGIN:VTIMEZONE\r\nTZID:Test/Months\r\nBEGIN:DAYLIGHT\r\n\
+         DTSTART:{start}\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0100\r\n\
+         RRULE:FREQ=YEARLY{suffix}\r\n{extra}END:DAYLIGHT\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n"
+    );
+    let document =
+        Document::parse(text.as_bytes(), Limits::DEFAULT, &mut IgnoreDiagnostics).unwrap();
+    assert_eq!(document.to_bytes(), text.as_bytes());
+    let mut meter = Meter::new(limits);
+    let mut diagnostics = Vec::new();
+    let zones = read_calendar_zones(
+        document.components().next().unwrap(),
+        &mut meter,
+        &mut diagnostics,
+    );
+    (zones, meter, diagnostics)
+}
+
+fn admitted(parts: &str, start: &str) -> VtimezoneSet {
+    let (zones, _, diagnostics) = read(parts, start, "", Limits::DEFAULT);
+    assert!(diagnostics.is_empty(), "{parts}: {diagnostics:?}");
+    zones
+}
+
+fn compiled_dates(zones: &VtimezoneSet, year: u16) -> BTreeSet<CivilDate> {
+    zones
+        .table("Test/Months")
+        .unwrap()
+        .rules()
+        .iter()
+        .filter_map(|observance| observance.rule().unwrap().occurrence_in(year))
+        .collect()
+}
+
+fn expected_dates(year: u16, days: &[i8], weekday: Option<Weekday>) -> BTreeSet<CivilDate> {
+    let mut found = BTreeSet::new();
+    for month in 1..=12 {
+        for day in 1..=31 {
+            let Some(value) = CivilDate::from_ymd(year, month, day) else {
+                continue;
+            };
+            let length = CivilDate::days_in_month(year, month).unwrap();
+            let positive = i8::try_from(day).unwrap();
+            let negative = i16::from(day)
+                .checked_sub(i16::from(length))
+                .unwrap()
+                .checked_sub(1)
+                .unwrap();
+            if (days.contains(&positive) || days.contains(&i8::try_from(negative).unwrap()))
+                && weekday.is_none_or(|expected| value.weekday() == Some(expected))
+            {
+                found.insert(value);
+            }
+        }
+    }
+    found
+}
+
+fn anchor(value: CivilDate) -> String {
+    format!(
+        "{:04}{:02}{:02}T020000",
+        value.year(),
+        value.month(),
+        value.day()
+    )
+}
+
+#[test]
+fn unrestricted_month_days_include_every_month() {
+    let zones = admitted("BYMONTHDAY=1", "20240101T020000");
+    let expected = (1..=12).map(|month| date(2024, month, 1)).collect();
+    assert_eq!(compiled_dates(&zones, 2024), expected);
+}
+
+#[test]
+fn every_admitted_fixed_day_matches_independent_date_enumeration() {
+    for day in (-1_i8..=31).filter(|value| *value != 0) {
+        let expected = expected_dates(2000, &[day], None);
+        let start = anchor(*expected.first().unwrap());
+        let zones = admitted(&format!("BYMONTHDAY={day}"), &start);
+        for year in [0, 1, 1900, 2000, 2023, 2024, 2100, 9999] {
+            assert_eq!(
+                compiled_dates(&zones, year),
+                expected_dates(year, &[day], None),
+                "day={day}, year={year}"
+            );
+        }
+    }
+}
+
+#[test]
+fn weekday_windows_expand_by_the_written_date_intersection() {
+    for weekday in Weekday::ALL {
+        let name = std::str::from_utf8(weekday.as_bytes()).unwrap();
+        let windows = (1_i8..=25)
+            .map(|first| (first..=first.checked_add(6).unwrap()).collect::<Vec<_>>())
+            .chain(std::iter::once((-7_i8..=-1).collect()));
+        for days in windows {
+            let written = days.iter().map(i8::to_string).collect::<Vec<_>>().join(",");
+            let parts = format!("BYDAY={name};BYMONTHDAY={written}");
+            let expected = expected_dates(2000, &days, Some(weekday));
+            let zones = admitted(&parts, &anchor(*expected.first().unwrap()));
+            for year in [0, 1900, 2000, 2024, 2026, 9999] {
+                assert_eq!(
+                    compiled_dates(&zones, year),
+                    expected_dates(year, &days, Some(weekday)),
+                    "{parts}, year={year}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn explicit_months_anniversaries_and_year_ordinals_stay_single() {
+    for (parts, start, expected) in [
+        (
+            "BYMONTH=5;BYMONTHDAY=15",
+            "20240515T020000",
+            date(2024, 5, 15),
+        ),
+        ("", "20240615T020000", date(2024, 6, 15)),
+    ] {
+        let zones = admitted(parts, start);
+        assert_eq!(
+            zones.table("Test/Months").unwrap().rules().len(),
+            1,
+            "{parts}"
+        );
+        assert_eq!(
+            compiled_dates(&zones, 2024),
+            [expected].into_iter().collect(),
+            "{parts}"
+        );
+    }
+    let zones = admitted("BYDAY=20MO", "19970519T020000");
+    assert_eq!(zones.table("Test/Months").unwrap().rules().len(), 1);
+    assert_eq!(
+        compiled_dates(&zones, 1997),
+        [date(1997, 5, 19)].into_iter().collect()
+    );
+}
+
+#[test]
+fn expanded_rules_keep_original_anchors_clocks_offsets_and_until() {
+    let zones = admitted("BYMONTHDAY=15;UNTIL=20250315T020000Z", "20240615T020000");
+    let table = zones.table("Test/Months").unwrap();
+    let clock = CivilTime::from_hms(2, 0, 0).unwrap();
+    for observance in table.rules() {
+        assert_eq!(
+            observance.start(),
+            CivilDateTime::new(date(2024, 6, 15), clock)
+        );
+        assert_eq!(observance.offset_from(), UtcOffset::UTC);
+        assert_eq!(
+            observance.offset_to(),
+            UtcOffset::from_seconds(3600).unwrap()
+        );
+        assert_eq!(observance.rule().unwrap().at(), clock);
+        assert_eq!(
+            observance.rule().unwrap().through(),
+            Some(date(2025, 3, 15))
+        );
+        assert_eq!(observance.transition_in(2023), None);
+        assert_eq!(observance.transition_in(2026), None);
+    }
+    let onsets: BTreeSet<_> = table
+        .rules()
+        .iter()
+        .filter_map(|observance| observance.transition_in(2024))
+        .collect();
+    let expected = (6..=12)
+        .map(|month| CivilDateTime::new(date(2024, month, 15), clock))
+        .collect();
+    assert_eq!(onsets, expected);
+    assert_eq!(
+        compiled_dates(&zones, 2025),
+        (1..=3).map(|month| date(2025, month, 15)).collect()
+    );
+    assert_eq!(table.coverage_end(), Some(date(2025, 3, 15)));
+}
+
+#[test]
+fn explicit_dates_are_stored_once_beside_expanded_rules() {
+    let (zones, meter, diagnostics) = read(
+        "BYMONTHDAY=15",
+        "20240615T020000",
+        "RDATE:20240820T020000,20240920T020000\r\n",
+        Limits::DEFAULT,
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let table = zones.table("Test/Months").unwrap();
+    let dated: Vec<_> = table
+        .observances()
+        .iter()
+        .filter(|observance| observance.rule().is_none())
+        .map(|observance| observance.start().date())
+        .collect();
+    assert_eq!(dated, [date(2024, 8, 20), date(2024, 9, 20)]);
+    assert_eq!(table.rules().len(), 12);
+    assert_eq!(meter.vtimezone_observances(), 14);
+}
+
+#[test]
+fn every_stored_pattern_is_charged_to_the_existing_observance_bound() {
+    for cap in [0_u32, 1, 11, 12, 13] {
+        let (zones, meter, diagnostics) = read(
+            "BYMONTHDAY=1",
+            "20240101T020000",
+            "",
+            Limits::DEFAULT.with_max_vtimezone_observances(cap),
+        );
+        let table = zones.table("Test/Months").unwrap();
+        assert_eq!(meter.vtimezone_observances(), cap.min(12), "cap={cap}");
+        assert_eq!(
+            table.observances().len(),
+            usize::try_from(cap.min(12)).unwrap(),
+            "cap={cap}"
+        );
+        assert_eq!(table.is_truncated(), cap < 12, "cap={cap}");
+        if cap < 12 {
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .copied()
+                    .map(Diagnostic::code)
+                    .collect::<Vec<_>>(),
+                [DiagnosticCode::VtimezoneObservancesTruncated],
+                "cap={cap}"
+            );
+            assert_eq!(diagnostics[0].severity(), Severity::LimitReached);
+        } else {
+            assert!(diagnostics.is_empty(), "cap={cap}: {diagnostics:?}");
+        }
+    }
+}
+
+#[test]
+fn unsupported_selectors_keep_one_anchor_and_one_note() {
+    for parts in [
+        "BYMONTHDAY=1,15",
+        "BYMONTHDAY=1;COUNT=4",
+        "BYMONTHDAY=1;INTERVAL=2",
+        "BYMONTH=1,2;BYMONTHDAY=1",
+        "BYDAY=1MO;BYMONTHDAY=1",
+        "BYDAY=SU",
+        "RSCALE=CHINESE;BYMONTHDAY=1",
+    ] {
+        let (zones, meter, diagnostics) = read(parts, "20240101T020000", "", Limits::DEFAULT);
+        let table = zones.table("Test/Months").unwrap();
+        assert_eq!(table.observances().len(), 1, "{parts}");
+        assert!(table.rules().is_empty(), "{parts}");
+        assert_eq!(meter.vtimezone_observances(), 1, "{parts}");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .copied()
+                .map(Diagnostic::code)
+                .collect::<Vec<_>>(),
+            [DiagnosticCode::VtimezoneRuleUnsupported],
+            "{parts}"
+        );
+    }
+}

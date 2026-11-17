@@ -17,8 +17,9 @@
 //! ```
 //!
 //! The one place untrusted zone text becomes a model, and therefore the only place in this crate that charges a meter.
-//! Each `STANDARD` and `DAYLIGHT` subcomponent becomes one `Observance` for its own `DTSTART`, one more for each `RDATE` value it carries, and a `YearlyRule` where its `RRULE` matches a `RuleDay` form.
-//! A definition carrying both forms carries both, which is ordinary rather than a conflict: the rule states the cadence and the dates state the exceptions to it.
+//! Each `STANDARD` and `DAYLIGHT` subcomponent contributes its `DTSTART` anchor and explicit `RDATE` transitions.
+//! A supported `RRULE` compiles into one annual pattern or twelve month-specific patterns sharing that anchor.
+//! Explicit dates and computed onsets contribute to the same transition set.
 //!
 //! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no prefix stripping, no alias lookup.
 //! `docs/adr/0003` makes mapping a vendor identifier onto an IANA one the caller's visible step, and a reader that quietly normalized here would take it back.
@@ -52,7 +53,9 @@
 //! # Bounds
 //!
 //! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`].
-//! The list handed to the former is built whole first, and that is bounded rather than unbounded — an observance costs at least sixteen octets of input, and those octets were charged against this same ledger by the parse that produced the tree being read.
+//! The input byte ceiling bounds source components and explicit dates.
+//! Each accepted rule emits at most twelve stored annual patterns before table admission.
+//! The table sorts all patterns and explicit dates before enforcing the observance bound.
 //! Cutting the list short before the table sees it would move the truncation point off the sorted order the table truncates in, which is how a table acquires a hole in the middle instead of an earlier end.
 //!
 //! The walk looking for identifiers nothing defines keeps its own worklist rather than recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
@@ -67,7 +70,7 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::internal::core::{
-    CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
+    CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
     DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject, UtcOffset,
     Weekday, report_diagnostic,
 };
@@ -274,14 +277,21 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
         .value()
         .and_then(|value| wall_clock(value, offset_from))
     {
-        let rule = read_rule(component, start, offset_from, meter, sink);
-        out.push(Observance::new(
-            start,
-            offset_from,
-            offset_to,
-            daylight,
-            rule,
-        ));
+        if let Some(rules) = read_rule(component, start, offset_from, meter, sink) {
+            out.extend(
+                rules.into_rules().map(|rule| {
+                    Observance::new(start, offset_from, offset_to, daylight, Some(rule))
+                }),
+            );
+        } else {
+            out.push(Observance::new(
+                start,
+                offset_from,
+                offset_to,
+                daylight,
+                None,
+            ));
+        }
     }
     push_dated_transitions(component, offset_from, offset_to, daylight, out);
 }
@@ -337,7 +347,30 @@ fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilD
     }
 }
 
-/// The rule repeating an observance, reporting the ones this crate declines to evaluate.
+#[derive(Clone, Copy, Debug)]
+enum YearlyRules {
+    Single(YearlyRule),
+    AllMonths {
+        day: RuleDay,
+        at: CivilTime,
+        through: Option<CivilDate>,
+    },
+}
+
+impl YearlyRules {
+    fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
+        let count = match self {
+            Self::Single(_) => 1,
+            Self::AllMonths { .. } => 12,
+        };
+        (1..=count).filter_map(move |month| match self {
+            Self::Single(rule) => Some(rule),
+            Self::AllMonths { day, at, through } => YearlyRule::new(month, day, at, through),
+        })
+    }
+}
+
+/// Compile the rule repeating an observance, reporting one this crate declines to evaluate.
 ///
 /// A second `RRULE` on one observance is outside the vocabulary rather than a rule to choose between: RFC 5545 section 3.6.5 gives an observance one cadence, and deciding which of two it is would be exactly the silent choice this crate is arranged against.
 fn read_rule<S: DiagnosticSink + ?Sized>(
@@ -346,7 +379,7 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     offset_from: UtcOffset,
     meter: &mut Meter,
     sink: &mut S,
-) -> Option<YearlyRule> {
+) -> Option<YearlyRules> {
     let wanted = PropertyId::RRULE;
     let mut written = component.properties_named(&wanted);
     let first = written.next()?;
@@ -374,31 +407,39 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     rule
 }
 
-/// One observance `RRULE`, read as the closed form or not at all.
+/// One observance `RRULE`, compiled into annual patterns or refused as a whole.
 ///
 /// Numeric `BYDAY` without `BYMONTH` counts within the year.
+/// A supported `BYMONTHDAY` without `BYMONTH` expands across all months.
 /// An omitted day selector uses `DTSTART`'s day.
 /// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
-fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRule> {
+fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
     if parts.month.is_none()
         && parts.month_days.count == 0
         && let Some(term) = parts.weekday
         && let Some(ordinal) = term.ordinal
     {
-        return Some(YearlyRule::for_year_weekday(
+        return Some(YearlyRules::Single(YearlyRule::for_year_weekday(
             term.weekday,
             NthWeek::from_ordinal(ordinal)?,
             start.time(),
             parts.until,
-        ));
+        )));
+    }
+    let day = day_form(parts, start.date())?;
+    if parts.month.is_none() && parts.month_days.count != 0 {
+        return Some(YearlyRules::AllMonths {
+            day,
+            at: start.time(),
+            through: parts.until,
+        });
     }
     let month = match parts.month {
         Some(stated) => stated,
         None => start.date().month(),
     };
-    let day = day_form(parts, start.date())?;
-    YearlyRule::new(month, day, start.time(), parts.until)
+    YearlyRule::new(month, day, start.time(), parts.until).map(YearlyRules::Single)
 }
 
 /// What a `RECUR` value said, as far as this crate reads one.

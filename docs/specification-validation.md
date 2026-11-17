@@ -162,6 +162,13 @@ Positive windows keep their lower bound, so February can have no matching transi
 The negative window from `-7` through `-1` instead selects the month's last matching weekday.
 The [month-day intersection decision](adr/month-day-intersections-in-embedded-time-zones.md) records the arithmetic and short-month behavior.
 
+Without `BYMONTH`, supported `BYMONTHDAY` selectors expand across all twelve months.
+The reader compiles month-specific annual patterns with the original anchor, offsets, clock, and inclusive end bound.
+The reader stores each explicit date once.
+Table admission charges every stored pattern to the existing observance meter.
+Explicit month selectors, default anniversaries, and yearly weekday ordinals keep their scope.
+The [month expansion decision](adr/month-day-selectors-across-all-months.md) records the bounded compilation and its storage cost.
+
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Clock fields, month numbers, month days, week numbers, and weekday ordinals use one or two digits.

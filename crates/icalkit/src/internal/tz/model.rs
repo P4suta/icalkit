@@ -211,8 +211,9 @@ impl YearlyRule {
     }
 }
 
-/// One `STANDARD` or `DAYLIGHT` subcomponent, or one date out of an `RDATE` inside one.
+/// One annual pattern or explicit date from a `STANDARD` or `DAYLIGHT` subcomponent.
 ///
+/// An unrestricted month-day rule compiles into one pattern per month, sharing the original anchor.
 /// An `RDATE`-driven definition becomes one of these per date, sharing the offsets its subcomponent declared and carrying no rule.
 /// That is what makes a table a flat sorted list rather than a tree, and it is why running out of `RDATE`s is visible as the list simply ending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -391,8 +392,8 @@ impl TransitionTable {
     /// The observances that repeat by a rule, in the same order.
     ///
     /// Every one of them is asked about every query, because a rule is in force from its own `DTSTART` until a later observance supersedes it and no count of dated transitions written beside it changes that.
-    /// A definition holds a handful — two for an ordinary zone,
-    /// four for one that kept the rules a government replaced — so "every one of them" is a constant a lookup can afford, which is what `docs/adr/0010` asks of this path.
+    /// The observance meter bounds the number of compiled patterns, including month-specific patterns from one source rule.
+    /// Each pattern contributes at most one computed onset per year.
     #[must_use]
     pub fn rules(&self) -> &[Observance] {
         &self.rules
