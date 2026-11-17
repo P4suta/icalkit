@@ -13,7 +13,7 @@ use crate::internal::recur::rule::Skip;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CalendarArithmeticError;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct DateSpan {
     first: i64,
     days: u16,

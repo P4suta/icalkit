@@ -275,6 +275,15 @@ Their candidate extent can begin before or after January 1.
 Search bounds use the generation date extent while shorter periods keep their clock precision.
 Completed `COUNT` limits stop before another period spends resources.
 The [search bound decision](adr/recurrence-week-year-search-bounds.md) records the shared boundary and continuation requirements.
+Yearly week rules begin in the selected calendar's week-numbering year containing `DTSTART`.
+Nonunit intervals advance that numbered year rather than the source's calendar year.
+Periods carry complete week extents independently of their writable anchors.
+Generation and window bounds share the extent, including partial periods at the Gregorian civil endpoints.
+Writable clipping precedes position selection.
+Indexed resumes reconstruct the same extent without changing counts, additions, exclusions, or cursor selection.
+The [week period decision](adr/week-year-periods-carry-their-date-extents.md) records explicit extent storage and source alignment.
+Independent four-day boundaries cover every supported calendar and week start.
+Regression tests also cover interval phases and indexed continuation.
 Bounds follow the `DTSTART` conditions in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Floating starts follow the explicit condition that both times use local time.
 Observance bounds use UTC.

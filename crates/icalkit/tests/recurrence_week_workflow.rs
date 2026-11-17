@@ -78,6 +78,110 @@ fn intervals_and_period_selection_keep_the_week_numbering_year() {
 }
 
 #[test]
+fn adjacent_year_sources_align_intervals_with_their_numbered_year() {
+    assert_eq!(
+        rule_starts(
+            "FREQ=YEARLY;INTERVAL=2;BYWEEKNO=1;BYDAY=MO",
+            "2019-12-30T09:00:00Z",
+            window("2020-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+        ),
+        [
+            at("2022-01-03T09:00:00Z"),
+            at("2024-01-01T09:00:00Z"),
+            at("2025-12-29T09:00:00Z"),
+        ],
+    );
+    assert_eq!(
+        rule_starts(
+            "FREQ=YEARLY;INTERVAL=2;BYWEEKNO=53;BYDAY=FR,SA;COUNT=4",
+            "2021-01-01T09:00:00Z",
+            window("2021-01-01T00:00:00Z", "2027-01-03T00:00:00Z"),
+        ),
+        [
+            at("2021-01-01T09:00:00Z"),
+            at("2021-01-02T09:00:00Z"),
+            at("2027-01-01T09:00:00Z"),
+            at("2027-01-02T09:00:00Z"),
+        ],
+    );
+}
+
+#[test]
+fn source_week_limits_and_positions_use_the_complete_period() {
+    for limit in ["COUNT=2", "UNTIL=20191231T090000Z"] {
+        assert_eq!(
+            rule_starts(
+                &format!("FREQ=YEARLY;INTERVAL=2;BYWEEKNO=1;BYDAY=MO,TU;{limit}"),
+                "2019-12-30T09:00:00Z",
+                window("2019-12-30T00:00:00Z", "2022-01-05T00:00:00Z"),
+            ),
+            [at("2019-12-30T09:00:00Z"), at("2019-12-31T09:00:00Z")],
+            "{limit}",
+        );
+    }
+    assert_eq!(
+        rule_starts(
+            "FREQ=YEARLY;INTERVAL=2;BYWEEKNO=1;BYDAY=MO,TU;BYSETPOS=2;COUNT=2",
+            "2019-12-31T09:00:00Z",
+            window("2019-12-30T00:00:00Z", "2022-01-05T00:00:00Z"),
+        ),
+        [at("2019-12-31T09:00:00Z"), at("2022-01-04T09:00:00Z")],
+    );
+}
+
+#[test]
+fn source_week_cursors_keep_the_remaining_nonunit_interval_candidates() {
+    let rule = Rule::parse("FREQ=YEARLY;INTERVAL=2;BYWEEKNO=1;BYDAY=MO,TU;COUNT=4").unwrap();
+    let dtstart = at("2019-12-30T09:00:00Z");
+    let bounds = window("2019-12-30T00:00:00Z", "2022-01-05T00:00:00Z");
+    let engine = Engine::default();
+    let mut session = engine.session();
+    let mut occurrences = rule.occurrences(&mut session, dtstart, bounds).unwrap();
+    assert_eq!(occurrences.try_next().unwrap().unwrap().start(), dtstart);
+    let cursor = occurrences.cursor();
+    drop(occurrences);
+    assert_eq!(
+        starts(rule.resume(&mut session, dtstart, bounds, cursor).unwrap()),
+        [
+            at("2019-12-31T09:00:00Z"),
+            at("2022-01-03T09:00:00Z"),
+            at("2022-01-04T09:00:00Z"),
+        ],
+    );
+}
+
+#[test]
+fn stored_source_weeks_keep_additions_exclusions_and_original_bytes() {
+    let source = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit source weeks//EN\r\n\
+        BEGIN:VEVENT\r\nUID:source-weeks@example.test\r\nDTSTAMP:20190101T000000Z\r\n\
+        DTSTART:20191230T090000Z\r\nDURATION:PT1H\r\n\
+        RRULE:FREQ=YEARLY;INTERVAL=2;BYWEEKNO=1;BYDAY=MO,TU;COUNT=4\r\n\
+        RDATE:20210101T090000Z\r\nEXDATE:20220103T090000Z\r\n\
+        END:VEVENT\r\nEND:VCALENDAR\r\n";
+    let calendar = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    assert_eq!(
+        starts(
+            calendar
+                .occurrences(
+                    &mut session,
+                    "source-weeks@example.test",
+                    window("2019-12-30T00:00:00Z", "2025-01-01T00:00:00Z"),
+                )
+                .unwrap(),
+        ),
+        [
+            at("2019-12-30T09:00:00Z"),
+            at("2019-12-31T09:00:00Z"),
+            at("2021-01-01T09:00:00Z"),
+            at("2022-01-04T09:00:00Z"),
+        ],
+    );
+    assert_eq!(calendar.to_bytes(), source.as_bytes());
+}
+
+#[test]
 fn rule_limits_apply_to_candidates_before_the_calendar_anchor() {
     for limit in ["COUNT=2", "UNTIL=20191231T090000Z"] {
         assert_eq!(

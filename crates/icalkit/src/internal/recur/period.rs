@@ -11,8 +11,10 @@
 //! Resumed indices derive their first anchor from the normalized origin.
 //! Sequential walks reuse the preceding normalized calendar boundary.
 //! `INTERVAL` separates anchors without widening a period.
+//! Yearly week rules begin in the source's week-numbering year.
+//! Explicit week extents preserve partial periods at the writable calendar edges.
 //! Gregorian anchors remain within years 0000 through 9999.
-//! An initial non-Gregorian boundary before year zero is clipped to the first writable date.
+//! Initial calendar and week boundaries before year zero use their first writable date.
 
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
@@ -24,7 +26,8 @@ use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Duration, MonthAddOutcome, Weekday,
 };
 
-use crate::internal::recur::rule::{Freq, RecurrenceRule};
+use crate::internal::recur::calendar::{CalendarFrame, DateSpan};
+use crate::internal::recur::rule::{Freq, RecurrenceRule, RulePart};
 
 /// Seconds in a minute, which is what one `FREQ=MINUTELY` period spans.
 const SECONDS_PER_MINUTE: i64 = 60;
@@ -69,21 +72,47 @@ const fn cadence(freq: Freq) -> Cadence {
     }
 }
 
-/// One period of the base cadence, named by where it begins.
+/// One cadence period with a writable anchor and any explicit week-year extent.
 ///
-/// Consecutive periods tile the timeline without overlapping — no instant belongs to two of them and none falls between two — so the anchor of the next period is where this one ends and there is nothing for a second field to hold.
-/// The span itself is one `FREQ` unit and is recomputed from the anchor wherever it is needed, which is the expansion and nowhere else.
+/// Week periods carry their full extent because clipping can move the anchor to another numbered year.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Period {
-    /// Where the period begins.
-    anchor: CivilDateTime,
+pub struct Period(PeriodDomain);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PeriodDomain {
+    Civil(CivilDateTime),
+    WeekYear {
+        anchor: CivilDateTime,
+        extent: DateSpan,
+    },
 }
 
 impl Period {
-    /// Where the period begins.
+    /// The first writable date and clock in the period.
     #[must_use]
     pub const fn anchor(self) -> CivilDateTime {
-        self.anchor
+        match self.0 {
+            PeriodDomain::Civil(anchor) | PeriodDomain::WeekYear { anchor, .. } => anchor,
+        }
+    }
+
+    pub(super) const fn week_extent(self) -> Option<DateSpan> {
+        match self.0 {
+            PeriodDomain::Civil(_) => None,
+            PeriodDomain::WeekYear { extent, .. } => Some(extent),
+        }
+    }
+
+    const fn civil(anchor: CivilDateTime) -> Self {
+        Self(PeriodDomain::Civil(anchor))
+    }
+
+    fn week_year(extent: DateSpan) -> Option<Self> {
+        let (first, _) = extent.writable().ok()??;
+        Some(Self(PeriodDomain::WeekYear {
+            anchor: midnight(first),
+            extent,
+        }))
     }
 }
 
@@ -124,7 +153,16 @@ impl PeriodWalk {
         index: u64,
     ) -> Self {
         let freq = rule.freq();
-        let origin = if calendar != CalendarScale::Gregorian
+        let origin = if freq == Freq::Yearly && rule.has_part(RulePart::WeekNo) {
+            CalendarFrame::new(calendar)
+                .week_of(dtstart.date(), rule.wkst())
+                .ok()
+                .map(|(year, _)| Origin::WeekYears {
+                    year,
+                    start: rule.wkst(),
+                    calendar,
+                })
+        } else if calendar != CalendarScale::Gregorian
             && matches!(freq, Freq::Monthly | Freq::Yearly)
         {
             calendar_origin(dtstart.date(), freq, calendar)
@@ -163,16 +201,12 @@ impl PeriodWalk {
         self.index
     }
 
-    /// The period at `index`, or `None` when it is not one this calendar can express.
-    ///
-    /// Expressible is a claim about the anchor and never about the edge past it.
-    /// A period whose anchor is a date RFC 5545 section 3.3.4 can write holds only instants at or after that anchor, and every one of them is representable however far the following anchor would be — which is why the year 9999 has a yearly period and its December 31st has a daily one.
+    /// The period at `index`, or `None` when it has no writable anchor.
     fn period_at(&mut self, index: u64) -> Option<Period> {
         let steps = i64::try_from(index)
             .ok()?
             .checked_mul(i64::from(self.interval.get()))?;
-        let anchor = self.origin.as_mut()?.at(self.cadence, steps)?;
-        Some(Period { anchor })
+        self.origin.as_mut()?.at(self.cadence, steps)
     }
 }
 
@@ -183,12 +217,17 @@ enum Origin {
         date: CalendarCoordinates,
         position: i64,
     },
+    WeekYears {
+        year: i32,
+        start: Weekday,
+        calendar: CalendarScale,
+    },
 }
 
 impl Origin {
-    fn at(&mut self, cadence: Cadence, steps: i64) -> Option<CivilDateTime> {
+    fn at(&mut self, cadence: Cadence, steps: i64) -> Option<Period> {
         match self {
-            Self::Civil(origin) => advance(*origin, cadence, steps),
+            Self::Civil(origin) => advance(*origin, cadence, steps).map(Period::civil),
             Self::Calendar { date, position } => {
                 let count = i32::try_from(steps.checked_sub(*position)?).ok()?;
                 let following = match cadence {
@@ -208,7 +247,21 @@ impl Origin {
                 };
                 *date = following;
                 *position = steps;
-                Some(midnight(civil))
+                Some(Period::civil(midnight(civil)))
+            },
+            Self::WeekYears {
+                year,
+                start,
+                calendar,
+            } => {
+                if cadence != Cadence::Years {
+                    return None;
+                }
+                let year = year.checked_add(i32::try_from(steps).ok()?)?;
+                let extent = CalendarFrame::new(*calendar)
+                    .week_year_span(year, *start)
+                    .ok()?;
+                Period::week_year(extent)
             },
         }
     }
@@ -255,9 +308,7 @@ impl Iterator for PeriodWalk {
 
 impl FusedIterator for PeriodWalk {}
 
-/// Where the period of `freq` holding `dtstart` begins, or `None` when that is not a date RFC 5545 section 3.3.4 can write.
-///
-/// This is the one place the seven frequencies differ before the arithmetic, and each answer is a truncation towards the start of the span the frequency names — never a `BYxxx` part and never a zone.
+/// Normalize a civil origin to its cadence boundary within the writable calendar.
 fn period_start(dtstart: CivilDateTime, freq: Freq, wkst: Weekday) -> Option<CivilDateTime> {
     let date = dtstart.date();
     let clock = dtstart.time();
@@ -301,9 +352,7 @@ fn at_time(date: CivilDate, hour: u8, minute: u8, second: u8) -> Option<CivilDat
     ))
 }
 
-/// `from` moved `count` cadence units, or `None` when the result leaves the years RFC 5545 section 3.3.4 can write.
-///
-/// The whole of the walk's arithmetic, so that `SECONDLY` and `YEARLY` are the same code with a different unit and there is no second copy for one of them to be wrong in.
+/// Advance a civil origin by cadence units within the writable calendar.
 fn advance(from: CivilDateTime, cadence: Cadence, count: i64) -> Option<CivilDateTime> {
     match cadence {
         Cadence::Seconds(unit) => {

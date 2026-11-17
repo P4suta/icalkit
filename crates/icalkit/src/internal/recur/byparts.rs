@@ -168,7 +168,7 @@ pub(super) fn candidate_lower_bound(
 ) -> Result<CivilDateTime, CalendarArithmeticError> {
     let anchor = period.anchor();
     let mut frame = CalendarFrame::new(rule.calendar_scale());
-    let span = day_extent(rule, rule.parts_present(), anchor.date(), &mut frame)?;
+    let span = day_extent(rule, period, &mut frame)?;
     let (mut date, _) = span.writable()?.ok_or(CalendarArithmeticError)?;
     if rule.skip() != Skip::Omit && expands_year_days(rule, rule.parts_present()) {
         let year = frame.fields(anchor.date())?.year;
@@ -222,7 +222,7 @@ pub fn expand_period<S: DiagnosticSink + ?Sized>(
         meter,
         sink,
     };
-    let mut days = period_days(rule, present, anchor.date(), &mut context)?;
+    let mut days = period_days(period, &mut context)?;
     apply_date_parts(&mut days, present, &mut context)?;
     if !has_expanding_day_part(rule, present) {
         apply_default_day(
@@ -303,14 +303,14 @@ fn expands_year_days(rule: &RecurrenceRule, present: PartsPresent) -> bool {
 
 fn day_extent(
     rule: &RecurrenceRule,
-    present: PartsPresent,
-    anchor: CivilDate,
+    period: Period,
     frame: &mut CalendarFrame,
 ) -> Result<DateSpan, CalendarArithmeticError> {
-    let fields = frame.fields(anchor)?;
-    if rule.has_part(RulePart::WeekNo) && effect(rule.freq(), RulePart::WeekNo, present).expands() {
-        return frame.week_year_span(fields.year, rule.wkst());
+    if let Some(extent) = period.week_extent() {
+        return Ok(extent);
     }
+    let anchor = period.anchor().date();
+    let fields = frame.fields(anchor)?;
     match Span::of(rule.freq()) {
         Span::Year => Ok(fields.year_span),
         Span::Month => Ok(fields.month_span),
@@ -348,12 +348,10 @@ fn append_span<S: DiagnosticSink + ?Sized>(
 }
 
 fn period_days<S: DiagnosticSink + ?Sized>(
-    rule: &RecurrenceRule,
-    present: PartsPresent,
-    anchor: CivilDate,
+    period: Period,
     context: &mut DateContext<'_, S>,
 ) -> Result<Vec<CivilDate>, ExpansionError> {
-    let span = day_extent(rule, present, anchor, &mut context.frame)?;
+    let span = day_extent(context.rule, period, &mut context.frame)?;
     let mut days = Vec::new();
     append_span(&mut days, span, context)?;
     Ok(days)
