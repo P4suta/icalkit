@@ -29,15 +29,18 @@ doc = false
 name = "capture-audit"
 path = "src/bin/capture_audit.rs"
 
-# The private source is path-included from `crates/icalkit`, outside this package directory, so cargo-shear cannot see its direct xmlparser import.
+# The private source is path-included from `crates/icalkit`, outside this package directory, so cargo-shear cannot see its direct xmlparser and icu_calendar imports.
 # jiff is visible through capture-audit.
 # The iTIP chapter is likewise included by tests/itip_chapter.rs until that corpus moves behind the subject protocol.
 [package.metadata.cargo-shear]
-ignored = ["xmlparser"]
+ignored = ["icu_calendar", "xmlparser"]
 ignored-paths = ["src/itip.rs"]
 
 [dependencies]
 icalkit = { path = "../icalkit", version = "0.0.0" }
+icu_calendar = { version = "2.4.0", default-features = false, features = [
+  "compiled_data",
+] }
 jiff = { version = "0.2.35", default-features = false, features = [
   "alloc",
   "tz-fat",

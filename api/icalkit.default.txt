@@ -211,6 +211,7 @@ pub icalkit::recurrence::CalendarScale::Persian
 pub icalkit::recurrence::CalendarScale::Roc
 impl icalkit::recurrence::CalendarScale
 pub const fn icalkit::recurrence::CalendarScale::name(self) -> &'static str
+impl icalkit::recurrence::CalendarScale
 pub fn icalkit::recurrence::CalendarScale::parse(&str) -> core::result::Result<Self, icalkit::Error>
 pub struct icalkit::recurrence::CalendarDate
 impl icalkit::recurrence::CalendarDate
@@ -224,8 +225,9 @@ pub const fn icalkit::recurrence::CalendarDate::year(self) -> i32
 pub struct icalkit::recurrence::CalendarMonth
 impl icalkit::recurrence::CalendarMonth
 pub const fn icalkit::recurrence::CalendarMonth::is_leap(self) -> bool
-pub fn icalkit::recurrence::CalendarMonth::leap(u8) -> core::result::Result<Self, icalkit::Error>
 pub const fn icalkit::recurrence::CalendarMonth::number(self) -> u8
+impl icalkit::recurrence::CalendarMonth
+pub fn icalkit::recurrence::CalendarMonth::leap(u8) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::recurrence::CalendarMonth::regular(u8) -> core::result::Result<Self, icalkit::Error>
 pub struct icalkit::recurrence::Cursor
 pub struct icalkit::recurrence::Occurrence

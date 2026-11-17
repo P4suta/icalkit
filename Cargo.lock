@@ -111,6 +111,7 @@ name = "icalkit-conformance"
 version = "0.0.0"
 dependencies = [
  "icalkit",
+ "icu_calendar",
  "jiff",
  "serde",
  "serde_json",
