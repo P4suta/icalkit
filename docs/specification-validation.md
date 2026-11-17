@@ -182,7 +182,24 @@ Imports preserve original bytes, and unrelated unknown parts keep their notes.
 The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
 The [month day decision](adr/gregorian-month-day-adjustments.md) extends the native subset.
 The [year day decision](adr/gregorian-year-day-correction-order.md) records the source constraints and shared date arithmetic.
-Calendar conversion, leap month selection, week number correction, and CalDAV capability negotiation remain open.
+Calendar conversion, leap month selection, and week number correction remain open.
+
+CalDAV recurrence scale negotiation follows [RFC 7529 section 10](https://www.rfc-editor.org/rfc/rfc7529.html#section-10).
+`Client::supported_rscales` explicitly requests `CALDAV:supported-rscale-set` at Depth 0 from a calendar collection or calendar home.
+An absent advertisement differs from an advertised set without calendar names.
+Named sets keep unknown names and compare supported names without case sensitivity, including the supported Gregorian aliases.
+`Client::conditional_write` refuses interpreted `RSCALE` rules without negotiation.
+`Client::conditional_write_with_rscales` probes the associated collection or home URI selected by the caller before offering the conditional `PUT`.
+The request keeps the original calendar bytes and revision headers.
+Unknown value types and unknown components remain opaque.
+The client requires a single resource response and complete, valid property content within shared resource budgets.
+Project policy uses property status `200 OK` to establish support, following the successful property status described in [RFC 4918 section 9.1.2](https://www.rfc-editor.org/rfc/rfc4918.html#section-9.1.2).
+Other status codes never release a scale-dependent write.
+Servers advertise support through explicit `Discovery::with_supported_rscales` configuration.
+The protected property appears in explicit property requests and `allprop` requests with an explicit `include` selection.
+Ordinary `allprop` responses omit it.
+Unsupported calendar names receive `403` with the `CALDAV:supported-rscale` precondition after authorization, without a storage request.
+The [advertisement decision](adr/advertised-recurrence-scales-before-caldav-writes.md) records the caller and transport boundaries.
 
 `RDATE` and `EXDATE` lists follow [RFC 5545 section 3.8.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5).
 Each field must match its declared type.

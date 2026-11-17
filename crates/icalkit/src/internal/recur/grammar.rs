@@ -470,6 +470,14 @@ fn is_calendar_control(name: &[u8]) -> bool {
     equals_ignoring_case(name, b"RSCALE") || equals_ignoring_case(name, b"SKIP")
 }
 
+/// Whether a scale names the native Gregorian calendar or its registered spelling.
+#[must_use]
+pub fn is_gregorian_scale(scale: &[u8]) -> bool {
+    [b"GREGORIAN".as_slice(), b"GREGORY"]
+        .iter()
+        .any(|name| equals_ignoring_case(scale, name))
+}
+
 fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
     let mut scale: Option<&[u8]> = None;
     let mut skip: Option<&[u8]> = None;
@@ -513,9 +521,7 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
             return Err(RuleError::MalformedCalendarControls);
         }
     }
-    let gregorian = [b"GREGORIAN".as_slice(), b"GREGORY"]
-        .iter()
-        .any(|name| equals_ignoring_case(scale, name));
+    let gregorian = is_gregorian_scale(scale);
     let policy = match skip {
         Some(mode) if equals_ignoring_case(mode, b"BACKWARD") => Skip::Backward,
         Some(mode) if equals_ignoring_case(mode, b"FORWARD") => Skip::Forward,

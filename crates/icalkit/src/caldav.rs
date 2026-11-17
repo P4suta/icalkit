@@ -4,6 +4,8 @@
 
 //! Sans-I/O CalDAV client and server workflow vocabulary.
 
+mod rscale;
+
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -362,6 +364,7 @@ pub struct Discovery {
     principal: String,
     calendar_home: String,
     scheduling_outbox: Option<String>,
+    rscales: Option<Vec<String>>,
 }
 
 impl Discovery {
@@ -383,6 +386,7 @@ impl Discovery {
             principal,
             calendar_home,
             scheduling_outbox,
+            rscales: None,
         })
     }
 
@@ -833,12 +837,20 @@ fn propfind_request(
 }
 
 fn read_multistatus(response: &WireResponse, policy: ResourcePolicy) -> Result<MultiStatus, Error> {
+    let mut meter = Meter::new(policy.limits);
+    read_multistatus_metered(response, policy, &mut meter)
+}
+
+fn read_multistatus_metered(
+    response: &WireResponse,
+    policy: ResourcePolicy,
+    meter: &mut Meter,
+) -> Result<MultiStatus, Error> {
     if response.status != 207 {
         return Err(Error::single("icalkit.caldav.multistatus-expected"));
     }
-    let mut meter = Meter::new(policy.limits);
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut context = DecodeContext::new(policy.limits, &mut meter, &mut diagnostics);
+    let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics);
     let mut events = XmlReader::new(&response.body);
     let mut source = MultiStatusReader::new(&mut events);
     let body = MultiStatus::read(&mut source, &mut context)
@@ -1114,7 +1126,19 @@ impl PutRequest {
             },
             _ => return Err(Error::single(INVALID)),
         };
-        let calendar = Calendar::parse(&request.body).map_err(|_| Error::single(INVALID))?;
+        let calendar = Calendar::parse(&request.body).map_err(|error| {
+            let unsupported = error
+                .issues()
+                .iter()
+                .any(|issue| issue.code().as_str() == "unsupported-recurrence-semantics")
+                && rscale::unsupported_scale_body(&request.body, policy).unwrap_or(false);
+            let code = if unsupported {
+                "icalkit.caldav.rscale-unsupported"
+            } else {
+                INVALID
+            };
+            Error::new(code, error.issues().to_vec())
+        })?;
         Ok(Self { calendar, revision })
     }
 }
@@ -1712,6 +1736,7 @@ impl Client {
                             principal,
                             calendar_home,
                             scheduling_outbox,
+                            rscales: None,
                         }))
                     }),
                 ))
@@ -1757,7 +1782,22 @@ impl Client {
     }
 
     /// PUT a validated calendar only if the supplied revision still holds.
+    /// Interpreted `RSCALE` rules require [`Self::conditional_write_with_rscales`].
     pub fn conditional_write(
+        &self,
+        revision: &Revision,
+        calendar: &Calendar,
+    ) -> Result<Operation<Revision>, Error> {
+        let operation = self.prepare_conditional_write(revision, calendar)?;
+        if !rscale::required_scales(calendar, self.policy)?.is_empty() {
+            return Err(Error::single(
+                "icalkit.caldav.rscale-advertisement-required",
+            ));
+        }
+        Ok(operation)
+    }
+
+    fn prepare_conditional_write(
         &self,
         revision: &Revision,
         calendar: &Calendar,
@@ -2226,6 +2266,9 @@ fn discovery_response(
             true,
         ),
     };
+    if names_only && discovery.rscales.is_some() {
+        names.push(PropName::Known(ElementName::SupportedRscaleSet));
+    }
     let mut meter = Meter::new(policy.limits);
     let href = Href::new(uri.as_bytes(), policy.limits, &mut meter)
         .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
@@ -2234,6 +2277,8 @@ fn discovery_response(
     for name in names.drain(..) {
         let value = if names_only {
             Some(PropValue::Empty)
+        } else if name == PropName::Known(ElementName::SupportedRscaleSet) {
+            rscale::advertisement_value(discovery.rscales.as_deref(), policy, &mut meter)?
         } else {
             let target = match &name {
                 PropName::Known(ElementName::CurrentUserPrincipal) => {
@@ -2562,7 +2607,13 @@ impl Server {
     }
 
     fn handle_put(&self, request: WireRequest) -> Result<ServerOperation, Error> {
-        let write = PutRequest::parse(&request, self.policy)?;
+        let write = match PutRequest::parse(&request, self.policy) {
+            Ok(write) => write,
+            Err(error) if error.code().as_str() == "icalkit.caldav.rscale-unsupported" => {
+                return Ok(rscale::unsupported_put_operation(&request, self.policy));
+            },
+            Err(error) => return Err(error),
+        };
         let method = request.method;
         let uri = request.uri;
         let need = ServerNeed::request("caldav.authorize", &method, &uri);

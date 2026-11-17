@@ -13,9 +13,15 @@ pub const fn icalkit::caldav::Client::new() -> Self
 pub fn icalkit::caldav::Client::operation<T>(&self, icalkit::caldav::WireRequest, impl core::ops::function::FnOnce(icalkit::caldav::WireResponse) -> core::result::Result<T, icalkit::Error> + 'static) -> icalkit::caldav::Operation<T>
 pub fn icalkit::caldav::Client::schedule(&self, &str, &icalkit::scheduling::Message) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::ScheduleResponse>, icalkit::Error>
 pub fn icalkit::caldav::Client::sync(&self, &str, core::option::Option<&icalkit::caldav::SyncToken>) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::SyncResult>, icalkit::Error>
+impl icalkit::caldav::Client
+pub fn icalkit::caldav::Client::conditional_write_with_rscales(&self, &str, &icalkit::caldav::Revision, &icalkit::Calendar) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::Revision>, icalkit::Error>
+pub fn icalkit::caldav::Client::supported_rscales(&self, &str) -> core::result::Result<icalkit::caldav::Operation<core::option::Option<alloc::vec::Vec<alloc::string::String>>>, icalkit::Error>
 impl core::default::Default for icalkit::caldav::Client
 pub fn icalkit::caldav::Client::default() -> Self
 pub struct icalkit::caldav::Discovery
+impl icalkit::caldav::Discovery
+pub fn icalkit::caldav::Discovery::advertised_rscales(&self) -> core::option::Option<&[alloc::string::String]>
+pub fn icalkit::caldav::Discovery::with_supported_rscales(self, &[&str]) -> core::result::Result<Self, icalkit::Error>
 impl icalkit::caldav::Discovery
 pub fn icalkit::caldav::Discovery::calendar_home_uri(&self) -> &str
 pub fn icalkit::caldav::Discovery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> core::result::Result<Self, icalkit::Error>
