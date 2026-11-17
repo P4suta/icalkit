@@ -18,7 +18,7 @@
 //!
 //! The one place untrusted zone text becomes a model, and therefore the only place in this crate that charges a meter.
 //! Each `STANDARD` and `DAYLIGHT` subcomponent contributes its `DTSTART` anchor and explicit `RDATE` transitions.
-//! A supported `RRULE` compiles into at most 366 calendar patterns or 372 week patterns sharing that anchor.
+//! Date selection compiles into at most 366 calendar patterns or 372 week patterns per clock, sharing that anchor.
 //! Explicit dates and computed onsets contribute to the same transition set.
 //!
 //! Definition identifiers use decoded `TEXT` values with literal quotes preserved.
@@ -54,9 +54,10 @@
 //!
 //! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`].
 //! The input byte ceiling bounds source components and explicit dates.
-//! Calendar rules emit at most 366 stored patterns and week-numbered rules at most 372 before table admission.
-//! The table sorts all patterns and explicit dates before enforcing the observance bound.
-//! Cutting the list short before the table sees it would move the truncation point off the sorted order the table truncates in, which is how a table acquires a hole in the middle instead of an earlier end.
+//! Clock products retain only the earliest scalar patterns within the remaining budget plus one overflow witness.
+//! Compiler streams use the complete table ordering before dropping any suffix.
+//! Bounded staging combines those patterns with explicit dates under the same ordering.
+//! Table admission charges the meter and reports truncation.
 //!
 //! The walk looking for identifiers nothing defines keeps its own worklist rather than recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
 //!
@@ -77,6 +78,7 @@ use crate::internal::core::{
     Weekday, report_diagnostic,
 };
 
+use crate::internal::tz::annual_clocks::{self, ClockLimit, ClockSet, read_clock_field};
 use crate::internal::tz::annual_counts::{CountEnd, counted_end};
 use crate::internal::tz::annual_dates::{DateSelectors, MonthSet, YearDateMasks};
 use crate::internal::tz::annual_positions::AnnualPositions;
@@ -261,7 +263,7 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
         .value()
         .and_then(|value| wall_clock(value, offset_from));
     if let Some(start) = start {
-        let mut rules = read_rule(component, start, offset_from, meter, sink)
+        let mut rules = read_rule(component, start, offset_from, meter, sink, out.capacity())
             .into_iter()
             .flat_map(YearlyRules::into_rules)
             .peekable();
@@ -356,6 +358,7 @@ impl YearlyRules {
 
 #[derive(Debug)]
 enum YearlyPatterns {
+    Clocks(Vec<YearlyRule>),
     Single(YearlyRule),
     Months {
         months: Option<MonthSet>,
@@ -377,21 +380,25 @@ enum YearlyPatterns {
 
 impl YearlyPatterns {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
-        let (single, monthly, compiled, weeks) = match self {
-            Self::Single(rule) => (Some(rule), None, None, None),
+        let (single, monthly, compiled, weeks, clocks) = match self {
+            Self::Clocks(rules) => (None, None, None, None, Some(rules)),
+            Self::Single(rule) => (Some(rule), None, None, None, None),
             Self::Months {
                 months,
                 day,
                 at,
                 through,
-            } => (None, Some((months, day, at, through)), None, None),
-            Self::DaySets { dates, at, through } => (None, None, Some((dates, at, through)), None),
+            } => (None, Some((months, day, at, through)), None, None, None),
+            Self::DaySets { dates, at, through } => {
+                (None, None, Some((dates, at, through)), None, None)
+            },
             Self::WeekDates { dates, at, through } => {
-                (None, None, None, Some((dates, at, through)))
+                (None, None, None, Some((dates, at, through)), None)
             },
         };
         single
             .into_iter()
+            .chain(clocks.into_iter().flatten())
             .chain(monthly.into_iter().flat_map(|(months, day, at, through)| {
                 (1..=12)
                     .filter(move |month| months.is_none_or(|selected| selected.contains(*month)))
@@ -419,6 +426,7 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     offset_from: UtcOffset,
     meter: &mut Meter,
     sink: &mut S,
+    capacity: usize,
 ) -> Option<YearlyRules> {
     let wanted = PropertyId::RRULE;
     let mut written = component.properties_named(&wanted);
@@ -430,7 +438,7 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     {
         None
     } else {
-        parse_rule(first.value_text().as_bytes(), start, offset_from)
+        parse_rule(first.value_text().as_bytes(), start, offset_from, capacity)
     };
     if rule.is_none() {
         // No subject: what this is about is one observance of a zone, and an observance has no name of its own to carry.
@@ -453,9 +461,51 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 /// `BYWEEKNO` accepts only nonnumeric weekday terms.
 /// A supported `BYMONTHDAY` without `BYMONTH` expands across all months.
 /// Day defaults use `DTSTART`'s weekday with `BYWEEKNO` and its month day otherwise.
-/// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
-fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
+/// Missing clock fields come from `DTSTART`, per RFC 5545 section 3.3.10.
+fn parse_rule(
+    text: &[u8],
+    start: CivilDateTime,
+    offset_from: UtcOffset,
+    capacity: usize,
+) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
+    if parts.has_clocks() {
+        let clocks = ClockSet::new(parts.hours, parts.minutes, parts.seconds, start.time());
+        let unpositioned = RuleParts {
+            set_positions: None,
+            ..parts
+        };
+        let end = match parts.end {
+            RuleEnd::Unlimited => ClockLimit::Unlimited,
+            RuleEnd::Until(last) => ClockLimit::Until(last),
+            RuleEnd::Count(count) => ClockLimit::Count(count),
+        };
+        let compiled = if parts.week_numbers.is_some() {
+            annual_clocks::compile(
+                &compile_week_masks(&unpositioned, start)?,
+                clocks,
+                parts.set_positions,
+                start,
+                parts.interval,
+                end,
+                capacity,
+            )?
+        } else {
+            annual_clocks::compile(
+                &compile_date_masks(&unpositioned, start)?,
+                clocks,
+                parts.set_positions,
+                start,
+                parts.interval,
+                end,
+                capacity,
+            )?
+        };
+        return Some(YearlyRules {
+            patterns: YearlyPatterns::Clocks(compiled),
+            interval: parts.interval,
+        });
+    }
     validate_until(&parts, start, offset_from)?;
     Some(YearlyRules {
         patterns: compile_patterns(&parts, start)?,
@@ -604,7 +654,8 @@ fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPa
 fn compile_date_masks(parts: &RuleParts, start: CivilDateTime) -> Option<YearDateMasks> {
     let default_day =
         parts.year_days.is_none() && parts.month_days.is_none() && parts.weekdays.is_none();
-    if default_day && parts.month.is_none() && parts.set_positions.is_some() {
+    if default_day && parts.month.is_none() && parts.set_positions.is_some() && !parts.has_clocks()
+    {
         return None;
     }
     let months = if default_day && parts.month.is_none() {
@@ -690,6 +741,9 @@ struct RuleParts {
     year_days: Option<AnnualPositions>,
     /// Positions within the complete yearly candidate set.
     set_positions: Option<AnnualPositions>,
+    hours: Option<u64>,
+    minutes: Option<u64>,
+    seconds: Option<u64>,
     end: RuleEnd,
 }
 
@@ -706,8 +760,15 @@ impl RuleParts {
         month_days: None,
         year_days: None,
         set_positions: None,
+        hours: None,
+        minutes: None,
+        seconds: None,
         end: RuleEnd::Unlimited,
     };
+
+    const fn has_clocks(self) -> bool {
+        self.hours.is_some() || self.minutes.is_some() || self.seconds.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -721,12 +782,15 @@ enum RulePartName {
     MonthDay,
     YearDay,
     SetPosition,
+    Hour,
+    Minute,
+    Second,
     Count,
     Until,
 }
 
 impl RulePartName {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 14] = [
         Self::Frequency,
         Self::Interval,
         Self::WeekStart,
@@ -736,6 +800,9 @@ impl RulePartName {
         Self::MonthDay,
         Self::YearDay,
         Self::SetPosition,
+        Self::Hour,
+        Self::Minute,
+        Self::Second,
         Self::Count,
         Self::Until,
     ];
@@ -758,6 +825,9 @@ impl RulePartName {
             Self::MonthDay => b"BYMONTHDAY",
             Self::YearDay => b"BYYEARDAY",
             Self::SetPosition => b"BYSETPOS",
+            Self::Hour => b"BYHOUR",
+            Self::Minute => b"BYMINUTE",
+            Self::Second => b"BYSECOND",
             Self::Count => b"COUNT",
             Self::Until => b"UNTIL",
         }
@@ -835,6 +905,18 @@ fn take_part(
         RulePartName::SetPosition => {
             parts.set_positions = read_annual_positions(value);
             parts.set_positions.is_some()
+        },
+        RulePartName::Hour => {
+            parts.hours = read_clock_field(value, 23);
+            parts.hours.is_some()
+        },
+        RulePartName::Minute => {
+            parts.minutes = read_clock_field(value, 59);
+            parts.minutes.is_some()
+        },
+        RulePartName::Second => {
+            parts.seconds = read_clock_field(value, 60);
+            parts.seconds.is_some()
         },
         RulePartName::Count => parts.end.take(
             crate::internal::recur::decode_positive_decimal(value)

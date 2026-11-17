@@ -39,6 +39,10 @@ impl EarliestObservances {
         }
     }
 
+    pub(super) const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub(super) fn into_observances(self) -> impl Iterator<Item = Observance> {
         self.entries
             .into_sorted_vec()

@@ -189,7 +189,7 @@ Embedded `BYMONTHDAY` lists combine positive and negative positions in the selec
 `BYDAY` lists can intersect the resulting dates.
 Repeated values and coincident positive and negative positions produce one computed onset per date.
 Missing dates produce no computed onset, while the original anchor remains available.
-The reader retains compact scalar and seven-day window patterns and compiles other sets into at most 366 annual patterns.
+For one transition clock, the reader retains compact scalar and seven-day window patterns and compiles other sets into at most 366 annual patterns.
 Every stored pattern consumes the existing observance budget.
 Malformed lists and repeated month-day parts produce an unsupported-rule diagnostic.
 The [month-day set decision](adr/month-day-sets-as-ranked-annual-patterns.md) records rank selection, duplicate handling, and storage bounds.
@@ -205,14 +205,14 @@ The [weekday set decision](adr/weekday-sets-as-calendar-year-masks.md) records c
 
 Embedded yearly `BYYEARDAY` lists select signed positions from `-366` through `-1` or `1` through `366`.
 Year-day, month, month-day, and weekday constraints intersect before `BYSETPOS` selects from the complete year's candidates.
-Set positions use the same signed range and require another supported date selector.
-Positions count distinct existing dates after filtering and before anchor or inclusive end clipping.
+Set positions use the same signed range and require another supported date or clock selector.
+Positions count distinct existing date-times after filtering and before anchor or inclusive end clipping.
 Without an explicit day selector, selected months use the anchor's day and exclude missing dates before counting positions.
 Explicit dates remain separate from recurrence position selection.
 Malformed lists and repeated year-day or set-position parts produce an unsupported-rule diagnostic while preserving the anchor.
 Signed positions accept one to three digits without changing the original source spelling.
 Compiled patterns keep month bindings, clocks, offsets, and resource charges.
-Nonannual frequencies and explicit time selectors remain outside the embedded compiler's supported subset.
+Nonannual frequencies remain outside the embedded compiler's supported subset.
 The [annual selection decision](adr/annual-selection-before-month-patterns.md) records full-year compilation and bounded lookup.
 
 Embedded recurrence rules require unique part names under [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
@@ -238,7 +238,7 @@ Stored patterns keep their existing resource charges.
 The [year alignment decision](adr/year-aligned-embedded-transitions.md) records the search bound and independent enumeration checks.
 
 Embedded yearly `COUNT` uses the shared positive decimal decoder and counts the source `DTSTART` first.
-The count applies to distinct existing dates after yearly filtering and position selection, across every compiled month pattern.
+The count applies to distinct existing date-times across every compiled pattern after yearly filtering and position selection.
 Missing dates don't spend the count or restart the interval.
 Explicit dates keep their own onsets before, between, or after counted dates.
 `COUNT` and `UNTIL` are mutually exclusive, and repeated or malformed limits refuse the whole rule.
@@ -261,9 +261,21 @@ Four civil-boundary periods exclude unwritable dates before position selection.
 Count summaries skip only periodic years and inspect boundary periods with their actual candidate counts.
 UTC ends must match the selected date, clock, and generating-year phase.
 Source anchors and explicit dates keep their independent onsets and resource charges.
-One week-numbered rule stores at most 372 patterns, with at most 407 lookup probes per pattern.
+For one transition clock, a week-numbered rule stores at most 372 patterns, with at most 407 lookup probes per pattern.
 The [week projection decision](adr/week-numbered-observances-as-calendar-patterns.md) records the layout and lookup bounds.
 Forward enumeration and CalDAV wire tests cover Gregorian cycles, every week start, signed aliases, source-week boundaries, count limits, and civil endpoints.
+
+Embedded yearly `BYHOUR`, `BYMINUTE`, and `BYSECOND` lists form a Cartesian product after date filtering.
+Missing fields default independently to the source `DTSTART`.
+Each term uses one or two unsigned decimal digits within the RFC range, including second `60`.
+Repeated values and padded aliases select one clock field.
+Raw leap-second fields remain distinct until the kernel's existing instant projection.
+`BYSETPOS` ranks complete date-time periods, and `COUNT` bounds the whole rule rather than each clock.
+Wide cycle summaries find the final onset without materializing date-time products.
+Clock groups share date masks when anchor and end cutoffs agree.
+Sorted scalar streams keep only the earliest remaining admission budget plus one overflow witness.
+Independent enumeration, public CalDAV queries, and isolated allocation checks cover products, partial dates, sparse positions, large counts, and spent budgets.
+The [clock product decision](adr/annual-clock-products-as-bounded-patterns.md) records the ranking and admission boundaries.
 
 Recurrence rules use the maintained parser and the shared session meter.
 Numeric selectors enforce the digit limits in [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).

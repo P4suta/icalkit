@@ -145,8 +145,9 @@ Numeric `BYDAY` terms can't combine with `BYWEEKNO`.
 `COUNT` bounds all onsets of the rule, including `DTSTART`.
 Explicit `RDATE` onsets keep their independent dates and clocks.
 `UNTIL` must use UTC and name the final generated onset.
-Transition clocks come from the observance's `DTSTART`.
-Explicit `BYHOUR`, `BYMINUTE`, and `BYSECOND` selectors and nonannual frequencies remain unsupported.
+`BYHOUR`, `BYMINUTE`, and `BYSECOND` form complete clock products, with missing fields taken from `DTSTART`.
+`BYSETPOS` selects from complete date-time periods before shared count and end bounds.
+Nonannual frequencies remain unsupported.
 Unsupported query timezone rules return `icalkit.caldav.query-timezone-unsupported`.
 The [specification validation guide](specification-validation.md) records the supported combinations, resource charges, and bounded lookup behavior.
 

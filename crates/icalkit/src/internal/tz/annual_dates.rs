@@ -86,7 +86,7 @@ fn month_bit(month: u8) -> Option<u16> {
     1_u16.checked_shl(u32::from(month.checked_sub(1)?))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct YearDateMasks {
     layouts: [[u32; 12]; 14],
 }
@@ -172,6 +172,23 @@ impl YearDateMasks {
         last: CivilDate,
         interval: YearInterval,
     ) -> Option<()> {
+        self.retain_between(first, last, interval, false)
+    }
+
+    pub(super) fn select(mut self, positions: AnnualPositions) -> Option<Self> {
+        for dates in &mut self.layouts {
+            select_positions(dates, positions)?;
+        }
+        Some(self)
+    }
+
+    pub(super) fn retain_between(
+        &mut self,
+        first: CivilDate,
+        last: CivilDate,
+        interval: YearInterval,
+        include_first: bool,
+    ) -> Option<()> {
         if last < first {
             return None;
         }
@@ -182,7 +199,7 @@ impl YearDateMasks {
         // Four hundred aligned periods cover every reachable Gregorian layout.
         for period in 0..=final_period.min(400) {
             let year = u16::try_from(interval.year_at(first.year(), period)?).ok()?;
-            kept.include_year(self, year, first, last)?;
+            kept.include_year(self, year, first, last, include_first)?;
         }
         if final_period > 400 {
             kept.include_year(
@@ -190,6 +207,7 @@ impl YearDateMasks {
                 u16::try_from(interval.year_at(first.year(), final_period)?).ok()?,
                 first,
                 last,
+                include_first,
             )?;
         }
         *self = kept;
@@ -202,6 +220,7 @@ impl YearDateMasks {
         year: u16,
         first: CivilDate,
         last: CivilDate,
+        include_first: bool,
     ) -> Option<()> {
         let layout = year_layout(year)?;
         let dates = source.layouts.get(layout)?;
@@ -211,7 +230,7 @@ impl YearDateMasks {
             let mut mask = *dates.get(column)?;
             if year == first.year() && month <= first.month() {
                 mask &= if month == first.month() {
-                    !through_day(first.day())?
+                    !through_day(first.day().checked_sub(u8::from(include_first))?)?
                 } else {
                     0
                 };
@@ -264,6 +283,7 @@ impl YearDateMasks {
 }
 
 impl AnnualCandidates for YearDateMasks {
+    type Point = CivilDate;
     fn first_year(&self, start: CivilDate) -> Option<i32> {
         Some(i32::from(start.year()))
     }
@@ -273,17 +293,21 @@ impl AnnualCandidates for YearDateMasks {
     fn periodic_range(&self) -> (i32, i32) {
         (0, 9999)
     }
-    fn year_count(&self, year: i32) -> Option<u32> {
-        YearDateMasks::year_count(self, u16::try_from(year).ok()?)
+    fn year_count(&self, year: i32) -> Option<u64> {
+        YearDateMasks::year_count(self, u16::try_from(year).ok()?).map(u64::from)
     }
-    fn count_through(&self, year: i32, date: CivilDate) -> Option<u32> {
+    fn count_through(&self, year: i32, date: CivilDate) -> Option<u64> {
         if year != i32::from(date.year()) {
             return None;
         }
-        YearDateMasks::count_through(self, date)
+        YearDateMasks::count_through(self, date).map(u64::from)
     }
-    fn date_at(&self, year: i32, position: u32) -> Option<CivilDate> {
-        YearDateMasks::date_at(self, u16::try_from(year).ok()?, position)
+    fn point_at(&self, year: i32, position: u64) -> Option<CivilDate> {
+        YearDateMasks::date_at(
+            self,
+            u16::try_from(year).ok()?,
+            u32::try_from(position).ok()?,
+        )
     }
 }
 

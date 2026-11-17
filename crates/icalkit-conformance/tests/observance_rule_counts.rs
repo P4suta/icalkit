@@ -458,7 +458,7 @@ fn malformed_counts_and_incompatible_bounds_refuse_the_whole_rule() {
         "UNTIL=20250310T003000Z;COUNT=2",
         "COUNT=2;BYSETPOS=1",
         "COUNT=2;INTERVAL=3;WKST=SU;BYSETPOS=1",
-        "COUNT=2;BYMONTH=3;BYHOUR=2",
+        "COUNT=2;BYMONTH=3;BYHOUR=24",
         "COUNT=2;BYWEEKNO=0",
     ] {
         let (zones, meter, diagnostics) = read(

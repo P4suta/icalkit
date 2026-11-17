@@ -58,7 +58,8 @@ Strict parsing preserves the identifiers without imposing wall-clock order acros
 Embedded Gregorian `FREQ=YEARLY` rules compile into bounded calendar-month patterns.
 The supported controls are `INTERVAL`, `COUNT`, `UNTIL`, and `WKST`.
 Date selection supports `BYMONTH`, `BYMONTHDAY`, `BYYEARDAY`, `BYDAY`, `BYWEEKNO`, and `BYSETPOS`.
-Transition clocks come from `DTSTART`, and explicit `RDATE` onsets remain independent.
+Clock selection supports `BYHOUR`, `BYMINUTE`, and `BYSECOND`, with missing fields taken from `DTSTART`.
+Positions and bounds apply to complete date-time periods, and explicit `RDATE` onsets remain independent.
 UTC `UNTIL` must name the final generated onset.
 The [specification validation guide](docs/specification-validation.md) records selector combinations, numeric limits, resource charges, and lookup bounds.
 

@@ -60,7 +60,7 @@ fn number_bit(number: i16) -> Option<u128> {
     1_u128.checked_shl(index)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct WeekYearMasks {
     layouts: [[u32; 36]; WEEK_LAYOUTS],
     start: Weekday,
@@ -111,11 +111,28 @@ impl WeekYearMasks {
         last: CivilDate,
         interval: YearInterval,
     ) -> Option<()> {
+        self.retain_between(first, last, interval, false)
+    }
+
+    pub(super) fn select(mut self, positions: AnnualPositions) -> Option<Self> {
+        for dates in &mut self.layouts {
+            select_positions(dates, positions)?;
+        }
+        Some(self)
+    }
+
+    pub(super) fn retain_between(
+        &mut self,
+        first: CivilDate,
+        last: CivilDate,
+        interval: YearInterval,
+        include_first: bool,
+    ) -> Option<()> {
         let mut kept = Self {
             layouts: [[0; 36]; WEEK_LAYOUTS],
             start: self.start,
         };
-        if last <= first {
+        if last < first || (last == first && !include_first) {
             *self = kept;
             return Some(());
         }
@@ -123,14 +140,26 @@ impl WeekYearMasks {
         let end = self.period_year(last)?;
         let final_period = interval.periods_through(origin, end)?;
         for period in 0..=final_period.min(402) {
-            kept.include_period(self, interval.year_at(origin, period)?, first, last)?;
+            kept.include_period(
+                self,
+                interval.year_at(origin, period)?,
+                first,
+                last,
+                include_first,
+            )?;
         }
         if final_period > 402 {
-            kept.include_period(self, interval.year_at(origin, final_period)?, first, last)?;
+            kept.include_period(
+                self,
+                interval.year_at(origin, final_period)?,
+                first,
+                last,
+                include_first,
+            )?;
         }
         for year in BOUNDARY_YEARS {
             if year >= origin && year <= end && interval.contains(origin, year) {
-                kept.include_period(self, year, first, last)?;
+                kept.include_period(self, year, first, last, include_first)?;
             }
         }
         *self = kept;
@@ -143,6 +172,7 @@ impl WeekYearMasks {
         year: i32,
         first: CivilDate,
         last: CivilDate,
+        include_first: bool,
     ) -> Option<()> {
         let layout = week_layout(year)?;
         let row = source.layouts.get(layout)?;
@@ -158,7 +188,7 @@ impl WeekYearMasks {
                 }
                 if year == lower && month <= first.month() {
                     mask &= if month == first.month() {
-                        !through_day(first.day())?
+                        !through_day(first.day().checked_sub(u8::from(include_first))?)?
                     } else {
                         0
                     };
@@ -210,6 +240,7 @@ impl WeekYearMasks {
 }
 
 impl AnnualCandidates for WeekYearMasks {
+    type Point = CivilDate;
     fn first_year(&self, start: CivilDate) -> Option<i32> {
         self.period_year(start)
     }
@@ -220,16 +251,18 @@ impl AnnualCandidates for WeekYearMasks {
         (1, 9998)
     }
 
-    fn year_count(&self, year: i32) -> Option<u32> {
+    fn year_count(&self, year: i32) -> Option<u64> {
         self.layouts
             .get(week_layout(year)?)?
             .iter()
-            .try_fold(0_u32, |total, mask| total.checked_add(mask.count_ones()))
+            .try_fold(0_u64, |total, mask| {
+                total.checked_add(u64::from(mask.count_ones()))
+            })
     }
 
-    fn count_through(&self, year: i32, date: CivilDate) -> Option<u32> {
+    fn count_through(&self, year: i32, date: CivilDate) -> Option<u64> {
         let row = self.layouts.get(week_layout(year)?)?;
-        let mut total = 0_u32;
+        let mut total = 0_u64;
         for offset in YearOffset::ALL {
             let boundary = offset.period_year(date.year())?;
             for month in 1_u8..=12 {
@@ -240,13 +273,13 @@ impl AnnualCandidates for WeekYearMasks {
                 if year == boundary && month == date.month() {
                     mask &= through_day(date.day())?;
                 }
-                total = total.checked_add(mask.count_ones())?;
+                total = total.checked_add(u64::from(mask.count_ones()))?;
             }
         }
         Some(total)
     }
 
-    fn date_at(&self, year: i32, mut position: u32) -> Option<CivilDate> {
+    fn point_at(&self, year: i32, mut position: u64) -> Option<CivilDate> {
         if position == 0 {
             return None;
         }
@@ -256,7 +289,7 @@ impl AnnualCandidates for WeekYearMasks {
                     .layouts
                     .get(week_layout(year)?)?
                     .get(column(offset, month)?)?;
-                let count = mask.count_ones();
+                let count = u64::from(mask.count_ones());
                 if position > count {
                     position = position.checked_sub(count)?;
                     continue;

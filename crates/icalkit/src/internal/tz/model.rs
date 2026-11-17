@@ -194,6 +194,11 @@ impl YearlyRule {
         self.date
     }
 
+    pub(super) const fn with_clock(mut self, at: CivilTime) -> Self {
+        self.at = at;
+        self
+    }
+
     pub(super) const fn with_year_interval(mut self, interval: YearInterval) -> Self {
         self.interval = interval;
         self

@@ -10,6 +10,39 @@ use crate::internal::core::CivilDate;
 pub(super) struct AnnualPositions([u64; 12]);
 
 impl AnnualPositions {
+    pub(super) fn values(self) -> impl Iterator<Item = i16> {
+        (-366..=366).filter(move |position| self.contains(*position))
+    }
+
+    pub(super) fn indices(self, extent: u64) -> impl Iterator<Item = u64> {
+        let mut forward = (1_i16..=366)
+            .filter(move |position| self.contains(*position))
+            .filter_map(|position| u64::try_from(position).ok())
+            .filter(move |position| *position <= extent)
+            .peekable();
+        let mut reverse = (-366_i16..=-1)
+            .filter(move |position| self.contains(*position))
+            .filter_map(move |position| {
+                extent
+                    .checked_add(1)?
+                    .checked_sub(u64::from(position.unsigned_abs()))
+            })
+            .filter(|position| *position != 0)
+            .peekable();
+        core::iter::from_fn(
+            move || match (forward.peek().copied(), reverse.peek().copied()) {
+                (Some(left), Some(right)) if left == right => {
+                    reverse.next();
+                    forward.next()
+                },
+                (Some(left), Some(right)) if left < right => forward.next(),
+                (Some(_) | None, Some(_)) => reverse.next(),
+                (Some(_), None) => forward.next(),
+                (None, None) => None,
+            },
+        )
+    }
+
     pub(super) fn singleton(position: i16) -> Option<Self> {
         Self([0; 12]).with_position(position)
     }

@@ -6,34 +6,34 @@
 
 use core::num::NonZeroU32;
 
-use crate::internal::core::CivilDate;
 use crate::internal::tz::year_intervals::YearInterval;
 
 const CYCLE_PERIODS: u32 = 400;
 const MAX_RANK_PROBES: usize = 402;
 
 pub(super) trait AnnualCandidates {
-    fn first_year(&self, start: CivilDate) -> Option<i32>;
+    type Point: Copy;
+    fn first_year(&self, start: Self::Point) -> Option<i32>;
     fn last_year(&self) -> i32;
     fn periodic_range(&self) -> (i32, i32);
-    fn year_count(&self, year: i32) -> Option<u32>;
-    fn count_through(&self, year: i32, date: CivilDate) -> Option<u32>;
-    fn date_at(&self, year: i32, position: u32) -> Option<CivilDate>;
+    fn year_count(&self, year: i32) -> Option<u64>;
+    fn count_through(&self, year: i32, point: Self::Point) -> Option<u64>;
+    fn point_at(&self, year: i32, position: u64) -> Option<Self::Point>;
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) enum CountEnd {
-    Within(CivilDate),
+pub(super) enum CountEnd<P> {
+    Within(P),
     BeyondCivilRange,
 }
 
-pub(super) fn counted_end(
-    dates: &impl AnnualCandidates,
-    start: CivilDate,
+pub(super) fn counted_end<D: AnnualCandidates>(
+    dates: &D,
+    start: D::Point,
     interval: YearInterval,
     count: NonZeroU32,
-) -> Option<CountEnd> {
-    let mut remaining = count.get().checked_sub(1)?;
+) -> Option<CountEnd<D::Point>> {
+    let mut remaining = u64::from(count.get().checked_sub(1)?);
     if remaining == 0 {
         return Some(CountEnd::Within(start));
     }
@@ -42,7 +42,7 @@ pub(super) fn counted_end(
     let first_count = dates.year_count(first)?.checked_sub(prefix)?;
     if remaining <= first_count {
         return dates
-            .date_at(first, prefix.checked_add(remaining)?)
+            .point_at(first, prefix.checked_add(remaining)?)
             .map(CountEnd::Within);
     }
     remaining = remaining.checked_sub(first_count)?;
@@ -57,7 +57,7 @@ pub(super) fn counted_end(
         }
         let count = dates.year_count(next)?;
         if remaining <= count {
-            return dates.date_at(next, remaining).map(CountEnd::Within);
+            return dates.point_at(next, remaining).map(CountEnd::Within);
         }
         remaining = remaining.checked_sub(count)?;
         first = next;
@@ -71,9 +71,9 @@ pub(super) fn counted_end(
         .periods_through(first, periodic_last)
         .unwrap_or(0)
         .checked_div(CYCLE_PERIODS)?;
-    let cycles = rank.checked_div(cycle_total)?.min(available);
+    let cycles = rank.checked_div(cycle_total)?.min(u64::from(available));
     let mut position = remaining.checked_sub(cycles.checked_mul(cycle_total)?)?;
-    let mut period = u64::from(cycles)
+    let mut period = cycles
         .checked_mul(u64::from(CYCLE_PERIODS))?
         .checked_add(1)?;
     let final_period = u64::from(interval.periods_through(first, dates.last_year())?);
@@ -85,7 +85,7 @@ pub(super) fn counted_end(
         let year = interval.year_at(first, u32::try_from(period).ok()?)?;
         let count = dates.year_count(year)?;
         if position <= count {
-            return dates.date_at(year, position).map(CountEnd::Within);
+            return dates.point_at(year, position).map(CountEnd::Within);
         }
         position = position.checked_sub(count)?;
         period = period.checked_add(1)?;
@@ -93,10 +93,10 @@ pub(super) fn counted_end(
     None
 }
 
-fn cycle_count(dates: &impl AnnualCandidates, first: i32, interval: YearInterval) -> Option<u32> {
+fn cycle_count(dates: &impl AnnualCandidates, first: i32, interval: YearInterval) -> Option<u64> {
     let mut residue = u32::try_from(first.rem_euclid(i32::try_from(CYCLE_PERIODS).ok()?)).ok()?;
     let step = interval.step().get().checked_rem(CYCLE_PERIODS)?;
-    let mut total = 0_u32;
+    let mut total = 0_u64;
     for _ in 0..CYCLE_PERIODS {
         residue = residue.checked_add(step)?.checked_rem(CYCLE_PERIODS)?;
         let year = i32::try_from(2000_u32.checked_add(residue)?).ok()?;
