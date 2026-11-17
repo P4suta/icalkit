@@ -37,8 +37,8 @@
 //! - It must not be one `match`.
 //!   This crate's Clippy profile bounds a function at 100 lines and a cognitive complexity of 15; a `BYxxx` application written as one match fails both,
 //!   which is the gate asking for the table-driven shape rather than obstructing it.
-//! - It must not clamp an invalid date.
-//!   `FREQ=MONTHLY;BYMONTHDAY=31` has no February instance and section 3.3.10 says such an instance MUST be ignored.
+//! - It moves a missing date only for an explicit RFC 7529 `SKIP` policy.
+//!   `FREQ=MONTHLY;BYMONTHDAY=31` without that extension has no February instance under RFC 5545 section 3.3.10.
 //!   The skip is reported with [`DiagnosticCode::NonexistentRecurrenceInstance`], and the skipped candidate is still charged, because it was still generated (`docs/adr/0011`).
 //! - It must not emit anything.
 //!   Candidates leave this unit as a period-local set.
@@ -63,7 +63,7 @@ use crate::internal::core::{
 };
 
 use crate::internal::recur::period::Period;
-use crate::internal::recur::rule::{Freq, RecurrenceRule, RulePart, WeekdayNum};
+use crate::internal::recur::rule::{Freq, RecurrenceRule, RulePart, Skip, WeekdayNum};
 use crate::internal::recur::table::{PartEffect, PartsPresent, WeekdayScope, effect};
 
 /// The rule parts that name a coordinate of the date, in the table's row order.
@@ -135,7 +135,17 @@ impl CandidateSet {
 /// Lower bound for the period's candidate date-times.
 pub(super) fn candidate_lower_bound(period: Period, rule: &RecurrenceRule) -> CivilDateTime {
     let anchor = period.anchor();
-    let (date, _) = day_extent(rule, rule.parts_present(), anchor.date());
+    let (mut date, _) = day_extent(rule, rule.parts_present(), anchor.date());
+    // January holds every admitted month day, so these corrections can't leave a year.
+    // Monthly lower bounds use the same resolver as candidate generation.
+    if rule.skip() == Skip::Backward && rule.freq() == Freq::Monthly {
+        date = rule
+            .by_month_day()
+            .as_slice()
+            .iter()
+            .filter_map(|value| resolve_month_day(date.year(), date.month(), *value, rule.skip()))
+            .fold(date, core::cmp::min);
+    }
     let clock = if date == anchor.date() {
         anchor.time()
     } else {
@@ -163,7 +173,15 @@ pub fn expand_period<S: DiagnosticSink + ?Sized>(
     if !has_expanding_day_part(rule, present) {
         // Nothing expanded at the granularity of a day, so section 3.3.10's fallback stands and the day is the one `DTSTART` names within whatever the period and the expanding span parts left free.
         let span = effective_span(rule, present);
-        apply_default_day(&mut days, span, dtstart.date(), anchor, meter, sink)?;
+        apply_default_day(
+            &mut days,
+            span,
+            dtstart.date(),
+            anchor,
+            rule.skip(),
+            meter,
+            sink,
+        )?;
     }
     let clocks = period_times(rule, present, anchor.time(), dtstart.time(), meter)?;
     assemble(&days, &clocks, meter)
@@ -274,7 +292,8 @@ fn period_days(
 /// There, section 3.3.10 expands the period to *the weeks of that year*, and a week-numbering year is not a calendar year: week one of 2020 begins on Monday December 30th 2019, and week 53 of 2014 runs to January 3rd 2015.
 /// Enumerating the calendar year instead attributes each of those days to the neighboring period, which is invisible at `INTERVAL=1` — the two readings partition the same union — and wrong the moment a period is skipped or a `BYSETPOS` selects within one.
 ///
-/// Week-numbering years tile the timeline exactly as calendar years do, each beginning where the last ended, so two periods still never offer the same day and candidates still ascend across periods.
+/// Week-numbering years tile the timeline exactly as calendar years do, each beginning where the last ended.
+/// Explicit Gregorian corrections can move candidates outside these base extents.
 fn day_extent(rule: &RecurrenceRule, present: PartsPresent, anchor: CivilDate) -> (CivilDate, u16) {
     let expands_weeks =
         rule.has_part(RulePart::WeekNo) && effect(rule.freq(), RulePart::WeekNo, present).expands();
@@ -346,6 +365,17 @@ fn apply_date_parts<S: DiagnosticSink + ?Sized>(
         }
         let action = effect(rule.freq(), part, present);
         if action == PartEffect::NotApplicable {
+            continue;
+        }
+        if part == RulePart::MonthDay && action.expands() && rule.skip() != Skip::Omit {
+            *days = corrected_month_days(
+                days,
+                rule.by_month_day().as_slice(),
+                rule.skip(),
+                anchor,
+                meter,
+                sink,
+            )?;
             continue;
         }
         if action.expands() {
@@ -703,12 +733,67 @@ fn apply_default_day<S: DiagnosticSink + ?Sized>(
     span: Span,
     start: CivilDate,
     anchor: CivilDateTime,
+    skip: Skip,
     meter: &mut Meter,
     sink: &mut S,
 ) -> Result<(), LimitExceeded> {
+    if skip != Skip::Omit && matches!(span, Span::Year | Span::Month) {
+        if span == Span::Year {
+            days.retain(|date| date.month() == start.month());
+        }
+        if let Ok(day) = i8::try_from(start.day()) {
+            *days = corrected_month_days(days, &[day], skip, anchor, meter, sink)?;
+        }
+        return Ok(());
+    }
     report_absent_default(days, span, start, anchor, meter, sink)?;
     days.retain(|date| default_day_matches(span, *date, start));
     Ok(())
+}
+
+/// Resolve month days after month selection and before weekday selection.
+fn corrected_month_days<S: DiagnosticSink + ?Sized>(
+    days: &[CivilDate],
+    values: &[i8],
+    skip: Skip,
+    anchor: CivilDateTime,
+    meter: &mut Meter,
+    sink: &mut S,
+) -> Result<Vec<CivilDate>, LimitExceeded> {
+    let mut corrected = Vec::new();
+    for (year, month) in distinct_months(days) {
+        for value in values {
+            if let Some(date) = resolve_month_day(year, month, *value, skip) {
+                meter.try_charge_candidate()?;
+                corrected.push(date);
+            } else {
+                report_absent(anchor, meter, sink)?;
+            }
+        }
+    }
+    corrected.sort_unstable();
+    corrected.dedup();
+    Ok(corrected)
+}
+
+/// Resolve one signed month day without normalizing an overflow by its size.
+fn resolve_month_day(year: u16, month: u8, value: i8, skip: Skip) -> Option<CivilDate> {
+    if value == 0 || !(-31..=31).contains(&value) {
+        return None;
+    }
+    let length = CivilDate::days_in_month(year, month)?;
+    if let Some(position) = position_named(i32::from(value), u32::from(length)) {
+        return CivilDate::from_ymd(year, month, u8::try_from(position).ok()?);
+    }
+    let first = CivilDate::from_ymd(year, month, 1)?;
+    let last = CivilDate::from_ymd(year, month, length)?;
+    match (skip, value.is_positive()) {
+        (Skip::Omit, _) => None,
+        (Skip::Backward, true) => Some(last),
+        (Skip::Backward, false) => first.checked_add_days(-1),
+        (Skip::Forward, true) => last.checked_add_days(1),
+        (Skip::Forward, false) => Some(first),
+    }
 }
 
 /// Report each span whose free coordinate `DTSTART` fills with a day the span does not have.

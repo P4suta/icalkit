@@ -165,7 +165,11 @@ Unknown `VALUE` types stop typed decoding and produce notes, as required by [sec
 
 Calendar controls follow [RFC 7529](https://www.rfc-editor.org/rfc/rfc7529.html#section-4.1).
 The native engine admits the [Gregorian names](https://raw.githubusercontent.com/unicode-org/cldr/main/common/bcp47/calendar.xml) with absent or `OMIT` skipping.
-Other calendars, other `SKIP` modes, and leap month selectors produce `unsupported-recurrence-semantics`.
+Gregorian `BACKWARD` and `FORWARD` handle default month days and `BYMONTHDAY`.
+Month selection precedes correction, and weekday, clock, and period position selection follow it.
+The search orders and deduplicates overlapping period candidates before counting.
+Continuation preserves pending candidates and unconsumed rule offers beside `RDATE` additions.
+Other calendars, leap month selectors, and non-`OMIT` rules with `BYYEARDAY` or `BYWEEKNO` produce `unsupported-recurrence-semantics`.
 Malformed or repeated controls fail typed construction, including `SKIP` without `RSCALE`.
 Both typed decoders resolve `FREQ` independent of written order, following [RFC 5545 section 3.3.10](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10).
 Public rule errors keep the kernel diagnostics.
@@ -174,7 +178,8 @@ It charges admitted input bytes to the secure meter before parsing and refuses l
 The allocation gate bounds heap use for resource refusals independently of input size.
 Imports preserve original bytes, and unrelated unknown parts keep their notes.
 The [calendar control decision](adr/recurrence-calendar-controls-before-expansion.md) records the native subset and compatibility policy.
-Calendar conversion, other `SKIP` modes, and CalDAV capability negotiation remain open.
+The [month day decision](adr/gregorian-month-day-adjustments.md) extends the native subset.
+Calendar conversion, leap month selection, year day and week number correction, and CalDAV capability negotiation remain open.
 
 `RDATE` and `EXDATE` lists follow [RFC 5545 section 3.8.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5).
 Each field must match its declared type.

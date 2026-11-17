@@ -67,7 +67,7 @@ use crate::internal::recur::byparts::{candidate_lower_bound, expand_period};
 use crate::internal::recur::input::RecurrenceInput;
 use crate::internal::recur::merge::Merge;
 use crate::internal::recur::period::{Period, PeriodWalk};
-use crate::internal::recur::rule::{RecurrenceRule, RuleLimit};
+use crate::internal::recur::rule::{RecurrenceRule, RuleLimit, Skip};
 use crate::internal::recur::search::{
     BudgetExhausted, Occurrence, SearchOutcome, SearchStep, Window,
 };
@@ -200,6 +200,19 @@ struct StepEnv<'e, S: DiagnosticSink + ?Sized> {
     sink: &'e mut S,
 }
 
+/// Corrected candidates waiting for the next period's lower bound.
+#[derive(Default)]
+struct AdjustedStream {
+    /// Ordered keys with the earliest period that contributed each key.
+    pending: alloc::collections::BTreeMap<Instant, u64>,
+    /// A period inspected for its lower bound but not expanded.
+    peeked: Option<(Period, Instant, u64)>,
+    /// Why no more periods can enter the pending set.
+    stop: Option<RuleKey>,
+    /// Origin of the key on offer to the merge.
+    offered_period: Option<u64>,
+}
+
 /// The rule half of a search: periods in, cadence keys out.
 struct RuleStream<'a> {
     /// The rule and its walk, absent for an input that is only `RDATE`s.
@@ -208,6 +221,8 @@ struct RuleStream<'a> {
     selected: Option<SelectedCandidates>,
     /// How far through those candidates this stream has read.
     position: usize,
+    /// Cross-period ordering for explicit Gregorian corrections.
+    adjusted: AdjustedStream,
     /// Instances the rule has produced, which is what `COUNT` counts.
     produced: u32,
     /// `DTSTART`: the first instant the recurrence set can hold.
@@ -227,6 +242,7 @@ impl<'a> RuleStream<'a> {
             cadence: Cadence::open(input, cursor),
             selected: None,
             position: 0,
+            adjusted: AdjustedStream::default(),
             produced: cursor.map_or(0, SearchCursor::occurrences_emitted),
             begins_at: input.dtstart(),
             resume_after: cursor.map(SearchCursor::resume_after),
@@ -242,13 +258,90 @@ impl<'a> RuleStream<'a> {
                 self.ended = true;
                 return RuleKey::RuleEnded;
             }
-            let answer = match self.take_candidate() {
-                Some(key) => self.weigh(key, env.generation),
-                None => self.open_next_period(env),
+            let answer = if self.uses_adjustments() {
+                match self.adjusted_candidate(env) {
+                    Ok(key) => self.weigh(key, env.generation),
+                    Err(stop) => Some(stop),
+                }
+            } else {
+                match self.take_candidate() {
+                    Some(key) => self.weigh(key, env.generation),
+                    None => self.open_next_period(env),
+                }
             };
             if let Some(stop) = answer {
                 return stop;
             }
+        }
+    }
+
+    /// Whether missing month days can move across period boundaries.
+    fn uses_adjustments(&self) -> bool {
+        self.cadence
+            .as_ref()
+            .is_some_and(|cadence| cadence.rule.skip() != Skip::Omit)
+    }
+
+    /// The least corrected key once every period that can precede it has entered the set.
+    fn adjusted_candidate<S: DiagnosticSink + ?Sized>(
+        &mut self,
+        env: &mut StepEnv<'_, S>,
+    ) -> Result<Instant, RuleKey> {
+        loop {
+            self.peek_adjusted_period();
+            let ready = self
+                .adjusted
+                .pending
+                .first_key_value()
+                .is_some_and(|(key, _)| {
+                    self.adjusted
+                        .peeked
+                        .is_none_or(|(_, bound, _)| *key < bound)
+                });
+            if ready {
+                if let Some((key, origin)) = self.adjusted.pending.pop_first() {
+                    self.adjusted.offered_period = Some(origin);
+                    return Ok(key);
+                }
+            }
+            let Some((period, bound, origin)) = self.adjusted.peeked.take() else {
+                return Err(self.adjusted.stop.unwrap_or(RuleKey::RuleEnded));
+            };
+            if bound >= env.generation.end() {
+                self.adjusted.stop = Some(RuleKey::WindowEnded);
+                continue;
+            }
+            if let Some(stop) = self.expand(period, env) {
+                return Err(stop);
+            }
+            if let Some(selected) = self.selected.as_ref() {
+                for stamp in selected.as_slice() {
+                    if let Some(key) = stamp.at_offset(UtcOffset::UTC) {
+                        self.adjusted
+                            .pending
+                            .entry(key)
+                            .and_modify(|held| *held = (*held).min(origin))
+                            .or_insert(origin);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Inspect the next period without spending its expansion budget.
+    fn peek_adjusted_period(&mut self) {
+        if self.adjusted.peeked.is_some() || self.adjusted.stop.is_some() {
+            return;
+        }
+        match self.advance_walk() {
+            Ok((period, bound)) => {
+                let origin = self
+                    .cadence
+                    .as_ref()
+                    .map_or(0, |cadence| cadence.period_cursor.period_index);
+                self.adjusted.peeked = Some((period, bound, origin));
+            },
+            Err(stop) => self.adjusted.stop = Some(stop),
         }
     }
 
@@ -375,11 +468,20 @@ impl<'a> RuleStream<'a> {
 
     /// The last visited period, preserved when a resumed rule generates nothing.
     fn cursor_state(&self) -> RuleCursorState {
-        self.cadence
+        let visited = self
+            .cadence
             .as_ref()
             .map_or(RuleCursorState { period_index: 0 }, |cadence| {
                 cadence.period_cursor
-            })
+            });
+        let period_index = self
+            .adjusted
+            .pending
+            .values()
+            .copied()
+            .chain(self.adjusted.offered_period)
+            .fold(visited.period_index, u64::min);
+        RuleCursorState { period_index }
     }
 }
 
@@ -427,6 +529,8 @@ pub struct RecurrenceSearch<'a, S: DiagnosticSink + ?Sized = dyn DiagnosticSink 
     resume_after: Option<Instant>,
     /// The last cadence key this search reached.
     reached: Instant,
+    /// Last key consumed by the merge, excluding an unconsumed rule offer.
+    consumed: Instant,
     /// Why the search is not producing more, or that it still is.
     outcome: SearchOutcome,
     /// Whether `next` has already answered for the last time.
@@ -469,6 +573,7 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             stream_done: false,
             resume_after: cursor.map(SearchCursor::resume_after),
             reached: origin,
+            consumed: origin,
             outcome: SearchOutcome::Pending,
             finished: false,
         }
@@ -504,8 +609,10 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
     #[must_use]
     pub fn cursor(&self) -> SearchCursor {
         SearchCursor::new(
-            self.reached,
-            self.stream.produced,
+            self.consumed,
+            self.stream
+                .produced
+                .saturating_sub(u32::from(self.offered.is_some())),
             self.stream.cursor_state(),
         )
     }
@@ -527,7 +634,13 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         let consumes_offer = self.merge.takes_rule_key(offered);
         let produced = self.merge.step(offered, &mut *self.meter, &mut *self.sink);
         if consumes_offer {
+            if let Some(key) = offered {
+                self.consumed = self.consumed.max(key);
+            }
             self.offered = None;
+        }
+        if let Some(occurrence) = produced {
+            self.consumed = self.consumed.max(occurrence.key());
         }
         match produced {
             // Nothing to show for this candidate: an `EXDATE` removed it, or its start was not representable.

@@ -120,7 +120,8 @@ The textual check doesn't resolve macros or generated paths.
 Use checked time arithmetic with `checked_*`, `div_euclid`, and `rem_euclid`.
 No `Duration` carries years or months.
 Filter recurrence instances with nonexistent dates or local times under RFC 5545 section 3.3.10.
-Don't move the instances to nearby values.
+Move missing calendar dates only when an admitted RFC 7529 `SKIP` policy requires correction.
+Keep calendar correction separate from local time admission.
 [ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md) defines the arithmetic and resolution types.
 
 A supported property's parse and serialization round trip must preserve every byte, including uninterpreted parameters, casing, and ordering.

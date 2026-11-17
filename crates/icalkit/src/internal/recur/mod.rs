@@ -4,8 +4,8 @@
 
 //! Private bounded recurrence kernel.
 //!
-//! The unpublished conformance helper also compiles these files to exercise the low-level
-//! adversarial corpus. This module is the single source of truth.
+//! The unpublished conformance helper also compiles these files to exercise the low-level adversarial corpus.
+//! This module is the single source of truth.
 
 mod accounting;
 mod byparts;
@@ -30,7 +30,7 @@ pub use input::{
 pub use merge::{Merge, keep_first_rule};
 pub use period::{Period, PeriodWalk};
 pub use rule::{
-    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart,
+    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart, Skip,
     UntilClock, ValueKind, WeekdayNum,
 };
 pub use search::{

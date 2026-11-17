@@ -39,7 +39,7 @@ use crate::internal::core::{
 };
 
 use crate::internal::recur::rule::{
-    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart,
+    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart, Skip,
     UntilClock, ValueKind, WeekdayNum,
 };
 
@@ -448,7 +448,7 @@ impl DecodeValue<'_> for RecurrenceRule {
     /// The caller receives `View::Malformed` carrying this code beside the property with its octets intact, which is what `docs/adr/0001` asks of every value type.
     /// A caller that wants the surviving parts of a nearly-legal rule uses the lenient reading, which needs a sink this signature cannot carry.
     fn decode_value(bytes: &[u8]) -> Result<Self, DiagnosticCode> {
-        validate_calendar_controls(bytes).map_err(code_for)?;
+        let skip = validate_calendar_controls(bytes).map_err(code_for)?;
         let mut state = StrictDecode::new();
         for part in parts(bytes).filter(|part| equals_ignoring_case(part.name(), FREQ_NAME)) {
             apply(&mut state, part)?;
@@ -462,7 +462,7 @@ impl DecodeValue<'_> for RecurrenceRule {
         let builder = state
             .builder
             .ok_or(DiagnosticCode::MalformedRecurrenceRule)?;
-        builder.build().map_err(code_for)
+        builder.skip(skip).build().map_err(code_for)
     }
 }
 
@@ -470,16 +470,20 @@ fn is_calendar_control(name: &[u8]) -> bool {
     equals_ignoring_case(name, b"RSCALE") || equals_ignoring_case(name, b"SKIP")
 }
 
-fn validate_calendar_controls(value_text: &[u8]) -> Result<(), RuleError> {
+fn validate_calendar_controls(value_text: &[u8]) -> Result<Skip, RuleError> {
     let mut scale: Option<&[u8]> = None;
     let mut skip: Option<&[u8]> = None;
     let mut leap_month = false;
+    let mut unsupported_days = false;
     for part in parts(value_text) {
         let destination = if equals_ignoring_case(part.name(), b"RSCALE") {
             &mut scale
         } else if equals_ignoring_case(part.name(), b"SKIP") {
             &mut skip
         } else {
+            unsupported_days |= [b"BYYEARDAY".as_slice(), b"BYWEEKNO"]
+                .iter()
+                .any(|name| equals_ignoring_case(part.name(), name));
             if equals_ignoring_case(part.name(), b"BYMONTH") {
                 leap_month |= part.value().split(|octet| *octet == b',').any(|month| {
                     month
@@ -495,7 +499,7 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<(), RuleError> {
     }
     let Some(scale) = scale else {
         return if skip.is_none() {
-            Ok(())
+            Ok(Skip::Omit)
         } else {
             Err(RuleError::MalformedCalendarControls)
         };
@@ -514,10 +518,15 @@ fn validate_calendar_controls(value_text: &[u8]) -> Result<(), RuleError> {
     let gregorian = [b"GREGORIAN".as_slice(), b"GREGORY"]
         .iter()
         .any(|name| equals_ignoring_case(scale, name));
-    if !gregorian || leap_month || skip.is_some_and(|mode| !equals_ignoring_case(mode, b"OMIT")) {
+    let policy = match skip {
+        Some(mode) if equals_ignoring_case(mode, b"BACKWARD") => Skip::Backward,
+        Some(mode) if equals_ignoring_case(mode, b"FORWARD") => Skip::Forward,
+        Some(_) | None => Skip::Omit,
+    };
+    if !gregorian || leap_month || (policy != Skip::Omit && unsupported_days) {
         return Err(RuleError::UnsupportedCalendarSemantics);
     }
-    Ok(())
+    Ok(policy)
 }
 
 /// Which slot of RFC 5545 section 3.3.10's grammar a part name occupies.
@@ -641,10 +650,11 @@ pub fn parse_recur<S: DiagnosticSink + ?Sized>(
     meter: &mut Meter,
     sink: &mut S,
 ) -> Result<RecurrenceRule, RuleError> {
-    validate_calendar_controls(value_text).map_err(|error| refuse(error, meter, sink))?;
+    let skip =
+        validate_calendar_controls(value_text).map_err(|error| refuse(error, meter, sink))?;
     let collected = collect_parts(value_text, meter, sink);
     let freq = resolve_freq(&collected, meter, sink)?;
-    let builder = apply_collected(freq, &collected, meter, sink);
+    let builder = apply_collected(freq, &collected, meter, sink).skip(skip);
     let rule = finish(builder, meter, sink)?;
     report_forbidden_ordinals(&rule, meter, sink);
     Ok(rule)
@@ -842,8 +852,8 @@ fn report_dropped_part<S: DiagnosticSink + ?Sized>(
 
 /// Build the rule, dropping `BYSETPOS` when that is what stands in the way.
 ///
-/// The one condition [`RecurrenceRuleBuilder::build`] refuses is `BYSETPOS` with no other `BYxxx` part to select from, and dropping the part is what keeps the rest of the rule — the same answer this reading gives every other part it cannot use.
-/// The second build's own error is propagated rather than assumed away: a condition added to `build` later reaches the caller instead of being quietly un-refused here, and nothing in this file has to be right about what `build` checks for that to hold.
+/// Calendar controls have already passed their gate.
+/// Dropping an unsupported `BYSETPOS` keeps the other parts, and the second build propagates any remaining construction error.
 fn finish<S: DiagnosticSink + ?Sized>(
     builder: RecurrenceRuleBuilder,
     meter: &mut Meter,

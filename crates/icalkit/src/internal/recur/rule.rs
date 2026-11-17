@@ -379,6 +379,18 @@ impl Display for RuleError {
 
 impl Error for RuleError {}
 
+/// Policy for missing Gregorian month days under RFC 7529 section 4.1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Skip {
+    /// Discard missing dates, including rules without `RSCALE`.
+    #[default]
+    Omit,
+    /// Choose the previous valid date.
+    Backward,
+    /// Choose the next valid date.
+    Forward,
+}
+
 /// One recurrence rule, with every invariant its construction can settle already settled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecurrenceRule {
@@ -390,6 +402,8 @@ pub struct RecurrenceRule {
     limit: RuleLimit,
     /// The day a week starts on, which `BYWEEKNO` and `FREQ=WEEKLY` count from.
     wkst: Weekday,
+    /// Missing date policy, separate from local time admission.
+    skip: Skip,
     /// `BYSECOND`, each within 0..=60.
     by_second: ByList<u8>,
     /// `BYMINUTE`, each within 0..=59.
@@ -439,6 +453,12 @@ impl RecurrenceRule {
     #[must_use]
     pub const fn wkst(&self) -> Weekday {
         self.wkst
+    }
+
+    /// Missing Gregorian month day policy.
+    #[must_use]
+    pub const fn skip(&self) -> Skip {
+        self.skip
     }
 
     /// `BYSECOND`.
@@ -563,6 +583,7 @@ impl RecurrenceRuleBuilder {
     pub fn new(freq: Freq) -> Self {
         Self {
             rule: RecurrenceRule {
+                skip: Skip::Omit,
                 freq,
                 interval: RecurrenceRule::DEFAULT_INTERVAL,
                 limit: RuleLimit::Infinite,
@@ -598,6 +619,13 @@ impl RecurrenceRuleBuilder {
     #[must_use]
     pub fn wkst(mut self, wkst: Weekday) -> Self {
         self.rule.wkst = wkst;
+        self
+    }
+
+    /// Set the missing Gregorian month day policy.
+    #[must_use]
+    pub fn skip(mut self, skip: Skip) -> Self {
+        self.rule.skip = skip;
         self
     }
 
@@ -666,8 +694,13 @@ impl RecurrenceRuleBuilder {
 
     /// Check what a whole rule can be checked for, and hand back the rule.
     ///
-    /// One condition, because one is all that is not already a type invariant: RFC 5545 section 3.3.10 forbids `BYSETPOS` unless another `BYxxx` part is present, and no field type can express a relation between two fields.
+    /// Refuse unsupported calendar combinations and `BYSETPOS` without another `BYxxx` part.
     pub fn build(self) -> Result<RecurrenceRule, RuleError> {
+        if self.rule.skip != Skip::Omit
+            && (!self.rule.by_year_day.is_empty() || !self.rule.by_week_no.is_empty())
+        {
+            return Err(RuleError::UnsupportedCalendarSemantics);
+        }
         if !self.rule.by_set_pos.is_empty() && !self.rule.has_selectable_part() {
             return Err(RuleError::BySetPosWithoutByRule);
         }
