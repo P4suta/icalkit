@@ -4,6 +4,13 @@
 `Import::read` keeps the admitted input bytes, including input that fails promotion.
 The [calendar boundary](../crates/icalkit/src/calendar.rs) combines the private schema audit with constraints that depend on surrounding components and related properties.
 
+The shared meter checks addition before admitting byte totals, bounded counts, or nesting increments.
+Arithmetic overflow refuses a charge even when the configured ceiling equals the counter type's largest value.
+An overflowing count leaves its admitted total unchanged.
+The byte ledger keeps the attempted total up to `u64::MAX` and marks exhaustion on overflow.
+Zero-sized charges remain valid at an exact ceiling before exhaustion.
+Depth cleanup and diagnostic statistics keep their saturating behavior.
+
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
