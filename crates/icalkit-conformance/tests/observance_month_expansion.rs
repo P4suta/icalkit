@@ -358,7 +358,7 @@ fn negative_day_positions_follow_the_rfc_example_dates() {
 #[test]
 fn negative_positions_keep_clocks_anchors_and_inclusive_end_bounds() {
     for (until, expected) in [
-        ("20250226T020000Z", None),
+        ("20240228T020000Z", None),
         ("20250227T020000Z", Some(date(2025, 2, 27))),
     ] {
         let zones = admitted(

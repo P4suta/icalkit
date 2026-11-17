@@ -215,7 +215,12 @@ The reader accepts supported parts in any order.
 Part names and enumerated values ignore ASCII case.
 `INTERVAL` accepts leading zeros without changing its value.
 `WKST` requires one weekday token even when annual patterns don't use its value.
-Observance `UNTIL` requires a UTC `DATE-TIME` before conversion through `TZOFFSETFROM` to an inclusive wall date.
+Observance `UNTIL` requires a UTC `DATE-TIME` before conversion through `TZOFFSETFROM`.
+The [observance definition](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.5) requires the bound to equal the final recurrence onset.
+Admission checks the projected source clock, interval alignment, and complete yearly date selection, including `BYSETPOS`.
+The comparison follows the kernel's shared leap-second projection.
+Unmatched ends refuse the recurrence while preserving the original anchor and explicit dates.
+Matching ends compile to inclusive wall dates without changing pattern charges or lookup arithmetic.
 Malformed or repeated controls refuse the whole rule and preserve its anchor and explicit dates.
 
 Embedded yearly intervals use the shared positive decimal decoder and accept values from `1` through `4294967295`.

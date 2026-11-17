@@ -29,7 +29,7 @@
 //! - `vtimezone-without-observance` — section 3.6.5 requires at least one and this file has none.
 //!   The component is kept and the zone answers nothing.
 //! - `vtimezone-rule-unsupported` — an observance `RRULE` outside the closed-form vocabulary.
-//!   A note, because the file is legal and what is missing is here: the observance's own `DTSTART` still stands as one transition, so the answer is smaller rather than wrong.
+//!   The source anchor and explicit dates remain available when recurrence evaluation is refused.
 //! - `missing-time-zone-definition` — a `TZID` parameter naming no `VTIMEZONE` in the same calendar, named by the identifier it is about.
 //! - `duplicate-time-zone-identifier` — read off `ZoneAdmission::diagnostic_code` when `VtimezoneSet::insert` takes a second definition of one identifier beside the first.
 //! - `vtimezone-components-truncated` — read off `ZoneSetError::diagnostic_code` when the caller's own zone-count bound turns a definition back.
@@ -453,10 +453,30 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
 /// The transition clock comes from `DTSTART`, per RFC 5545 section 3.6.5.
 fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
+    validate_until(&parts, start, offset_from)?;
     Some(YearlyRules {
         patterns: compile_patterns(&parts, start)?,
         interval: parts.interval,
     })
+}
+
+/// Require `UNTIL` to name a generated onset, per RFC 5545 section 3.6.5.
+fn validate_until(parts: &RuleParts, start: CivilDateTime, offset_from: UtcOffset) -> Option<()> {
+    let RuleEnd::Until(last) = parts.end else {
+        return Some(());
+    };
+    let expected = CivilDateTime::new(last.date(), start.time());
+    if expected < start
+        || expected.at_offset(offset_from)? != last.at_offset(offset_from)?
+        || !parts
+            .interval
+            .contains(start.date().year(), last.date().year())
+    {
+        return None;
+    }
+    let dates = compile_date_masks(parts, start)?;
+    let position = dates.count_through(last.date())?;
+    (dates.date_at(last.date().year(), position) == Some(last.date())).then_some(())
 }
 
 fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
@@ -561,14 +581,14 @@ fn compile_date_masks(parts: &RuleParts, start: CivilDateTime) -> Option<YearDat
 #[derive(Clone, Copy, Debug)]
 enum RuleEnd {
     Unlimited,
-    Until(CivilDate),
+    Until(CivilDateTime),
     Count(NonZeroU32),
 }
 
 impl RuleEnd {
     const fn until(self) -> Option<CivilDate> {
         match self {
-            Self::Until(date) => Some(date),
+            Self::Until(stamp) => Some(stamp.date()),
             Self::Unlimited | Self::Count(_) => None,
         }
     }
@@ -737,7 +757,7 @@ fn take_part(
         ),
         RulePartName::Until => parts
             .end
-            .take(until_date(value, offset_from).map(RuleEnd::Until)),
+            .take(until_clock(value, offset_from).map(RuleEnd::Until)),
     }
 }
 
@@ -854,15 +874,12 @@ fn fixed_form(month_days: MonthDaySet) -> Option<RuleDay> {
     u8::try_from(day).ok().map(RuleDay::DayOfMonth)
 }
 
-/// The last date an `UNTIL` keeps a rule alive, on the observance's own clock.
-///
-/// RFC 5545 section 3.3.10 requires `UNTIL` to be UTC and section 3.6.5 evaluates an observance in wall-clock terms, so the two have to be reconciled somewhere.
-/// Here, once, against `TZOFFSETFROM` — the clock still running when the transition arrives.
-/// A rule whose end cannot be placed on that clock is one this crate does not evaluate, rather than one whose end is quietly dropped and which therefore runs forever.
-fn until_date(value: &[u8], offset_from: UtcOffset) -> Option<CivilDate> {
+/// Read the UTC bound on the clock in use before the transition.
+/// A reading outside the civil range cannot name a supported onset.
+fn until_clock(value: &[u8], offset_from: UtcOffset) -> Option<CivilDateTime> {
     let written = DateTimeValue::decode_value(value).ok()?;
     match written {
-        DateTimeValue::Utc(_) => wall_clock(written, offset_from).map(CivilDateTime::date),
+        DateTimeValue::Utc(_) => wall_clock(written, offset_from),
         DateTimeValue::Date(_) | DateTimeValue::Local(_) | DateTimeValue::Zoned { .. } => None,
     }
 }
