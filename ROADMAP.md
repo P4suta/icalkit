@@ -35,6 +35,8 @@ The [bounded recurrence decision](docs/adr/0002-bounded-lazy-recurrence.md) defi
 The recurrence module converts registered calendar coordinates to and from Jiff Gregorian dates.
 Regular month numbers and leap month identifiers remain distinct, including calendars with thirteen regular months.
 The [conversion decision](docs/adr/calendar-conversion-at-the-jiff-boundary.md) records the private ICU4X adapter and Rust 1.88 floor.
+The private period walker advances month and year anchors in the selected calendar, including leap months and thirteen-month years.
+The [period arithmetic decision](docs/adr/calendar-coordinates-for-recurrence-periods.md) records interval spacing, index resumption, and Gregorian boundary handling.
 Non-Gregorian recurrence expansion still requires every date selector and period step to use the converted coordinates.
 
 ## M2 time zones

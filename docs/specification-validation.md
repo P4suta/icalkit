@@ -198,6 +198,12 @@ Explicit `ISLAMIC-CIVIL`, `ISLAMIC-TBLA`, and `ISLAMIC-UMALQURA` algorithms rema
 The [conversion decision](adr/calendar-conversion-at-the-jiff-boundary.md) records the dependency and compiler boundary.
 Conversion alone doesn't enable non-Gregorian recurrence expansion.
 
+The private period walker uses the selected calendar for monthly and yearly anchors.
+Resumed indices derive their first anchor from normalized coordinates, while sequential walks reuse calendar boundaries.
+Both paths preserve leap month progression and interval spacing.
+The [period arithmetic decision](adr/calendar-coordinates-for-recurrence-periods.md) records shared calendar coordinates and Gregorian range boundaries.
+Date selection and missing date correction still gate non-Gregorian rule admission.
+
 CalDAV recurrence scale negotiation follows [RFC 7529 section 10](https://www.rfc-editor.org/rfc/rfc7529.html#section-10).
 `Client::supported_rscales` explicitly requests `CALDAV:supported-rscale-set` at Depth 0 from a calendar collection or calendar home.
 An absent advertisement differs from an advertised set without calendar names.
