@@ -115,6 +115,8 @@
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 // Root-local dependency adapter for the XML layer, whose source is also compiled by the standalone layering gate and the private conformance helper.
 // Keeping this spelling stable lets that layer name only its metering dependency and never its protocol parent.

@@ -74,6 +74,9 @@ impl<'a> AttributeValue<'a> {
     }
 
     pub(crate) fn is(self, bytes: &[u8]) -> bool {
+        if self.length != bytes.len() {
+            return false;
+        }
         match self.contiguous() {
             Some(literal) => literal == bytes,
             None => self.bytes().eq(bytes.iter().copied().map(Ok)),
@@ -81,6 +84,8 @@ impl<'a> AttributeValue<'a> {
     }
 
     pub(crate) fn bytes(self) -> AttributeBytes<'a> {
+        #[cfg(test)]
+        normalization_work::record(self.source_len());
         AttributeBytes {
             source: self.source,
             at: 0,
@@ -91,9 +96,40 @@ impl<'a> AttributeValue<'a> {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn observe_normalization<R>(run: impl FnOnce() -> R) -> (R, u64) {
+    normalization_work::observe(run)
+}
+
+#[cfg(test)]
+mod normalization_work {
+    use core::cell::Cell;
+
+    std::thread_local! {
+        static WIDTH: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record(width: usize) {
+        WIDTH.with(|total| {
+            total.set(
+                total
+                    .get()
+                    .saturating_add(u64::try_from(width).unwrap_or(u64::MAX)),
+            );
+        });
+    }
+
+    pub(super) fn observe<R>(run: impl FnOnce() -> R) -> (R, u64) {
+        WIDTH.with(|total| total.set(0));
+        let result = run();
+        let width = WIDTH.with(Cell::get);
+        (result, width)
+    }
+}
+
 impl PartialEq for AttributeValue<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
+        self.length == other.length && self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -107,6 +143,16 @@ impl PartialOrd for AttributeValue<'_> {
 
 impl Ord for AttributeValue<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
+        let same_view = match (self.source, other.source) {
+            (AttributeSource::Literal(left), AttributeSource::Literal(right))
+            | (AttributeSource::Encoded(left), AttributeSource::Encoded(right)) => {
+                core::ptr::eq(left, right)
+            },
+            _ => false,
+        };
+        if same_view {
+            return Ordering::Equal;
+        }
         match (self.contiguous(), other.contiguous()) {
             (Some(left), Some(right)) => left.cmp(right),
             _ => self.bytes().cmp(other.bytes()),
@@ -308,6 +354,28 @@ mod tests {
     use super::{
         AttributeValue, XmlFault, XmlSyntax, check_chars, escape_for, normalize_attribute,
     };
+
+    #[test]
+    fn shared_source_octets_keep_their_distinct_normalization_modes() {
+        let raw = b"&#65;";
+        let literal = AttributeValue::literal(raw);
+        let decoded = AttributeValue::parse(raw).unwrap();
+        assert_ne!(literal, decoded);
+        assert_eq!(literal.cmp(&decoded), core::cmp::Ordering::Less);
+        assert_eq!(decoded.cmp(&literal), core::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn repeated_comparisons_of_one_checked_value_do_not_decode_again() {
+        let value = AttributeValue::parse(b"u&#0000000000114;n:example").unwrap();
+        let ((), work) = super::observe_normalization(|| {
+            for _ in 0..128 {
+                assert_eq!(value, value);
+                assert_eq!(value.cmp(&value), core::cmp::Ordering::Equal);
+            }
+        });
+        assert_eq!(work, 0);
+    }
 
     #[test]
     fn normalized_views_match_literal_octets() {

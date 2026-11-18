@@ -85,9 +85,15 @@ pub enum Namespace<'a> {
     /// Not an IETF namespace and modeled anyway, because the property every widely deployed client polls a collection with lives in it.
     /// Recognizing it is what keeps a real server's `PROPFIND` response readable rather than two thirds skipped.
     CalendarServer,
+    /// The reserved XML namespace.
+    Xml,
     /// Anything else, with the URI kept.
-    Other(NamespaceUri<'a>),
+    Other(UnrecognizedNamespaceUri<'a>),
 }
+
+/// A namespace name outside the vocabularies classified by the factories.
+#[derive(Clone, Copy, Debug)]
+pub struct UnrecognizedNamespaceUri<'a>(NamespaceUri<'a>);
 
 impl<'a> From<AttributeValue<'a>> for Namespace<'a> {
     fn from(uri: AttributeValue<'a>) -> Self {
@@ -97,8 +103,10 @@ impl<'a> From<AttributeValue<'a>> for Namespace<'a> {
             Self::CalDav
         } else if uri.is(Self::CALENDARSERVER_URI) {
             Self::CalendarServer
+        } else if uri.is(Self::XML_URI) {
+            Self::Xml
         } else {
-            Self::Other(NamespaceUri(uri))
+            Self::Other(UnrecognizedNamespaceUri(NamespaceUri(uri)))
         }
     }
 }
@@ -110,6 +118,8 @@ impl<'a> Namespace<'a> {
     pub const CALDAV_URI: &'static [u8] = b"urn:ietf:params:xml:ns:caldav";
     /// The URI of the `CalendarServer` vendor namespace.
     pub const CALENDARSERVER_URI: &'static [u8] = b"http://calendarserver.org/ns/";
+    /// The reserved XML namespace URI.
+    pub const XML_URI: &'static [u8] = crate::internal::dav::xml::scan::XML_URI;
 
     /// Classify a resolved namespace URI.
     ///
@@ -123,8 +133,10 @@ impl<'a> Namespace<'a> {
             Self::CalDav
         } else if equal(uri, Self::CALENDARSERVER_URI) {
             Self::CalendarServer
+        } else if equal(uri, Self::XML_URI) {
+            Self::Xml
         } else {
-            Self::Other(NamespaceUri::literal(uri))
+            Self::Other(UnrecognizedNamespaceUri(NamespaceUri::literal(uri)))
         }
     }
 
@@ -135,16 +147,24 @@ impl<'a> Namespace<'a> {
             Self::Dav => NamespaceUri::literal(Self::DAV_URI),
             Self::CalDav => NamespaceUri::literal(Self::CALDAV_URI),
             Self::CalendarServer => NamespaceUri::literal(Self::CALENDARSERVER_URI),
-            Self::Other(uri) => uri,
+            Self::Xml => NamespaceUri::literal(Self::XML_URI),
+            Self::Other(uri) => uri.0,
         }
     }
 
     /// Whether two namespaces are the same namespace.
     ///
-    /// Written over the URIs rather than derived, so that a `Namespace<'static>` from the table and a `Namespace<'_>` borrowed from a body compare without either lifetime having to become the other.
+    /// Compare canonical classifications and normalized foreign names across borrowed lifetimes.
     #[must_use]
     pub fn is(self, other: Namespace<'_>) -> bool {
-        self.uri() == other.uri()
+        match (self, other) {
+            (Self::Dav, Namespace::Dav)
+            | (Self::CalDav, Namespace::CalDav)
+            | (Self::CalendarServer, Namespace::CalendarServer)
+            | (Self::Xml, Namespace::Xml) => true,
+            (Self::Other(left), Namespace::Other(right)) => left.0 == right.0,
+            _ => false,
+        }
     }
 
     /// The prefix this crate writes for the namespace.
@@ -157,6 +177,7 @@ impl<'a> Namespace<'a> {
             Self::Dav => b"D",
             Self::CalDav => b"C",
             Self::CalendarServer => b"CS",
+            Self::Xml => b"xml",
             Self::Other(_) => b"",
         }
     }
@@ -164,7 +185,7 @@ impl<'a> Namespace<'a> {
 
 impl PartialEq for Namespace<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.uri() == other.uri()
+        self.is(*other)
     }
 }
 
@@ -746,6 +767,35 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{ALL, ElementName, Namespace, QName};
+
+    #[test]
+    fn accepted_namespace_bindings_do_not_repeat_normalization_for_name_lookups() {
+        use crate::internal::dav::xml::chars::{AttributeValue, observe_normalization};
+
+        for suffix in [b"AV:".as_slice(), b"ttp://www.w3.org/XML/1998/namespace"] {
+            for padding in [32, 2048] {
+                let mut raw = Vec::from(b"&#".as_slice());
+                raw.extend(core::iter::repeat_n(b'0', padding));
+                raw.extend_from_slice(b"120;");
+                raw.extend_from_slice(suffix);
+                for lookups in [1, 128] {
+                    let ((), work) = observe_normalization(|| {
+                        let namespace = Namespace::from(AttributeValue::parse(&raw).unwrap());
+                        for _ in 0..lookups {
+                            assert_eq!(ElementName::resolve(namespace, b"owner"), None);
+                            assert!(!namespace.is(Namespace::from_uri(Namespace::XML_URI)));
+                            assert!(namespace.is(namespace));
+                        }
+                    });
+                    let bound = u64::try_from(raw.len()).unwrap().saturating_mul(8);
+                    assert!(
+                        work <= bound,
+                        "normalized {work} octets with a bound of {bound}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_prefix_is_never_what_a_name_resolves_on() {
