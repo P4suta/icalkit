@@ -78,6 +78,19 @@ impl ZoneDatabase for ConflictingZone {
 }
 
 #[test]
+fn xml_line_endings_in_the_query_definition_place_floating_events() {
+    let timezone = zone("").replace("\r\n", "\n");
+    let query = query(&timezone, "VEVENT", "20240102T070000Z", "20240102T073000Z");
+    let resource = calendar("VEVENT", "DTSTART:20240102T090000\r\nDURATION:PT1H\r\n");
+    assert_eq!(
+        query
+            .matches(&mut Engine::default().session(), &resource)
+            .unwrap(),
+        Match::Matched
+    );
+}
+
+#[test]
 fn floating_values_use_the_inline_definition_without_an_external_database() {
     let query = query(&zone(""), "VEVENT", "20240102T070000Z", "20240102T073000Z");
     let calendar = calendar("VEVENT", "DTSTART:20240102T090000\r\nDURATION:PT1H\r\n");

@@ -31,9 +31,10 @@ impl Client {
     pub fn supported_rscales(&self, uri: &str) -> Result<Operation<Option<Vec<String>>>, Error> {
         let policy = self.policy;
         let request = propfind_request(uri, &[ElementName::SupportedRscaleSet], policy)?;
+        let target = request.uri().to_string();
         Ok(Operation::with_policy(
             request,
-            move |response| read_advertisement(&response, policy),
+            move |response| read_advertisement(&response, &target, policy),
             policy,
         ))
     }
@@ -56,10 +57,11 @@ impl Client {
         let decoder = prepared.decoder.take().ok_or_else(invalid)?;
         let policy = self.policy;
         let probe = propfind_request(capability_uri, &[ElementName::SupportedRscaleSet], policy)?;
+        let target = probe.uri().to_string();
         Ok(Operation::from_decoder(
             probe,
             Box::new(move |response| {
-                let advertised = read_advertisement(&response, policy)?
+                let advertised = read_advertisement(&response, &target, policy)?
                     .ok_or_else(|| Error::single("icalkit.caldav.rscale-advertisement-required"))?;
                 if !advertised.is_empty()
                     && !required.iter().all(|name| {
@@ -227,6 +229,7 @@ fn scale_name(bytes: &[u8], policy: ResourcePolicy, meter: &mut Meter) -> Result
 
 fn read_advertisement(
     response: &WireResponse,
+    target: &str,
     policy: ResourcePolicy,
 ) -> Result<Option<Vec<String>>, Error> {
     let mut meter = Meter::new(policy.limits);
@@ -234,6 +237,9 @@ fn read_advertisement(
     let [resource] = body.responses() else {
         return Err(invalid());
     };
+    if !same_resource(target, resource.href.as_str().map_err(|_| invalid())?) {
+        return Err(invalid());
+    }
     let mut found = None;
     for group in resource
         .propstats()
@@ -253,6 +259,62 @@ fn read_advertisement(
     Ok(found)
 }
 
+struct ResourceReference<'a> {
+    origin: Option<&'a str>,
+    path: &'a str,
+    query: Option<&'a str>,
+}
+
+impl<'a> ResourceReference<'a> {
+    fn parse(uri: &'a str) -> Option<Self> {
+        if uri.contains('#') || uri.starts_with("//") {
+            return None;
+        }
+        let (origin, rest) = if uri.starts_with('/') {
+            (None, uri)
+        } else {
+            let (scheme, rest) = uri.split_once("://")?;
+            let port = if scheme.eq_ignore_ascii_case("https") {
+                ":443"
+            } else if scheme.eq_ignore_ascii_case("http") {
+                ":80"
+            } else {
+                return None;
+            };
+            let end = rest.find(['/', '?']).unwrap_or(rest.len());
+            let (authority, rest) = rest.split_at(end);
+            if authority.is_empty() || authority.contains('@') {
+                return None;
+            }
+            let origin = uri.strip_suffix(rest)?;
+            (Some(origin.strip_suffix(port).unwrap_or(origin)), rest)
+        };
+        let (path, query) = rest
+            .split_once('?')
+            .map_or((rest, None), |(path, query)| (path, Some(query)));
+        Some(Self {
+            origin,
+            path: if path.is_empty() { "/" } else { path },
+            query,
+        })
+    }
+}
+
+fn same_resource(target: &str, href: &str) -> bool {
+    let (Some(left), Some(right)) = (
+        ResourceReference::parse(target),
+        ResourceReference::parse(href),
+    ) else {
+        return false;
+    };
+    left.path == right.path
+        && left.query == right.query
+        && left
+            .origin
+            .zip(right.origin)
+            .is_none_or(|(one, other)| one.eq_ignore_ascii_case(other))
+}
+
 fn read_value(
     value: &PropValue,
     policy: ResourcePolicy,
@@ -260,6 +322,13 @@ fn read_value(
 ) -> Result<Vec<String>, Error> {
     let fragment = match value {
         PropValue::Empty => return Ok(Vec::new()),
+        PropValue::Text(text)
+            if text
+                .iter()
+                .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+        {
+            return Ok(Vec::new());
+        },
         PropValue::Markup(fragment) => fragment.as_ref(),
         _ => return Err(invalid()),
     };
@@ -391,4 +460,35 @@ pub(super) fn advertisement_value(
         return Err(too_large());
     }
     Ok(Some(PropValue::Markup(fragment.into_boxed_slice())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::internal::core::{IgnoreDiagnostics, Limits};
+
+    #[test]
+    fn scale_text_limit_applies_after_a_complete_name() {
+        let xml = br#"<supported-rscale-set xmlns="urn:ietf:params:xml:ns:caldav"><supported-rscale>GREGORIAN</supported-rscale><supported-rscale>ABCDEFGHIJ</supported-rscale></supported-rscale-set>"#;
+        let mut reader = XmlReader::new(xml);
+        let mut reader_meter = Meter::new(Limits::DEFAULT);
+        let mut sink = IgnoreDiagnostics;
+        let mut context = DecodeContext::new(Limits::DEFAULT, &mut reader_meter, &mut sink);
+        let policy = ResourcePolicy {
+            limits: Limits::DEFAULT.with_max_xml_text_bytes(9),
+        };
+        let mut meter = Meter::new(policy.limits);
+        let mut parser = ScaleList::new();
+        loop {
+            let event = reader.next_event(&mut context).unwrap().unwrap();
+            if let Err(error) = parser.event(event, policy, &mut meter) {
+                assert_eq!(parser.names, ["GREGORIAN"]);
+                assert_eq!(
+                    error.code().as_str(),
+                    "icalkit.caldav.rscale-advertisement-too-large"
+                );
+                break;
+            }
+        }
+    }
 }

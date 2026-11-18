@@ -12,9 +12,8 @@ A missing property and an advertised set without names have different meanings.
 
 ## Decision
 
-Require an explicit PROPFIND probe before writing interpreted `RSCALE` rules.
-The caller selects the associated calendar collection or calendar home URI.
-The transport supplies each response to its active request.
+Probe the caller's calendar collection or home with PROPFIND before writing `RSCALE` rules.
+Require one [WebDAV href](https://www.rfc-editor.org/rfc/rfc4918.html#section-8.3) matching the probe's path, query, and any shared origin.
 Accept CalDAV property values with `200 OK` as policy.
 An empty advertised set permits an attempt with any calendar name.
 Preserve listed names and compare them without case sensitivity, including supported Gregorian aliases.
@@ -24,13 +23,12 @@ Return the named `403` refusal for unsupported calendars after authorization.
 
 ## Alternatives
 
-Unchecked writes violate the protocol rule.
 An ordinary `allprop` request need not return this protected property.
 Guessing the object's parent misses advertisements on calendar homes.
 
 ## Consequences
 
-The write path adds a request and stops before storage on refusal.
+Refusal stops the write before storage.
 
 ## Confirmation
 

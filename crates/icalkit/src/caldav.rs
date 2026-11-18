@@ -19,8 +19,8 @@ use core::str;
 
 use crate::internal::core::codec::RequestStatus;
 use crate::internal::core::{
-    CivilDateTime, Component, DecodeValue as _, Diagnostic, DiagnosticCode, Instant, Meter,
-    Severity, UriValue, ValueType,
+    CivilDateTime, Component, DecodeValue as _, Diagnostic, DiagnosticCode, Instant, LimitExceeded,
+    Meter, Severity, UriValue, ValueType,
 };
 use crate::internal::dav::{
     CalendarDataRequest, CalendarPayload, DavProperty, DavResponse, DecodeContext, ETag,
@@ -187,7 +187,9 @@ fn read_query_zone(
     let Some(payload) = query.timezone.as_ref() else {
         return Ok(None);
     };
-    let calendar = crate::calendar::parse_calendar(payload.as_bytes(), policy, meter)
+    let bytes = normalize_xml_calendar(payload.as_bytes(), meter)
+        .map_err(|_| Error::single("icalkit.caldav.query-timezone-invalid"))?;
+    let calendar = crate::calendar::parse_calendar(&bytes, policy, meter)
         .map_err(|_| Error::single("icalkit.caldav.query-timezone-invalid"))?;
     let root = calendar
         .document
@@ -530,7 +532,8 @@ struct ScheduleCalendarData {
 
 impl ScheduleCalendarData {
     fn read(bytes: Vec<u8>, policy: ResourcePolicy, meter: &mut Meter) -> Result<Self, Error> {
-        let normalized = normalize_xml_calendar(&bytes, meter)?;
+        let normalized = normalize_xml_calendar(&bytes, meter)
+            .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))?;
         let message = Message::read_with_policy(&normalized, policy, meter)
             .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))?;
         Ok(Self {
@@ -540,24 +543,33 @@ impl ScheduleCalendarData {
     }
 }
 
-fn normalize_xml_calendar<'a>(bytes: &'a [u8], meter: &mut Meter) -> Result<Cow<'a, [u8]>, Error> {
+fn normalize_xml_calendar<'a>(
+    bytes: &'a [u8],
+    meter: &mut Meter,
+) -> Result<Cow<'a, [u8]>, LimitExceeded> {
     let bare_lf = |(index, byte): (usize, &u8)| {
         *byte == b'\n' && index.checked_sub(1).and_then(|index| bytes.get(index)) != Some(&b'\r')
     };
-    if !bytes.iter().enumerate().any(bare_lf) {
+    let extra = bytes
+        .iter()
+        .enumerate()
+        .filter(|entry| bare_lf(*entry))
+        .count();
+    if extra == 0 {
         return Ok(Cow::Borrowed(bytes));
     }
+    let length = meter.admit(|| bytes.len().checked_add(extra).ok_or(LimitExceeded::Budget))?;
+    meter.try_charge_bytes(u64::try_from(length).unwrap_or(u64::MAX))?;
     let mut normalized = Vec::new();
+    meter.admit(|| {
+        normalized
+            .try_reserve_exact(length)
+            .map_err(|_| LimitExceeded::Budget)
+    })?;
     for (index, byte) in bytes.iter().enumerate() {
         if bare_lf((index, byte)) {
-            meter
-                .try_charge(1)
-                .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))?;
             normalized.push(b'\r');
         }
-        meter
-            .try_charge(1)
-            .map_err(|_| Error::single("icalkit.caldav.schedule-invalid"))?;
         normalized.push(*byte);
     }
     Ok(Cow::Owned(normalized))
@@ -873,6 +885,14 @@ fn read_multistatus_metered(
             .any(|diagnostic| diagnostic.severity() == Severity::LimitReached)
         {
             return Err(Error::single("icalkit.caldav.response-truncated"));
+        }
+        let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics);
+        if events
+            .next_event(&mut context)
+            .map_err(|_| Error::single("icalkit.caldav.response-invalid"))?
+            .is_some()
+        {
+            return Err(Error::single("icalkit.caldav.response-invalid"));
         }
         Ok(body)
     })
