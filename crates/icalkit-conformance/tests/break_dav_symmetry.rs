@@ -15,8 +15,9 @@ use icalkit_conformance::internal::core::{Diagnostic, IgnoreDiagnostics, Instant
 use icalkit_conformance::internal::dav::{
     CalendarDataRequest, CalendarPayload, CalendarQuery, Collation, CompFilter, CompSelection,
     DavError, DavProperty, DavResponse, DecodeContext, ETag, ElementName, ExtensionName, Href,
-    MultiStatus, MultiStatusReader, ParamFilter, PropFilter, PropName, PropStat, PropValue,
-    RequestBody, ResourceType, Status, TextMatch, TimeRange, WriteXml, XmlReader,
+    LineEndings, MultiStatus, MultiStatusReader, ParamFilter, PropFilter, PropName, PropStat,
+    PropValue, RequestBody, ResourceType, Status, TextMatch, TextPolicy, TimeRange, WriteXml,
+    XmlReader,
 };
 
 /// RFC 4791 section 7.8.1's own `calendar-query`.
@@ -89,6 +90,113 @@ fn read_request_reporting(body: &[u8]) -> (Result<RequestBody, DavError>, Vec<Di
         RequestBody::read(&mut events, &mut context)
     };
     (read, reported)
+}
+
+fn single_property(value: &str, limits: Limits, policy: TextPolicy) -> Result<PropValue, DavError> {
+    let xml = format!(
+        r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/a</d:href><d:propstat><d:prop>{value}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
+    );
+    let mut meter = Meter::new(limits);
+    let mut sink = IgnoreDiagnostics;
+    let mut context = DecodeContext::new(limits, &mut meter, &mut sink).with_text(policy);
+    let mut events = XmlReader::new(xml.as_bytes());
+    let mut source = MultiStatusReader::new(&mut events);
+    let body = MultiStatus::read(&mut source, &mut context)?;
+    Ok(body.responses()[0].propstats()[0].props()[0].value.clone())
+}
+
+#[test]
+fn comments_between_character_runs_preserve_calendar_octets_and_folding() {
+    for (value, policy, bytes, endings) in [
+        (
+            "A\r<!--x-->\nB",
+            TextPolicy::Verbatim,
+            b"A\r\nB".as_slice(),
+            LineEndings::Crlf,
+        ),
+        (
+            "A\r\n<!--x-->B",
+            TextPolicy::Normalized,
+            b"A\nB",
+            LineEndings::Folded,
+        ),
+        (
+            "A<!--x-->B<!--y-->\r\nC",
+            TextPolicy::Normalized,
+            b"AB\nC",
+            LineEndings::Folded,
+        ),
+    ] {
+        let xml = format!("<c:calendar-data>{value}</c:calendar-data>");
+        let prop = single_property(&xml, Limits::DEFAULT, policy).unwrap();
+        let PropValue::CalendarData(payload) = prop else {
+            panic!("expected calendar data, got {prop:?}");
+        };
+        assert_eq!(payload.as_bytes(), bytes);
+        assert_eq!(payload.line_endings(), endings);
+    }
+}
+
+#[test]
+fn comments_between_character_runs_preserve_the_entity_tag() {
+    let tag = ETag::parse(br#""revision""#).unwrap();
+    assert_eq!(
+        single_property(
+            r#"<d:getetag>"rev<!--split-->ision"</d:getetag>"#,
+            Limits::DEFAULT,
+            TextPolicy::Normalized
+        )
+        .unwrap(),
+        PropValue::Entity(tag)
+    );
+}
+
+#[test]
+fn a_modeled_href_fits_its_text_limit_without_fragment_declarations() {
+    let value = single_property(
+        "<d:current-user-principal> <d:href> /a </d:href> </d:current-user-principal>",
+        Limits::DEFAULT.with_max_xml_text_bytes(64),
+        TextPolicy::Normalized,
+    )
+    .unwrap();
+    assert!(
+        matches!(value, PropValue::Reference(ref href) if href.as_bytes() == b"/a"),
+        "{value:?}"
+    );
+}
+
+#[test]
+fn a_reference_fallback_keeps_the_href_contents_and_layout() {
+    for (leading, trailing) in [("pre", ""), ("", ""), ("", "post")] {
+        let xml = format!(
+            "<d:owner>{leading}<d:href code=\"one\"> /a <d:displayname>nested</d:displayname> tail </d:href>{trailing}</d:owner>"
+        );
+        let prop = single_property(&xml, Limits::DEFAULT, TextPolicy::Normalized).unwrap();
+        let PropValue::Markup(fragment) = prop else {
+            panic!("expected markup, got {prop:?}");
+        };
+        let content = std::str::from_utf8(&fragment).unwrap();
+        assert!(
+            content.starts_with(&format!("{leading}<d:href ")),
+            "{content}"
+        );
+        assert!(
+            content.ends_with(&format!(
+                " code=\"one\"> /a <d:displayname>nested</d:displayname> tail </d:href>{trailing}"
+            )),
+            "{content}"
+        );
+    }
+    let prop = single_property(
+        "<d:owner> <d:href> /a </d:href> more</d:owner>",
+        Limits::DEFAULT,
+        TextPolicy::Normalized,
+    )
+    .unwrap();
+    let PropValue::Markup(fragment) = prop else {
+        panic!("expected markup");
+    };
+    assert!(fragment.ends_with(b"> /a </d:href> more"));
 }
 
 /// Read a multistatus, keeping whatever reached the sink on the way.
@@ -858,8 +966,7 @@ fn a_windowed_property_filter_and_an_absent_component_survive_both_directions() 
 
 /// RFC 4791 section 9.5's grammar puts `DAV:allprop` and `DAV:propname` inside a `calendar-query`.
 ///
-/// `<!ELEMENT calendar-query ((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)>` is the RFC's own production, and `CalendarQuery::props` is a property list and nothing else, so a client here cannot build two of the three shapes.
-/// What a server does with the body some other client sends is the half that can still be observed.
+/// A client sets `CalendarQuery::shape` to `QueryShape::AllProp` or `QueryShape::Names` to request either form.
 #[test]
 fn a_calendar_query_asking_for_every_property_is_a_body_rfc_4791_defines() {
     let wire = br#"<?xml version="1.0" encoding="utf-8" ?>

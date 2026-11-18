@@ -351,9 +351,12 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
                 XmlEvent::Text(run) => parts.absorb(run, context)?,
                 XmlEvent::Start { name, known, depth } => {
                     let inner = Opened { name, known, depth };
-                    // The start tag is recorded before the child is acted on, because acting on it may consume the whole subtree and the fragment has to stay balanced whichever branch was taken.
-                    parts.open_fragment(&*self.events, child, depth, context)?;
-                    self.in_property(&mut parts, inner, context)?;
+                    if let ValueContent::Resource(holder) = &mut parts.content {
+                        claim(holder, inner, context.meter)?;
+                        self.events.skip_element(context)?;
+                    } else {
+                        parts.open_fragment(&*self.events, child, inner, context)?;
+                    }
                 },
                 XmlEvent::End { .. } => {
                     parts.close_fragment(self.events.element_spelling(), context)?;
@@ -361,39 +364,7 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
             }
         }
         let at = self.events.offset();
-        parts.finish(at, context)
-    }
-
-    /// Act on one child element of a property.
-    fn in_property(
-        &mut self,
-        parts: &mut ValueParts<'body>,
-        child: Opened<'body>,
-        context: &mut DecodeContext<'_>,
-    ) -> Result<(), DavError> {
-        parts.child_count = parts.child_count.saturating_add(1);
-        if let ValueContent::Resource(holder) = &mut parts.content {
-            claim(holder, child, context.meter)?;
-            return self.events.skip_element(context);
-        }
-        if parts.shape == Shape::Reference && child.known == Some(ElementName::Href) {
-            parts.href_count = parts.href_count.saturating_add(1);
-            let found = self.href_of(child.depth, context)?;
-            // `href_of` consumed the element's own end tag, so the fragment is closed here with the value that came out of it — a reference-shaped property whose children turn out not to be the one `href` this shape admits still has to be keepable.
-            if let ValueContent::Markup(fragment) = &mut parts.content {
-                let octets = found.as_ref().map(Href::as_bytes).unwrap_or_default();
-                fragment.push_escaped(octets, false, context)?;
-                close_in_fragment(fragment, self.events.element_spelling(), context)?;
-            }
-            if parts.first_href.is_none() {
-                parts.first_href = found;
-            }
-            return Ok(());
-        }
-        // Deliberately not skipped: the loop that called this walks into the element instead,
-        // so the character data inside a property with no modeled shape is collected rather than passed over.
-        // `Unmodeled` promises the octets, and a subtree whose text was skipped on the way past would leave it with none to promise.
-        Ok(())
+        parts.finish(child, at, context)
     }
 
     /// Read the preconditions a `DAV:error` names.
@@ -730,27 +701,25 @@ struct ValueParts<'body> {
     /// The shape this property's name earns.
     shape: Shape,
     content: ValueContent<'body>,
-    /// The first `DAV:href` child, for a reference-shaped property.
-    first_href: Option<Href>,
-    /// Elements seen inside this property, at any depth.
-    child_count: u32,
-    /// `DAV:href` children seen.
-    href_count: u32,
-    reference_layout_only: bool,
 }
 
 #[derive(Debug)]
 enum ValueContent<'body> {
     Resource(ResourceType),
     Text(TextRuns<'body>),
+    Href(PendingHref<'body>),
     Markup(Fragment),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum TextRuns<'body> {
+    #[default]
     Empty,
     Single(DecodedText<'body>),
-    Joined(Vec<u8>),
+    Joined {
+        bytes: Vec<u8>,
+        folded: bool,
+    },
 }
 
 impl<'body> TextRuns<'body> {
@@ -758,7 +727,7 @@ impl<'body> TextRuns<'body> {
         match self {
             Self::Empty => &[],
             Self::Single(held) => held.run.as_bytes(),
-            Self::Joined(bytes) => bytes,
+            Self::Joined { bytes, .. } => bytes,
         }
     }
 
@@ -773,9 +742,16 @@ impl<'body> TextRuns<'body> {
                 let mut joined = Vec::new();
                 append(&mut joined, held.run.as_bytes(), context)?;
                 append(&mut joined, decoded.run.as_bytes(), context)?;
-                *self = Self::Joined(joined);
+                *self = Self::Joined {
+                    bytes: joined,
+                    folded: held.line_endings == LineEndings::Folded
+                        || decoded.line_endings == LineEndings::Folded,
+                };
             },
-            Self::Joined(bytes) => append(bytes, decoded.run.as_bytes(), context)?,
+            Self::Joined { bytes, folded } => {
+                append(bytes, decoded.run.as_bytes(), context)?;
+                *folded |= decoded.line_endings == LineEndings::Folded;
+            },
         }
         Ok(())
     }
@@ -785,6 +761,19 @@ impl<'body> TextRuns<'body> {
 struct Fragment(Vec<u8>);
 
 impl Fragment {
+    fn attribute(
+        &mut self,
+        spelling: &[u8],
+        value: &[u8],
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        self.push_fragment(b" ", context)?;
+        self.push_fragment(spelling, context)?;
+        self.push_fragment(b"=\"", context)?;
+        self.push_escaped(value, true, context)?;
+        self.push_fragment(b"\"", context)
+    }
+
     fn push_fragment(
         &mut self,
         bytes: &[u8],
@@ -810,14 +799,11 @@ impl<'body> ValueParts<'body> {
     fn new(shape: Shape, limits: Limits) -> Self {
         Self {
             shape,
-            first_href: None,
+
             content: match shape {
                 Shape::Resource => ValueContent::Resource(ResourceType::new(limits)),
                 _ => ValueContent::Text(TextRuns::Empty),
             },
-            child_count: 0,
-            href_count: 0,
-            reference_layout_only: true,
         }
     }
 
@@ -825,20 +811,38 @@ impl<'body> ValueParts<'body> {
         &mut self,
         events: &dyn XmlPull<'body>,
         property: Opened<'body>,
-        depth: u16,
+        child: Opened<'body>,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
         match &mut self.content {
             ValueContent::Resource(_) => Ok(()),
+            ValueContent::Text(text)
+                if self.shape == Shape::Reference
+                    && child.known == Some(ElementName::Href)
+                    && trim_xml(text.bytes()).is_empty() =>
+            {
+                self.content = ValueContent::Href(PendingHref::capture(
+                    events,
+                    core::mem::take(text),
+                    context,
+                )?);
+                Ok(())
+            },
             ValueContent::Text(text) => {
                 let mut fragment = Fragment(Vec::new());
                 fragment.push_escaped(text.bytes(), false, context)?;
-                open_in_fragment(events, &mut fragment, property, depth, context)?;
+                open_in_fragment(events, &mut fragment, property, child.depth, context)?;
+                self.content = ValueContent::Markup(fragment);
+                Ok(())
+            },
+            ValueContent::Href(href) => {
+                let mut fragment = href.fragment(property, context)?;
+                open_in_fragment(events, &mut fragment, property, child.depth, context)?;
                 self.content = ValueContent::Markup(fragment);
                 Ok(())
             },
             ValueContent::Markup(fragment) => {
-                open_in_fragment(events, fragment, property, depth, context)
+                open_in_fragment(events, fragment, property, child.depth, context)
             },
         }
     }
@@ -851,6 +855,10 @@ impl<'body> ValueParts<'body> {
         match &mut self.content {
             ValueContent::Resource(_) => Ok(()),
             ValueContent::Text(_) => Err(SyntaxError::Malformed.into()),
+            ValueContent::Href(href) => {
+                href.after = Some(TextRuns::Empty);
+                Ok(())
+            },
             ValueContent::Markup(fragment) => close_in_fragment(fragment, spelled, context),
         }
     }
@@ -860,10 +868,14 @@ impl<'body> ValueParts<'body> {
         decoded: DecodedText<'body>,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
-        self.reference_layout_only &= trim_xml(decoded.run.as_bytes()).is_empty();
         match &mut self.content {
             ValueContent::Resource(_) => Ok(()),
             ValueContent::Text(text) => text.absorb(decoded, context),
+            ValueContent::Href(href) => href
+                .after
+                .as_mut()
+                .unwrap_or(&mut href.text)
+                .absorb(decoded, context),
             ValueContent::Markup(fragment) => {
                 fragment.push_escaped(decoded.run.as_bytes(), false, context)
             },
@@ -871,7 +883,28 @@ impl<'body> ValueParts<'body> {
     }
 
     /// The value this content amounts to.
-    fn finish(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
+    fn finish(
+        mut self,
+        property: Opened<'body>,
+        at: u64,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<PropValue, DavError> {
+        if let ValueContent::Href(href) = &self.content {
+            let target = trim_xml(href.text.bytes());
+            if !target.is_empty()
+                && href
+                    .after
+                    .as_ref()
+                    .is_some_and(|after| trim_xml(after.bytes()).is_empty())
+            {
+                return Ok(PropValue::Reference(Href::new(
+                    target,
+                    context.limits,
+                    context.meter,
+                )?));
+            }
+            self.content = ValueContent::Markup(href.fragment(property, context)?);
+        }
         // A `resourcetype` answers with its claims even when it carries none: an empty one is a plain resource, which is a different fact from a property that arrived empty.
         if let ValueContent::Resource(claimed) = self.content {
             return Ok(PropValue::Resource(claimed));
@@ -884,45 +917,36 @@ impl<'body> ValueParts<'body> {
         match self.shape {
             Shape::Payload => self.payload(at, context),
             Shape::Entity => self.entity(at, context),
-            Shape::Reference => self.reference(at, context),
+            Shape::Reference | Shape::Foreign => self.unmodeled(at, context),
             Shape::Resource | Shape::Plain => self.plain(at, context),
-            Shape::Foreign => self.unmodeled(at, context),
         }
     }
 
     /// A `calendar-data` payload, with the line-ending witness the decode produced.
     fn payload(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
-        // The witness exists only on the run the decode produced, so a payload broken across runs by markup is one this reader cannot hand on as the octets the server stored.
-        if let ValueContent::Text(TextRuns::Single(held)) = &self.content {
-            let carried = CalendarPayload::from_text(held, context.limits, context.meter)?;
-            return Ok(PropValue::CalendarData(carried));
-        }
-        self.unmodeled(at, context)
+        let payload = match &self.content {
+            ValueContent::Text(TextRuns::Single(run)) => {
+                CalendarPayload::from_text(run, context.limits, context.meter)?
+            },
+            ValueContent::Text(TextRuns::Joined { bytes, folded }) => {
+                let payload = CalendarPayload::from_octets(bytes, context.limits, context.meter)?;
+                if *folded {
+                    payload.into_folded()
+                } else {
+                    payload
+                }
+            },
+            _ => return self.unmodeled(at, context),
+        };
+        Ok(PropValue::CalendarData(payload))
     }
 
     /// An entity tag, if the content is the quoted string RFC 9110 section 8.8.3 requires.
     fn entity(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
-        if let ValueContent::Text(TextRuns::Single(held)) = &self.content {
-            let parsed = ETag::parse(trim_xml(held.run.as_bytes())).ok();
-            if let Some(tag) = parsed {
-                return Ok(PropValue::Entity(tag));
-            }
-        }
-        self.unmodeled(at, context)
-    }
-
-    /// The one `href` a reference-shaped property carries.
-    fn reference(
-        mut self,
-        at: u64,
-        context: &mut DecodeContext<'_>,
-    ) -> Result<PropValue, DavError> {
-        if self.child_count == 1
-            && self.href_count == 1
-            && self.reference_layout_only
-            && let Some(target) = self.first_href.take()
+        if let ValueContent::Text(text) = &self.content
+            && let Ok(tag) = ETag::parse(trim_xml(text.bytes()))
         {
-            return Ok(PropValue::Reference(target));
+            return Ok(PropValue::Entity(tag));
         }
         self.unmodeled(at, context)
     }
@@ -941,6 +965,7 @@ impl<'body> ValueParts<'body> {
         context.report(DiagnosticCode::DavPropertyUnmodeled, Severity::Note, at);
         match self.content {
             ValueContent::Resource(claimed) => Ok(PropValue::Resource(claimed)),
+            ValueContent::Href(_) => Err(SyntaxError::Malformed.into()),
             ValueContent::Text(text) => {
                 let kept = retain(text.bytes(), context)?;
                 Ok(PropValue::Unmodeled(kept))
@@ -960,6 +985,90 @@ impl<'body> ValueParts<'body> {
     }
 }
 
+fn bindings_of<'a, 'reader>(
+    events: &'reader dyn XmlPull<'a>,
+    ancestors: bool,
+) -> impl Iterator<Item = (&'a [u8], Namespace<'a>)> + 'reader {
+    (0..).map_while(move |index| events.binding_at(index, ancestors))
+}
+
+#[derive(Debug)]
+struct PendingHref<'a> {
+    spelling: &'a [u8],
+    bindings: Vec<(&'a [u8], Namespace<'a>)>,
+    attributes: Vec<(&'a [u8], Box<[u8]>)>,
+    before: TextRuns<'a>,
+    text: TextRuns<'a>,
+    after: Option<TextRuns<'a>>,
+}
+
+impl<'a> PendingHref<'a> {
+    fn capture(
+        events: &dyn XmlPull<'a>,
+        before: TextRuns<'a>,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<Self, DavError> {
+        let mut bindings = Vec::new();
+        for binding in bindings_of(events, true) {
+            keep_item(&mut bindings, binding, context.meter)?;
+        }
+        let mut attributes = Vec::new();
+        for index in 0..events.attribute_count() {
+            let spelling = events
+                .attribute_spelling(index)
+                .ok_or(SyntaxError::Malformed)?;
+            let (_, value) = events.attribute_at(index).ok_or(SyntaxError::Malformed)?;
+            context
+                .meter
+                .try_charge_bytes(u64::try_from(value.len()).unwrap_or(u64::MAX))?;
+            let value = context.meter.admit(|| copy(value))?;
+            keep_item(&mut attributes, (spelling, value), context.meter)?;
+        }
+        Ok(Self {
+            spelling: events.element_spelling(),
+            bindings,
+            attributes,
+            before,
+            text: TextRuns::Empty,
+            after: None,
+        })
+    }
+
+    fn fragment(
+        &self,
+        property: Opened<'a>,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<Fragment, DavError> {
+        let mut fragment = Fragment(Vec::new());
+        fragment.push_escaped(self.before.bytes(), false, context)?;
+        fragment.push_fragment(b"<", context)?;
+        fragment.push_fragment(self.spelling, context)?;
+        declare_fragment_root(
+            self.bindings.iter().copied(),
+            &mut fragment,
+            property,
+            context,
+        )?;
+        for (spelling, value) in &self.attributes {
+            fragment.attribute(spelling, value, context)?;
+        }
+        fragment.push_fragment(b">", context)?;
+        fragment.push_escaped(self.text.bytes(), false, context)?;
+        if let Some(after) = &self.after {
+            close_in_fragment(&mut fragment, self.spelling, context)?;
+            fragment.push_escaped(after.bytes(), false, context)?;
+        }
+        Ok(fragment)
+    }
+}
+
+fn keep_item<T>(items: &mut Vec<T>, item: T, meter: &mut Meter) -> Result<(), DavError> {
+    meter.try_charge_bytes(u64::try_from(size_of::<T>()).unwrap_or(u64::MAX))?;
+    meter.admit(|| items.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
+    items.push(item);
+    Ok(())
+}
+
 fn open_in_fragment<'a>(
     events: &dyn XmlPull<'a>,
     parts: &mut Fragment,
@@ -970,12 +1079,9 @@ fn open_in_fragment<'a>(
     parts.push_fragment(b"<", context)?;
     parts.push_fragment(events.element_spelling(), context)?;
     if depth.saturating_sub(1) == property.depth {
-        declare_fragment_root(events, parts, property, context)?;
+        declare_fragment_root(bindings_of(events, true), parts, property, context)?;
     } else {
-        for index in 0.. {
-            let Some((prefix, namespace)) = events.binding_at(index, false) else {
-                break;
-            };
+        for (prefix, namespace) in bindings_of(events, false) {
             push_declaration(parts, prefix, namespace, context)?;
         }
     }
@@ -984,17 +1090,13 @@ fn open_in_fragment<'a>(
             .attribute_spelling(index)
             .ok_or(SyntaxError::Malformed)?;
         let (_, value) = events.attribute_at(index).ok_or(SyntaxError::Malformed)?;
-        parts.push_fragment(b" ", context)?;
-        parts.push_fragment(spelling, context)?;
-        parts.push_fragment(b"=\"", context)?;
-        parts.push_escaped(value, true, context)?;
-        parts.push_fragment(b"\"", context)?;
+        parts.attribute(spelling, value, context)?;
     }
     parts.push_fragment(b">", context)
 }
 
 fn declare_fragment_root<'a>(
-    events: &dyn XmlPull<'a>,
+    source: impl Iterator<Item = (&'a [u8], Namespace<'a>)>,
     fragment: &mut Fragment,
     property: Opened<'a>,
     context: &mut DecodeContext<'_>,
@@ -1002,14 +1104,7 @@ fn declare_fragment_root<'a>(
     let mut bindings = Vec::new();
     let mut add = |prefix: &'a [u8], namespace: Namespace<'a>| -> Result<(), DavError> {
         let order = bindings.len();
-        context.meter.try_charge_bytes(
-            u64::try_from(size_of::<(&[u8], usize, Namespace<'_>)>()).unwrap_or(u64::MAX),
-        )?;
-        context
-            .meter
-            .admit(|| bindings.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
-        bindings.push((prefix, order, namespace));
-        Ok(())
+        keep_item(&mut bindings, (prefix, order, namespace), context.meter)
     };
     for namespace in crate::internal::dav::writer::DECLARED {
         add(namespace.write_prefix(), namespace)?;
@@ -1018,10 +1113,7 @@ fn declare_fragment_root<'a>(
     if property.known.is_none() && !property_ns.uri().is_empty() && property_ns.uri() != XML_URI {
         add(b"X", property_ns)?;
     }
-    for index in 0.. {
-        let Some((prefix, namespace)) = events.binding_at(index, true) else {
-            break;
-        };
+    for (prefix, namespace) in source {
         add(prefix, namespace)?;
     }
     let width = bindings
