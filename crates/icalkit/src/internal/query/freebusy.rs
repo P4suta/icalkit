@@ -47,15 +47,14 @@
 //! which is the one thing section 7.10 and section 9.9 have to agree about.
 //! What is left here is section 7.10's own subject: which components contribute, under which type, clipped and coalesced how.
 //!
-//! One consequence is worth stating because it is the case a re-derivation gets wrong.
-//! An all-day event occupies its whole day in whichever zone places it, which is between 23 and 25 hours and never exactly 24.
-//! Nothing in this file divides a period by a day or adds 86,400 to a start, so a 23-hour instance arrives 23 hours long and leaves 23 hours long.
+//! An all-day event contributes the interval supplied by expansion in its placement zone.
 //!
 //! # The report has nowhere to put a third value
 //!
 //! A `VEVENT` with a floating `DTSTART` contributes busy time at no particular instant until a zone places it, and `docs/adr/0003` forbids inventing one.
 //! Unlike a filter, a report has no third answer available — a period is either in the list or it is not — so a resource that could not be placed must not be silently omitted, because the caller would read the gap as free time.
-//! [`Placement::incomplete`] carries the reason `expand` gives for an incomplete expansion straight through to [`BusyAnswer::unplaced`], where the caller can see it.
+//! The report retains an incomplete expansion's reason in [`BusyAnswer::unplaced`] when the shared budget can store it.
+//! Exhausting the budget while retaining a reason fails the report.
 
 use alloc::vec::Vec;
 
@@ -127,8 +126,7 @@ pub struct Placement<'a> {
     pub instances: &'a [Instance],
     /// Why that expansion is incomplete, absent when it is not.
     ///
-    /// The third value the report cannot hold, carried in so it can be handed back out.
-    /// A budget that stopped a search, a `TZID` no source knew, a floating value the query stated no zone for: each leaves this component contributing less busy time than it has, and each reaches the caller through [`BusyAnswer::unplaced`] rather than as an absence.
+    /// The report charges the shared meter before retaining a reason for an incomplete expansion.
     pub incomplete: Option<Undecided>,
 }
 

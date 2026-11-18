@@ -11,7 +11,7 @@ use icalkit_conformance::internal::core::{
 };
 use icalkit_conformance::internal::dav::{CompFilter, TimeRange};
 use icalkit_conformance::internal::query::{
-    self, Budget, Match, Reduction, Selection, Undecided, Zones,
+    self, Budget, Match, QueryError, Reduction, Selection, Undecided, Zones,
 };
 use icalkit_conformance::internal::tz::FixedOffsetSource;
 
@@ -59,15 +59,15 @@ fn assert_unreadable(source: &[u8]) {
     );
     let selection = Selection::new(document, Reduction::FAITHFUL);
     let mut meter = Meter::new(limits);
-    assert!(
+    assert!(matches!(
         query::expand_calendar(
             &selection,
             window(),
             zones,
             &mut Budget::new(limits, &mut meter)
-        )
-        .is_err()
-    );
+        ),
+        Err(QueryError::Unrepresentable)
+    ));
     assert_eq!(selection.calendar().to_bytes(), source);
 }
 

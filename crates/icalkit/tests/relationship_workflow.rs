@@ -78,6 +78,9 @@ fn inbound_and_outbound_scheduling_refuse_malformed_relationships() {
 
 #[test]
 fn queries_match_and_project_relationship_references_without_rewriting() {
+    let other =
+        Calendar::parse(calendar(&REFERENCES.replace("urn:other", "urn:different")).as_bytes())
+            .unwrap();
     let calendar = Calendar::parse(calendar(REFERENCES).as_bytes()).unwrap();
     let query = Query::parse(
         br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -96,6 +99,10 @@ fn queries_match_and_project_relationship_references_without_rewriting() {
         Match::Matched
     );
     let projected = query.project(&mut session, &calendar).unwrap();
+    assert_eq!(
+        query.matches(&mut session, &other).unwrap(),
+        Match::Unmatched
+    );
     assert!(
         projected
             .as_bytes()

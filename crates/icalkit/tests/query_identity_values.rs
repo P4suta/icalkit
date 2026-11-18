@@ -88,6 +88,15 @@ fn effective_properties_use_the_decoded_series_identity() {
     assert_eq!(
         matches(
             &calendar,
+            "20240102T120000Z",
+            "20240102T130000Z",
+            Some("Master")
+        ),
+        Match::Unmatched
+    );
+    assert_eq!(
+        matches(
+            &calendar,
             "20240102T090000Z",
             "20240102T100000Z",
             Some("Master")
