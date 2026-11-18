@@ -560,7 +560,7 @@ pub(crate) fn bounded_cap(bound: u32) -> usize {
 pub(crate) fn copy(octets: &[u8]) -> Result<Box<[u8]>, LimitExceeded> {
     let mut owned = Vec::new();
     owned
-        .try_reserve(octets.len())
+        .try_reserve_exact(octets.len())
         .map_err(|_| LimitExceeded::Budget)?;
     owned.extend_from_slice(octets);
     Ok(owned.into_boxed_slice())

@@ -16,7 +16,7 @@ use icalkit_conformance::internal::core::{
     LimitExceeded, Limits, Meter, UtcOffset,
 };
 use icalkit_conformance::internal::dav::{
-    DavError, DecodeContext, MultiStatus, MultiStatusReader, PropValue, XmlPull, XmlReader,
+    DavError, DecodeContext, Href, MultiStatus, MultiStatusReader, PropValue, XmlPull, XmlReader,
 };
 use icalkit_conformance::internal::tz::{Observance, TransitionTable, read_calendar_zones};
 
@@ -493,7 +493,23 @@ fn check_namespace_allocations() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn check_protocol_value_copies() -> Result<(), Box<dyn std::error::Error>> {
+    for bytes in [b"/".as_slice(), b"/short", b"/longer/href"] {
+        let limits = Limits::DEFAULT;
+        let (value, allocation) = measure(|| Href::new(bytes, limits, &mut Meter::new(limits)));
+        assert_eq!(value?.as_bytes(), bytes);
+        assert_eq!(allocation.retained, as_u64(bytes.len()), "{allocation:?}");
+        assert_eq!(
+            allocation.allocated,
+            as_u64(bytes.len()),
+            "boxing must not resize: {allocation:?}"
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    check_protocol_value_copies()?;
     let calendar_bytes = calendar_input();
     let (calendar, property_allocation) = measure(|| {
         let limits = Limits::GENEROUS;
