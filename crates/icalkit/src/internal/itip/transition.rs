@@ -4,22 +4,18 @@
 
 //! What a message would change, described and not made.
 //!
-//! A transition is a value. Nothing on it reaches a component, and applying one is a separate
-//! call taking a separate type — which is what lets a mail client render "this meeting was
-//! moved — accept?" before anything touches the user's calendar (ADR-0005).
+//! A transition is a value.
+//! Nothing on it reaches a component, and applying one is a separate call taking a separate type — which is what lets a mail client render "this meeting was moved — accept?"
+//! before anything touches the user's calendar (ADR-0005).
 //!
 //! # The vocabulary, and the address
 //!
-//! The words are `ical-core`'s: [`ProposedChange`] and
-//! [`ParameterEdit`](crate::internal::core::ParameterEdit), reused rather than reinvented, which is the
-//! coupling DP-13 bought. The *address* is this crate's, because
-//! `ical-core`'s [`PropertyId`](crate::internal::core::PropertyId) names an identity and a scheduling
-//! message changes one attendee among many. [`crate::internal::itip::PropertyOccurrence`] is that address, and
-//! [`crate::internal::core::Component::apply_to_occurrence`] is the door it is applied through — a second
-//! door beside the identity-addressed [`crate::internal::core::Component::apply`], not a widening of it.
+//! The words are `ical-core`'s: [`ProposedChange`] and [`ParameterEdit`](crate::internal::core::ParameterEdit), reused rather than reinvented, which is the coupling DP-13 bought.
+//! The *address* is this crate's, because `ical-core`'s [`PropertyId`](crate::internal::core::PropertyId) names an identity and a scheduling message changes one attendee among many.
+//! [`crate::internal::itip::PropertyOccurrence`] is that address, and [`crate::internal::core::Component::apply_to_occurrence`] is the door it is applied through — a second door beside the identity-addressed [`crate::internal::core::Component::apply`], not a widening of it.
 //!
-//! The map is keyed on the occurrence, so two conflicting changes to one line cannot both
-//! exist. A `Vec` would admit them and leave the resolution to whoever iterated last.
+//! The map is keyed on the occurrence, so two conflicting changes to one line cannot both exist.
+//! A `Vec` would admit them and leave the resolution to whoever iterated last.
 
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_map;
@@ -32,39 +28,47 @@ use crate::internal::itip::state::PropertyOccurrence;
 
 /// What kind of change a message describes, in RFC 5546's own terms.
 ///
-/// A caller renders a prompt from this rather than from the method, because two methods can
-/// describe one thing to a person: an updated `REQUEST` that moved the time and one that only
-/// fixed a typo are `Rescheduled` and `Updated`.
+/// A caller renders a prompt from this rather than from the method, because two methods can describe one thing to a person: an updated `REQUEST` that moved the time and one that only fixed a typo are `Rescheduled` and `Updated`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum TransitionReason {
-    /// An unsolicited posting. RFC 5546 section 3.2.1.
+    /// An unsolicited posting.
+    /// RFC 5546 section 3.2.1.
     Published,
-    /// An invitation to a component the caller did not have. Section 3.2.2.
+    /// An invitation to a component the caller did not have.
+    /// Section 3.2.2.
     Created,
-    /// An update to one it did, leaving the time alone. Section 3.2.2.
+    /// An update to one it did, leaving the time alone.
+    /// Section 3.2.2.
     Updated,
-    /// An update that moved the time. Section 3.2.2.1.
+    /// An update that moved the time.
+    /// Section 3.2.2.1.
     Rescheduled,
-    /// Instances added to an existing component. Section 3.2.4.
+    /// Instances added to an existing component.
+    /// Section 3.2.4.
     InstancesAdded,
-    /// One attendee's answer. Section 3.2.3.
+    /// One attendee's answer.
+    /// Section 3.2.3.
     ParticipationChanged,
-    /// The component, or some of its instances, cancelled. Section 3.2.5.
+    /// The component, or some of its instances, cancelled.
+    /// Section 3.2.5.
     Cancelled,
-    /// A request for the latest version. Section 3.2.6.
+    /// A request for the latest version.
+    /// Section 3.2.6.
     RefreshRequested,
-    /// An alternative proposal from an attendee. Section 3.2.7.
+    /// An alternative proposal from an attendee.
+    /// Section 3.2.7.
     CounterProposed,
-    /// An organizer declining one. Section 3.2.8.
+    /// An organizer declining one.
+    /// Section 3.2.8.
     CounterDeclined,
 }
 
 /// Every change one message would make, keyed by the occurrence it would make it to.
 ///
-/// Inert. No method here reaches a component, so a transition can be shown, stored, counted
-/// and thrown away, and none of that applies anything. Applying one needs a
-/// [`crate::internal::itip::Authorization`], which cannot be built from a transition.
+/// Inert.
+/// No method here reaches a component, so a transition can be shown, stored, counted and thrown away, and none of that applies anything.
+/// Applying one needs a [`crate::internal::itip::Authorization`], which cannot be built from a transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transition {
     /// What kind of change this is.
@@ -76,9 +80,8 @@ pub struct Transition {
 impl Transition {
     /// A transition of kind `reason` that changes nothing yet.
     ///
-    /// Public because a transition is inert: it describes and never acts, so nothing rests on
-    /// who built one. What rests on provenance is [`crate::internal::itip::Authorization`], which this cannot
-    /// become.
+    /// Public because a transition is inert: it describes and never acts, so nothing rests on who built one.
+    /// What rests on provenance is [`crate::internal::itip::Authorization`], which this cannot become.
     #[must_use]
     pub const fn new(reason: TransitionReason) -> Self {
         Self {
@@ -89,9 +92,7 @@ impl Transition {
 
     /// Record `change` against `at`, answering with whatever it displaced.
     ///
-    /// A displacement is a caller describing one occurrence twice, and the later description
-    /// wins — the same rule `crate::internal::recur::PropertyDiff` states about restating a property
-    /// inside one diff.
+    /// A displacement is a caller describing one occurrence twice, and the later description wins — the same rule `crate::internal::recur::PropertyDiff` states about restating a property inside one diff.
     pub fn record(
         &mut self,
         at: PropertyOccurrence,
@@ -114,8 +115,7 @@ impl Transition {
 
     /// Whether nothing would change.
     ///
-    /// A message that changes nothing is a normal outcome, not an error: a `REPLY` restating
-    /// an answer already recorded is one, and a caller shows "no change" rather than a prompt.
+    /// A message that changes nothing is a normal outcome, not an error: a `REPLY` restating an answer already recorded is one, and a caller shows "no change" rather than a prompt.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
@@ -158,12 +158,12 @@ impl ExactSizeIterator for Changes<'_> {
 
 /// Which party a property belongs to, for the purposes of RFC 5546's field restrictions.
 ///
-/// The generalization of section 3.2.2's and section 3.2.3's restriction tables, which state
-/// per method that an attendee's reply may not change the organizer's fields.
+/// The generalization of section 3.2.2's and section 3.2.3's restriction tables, which state per method that an attendee's reply may not change the organizer's fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum FieldRule {
-    /// Only the organizer may change it. The default, including for unknown names.
+    /// Only the organizer may change it.
+    /// The default, including for unknown names.
     OrganizerOnly,
     /// An attendee may change it, on their own `ATTENDEE` line and nowhere else.
     AttendeeOwn,
@@ -173,22 +173,15 @@ pub enum FieldRule {
 
 /// Which party may change the property `name`.
 ///
-/// The default is [`FieldRule::OrganizerOnly`], `X-` names included. An unrecognized property
-/// arriving in a `REPLY` is exactly the shape of an attendee smuggling state into an
-/// organizer's copy, and a permissive default there is a hole no test written against the
-/// properties we know will ever find. The price is the failure mode we prefer: the first real
-/// interoperability report is "this legitimate `COUNTER` was refused", not a silent write.
+/// The default is [`FieldRule::OrganizerOnly`], `X-` names included.
+/// An unrecognized property arriving in a `REPLY` is exactly the shape of an attendee smuggling state into an organizer's copy, and a permissive default there is a hole no test written against the properties we know will ever find.
+/// The price is the failure mode we prefer: the first real interoperability report is "this legitimate `COUNTER` was refused", not a silent write.
 ///
 /// # `ORGANIZER` and `SEQUENCE` are the organizer's, and echoing one is not changing it
 ///
-/// Both were [`FieldRule::EitherParty`] on the reading that an attendee's `COUNTER` legally
-/// *restates* them. That is true and is not what the rule decides: a transition holds only
-/// occurrences whose octets differ from the ones held, so a restatement produces no entry and
-/// is never asked about. What the permission actually bought was the other case — an
-/// attendee-authored message whose `ORGANIZER` line names somebody else, which RFC 5546
-/// section 3.2.7 gives an attendee no authority over and which hands the meeting away, and one
-/// whose `SEQUENCE` is a number section 2.1.4 makes the *organizer's* to increment and which
-/// the revision gate then reads back as the version to refuse everything older than.
+/// Both were [`FieldRule::EitherParty`] on the reading that an attendee's `COUNTER` legally *restates* them.
+/// That is true and is not what the rule decides: a transition holds only occurrences whose octets differ from the ones held, so a restatement produces no entry and is never asked about.
+/// What the permission actually bought was the other case — an attendee-authored message whose `ORGANIZER` line names somebody else, which RFC 5546 section 3.2.7 gives an attendee no authority over and which hands the meeting away, and one whose `SEQUENCE` is a number section 2.1.4 makes the *organizer's* to increment and which the revision gate then reads back as the version to refuse everything older than.
 #[must_use]
 pub fn field_rule(name: &[u8]) -> FieldRule {
     for (spelling, rule) in [
@@ -208,9 +201,7 @@ pub fn field_rule(name: &[u8]) -> FieldRule {
 
 /// Whether `name` is a property that says when something happens.
 ///
-/// What separates [`TransitionReason::Rescheduled`] from [`TransitionReason::Updated`], and
-/// the list an attendee may never write: moving a meeting by replying to it is the first
-/// attack `SECURITY.md` names.
+/// What separates [`TransitionReason::Rescheduled`] from [`TransitionReason::Updated`], and the list an attendee may never write: moving a meeting by replying to it is the first attack `SECURITY.md` names.
 #[must_use]
 pub fn is_time_property(name: &[u8]) -> bool {
     [
@@ -229,18 +220,14 @@ pub fn is_time_property(name: &[u8]) -> bool {
 
 /// Where an authorized transition is written.
 ///
-/// A trait because `ical-itip` owns no storage. It ships an implementation for
-/// [`crate::internal::core::Component`], routing each change through
-/// [`crate::internal::core::Component::apply_to_occurrence`]; a server whose storage is a row implements
-/// this against its rows instead.
+/// A trait because `ical-itip` owns no storage.
+/// It ships an implementation for [`crate::internal::core::Component`], routing each change through [`crate::internal::core::Component::apply_to_occurrence`]; a server whose storage is a row implements this against its rows instead.
 pub trait ScheduleTarget: Debug {
     /// Write one change, or say why this target will not.
     ///
     /// # Errors
     ///
-    /// [`WriteRejected`], which is a report and never a reason to stop: a partial application
-    /// is reported rather than hidden, because this crate owns no transaction and cannot roll
-    /// one back.
+    /// [`WriteRejected`], which is a report and never a reason to stop: a partial application is reported rather than hidden, because this crate owns no transaction and cannot roll one back.
     fn write_change(
         &mut self,
         at: &PropertyOccurrence,
@@ -291,9 +278,8 @@ impl RejectedChange {
 
 /// What applying a transition actually did.
 ///
-/// A partial application is reported, never hidden. A caller that needs all-or-nothing checks
-/// [`ApplyReport::is_complete`] before committing its own storage, because this crate owns no
-/// transaction and cannot roll one back.
+/// A partial application is reported, never hidden.
+/// A caller that needs all-or-nothing checks [`ApplyReport::is_complete`] before committing its own storage, because this crate owns no transaction and cannot roll one back.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ApplyReport {
     /// How many changes the target took.
@@ -417,8 +403,7 @@ mod tests {
         assert_eq!(field_rule(b"REQUEST-STATUS"), FieldRule::EitherParty);
     }
 
-    /// The two properties an attendee may echo and may not write: who runs the meeting, and
-    /// which revision of it this is.
+    /// The two properties an attendee may echo and may not write: who runs the meeting, and which revision of it this is.
     #[test]
     fn the_organizer_line_and_the_revision_are_not_an_attendees_to_change() {
         assert_eq!(field_rule(b"ORGANIZER"), FieldRule::OrganizerOnly);
