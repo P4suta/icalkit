@@ -842,17 +842,35 @@ fn platform_test_tool_violations(candidate: &str) -> Vec<String> {
     let Some(platform) = workflow_job(candidate, "platform") else {
         return Vec::new();
     };
-    let tools: Vec<_> = platform
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("install_args:"))
-        .map(|arguments| {
-            arguments
-                .split_once('#')
-                .map_or(arguments, |(value, _)| value)
-        })
-        .flat_map(str::split_whitespace)
-        .collect();
-    [
+    let steps = platform
+        .split_once("    steps:\n")
+        .map_or("", |(_, steps)| steps);
+    let mut tools = Vec::new();
+    let mut reached_tests = false;
+    for step in steps.split("\n      - ") {
+        if workflow_step_runs(step, "mise x -- just test-ci") {
+            reached_tests = true;
+            break;
+        }
+        let mise = step.lines().any(|line| {
+            line.trim()
+                .trim_start_matches("- ")
+                .starts_with("uses: jdx/mise-action@")
+        });
+        if mise {
+            tools.extend(
+                step.lines()
+                    .filter_map(|line| line.trim().strip_prefix("install_args:"))
+                    .map(|arguments| {
+                        arguments
+                            .split_once('#')
+                            .map_or(arguments, |(value, _)| value)
+                    })
+                    .flat_map(str::split_whitespace),
+            );
+        }
+    }
+    let mut violations: Vec<_> = [
         "rust",
         "just",
         "lefthook",
@@ -863,7 +881,24 @@ fn platform_test_tool_violations(candidate: &str) -> Vec<String> {
     .into_iter()
     .filter(|tool| !tools.contains(tool))
     .map(|tool| format!("candidate platform tests require {tool}"))
-    .collect()
+    .collect();
+    if !reached_tests {
+        violations.push("candidate platform tests require a test-ci step".to_owned());
+    }
+    violations
+}
+
+fn workflow_step_runs(step: &str, command: &str) -> bool {
+    for line in step.lines() {
+        let line = line.trim().trim_start_matches("- ");
+        if let Some(run) = line.strip_prefix("run:") {
+            let run = run.split_once('#').map_or(run, |(value, _)| value).trim();
+            return run == command
+                || (matches!(run, "|" | ">" | "|-" | ">-")
+                    && step.lines().any(|line| line.trim() == command));
+        }
+    }
+    false
 }
 
 fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
@@ -2762,6 +2797,7 @@ enum RegistryFence<'a> {
 fn registry_lines(document: &str) -> Result<Vec<&str>, String> {
     let mut open: Option<RegistryFence<'_>> = None;
     let mut registry = None;
+    let mut html_comment = false;
     for line in document.lines() {
         if let Some(active) = open.as_mut() {
             let marker = match active {
@@ -2774,6 +2810,13 @@ fn registry_lines(document: &str) -> Result<Vec<&str>, String> {
             } else if let RegistryFence::Registry(_, lines) = active {
                 lines.push(line);
             }
+            continue;
+        }
+        let trimmed = line.trim_start_matches(' ');
+        if html_comment
+            || (line.len().saturating_sub(trimmed.len()) <= 3 && trimmed.starts_with("<!--"))
+        {
+            html_comment = !line.contains("-->");
             continue;
         }
         if let Some((marker, info)) = CodeFence::parse(line) {
@@ -4042,6 +4085,49 @@ name = \"icalkit\"
     }
 
     #[test]
+    fn candidate_platform_tools_must_precede_test_execution() {
+        let candidate = include_str!("../../.github/workflows/candidate.yml");
+        let platform = super::workflow_job(candidate, "platform").unwrap();
+        let setup = platform
+            .lines()
+            .find(|line| line.trim().starts_with("install_args:"))
+            .unwrap();
+        let arguments = setup.trim().strip_prefix("install_args:").unwrap();
+        for tool in [
+            "rust",
+            "just",
+            "lefthook",
+            "taplo",
+            "typos",
+            "cargo:cargo-nextest",
+        ] {
+            let remaining = arguments
+                .split_whitespace()
+                .filter(|held| *held != tool)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let without = platform.replace(setup, &format!("          install_args: {remaining}"));
+            let step = format!(
+                "      - uses: jdx/mise-action@fixture\n        with:\n          install_args: {tool}\n"
+            );
+            let later = format!("{without}{step}");
+            assert!(
+                !super::platform_test_tool_violations(&candidate.replace(platform, &later))
+                    .is_empty(),
+                "a later setup supplied {tool}"
+            );
+            let earlier = without.replace(
+                "      - run: mise x -- just test-ci",
+                &format!("{step}      - run: mise x -- just test-ci"),
+            );
+            assert_eq!(
+                super::platform_test_tool_violations(&candidate.replace(platform, &earlier)),
+                Vec::<String>::new()
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_ci_does_not_start_candidate_qualification() {
         let root = super::workspace_root().unwrap();
         let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
@@ -5047,6 +5133,31 @@ Prose, and a `|` in it, above the table.
     fn registry_tables_reject_multiple_authoritative_blocks() {
         let source = format!("{SAMPLE_GOLDEN}\n{SAMPLE_GOLDEN}");
         assert!(golden_rows(&source).is_err());
+    }
+
+    #[test]
+    fn registry_tables_ignore_html_comment_blocks() {
+        for opening in ["<!--", " <!-- hidden", "   <!-- hidden"] {
+            let hidden = format!("{opening}\n{SAMPLE_GOLDEN}-->\n");
+            assert!(
+                golden_rows(&hidden).is_err(),
+                "a comment supplied the registry"
+            );
+            assert_eq!(
+                codes_violations(SAMPLE_DECLARATIONS, &format!("{hidden}\n{SAMPLE_GOLDEN}")),
+                Vec::<String>::new()
+            );
+        }
+        let example = format!("````markdown\n<!--\n````\n{SAMPLE_GOLDEN}");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &example),
+            Vec::<String>::new()
+        );
+        let single = format!("<!-- one line -->\n{SAMPLE_GOLDEN}");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &single),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
