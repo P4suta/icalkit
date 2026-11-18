@@ -1318,6 +1318,113 @@ fn a_generated_instance_reply_cannot_choose_a_side_of_a_repeated_hour() {
 }
 
 #[test]
+fn a_series_answer_does_not_order_a_generated_occurrence() {
+    check_instance_answer_order("").unwrap();
+}
+
+#[test]
+fn a_series_answer_does_not_order_a_stored_occurrence_with_inherited_attendees() {
+    check_instance_answer_order(
+        "BEGIN:VEVENT\r\nUID:range@example.test\r\nDTSTAMP:20260301T120000Z\r\n\
+         RECURRENCE-ID:20260317T140000Z\r\nDTSTART:20260317T160000Z\r\nEND:VEVENT\r\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_range_answer_does_not_order_a_later_generated_occurrence() {
+    check_instance_answer_order(
+        "BEGIN:VEVENT\r\nUID:range@example.test\r\nDTSTAMP:20260301T120000Z\r\n\
+         RECURRENCE-ID;RANGE=THISANDFUTURE:20260310T140000Z\r\nDTSTART:20260310T160000Z\r\n\
+         ATTENDEE;CN=Pat;PARTSTAT=TENTATIVE;\r\n X-ICALKIT-ANSWERED-AT=20260303T130000Z:mailto:pat@example.test\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED;\r\n X-ICALKIT-ANSWERED-AT=20260303T130000Z:mailto:alice@example.test\r\nEND:VEVENT\r\n",
+    ).unwrap();
+}
+
+fn check_instance_answer_order(stored: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let series = str::from_utf8(range_series::HELD)?
+        .replace(
+            "ATTENDEE;",
+            "ATTENDEE;CN=Pat:mailto:pat@example.test\r\nATTENDEE;",
+        )
+        .replace(WRAP_TAIL, &format!("{stored}{WRAP_TAIL}"));
+    let alice = Actor::new("mailto:alice@example.test").ok_or("invalid Alice address")?;
+    let pat = Actor::new("mailto:pat@example.test").ok_or("invalid Pat address")?;
+    let reply = |name: &str, status: &str, stamp: &str, key: &str, sequence| {
+        let fields = format!(
+            "{key}ORGANIZER:mailto:chair@example.test\r\n\
+                             ATTENDEE;PARTSTAT={status}:mailto:{name}@example.test\r\n"
+        );
+        Message::read(&scheduling_payload(
+            "REPLY",
+            "range@example.test",
+            stamp,
+            sequence,
+            &fields,
+        ))
+    };
+    let mut current = Calendar::parse(series.as_bytes())?;
+    for (name, status, actor) in [("alice", "ACCEPTED", &alice), ("pat", "TENTATIVE", &pat)] {
+        current = reply(name, status, "20260303T120000Z", "", 2)?
+            .review(&current, actor)?
+            .authorize()
+            .apply()?;
+    }
+
+    let key = "RECURRENCE-ID:20260317T140000Z\r\n";
+    let accepted = reply("alice", "DECLINED", "20260302T120000Z", key, 2)?
+        .review(&current, &alice)?
+        .authorize()
+        .apply()?;
+    let written = String::from_utf8(accepted.to_bytes())?;
+    let (master, _) = written
+        .split_once("END:VEVENT\r\n")
+        .ok_or("missing master")?;
+    let before = String::from_utf8(current.to_bytes())?;
+    assert_eq!(
+        master,
+        before
+            .split_once("END:VEVENT\r\n")
+            .ok_or("missing original master")?
+            .0
+    );
+    assert_eq!(
+        master
+            .matches("X-ICALKIT-ANSWERED-AT=20260303T120000Z")
+            .count(),
+        2
+    );
+    let occurrence = written
+        .rsplit_once("BEGIN:VEVENT\r\n")
+        .ok_or("missing detached event")?
+        .1
+        .replace("\r\n ", "");
+    assert_eq!(occurrence.matches(key).count(), 1);
+    assert!(occurrence.contains("ATTENDEE;CN=Pat;PARTSTAT=TENTATIVE:mailto:pat@example.test\r\n"));
+    assert!(occurrence.contains(
+        "PARTSTAT=DECLINED;X-ICALKIT-ANSWERED-AT=20260302T120000Z:mailto:alice@example.test\r\n"
+    ));
+    assert_eq!(occurrence.matches("X-ICALKIT-ANSWERED-AT").count(), 1);
+    for (stamp, sequence) in [
+        ("20260302T110000Z", 2),
+        ("20260304T120000Z", 1),
+        ("20260304T120000Z", 3),
+    ] {
+        assert!(
+            reply("alice", "ACCEPTED", stamp, key, sequence)?
+                .review(&accepted, &alice)
+                .is_err()
+        );
+    }
+    assert!(
+        reply("pat", "ACCEPTED", "20260302T110000Z", key, 2)?
+            .review(&accepted, &pat)
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[test]
 fn a_reply_updates_inherited_attendees_in_the_stored_occurrence() {
     let other = "ATTENDEE;CN=Pat:mailto:pat@example.test\r\n";
     let master = str::from_utf8(range_series::HELD)

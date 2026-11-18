@@ -18,9 +18,9 @@ use crate::internal::core::{
     UtcOffset,
 };
 use crate::internal::itip::{
-    ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method, PartyId,
-    ScheduleTarget, ScheduledComponent, ScheduledView, Transition, evaluate_initial_payload,
-    evaluate_message, evaluate_new_instance_payload, inspect_message,
+    ANSWERED_AT, ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method,
+    PartyId, ScheduleTarget, ScheduledComponent, ScheduledView, Transition,
+    evaluate_initial_payload, evaluate_message, evaluate_new_instance_payload, inspect_message,
 };
 
 use crate::calendar::parse_calendar;
@@ -800,6 +800,15 @@ fn review_occurrence(
     actor: &Actor,
     meter: &mut Meter,
 ) -> Result<Option<ReviewedChange>, Rejection> {
+    let inherits_attendees = occurrence.stored_item.is_none_or(|(_, stored)| {
+        stored
+            .properties_named(&PropertyId::ATTENDEE)
+            .next()
+            .is_none()
+    });
+    if inherits_attendees {
+        remove_inherited_reply_times(&mut occurrence.event);
+    }
     let transition = evaluate_new_instance_payload(
         message,
         &ScheduledView::of(&occurrence.event),
@@ -814,8 +823,12 @@ fn review_occurrence(
     let target = if let Some((item, stored)) = occurrence.stored_item {
         ChangeTarget::Existing {
             item,
-            inherited_attendees: take_inherited_attendees(&mut occurrence.event, stored, meter)
-                .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))?,
+            inherited_attendees: if inherits_attendees {
+                take_inherited_attendees(&mut occurrence.event, stored.items().len(), meter)
+                    .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))?
+            } else {
+                Vec::new()
+            },
         }
     } else {
         ChangeTarget::ReplyToOccurrence {
@@ -826,21 +839,30 @@ fn review_occurrence(
     Ok(Some(ReviewedChange { target, transition }))
 }
 
+fn remove_inherited_reply_times(event: &mut Component) {
+    for property in event
+        .items_mut()
+        .iter_mut()
+        .filter_map(Item::as_property_mut)
+    {
+        if property.has_id(&PropertyId::ATTENDEE)
+            && property.parameters_named(ANSWERED_AT).next().is_some()
+        {
+            property
+                .edit_parameters()
+                .retain(|parameter| !parameter.is_named(ANSWERED_AT));
+        }
+    }
+}
+
 fn take_inherited_attendees(
     event: &mut Component,
-    stored: &Component,
+    stored_items: usize,
     meter: &mut Meter,
 ) -> Result<Vec<Property>, LimitExceeded> {
     let mut attendees = Vec::new();
-    if stored
-        .properties_named(&PropertyId::ATTENDEE)
-        .next()
-        .is_some()
-    {
-        return Ok(attendees);
-    }
     let count = event.properties_named(&PropertyId::ATTENDEE).count();
-    charge_attendee_slots(meter, count, stored.items().len())?;
+    charge_attendee_slots(meter, count, stored_items)?;
     meter.admit(|| {
         attendees
             .try_reserve_exact(count)
