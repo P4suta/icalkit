@@ -624,6 +624,8 @@ pub struct Expansion {
     reduction: Reduction,
     /// Why the set is incomplete, absent when it is not.
     incomplete: Option<Undecided>,
+    /// Last start and identity safe to publish after a budget interruption.
+    ordered_through: Option<(Instant, Instant)>,
 }
 
 impl Expansion {
@@ -635,6 +637,16 @@ impl Expansion {
     #[must_use]
     pub fn instances(&self) -> &[Instance] {
         &self.instances
+    }
+
+    /// Instances whose order a calendar cursor can preserve across retries.
+    pub(crate) fn resumable_instances(&self) -> impl Iterator<Item = &Instance> {
+        self.instances.iter().filter(|instance| {
+            self.incomplete.is_none()
+                || self
+                    .ordered_through
+                    .is_some_and(|bound| (instance.start(), instance.recurrence_id()) <= bound)
+        })
     }
 
     /// What this expansion left out, which is always at least the recurrence rule itself.
@@ -1070,6 +1082,7 @@ const fn incomplete_expansion(reason: Undecided) -> Expansion {
             ..Reduction::FAITHFUL
         },
         incomplete: Some(reason),
+        ordered_through: None,
     }
 }
 
@@ -1826,6 +1839,7 @@ where
     S: DiagnosticSink + ?Sized,
 {
     let mut collected = Collector::new();
+    let mut ordered_through = None;
     if budget.is_exhausted() {
         collected.undecided = Some(Undecided::SearchExhausted);
     } else if let Some(bounds) = SearchBounds::compose(series, range)? {
@@ -1838,9 +1852,22 @@ where
                 collected.offer(found, range);
             }
         }
+        let mut last_walked = None;
         let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
+            if let Ok(instance) = found {
+                last_walked = Some(instance.recurrence_id());
+            }
             collected.offer(found, range)
         })?;
+        if series.clock == SeriesClock::Utc
+            && collected.undecided.is_none()
+            && incomplete == Some(Undecided::SearchExhausted)
+        {
+            ordered_through = last_walked.and_then(|key| {
+                let earliest = key.checked_add_seconds(bounds.widening().checked_neg()?)?;
+                Some((earliest, key))
+            });
+        }
         collected.undecided = collected.undecided.or(incomplete);
         if let Some(refusal) = collected.refused {
             return Err(refusal);
@@ -1856,6 +1883,7 @@ where
             ..Reduction::FAITHFUL
         },
         incomplete: collected.undecided,
+        ordered_through,
     })
 }
 

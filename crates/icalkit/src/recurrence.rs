@@ -327,8 +327,7 @@ fn start_calendar_occurrences<'a>(
     })?;
     let terminal_error = expansion.incomplete().map(recurrence_incomplete);
     let mut occurrences: Vec<Occurrence> = expansion
-        .instances()
-        .iter()
+        .resumable_instances()
         .map(|instance| {
             Ok(Occurrence {
                 key: timestamp(instance.recurrence_id())?,

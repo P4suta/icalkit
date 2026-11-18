@@ -197,6 +197,124 @@ END:VCALENDAR\r\n",
 }
 
 #[test]
+fn incomplete_calendar_searches_keep_unseen_earlier_starts() {
+    let calendar = Calendar::parse(concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240101T090000Z\r\n",
+        "RRULE:FREQ=DAILY;COUNT=5\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nRECURRENCE-ID:20240104T090000Z\r\n",
+        "DTSTART:20240101T090000Z\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nRECURRENCE-ID:20240103T090000Z\r\n",
+        "DTSTART:20240101T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    ).as_bytes()).unwrap();
+    let window = Window::new(january_2024(1, 0), january_2024(6, 0)).unwrap();
+    let tight = Engine::builder()
+        .resource_policy(ResourcePolicy::secure().with_occurrences_per_search(1))
+        .build();
+    let mut small = tight.session();
+    let mut first = calendar.occurrences(&mut small, "one", window).unwrap();
+    let initial = first.cursor();
+    assert_eq!(
+        first.try_next().unwrap_err().code().as_str(),
+        "icalkit.recurrence.budget-exhausted"
+    );
+    assert_eq!(first.cursor(), initial);
+    drop(first);
+    let full = Engine::default();
+    let mut session = full.session();
+    let mut complete = calendar
+        .resume_occurrences(&mut session, "one", window, initial)
+        .unwrap();
+    let early = complete.try_next().unwrap().unwrap();
+    assert_eq!(
+        (early.start(), early.key()),
+        (january_2024(1, 8), january_2024(3, 9))
+    );
+    let after_early = complete.cursor();
+    drop(complete);
+    let mut small = tight.session();
+    let mut refused = calendar
+        .resume_occurrences(&mut small, "one", window, after_early)
+        .unwrap();
+    assert_eq!(
+        refused.try_next().unwrap_err().code().as_str(),
+        "icalkit.recurrence.budget-exhausted"
+    );
+    assert_eq!(refused.cursor(), after_early);
+    drop(refused);
+    let middle = Engine::builder()
+        .resource_policy(ResourcePolicy::secure().with_occurrences_per_search(4))
+        .build();
+    let mut medium = middle.session();
+    let mut ties = calendar
+        .resume_occurrences(&mut medium, "one", window, after_early)
+        .unwrap();
+    for key in [january_2024(1, 9), january_2024(4, 9)] {
+        let entry = ties.try_next().unwrap().unwrap();
+        assert_eq!((entry.start(), entry.key()), (january_2024(1, 9), key));
+    }
+    let after_ties = ties.cursor();
+    assert_eq!(
+        ties.try_next().unwrap_err().code().as_str(),
+        "icalkit.recurrence.budget-exhausted"
+    );
+    assert_eq!(ties.cursor(), after_ties);
+    drop(ties);
+    let mut rest = calendar
+        .resume_occurrences(&mut session, "one", window, after_ties)
+        .unwrap();
+    let actual = core::iter::from_fn(|| rest.try_next().transpose())
+        .map(|entry| entry.map(|occurrence| (occurrence.start(), occurrence.key())))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        actual,
+        [
+            (january_2024(2, 9), january_2024(2, 9)),
+            (january_2024(5, 9), january_2024(5, 9)),
+        ]
+    );
+}
+
+#[test]
+fn a_lone_dtstart_cannot_certify_the_order_of_unseen_additions() {
+    let calendar = Calendar::parse(
+        concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n",
+            "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240105T090000Z\r\n",
+            "RDATE:20240101T090000Z,20240102T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let window = Window::new(january_2024(1, 0), january_2024(6, 0)).unwrap();
+    let tight = Engine::builder()
+        .resource_policy(ResourcePolicy::secure().with_occurrences_per_search(0))
+        .build();
+    let mut small = tight.session();
+    let mut partial = calendar.occurrences(&mut small, "one", window).unwrap();
+    let initial = partial.cursor();
+    assert_eq!(
+        partial.try_next().unwrap_err().code().as_str(),
+        "icalkit.recurrence.budget-exhausted"
+    );
+    assert_eq!(partial.cursor(), initial);
+    drop(partial);
+    let full = Engine::default();
+    let mut session = full.session();
+    let mut retry = calendar
+        .resume_occurrences(&mut session, "one", window, initial)
+        .unwrap();
+    for day in [1, 2, 5] {
+        assert_eq!(
+            retry.try_next().unwrap().unwrap().key(),
+            january_2024(day, 9)
+        );
+    }
+    assert_eq!(retry.try_next().unwrap(), None);
+}
+
+#[test]
 fn calendar_cursors_resume_in_start_and_key_order_across_windows() {
     let calendar = Calendar::parse(concat!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit cursor tests//EN\r\n",
