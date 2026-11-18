@@ -18,8 +18,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use icalkit_conformance::internal::core::{
-    Component, Diagnostic, Document, GrammarLimits, Item, Limits, MutationError, ParameterEdit,
-    ParseError, Property, PropertyId, ProposedChange, TextValue,
+    Component, Diagnostic, Document, GrammarLimits, Item, Limits, MutationError, Parameter,
+    ParameterEdit, ParseError, Property, PropertyId, ProposedChange, TextValue,
 };
 
 /// The first property starts below a fold at octet zero of its content line.
@@ -805,9 +805,15 @@ impl<'a> ParameterTarget<'a> {
             let assigned = new
                 .parameters_named(name)
                 .map(|parameter| (parameter.has_value(), parameter.unquoted()));
+            let unchanged = |parameter: &&Parameter| !parameter.is_named(name);
             if new.name() != old.name()
                 || new.value_text() != old.value_text()
                 || !assigned.eq([(true, value)])
+                || !new
+                    .parameters()
+                    .iter()
+                    .filter(unchanged)
+                    .eq(old.parameters().iter().filter(unchanged))
             {
                 return false;
             }
@@ -881,6 +887,34 @@ fn parameter_edit_checks_accept_duplicate_targets_and_reject_other_rows() {
     assert!(check(&changed_value).is_err());
     let refolded = both.replace("X-STATE:nested", "X-STATE:nes\r\n ted");
     assert!(check(&refolded).is_err());
+}
+
+#[test]
+fn parameter_edit_checks_preserve_the_other_parameters_on_the_edited_row() {
+    let source = b"BEGIN:VEVENT\r\nSUMMARY;X-A=one;LANGUAGE=de;X-B=two:value\r\nEND:VEVENT\r\n";
+    let before = Document::parse(source, Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let target = ParameterTarget::first(&before).unwrap();
+    let check = |parameters: &str| {
+        let written =
+            format!("BEGIN:VEVENT\r\nSUMMARY;LANGUAGE=en;{parameters}:value\r\nEND:VEVENT\r\n");
+        target.check(
+            source,
+            written.as_bytes(),
+            (b"LANGUAGE", b"en"),
+            Limits::DEFAULT,
+        )
+    };
+    check("X-A=one;X-B=two").unwrap();
+    let altered = [
+        "X-B=two",
+        "X-A=other;X-B=two",
+        "X-B=two;X-A=one",
+        "X-A=one;X-B=two;X-C=three",
+    ];
+    assert_eq!(
+        altered.map(|parameters| check(parameters).is_err()),
+        [true; 4]
+    );
 }
 
 #[test]
