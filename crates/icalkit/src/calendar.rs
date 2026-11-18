@@ -28,7 +28,7 @@ use crate::internal::tz::{FoldPolicy, GapPolicy, ZoneSource, read_calendar_zones
 use crate::model::EventRef;
 use crate::recurrence::{Cursor, Occurrences, Window};
 
-/// A strictly validated, losslessly stored calendar object.
+/// A validated calendar that preserves the original content lines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Calendar {
     pub(crate) document: Document,
@@ -44,8 +44,8 @@ impl Calendar {
         parse_calendar(bytes, policy, &mut meter)
     }
 
-    /// Serialize the stored CST.
-    /// Unedited lines retain their original octets.
+    /// Serialize the concrete syntax tree.
+    /// Unedited lines keep their original octets.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.document.to_bytes()
@@ -67,11 +67,11 @@ impl Calendar {
             .map(EventRef::new)
     }
 
-    /// Expand one stored component's complete recurrence set over a mandatory window.
+    /// Expand one component's recurrence set within the required window.
     ///
-    /// The master, `RRULE`, `RDATE`, `EXDATE`, and sibling `RECURRENCE-ID` overrides are composed internally.
-    /// Results are ordered by effective start rather than cadence key.
-    /// The identifier is decoded `UID` text.
+    /// Expansion combines the master, `RRULE`, `RDATE`, `EXDATE`, and sibling `RECURRENCE-ID` overrides.
+    /// Results follow effective start order.
+    /// Supply the decoded `UID` text.
     pub fn occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,
@@ -81,8 +81,8 @@ impl Calendar {
         crate::recurrence::calendar_occurrences(self, session, uid, window)
     }
 
-    /// Resume a stored recurrence set after an opaque cursor.
-    /// The identifier is decoded `UID` text.
+    /// Resume a recurrence set at an opaque cursor.
+    /// Supply the decoded `UID` text.
     pub fn resume_occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,
@@ -1456,9 +1456,9 @@ pub struct Editor<'a> {
 }
 
 impl Editor<'_> {
-    /// Replace one event's `SUMMARY` with a safely encoded `TEXT` value.
+    /// Replace an event's `SUMMARY` and encode the new `TEXT` value.
     ///
-    /// The decoded `UID` must identify exactly one event.
+    /// The decoded `UID` must identify one event.
     /// Unreadable event identities prevent selection.
     pub fn set_summary(&mut self, uid: &str, summary: &str) -> Result<(), Error> {
         let encoded = encode_text(summary)?;
@@ -1475,9 +1475,9 @@ impl Editor<'_> {
         Ok(())
     }
 
-    /// Set a vendor property on one event with an ASCII case-insensitive `X-` prefix.
+    /// Write one event's vendor property using a case-insensitive ASCII `X-` prefix.
     ///
-    /// The decoded `UID` must identify exactly one event.
+    /// The decoded `UID` must identify one event.
     /// Unreadable event identities prevent selection.
     pub fn set_vendor_property(
         &mut self,

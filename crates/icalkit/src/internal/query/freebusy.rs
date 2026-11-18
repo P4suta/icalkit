@@ -2,59 +2,28 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 8 — free-busy report generation.
-//! RFC 4791 sections 7.10 and 9.11.
+//! Generate free-busy reports under RFC 4791 sections 7.10 and 9.11.
 //!
-//! # What this unit owns
+//! Each [`Placement`] supplies a component, its expanded intervals in UTC, and any incomplete expansion reason.
+//! The overlap and expansion code supplies the same intervals for reports and time-range filters.
+//! For an all-day event, the interval follows its placement zone.
 //!
-//! Turning a `CALDAV:free-busy-query` and a collection of resources into a [`crate::internal::query::FreeBusyReport`]: the busy periods, merged, inside the window the query stated.
+//! An opaque `VEVENT` contributes busy time unless its status is `CANCELLED`.
+//! An absent `TRANSP` means `OPAQUE`.
+//! An absent `STATUS` means `CONFIRMED`.
+//! A tentative event contributes `BUSY-TENTATIVE`.
+//! An opaque event with an extension status contributes `BUSY`.
+//! A transparent event contributes no busy period.
 //!
-//! - Only the components that contribute do.
-//!   Section 7.10 counts `VEVENT` occurrences whose `TRANSP` is `OPAQUE` (the default) and whose `STATUS` is not `CANCELLED`, and the `FREEBUSY` periods of `VFREEBUSY` components.
-//!   A `VEVENT` with `TRANSP:TRANSPARENT` states that its time is free and must not appear; counting it reports somebody busy when they said they were not.
-//! - `STATUS:TENTATIVE` contributes as [`crate::internal::query::BusyType::Tentative`] rather than as `BUSY`, and the two must not be merged into one period.
-//! - Expansion goes through `expand` and the window through the same composition, so a report and a `time-range` filter over the same window agree about which occurrences exist.
-//! - Periods are clipped to the window and merged where they overlap and share a [`crate::internal::query::BusyType`].
-//!   Merging across types would state busy time the calendar does not.
-//! - Every period is charged through [`crate::internal::query::FreeBusyReport::push`], which is where `Limits::max_freebusy_periods` binds.
-//!   A report stopped at that bound calls [`crate::internal::query::FreeBusyReport::note_truncated`]: a caller reading the missing periods as free would double-book somebody, and a plain list of periods cannot say what is not in it.
+//! A `VFREEBUSY` contributes its explicit busy periods.
+//! The report clips them to the window and coalesces consecutive or overlapping periods of the same type.
+//! Different types can cover the same instant.
 //!
-//! # Section 7.10's mapping, transcribed
-//!
-//! The free or busy type of a `VEVENT` is a function of two properties and not of one, and the table is the whole of the rule:
-//!
-//! | `TRANSP`           | `STATUS`              | `FBTYPE`               |
-//! | ------------------ | --------------------- | ---------------------- |
-//! | `OPAQUE` (default) | `CONFIRMED` (default) | `BUSY`                 |
-//! | `OPAQUE`           | `CANCELLED`           | `FREE`                 |
-//! | `OPAQUE`           | `TENTATIVE`           | `BUSY-TENTATIVE`       |
-//! | `OPAQUE`           | an `x-name`           | `BUSY` or the `x-name` |
-//! | `TRANSPARENT`      | any of the four       | `FREE`                 |
-//!
-//! A row answering `FREE` states the absence of busy time, so it contributes no period at all:
-//! [`crate::internal::query::BusyType::Free`]'s own definition says a report generated from events does not write one.
-//! The `x-name` row is answered `BUSY`, which is the branch section 7.10 offers and this crate has no extension vocabulary to take the other one with.
-//!
-//! # Coalescing
-//!
-//! Section 7.10: *"Servers SHOULD coalesce consecutive or overlapping busy time periods of the same type."* Consecutive as well as overlapping — two `BUSY` periods that meet at one instant come back as one, because half-open periods that abut describe exactly the same busy time whether they are written as one or as two, and a client diffing two servers' answers should not see a difference that is not one.
-//! Periods of *different* types are never coalesced, which is why the same hour can appear twice.
-//!
-//! # No occurrence is placed here, and no length is derived here
-//!
-//! [`Placement`] carries `expand`'s own [`crate::internal::query::expand::Instance`] values, each already on the UTC timeline with a start and an end.
-//! That is deliberate and it is the point of the unit boundary: RFC 4791 section 9.9's table of what period a component occupies belongs to `overlap`, placing that period through a zone belongs to `expand`, and a report that derived either again would be free to disagree with a `time-range` filter run over the same window —
-//! which is the one thing section 7.10 and section 9.9 have to agree about.
-//! What is left here is section 7.10's own subject: which components contribute, under which type, clipped and coalesced how.
-//!
-//! An all-day event contributes the interval supplied by expansion in its placement zone.
-//!
-//! # The report has nowhere to put a third value
-//!
-//! A `VEVENT` with a floating `DTSTART` contributes busy time at no particular instant until a zone places it, and `docs/adr/0003` forbids inventing one.
-//! Unlike a filter, a report has no third answer available — a period is either in the list or it is not — so a resource that could not be placed must not be silently omitted, because the caller would read the gap as free time.
-//! The report retains an incomplete expansion's reason in [`BusyAnswer::unplaced`] when the shared budget can store it.
-//! Exhausting the budget while retaining a reason fails the report.
+//! [`BusyAnswer::unplaced`] identifies resources with incomplete coverage.
+//! For example, placing a floating `DTSTART` in UTC requires a zone.
+//! A missing period in an incomplete report gives no assurance of free time.
+//! The shared period limit bounds the report.
+//! Failure to store a reason within the shared allocation budget ends the operation.
 
 use alloc::vec::Vec;
 
@@ -69,11 +38,7 @@ use crate::internal::query::vocabulary::{
     Budget, BusyPeriod, BusyType, FreeBusyReport, QueryError, Undecided,
 };
 
-/// What free-busy report generation is reviewed against, one row per passage.
-///
-/// The transcription manifest for this unit.
-/// Every rule in this file comes from one of these passages, and a reviewer checks the file by reading them in this order rather than by reconstructing which specification a branch came from.
-/// A rule with no row here is a rule somebody invented, which is the failure this crate is most exposed to: an evaluator that disagrees with a conformant server returns a different set of resources and says nothing.
+/// Specification sections for the mapping, clipping, coalescing, and limits of a free-busy report.
 pub const FREE_BUSY_SECTIONS: &[&str] = &[
     "RFC 4791 section 7.10, the CALDAV:free-busy-query REPORT",
     "RFC 4791 section 7.10, the TRANSP and STATUS to FBTYPE mapping",
@@ -86,10 +51,7 @@ pub const FREE_BUSY_SECTIONS: &[&str] = &[
     "RFC 5545 section 3.8.2.7, TRANSP",
 ];
 
-/// Seconds in one day, RFC 5545 putting no leap second on the timeline.
-///
-/// Read at exactly one site — a `FREEBUSY` period written as a start and a duration, whose bounds section 3.8.2.6 requires in UTC, where a day is a day because UTC runs no transitions.
-/// It is not, and must not become, the length of anybody's calendar day.
+/// Seconds in a UTC day when placing a `FREEBUSY` start and duration.
 const SECONDS_PER_DAY: i64 = 86_400;
 
 /// The parameter RFC 5545 section 3.2.9 states a `FREEBUSY` period's type in.
@@ -107,77 +69,63 @@ const CANCELLED: &[u8] = b"CANCELLED";
 /// `STATUS:TENTATIVE`, RFC 5545 section 3.8.1.11.
 const TENTATIVE: &[u8] = b"TENTATIVE";
 
-/// One component of a calendar collection, expanded.
+/// One component and its expansion within the query window.
 ///
-/// The component itself and not the calendar object holding it: unwrapping a `VCALENDAR` is the caller's step, because the caller is the one that knows which of its children the query reached.
-/// A component whose type section 7.10 does not consider is accepted and contributes nothing, so a caller may hand in everything it holds without filtering first.
-///
-/// The three fields are exactly what `expand` produces for one component, so a caller writes `Placement { component, instances: expansion.instances(), incomplete: expansion.incomplete() }` and nothing else.
+/// The caller selects children of `VCALENDAR`.
+/// Components outside RFC 4791 section 7.10 contribute no busy time.
 #[derive(Clone, Copy, Debug)]
 pub struct Placement<'a> {
     /// The component the instances are of.
     pub component: &'a Component,
-    /// The instances `expand` placed inside the window, each with a start and an end in UTC.
-    ///
-    /// Empty means `expand` placed none there, which contributes nothing.
-    /// It does *not* mean "place it from `DTSTART`": a unit that guessed there would report busy time for a series the window excludes, and it would do so by deriving a period `overlap`'s table already owns.
-    ///
-    /// Ignored for a `VFREEBUSY`, whose `FREEBUSY` periods are absolute instants of their own (RFC 5545 section 3.8.2.6) rather than occurrences anything generates.
+    /// Instances that expansion placed in the window.
+    /// Each interval starts and ends in UTC.
+    /// An empty slice contributes no busy periods.
     pub instances: &'a [Instance],
-    /// Why that expansion is incomplete, absent when it is not.
-    ///
-    /// The report charges the shared meter before retaining a reason for an incomplete expansion.
+    /// The reason the expansion stopped early, if any.
+    /// The report charges the shared meter before storing the reason.
     pub incomplete: Option<Undecided>,
 }
 
-/// One resource the report could not fully account for, and why.
-///
-/// The third value a list of periods has nowhere to hold.
-/// A caller that drops these is reporting the time as free, which is the one reading that double-books somebody.
+/// A resource with incomplete free-busy coverage and the reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unplaced {
-    /// Which entry of the placements handed to [`free_busy`] this is about.
-    ///
-    /// One entry may appear twice: an expansion that stopped short and a value inside the component that did not decode are two different facts about one resource, and collapsing them would drop whichever was noticed second.
+    /// The index in the placements passed to [`free_busy`].
+    /// An incomplete expansion and an unreadable value can produce separate entries for the same resource.
     pub placement: usize,
-    /// What could not be decided about it.
+    /// The cause of the incomplete coverage.
     pub reason: Undecided,
 }
 
-/// A free-busy report and what it could not account for.
-///
-/// The two travel together for the reason [`crate::internal::query::Selection`]'s two halves do: separating them is how the second gets dropped, and a bare [`FreeBusyReport`] is indistinguishable from one generated over a collection every member of which was placeable.
+/// A free-busy report with the reasons for incomplete coverage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BusyAnswer {
     /// The busy periods, coalesced and clipped to the query's window.
     report: FreeBusyReport,
-    /// The resources that could not be fully accounted for, in the order they were handed in.
+    /// Resources with incomplete coverage, in input order.
     unplaced: Vec<Unplaced>,
 }
 
 impl BusyAnswer {
-    /// The report, whether or not everything reached it.
+    /// The busy periods the report collected.
     #[must_use]
     pub const fn report(&self) -> &FreeBusyReport {
         &self.report
     }
 
-    /// The resources that could not be fully accounted for.
+    /// The resources with incomplete coverage.
     #[must_use]
     pub fn unplaced(&self) -> &[Unplaced] {
         &self.unplaced
     }
 
-    /// Whether the report accounts for every resource it was given.
-    ///
-    /// `false` when something could not be placed *or* when a bound stopped the report short.
-    /// One question rather than two, because a caller acts on both the same way: what it holds is less busy time than the collection states.
+    /// Whether the report accounts for every resource.
+    /// Unplaced resources and truncation both make coverage incomplete.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.unplaced.is_empty() && !self.report.is_truncated()
     }
 
-    /// The code an unaccounted resource is reported under, or `None` when there was none.
+    /// The diagnostic code for an unplaced resource, or `None` if all resources have placements.
     #[must_use]
     pub fn code(&self) -> Option<DiagnosticCode> {
         if self.unplaced.is_empty() {
@@ -187,25 +135,23 @@ impl BusyAnswer {
         }
     }
 
-    /// The report, given up along with the record of what is missing from it.
-    ///
-    /// Named rather than a `From` impl, for [`crate::internal::query::Selection::into_calendar`]'s reason:
-    /// discarding the witness is something a reader of the call site sees happening.
+    /// Return the report and discard its record of unplaced resources.
     #[must_use]
     pub fn into_report(self) -> FreeBusyReport {
         self.report
     }
 }
 
-/// Generate the busy time a `CALDAV:free-busy-query` asks for, RFC 4791 section 7.10.
+/// Generate busy periods for a `CALDAV:free-busy-query` under RFC 4791 section 7.10.
 ///
-/// `placements` is the collection: one entry per component, each carrying the instances `expand` placed for it and the reason, if there is one, that it placed fewer than the component has.
-/// `budget` bounds the report, through `Limits::max_freebusy_periods` and through the ledger every period is charged to.
+/// Supply each component's expanded instances and any reason for incomplete expansion in one placement.
+/// The caller can share a meter across reports to apply one period budget to the entire exchange.
+/// Resource-specific reasons remain available on [`BusyAnswer::unplaced`].
 ///
-/// The refusals that end the whole call are the ones no report can be produced past: a value this crate would have to write back and cannot spell ([`QueryError::Unrepresentable`]), and an allocation the caller's ledger refused.
-/// Everything else is per resource and is reported.
+/// # Errors
 ///
-/// One `Meter` per report, or one across a whole collection, is the caller's choice and it is the choice `docs/adr/0010` describes: a shared ledger makes the period bound bind across every report an exchange produces, and truncates the later ones rather than letting each spend the bound again.
+/// Returns [`QueryError::Unrepresentable`] for a value the report can't write.
+/// Insufficient space in the shared budget also ends the operation.
 pub fn free_busy(
     query: FreeBusyQuery,
     placements: &[Placement<'_>],
@@ -232,10 +178,7 @@ pub fn free_busy(
     })
 }
 
-/// What stopped one resource from reaching the report.
-///
-/// Two kinds and not one, because they end different things: a resource nothing could place is a row of [`BusyAnswer::unplaced`] and the rest of the collection is still reported, while a value this crate cannot write back ends the call.
-/// Collapsing them would either turn one bad resource into a failed report or turn an unwritable answer into a silently short one.
+/// A resource-level placement failure or an error that prevents constructing the report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Refusal {
     /// This resource has no place on the timeline, and the answer says so.
@@ -265,14 +208,13 @@ fn contribute(
     match placement.component.kind() {
         Some(ComponentKind::Event) => collect_event(placement, window, coalesced),
         Some(ComponentKind::FreeBusy) => collect_free_busy(placement.component, window, coalesced),
-        // Section 7.10 names two component types and considers no others, so a `VTODO` or a `VJOURNAL` contributes nothing — and that is the specification's own answer rather than a gap, which makes it the one place in this file where saying nothing is not an invention.
+        // RFC 4791 section 7.10 includes only events and free-busy components.
         Some(_) | None => Ok(()),
     }
 }
 
-/// Add every instance of one `VEVENT`, RFC 4791 section 7.10.
-///
-/// The type is read once from the component and applied to every instance, because `TRANSP` and `STATUS` are properties of the component: an override that changed either would arrive as its own component with its own placement.
+/// Add each placed event instance under its component's `TRANSP` and `STATUS`.
+/// Overrides with different properties arrive as separate placements.
 fn collect_event(
     placement: Placement<'_>,
     window: (Option<Instant>, Option<Instant>),
@@ -291,7 +233,7 @@ fn collect_event(
 /// What one `VEVENT` contributes, or `None` for the rows of the table that state `FREE`.
 fn event_kind(component: &Component) -> Result<Option<BusyType>, Undecided> {
     if !is_opaque(component)? {
-        // Every `TRANSPARENT` row of section 7.10's table answers `FREE`, whatever the `STATUS` beside it says, so the `STATUS` is not even read.
+        // Transparent events contribute no period under any status.
         return Ok(None);
     }
     let status = component.status();
@@ -310,8 +252,7 @@ fn event_kind(component: &Component) -> Result<Option<BusyType>, Undecided> {
     } else if value.eq_ignore_ascii_case(TENTATIVE) {
         Ok(Some(BusyType::Tentative))
     } else {
-        // `CONFIRMED`, and the `x-name` row, which section 7.10 answers "BUSY or x-name".
-        // This crate holds no extension vocabulary, so it takes the branch it can state.
+        // RFC 4791 section 7.10 permits `BUSY` for an opaque event with an extension status.
         Ok(Some(BusyType::Busy))
     }
 }
@@ -333,16 +274,13 @@ fn is_opaque(component: &Component) -> Result<bool, Undecided> {
     } else if value.eq_ignore_ascii_case(TRANSPARENT) {
         Ok(false)
     } else {
-        // Section 3.8.2.7 defines two values and section 7.10's table has a row for each.
-        // A third is a value that is present and does not decode, and reading it as `OPAQUE` would report somebody busy on a guess.
+        // RFC 5545 section 3.8.2.7 defines two transparency values.
         Err(Undecided::ValueUnreadable)
     }
 }
 
-/// Add every `FREEBUSY` period of one `VFREEBUSY`, RFC 5545 section 3.8.2.6.
-///
-/// The `DTSTART` and `DTEND` of the component itself are deliberately not read.
-/// They state the window the publisher's answer covers rather than time anybody is busy, and section 7.10 aggregates busy time: a `VFREEBUSY` carrying a week's window and one meeting states one busy hour and not a busy week.
+/// Add busy periods from a `VFREEBUSY` under RFC 5545 section 3.8.2.6.
+/// The component's `DTSTART` and `DTEND` describe the reporting window.
 fn collect_free_busy(
     component: &Component,
     window: (Option<Instant>, Option<Instant>),
@@ -402,8 +340,7 @@ fn utc_period(written: Period<'_>, kind: BusyType) -> Result<BusyPeriod, Refusal
     let ends = match written {
         Period::Explicit { end, .. } => utc_instant(end)?,
         Period::Starting { duration, .. } => {
-            // UTC runs no transitions, so a nominal day and an exact one are the same 86,400 seconds here and RFC 5545 section 3.3.6's split has nothing to decide.
-            // This is the only place in this file where a day has a length at all.
+            // In UTC, each duration day contributes 86,400 seconds.
             let carried = duration
                 .days()
                 .checked_mul(SECONDS_PER_DAY)
@@ -419,22 +356,21 @@ fn utc_period(written: Period<'_>, kind: BusyType) -> Result<BusyPeriod, Refusal
     Ok(BusyPeriod::new(begins, ends, kind))
 }
 
-/// One bound of a `FREEBUSY` period, which section 3.8.2.6 requires be written in UTC.
+/// Read a UTC bound as RFC 5545 section 3.8.2.6 requires.
 fn utc_instant(bound: DateTimeValue<'_>) -> Result<Instant, Refusal> {
     match bound {
         DateTimeValue::Utc(stamp) => stamp
             .at_offset(UtcOffset::UTC)
             .ok_or(Refusal::Refused(QueryError::Unrepresentable)),
-        // A bound that is not in UTC is a value section 3.8.2.6 does not define, and placing it in the query's zone would report busy time at an instant nobody wrote.
+        // Applying a query zone would invent an instant for this bound.
         DateTimeValue::Date(_) | DateTimeValue::Local(_) | DateTimeValue::Zoned { .. } => {
             Err(Refusal::Unplaceable(Undecided::ValueUnreadable))
         },
     }
 }
 
-/// The part of `period` that lies inside `window`, which may be none of it.
-///
-/// Half-open at both ends, as RFC 4791 section 9.9 writes every window in this workspace: a period ending exactly where the window opens is outside it, and so is one beginning exactly where the window closes.
+/// Intersect a busy period with the half-open query window.
+/// A period that just touches the window contributes no busy time.
 fn clip(period: BusyPeriod, window: (Option<Instant>, Option<Instant>)) -> BusyPeriod {
     let start = match window.0 {
         Some(bound) if bound > period.start => bound,
@@ -447,17 +383,13 @@ fn clip(period: BusyPeriod, window: (Option<Instant>, Option<Instant>)) -> BusyP
     BusyPeriod::new(start, end, period.kind)
 }
 
-/// Whether RFC 4791 section 7.10 says to coalesce two periods, given they share a type.
-///
-/// "Consecutive or overlapping", so touching at one instant counts: two half-open periods that abut describe the same busy time as the single period covering both, and a report that wrote them separately would differ from a conformant server's for no reason a client could act on.
+/// Whether two periods of the same type meet or overlap under RFC 4791 section 7.10.
 fn touches(held: BusyPeriod, other: BusyPeriod) -> bool {
     held.start <= other.end && other.start <= held.end
 }
 
-/// The busy periods gathered so far, kept coalesced and ordered as they arrive.
-///
-/// Coalesced on the way in rather than at the end, for one reason that is not tidiness:
-/// [`FreeBusyReport`] has no way to withdraw a period once pushed, so merging afterwards is not possible, and a working list that grew without bound before the merge would be the very unbounded retention `Limits::max_freebusy_periods` exists to refuse.
+/// Sorted, coalesced busy periods.
+/// Merging on insertion applies the resource limit to the working list.
 #[derive(Debug)]
 struct Coalesced {
     /// The periods, ordered by start and pairwise non-touching within each type.
@@ -479,11 +411,9 @@ impl Coalesced {
         }
     }
 
-    /// Record `period`, merging it into every period of its own type that it touches.
-    ///
-    /// One pass suffices because the list is ordered by start and holds no two touching periods of one type: an entry passed over cannot be brought into contact by a later merge, since the entry that would have done so is one this list would already have merged with it.
+    /// Merge the period with every touching or overlapping period of the same type.
+    /// Start order and prior coalescing make one pass sufficient.
     fn insert(&mut self, period: BusyPeriod) -> Result<(), QueryError> {
-        // Section 3.8.2.6 writes a period with a positive duration, so a zero-width one states no busy time for anybody to read — and a period the window clipped away is exactly that.
         if period.is_empty() {
             return Ok(());
         }
@@ -498,8 +428,7 @@ impl Coalesced {
             false
         });
         if self.periods.len() == before && before >= self.cap {
-            // Nothing was absorbed, so this period would be a new entry against a full list.
-            // A period that *did* merge is always admitted, because it replaces at least one entry and so cannot grow the list.
+            // An entry that merges can fit even when the list has reached its limit.
             self.truncated = true;
             return Ok(());
         }
@@ -514,10 +443,7 @@ impl Coalesced {
     }
 }
 
-/// Move the gathered periods into the report the caller receives.
-///
-/// The only refusal [`FreeBusyReport::push`] gives is the free-busy period bound, which is a truncation of the answer rather than a failure to produce one: the periods already recorded are true, the ones after it are missing, and the report says so.
-/// The caller's ledger latches on the same charge, so the fact survives being handed on as a plain list of periods.
+/// Transfer the periods to the report, marking truncation if the remaining period budget runs out.
 fn assemble(
     window: (Option<Instant>, Option<Instant>),
     coalesced: Coalesced,
@@ -536,9 +462,8 @@ fn assemble(
     report
 }
 
-/// Retain one unaccounted resource, charging the caller's ledger for holding it.
-///
-/// Charged against the octet budget because no other dimension counts it: a collection of resources that are each unplaceable states no busy time at all, so it crosses no free-busy period bound while buying as much retention as the collection is long.
+/// Charge the byte budget before storing a resource with incomplete coverage.
+/// Such a resource can contribute no periods.
 fn record(
     unplaced: &mut Vec<Unplaced>,
     placement: usize,
@@ -614,13 +539,13 @@ mod tests {
     struct Case {
         /// What the row asserts, quoted at whichever assertion fails.
         what: &'static str,
-        /// The calendar, whose children are the collection, in the order they are written.
+        /// The calendar in component order.
         ics: &'static str,
-        /// Where `expand` placed each child's one instance, as a start and an end.
+        /// Each child's expanded start and end.
         instances: &'static [(i64, i64)],
         /// The periods RFC 4791 section 7.10 says come back, in order.
         periods: &'static [(i64, i64, BusyType)],
-        /// The resources it says cannot be accounted for, in order.
+        /// Placement failures in input order.
         unplaced: &'static [Undecided],
     }
 
@@ -629,9 +554,7 @@ mod tests {
         Document::parse(ics.as_bytes(), Limits::DEFAULT, &mut IgnoreDiagnostics).unwrap()
     }
 
-    /// Every child of every `VCALENDAR`, unfiltered.
-    ///
-    /// Unfiltered on purpose: a component section 7.10 does not consider is handed in, so that its being skipped is something the table proves rather than something the test arranges.
+    /// Return every child so the test exercises component selection.
     fn children(document: &Document) -> Vec<&Component> {
         document
             .components()
@@ -650,7 +573,7 @@ mod tests {
             .collect()
     }
 
-    /// One placement per child, each carrying one instance and no incompleteness.
+    /// Give each child one complete placement.
     fn one_each<'a>(components: &[&'a Component], found: &'a [Instance]) -> Vec<Placement<'a>> {
         components
             .iter()
@@ -690,14 +613,12 @@ mod tests {
             .collect()
     }
 
-    /// The reasons the report could not account for a resource, in order.
+    /// Return the reasons in report order.
     fn reasons_of(answer: &BusyAnswer) -> Vec<Undecided> {
         answer.unplaced().iter().map(|held| held.reason).collect()
     }
 
-    /// Every row is RFC 4791 section 7.10's own answer, read off its mapping table, its coalescing sentence and section 9.9's half-open window.
-    ///
-    /// One table rather than thirty tests because that is the review this transcription can actually get: a reviewer puts the `periods` column beside the RFC and reads down it.
+    /// Expected outcomes from RFC 4791 sections 7.10 and 9.9 for status mapping, coalescing, and window boundaries.
     const CASES: &[Case] = &[
         Case {
             what: "an opaque confirmed event is busy for its whole period",
@@ -1069,7 +990,7 @@ mod tests {
         );
     }
 
-    /// A ledger already spent on an earlier report truncates the next one where it is pushed.
+    /// An earlier report can consume part of the shared period budget.
     #[test]
     fn a_shared_ledger_truncates_the_report_and_latches() {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\n\
@@ -1083,7 +1004,6 @@ mod tests {
         let placements = one_each(&components, &found);
         let limits = Limits::DEFAULT.with_max_freebusy_periods(2);
         let mut meter = Meter::new(limits);
-        // One period already charged by an earlier report over the same ledger, which is the aggregate posture a shared meter exists for.
         meter.try_charge_freebusy_period().unwrap();
         let mut budget = Budget::new(limits, &mut meter);
         let answer = free_busy(query(WINDOW_START, WINDOW_END), &placements, &mut budget).unwrap();
@@ -1093,9 +1013,7 @@ mod tests {
         assert!(meter.is_exhausted(), "the ledger latches on the refusal");
     }
 
-    /// An expansion that could not place a resource is reported and not read as free time.
-    ///
-    /// The row this crate exists to get right: the second component is in the window, nothing could say where, and a report that simply omitted it would tell the caller that hour is free.
+    /// An incomplete expansion leaves uncertainty in the report.
     #[test]
     fn an_incomplete_expansion_is_reported_rather_than_read_as_free_time() {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\n\
@@ -1134,7 +1052,7 @@ mod tests {
         );
     }
 
-    /// A partial expansion contributes what it placed and still reports what it did not.
+    /// A partial expansion contributes its known instances and a reason for the missing ones.
     #[test]
     fn a_partial_expansion_contributes_its_instances_and_reports_the_rest() {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series\r\n\
@@ -1184,7 +1102,7 @@ mod tests {
         assert!(answer.is_complete());
     }
 
-    /// A series `expand` placed nowhere inside the window contributes nothing, and is not a resource that could not be placed.
+    /// A complete expansion can find zero instances within the window.
     #[test]
     fn a_series_with_no_instance_in_the_window_is_not_an_unaccounted_resource() {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:elsewhere\r\n\

@@ -2,40 +2,26 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The evidence M0-alpha reported and never committed, as a sweep that can be rerun.
+//! Check the lossless read and scoped write contracts in `docs/adr/0001`.
 //!
-//! The round-trip claim of `docs/adr/0001` is stated over every input; the corpus beside this file states it over the inputs somebody thought to commit.
-//! Those are different claims, and the gap between them is where a reader keeps the bug nobody wrote a fixture for: a bare `CR` immediately before a `DQUOTE`, a `\` at the last octet of a value, a fold introduced between the two octets of one codepoint.
-//! This file closes the gap the only way a test can,
-//! by covering the inputs nobody would have chosen.
+//! Accepted input must serialize byte for byte before and after a second parse.
+//! A panic or process termination fails the test.
+//! For a refusal, [`crossed`] checks an independent upper bound from the entire input.
+//! An input can exceed the bound for a header even if every individual header fits.
 //!
-//! Each sweep checks that accepted input serializes byte for byte and remains a fixed point after a second parse.
-//! A panic or abort fails the test.
-//! For a refusal, [`crossed`] independently checks a necessary condition against the whole input.
-//! For example, a large input can satisfy the size check for a header even when every header fits its limit.
-//!
-//! The inputs come from four places.
-//! Exhaustively, every string of at most six octets over the twelve octets that decide how RFC 5545 section 3.1 reads a line.
-//! Randomly, calendars drawn from a hand-rolled generator whose seed is a constant in this file rather than a clock or an environment variable, because a sweep nobody else can reproduce reports nothing.
-//! Generatively, octet-level edits to the calendars real clients exported that are already committed under `tests/fixtures`, which is the only material here whose shape nobody chose.
-//! And through the mutation door, one scoped write of each kind the change vocabulary has,
-//! applied to those same fixtures.
-//!
-//! The scoped writes exercise part of the mutation-locality requirement in `docs/adr/0001`.
-//! They check serialization stability, component nesting and the expected change in property count.
-//! A change to an unrelated property's bytes can pass all three checks.
-//! The write sweep collects reread diagnostics without asserting their contents.
-//!
+//! The exhaustive sweep enumerates strings of up to six octets from a twelve-octet alphabet.
+//! Randomized shards generate calendars from a fixed seed and shard index.
+//! Other shards edit fixture bytes and apply scoped writes to calendar components.
 //! Each shard runs as a separate test under the nextest time limit.
-//! The exhaustive shards partition the indices at each length.
-//! Randomized shards reproduce their draws from a seed and shard index and can generate the same inputs.
+//! Exhaustive shards partition indices at each length.
+//! Randomized shards can draw the same inputs.
 //!
-//! The generator is hand-rolled for the same reason the crates below this one carry no dependency: `just purity` reads dev-dependencies too and `cargo deny` refuses a second copy of anything, so the fact that this crate is `std` and outside the gate does not make a generator crate reachable from it.
-//! Sixty lines of `splitmix64` and a fragment table cost less than the argument would.
+//! Scoped writes check serialization stability, component nesting, and the expected property count.
+//! Changes to unrelated property bytes can pass those checks.
+//! The sweep collects reread diagnostics without checking their contents.
 //!
-//! Every sweep prints what it covered.
-//! A budget that quietly shrinks — a length lowered, a draw count reduced, a fixture directory that moved and was silently found empty — is the failure mode a generative test has and a committed fixture does not, and a printed count is the cheapest thing that makes it visible.
-//! The figures the whole file is sized against are the ones M0-alpha reported and did not commit — 1,900,000 exhaustive inputs, 2,200,000 randomized documents, 135,000 generative mutations — and `break_sweeps.rs` computes what the constants below actually cover and fails if it has fallen under any of them.
+//! Each sweep prints its coverage.
+//! The `break_sweeps.rs` tests require at least 1,900,000 exhaustive inputs, 2,200,000 randomized documents, and 135,000 generative mutations.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -46,36 +32,21 @@ use icalkit_conformance::internal::core::{
     ParameterEdit, ParseError, PropertyId, ProposedChange, RawText, TextValue,
 };
 
-/// The seed every randomized sweep in this file starts from.
-///
-/// A committed constant rather than a clock or an environment variable: a sweep whose inputs depend on when it ran reports a failure nobody else can reproduce, and a failure nobody can reproduce is a flake rather than a finding.
-/// Changing this number changes which inputs are covered, which is a deliberate act, and the counts each sweep prints are what makes it visible rather than silent.
+/// A fixed seed makes randomized failures reproducible.
 const SEED: u64 = 0x1CA1_C017_0BEE_F001;
 
-/// The octets that decide how a content line is read, and one that is not text at all.
-///
-/// RFC 5545 gives every one of these a structural meaning: the value separator, the parameter separator, the value list separator of section 3.2, the `DQUOTE` that lets a parameter carry the other three, the escape prefix of section 3.3.11, RFC 6868's caret, the three terminators section 3.1 leaves a reader to tell apart, and the two octets a fold may continue with.
-/// `A` stands for every octet that means nothing in particular, and `0xE9` for the CP1252 `SUMMARY` that has to survive a round trip it can never be decoded from.
+/// Structural octets from RFC 5545 sections 3.1 and 3.2 plus an octet outside ASCII.
 const ALPHABET: &[u8] = b":;,\"\\^\r\n \tA\xE9";
 
-/// The longest input the exhaustive sweep enumerates.
-///
-/// Four would be the floor rather than the answer: a fold is three octets — a terminator and the whitespace that continues it — so only at four does anything sit on the far side of one,
-/// and only at six can a line carry a fold and a header and a value with something after each.
-/// Six over twelve octets is 3,257,437 inputs and two policies apiece, which is above the evidence this sweep was landed to hold and inside the time it is given.
+/// Longest exhaustive input in octets.
+/// Six octets can include a fold with surrounding header and value data.
+/// The twelve-octet alphabet yields 3,257,437 strings of up to six octets under each policy.
 const EXHAUSTIVE_LENGTH: usize = 6;
 
-/// How many tests the exhaustive leg is cut into.
-///
-/// The inputs are dealt out by index, so each shard gets every length in the same proportion and no input is examined twice.
-/// Raising this makes each test shorter without covering less.
+/// Shards partition the indices at every input length.
 const EXHAUSTIVE_SHARDS: usize = 12;
 
-/// A policy small enough that a four-octet input crosses something.
-///
-/// The exhaustive sweep is worth running twice only if one of the passes reaches the refusal path at all, and the default policy is far too generous for four octets to trouble.
-/// Low ceilings allow short inputs to exercise the refusal conditions checked by [`crossed`].
-/// The input budget is four rather than lower because the ledger is charged with octets drawn from the input, so a budget below the longest input would be crossed by inputs this sweep cannot distinguish from a double charge.
+/// Low resource limits let short inputs exercise the refusal path.
 const TIGHT: Limits = Limits::DEFAULT
     .with_grammar(
         GrammarLimits::DEFAULT
@@ -88,9 +59,7 @@ const TIGHT: Limits = Limits::DEFAULT
     .with_max_items(2)
     .with_max_component_depth(1);
 
-/// A policy a generated calendar crosses about as often as it does not.
-///
-/// Chosen so that the randomized sweep exercises both answers rather than one: under the default policy a calendar of a few hundred octets crosses nothing, and under a policy this tight roughly half of them cross something, which is what puts [`crossed`] under load.
+/// A generated calendar can fit or exceed these limits.
 const BOUNDED: Limits = Limits::DEFAULT
     .with_grammar(
         GrammarLimits::DEFAULT
@@ -106,12 +75,10 @@ const BOUNDED: Limits = Limits::DEFAULT
 /// How many calendars the randomized sweep draws, across every shard of it.
 const CALENDARS: usize = 1_100_000;
 
-/// How many tests the randomized leg is cut into.
-///
-/// The committed seed and the shard index determine the draws for each shard.
+/// The seed and shard index determine each randomized sequence.
 const RANDOMIZED_SHARDS: usize = 16;
 
-/// How many edits each committed fixture is put through.
+/// Number of edits per committed fixture.
 const EDITS_PER_FIXTURE: usize = 480;
 
 /// The same, for a fixture large enough that this is the expensive sweep.
@@ -120,16 +87,13 @@ const EDITS_PER_LARGE_FIXTURE: usize = 12;
 /// How many tests the generative and write legs are each cut into.
 const FIXTURE_SHARDS: usize = 4;
 
-/// How many scoped writes of each kind each committed fixture is put through.
+/// Number of scoped writes per kind and fixture.
 const WRITES_PER_FIXTURE: usize = 24;
 
 /// The same, for a fixture large enough that a write to it costs a copy of the whole tree.
 const WRITES_PER_LARGE_FIXTURE: usize = 2;
 
-/// The size past which a fixture is swept fewer times.
-///
-/// The attacker's directory holds a fold bomb and a nesting bomb measured in the tens of thousands, and copying one of those into a fresh buffer per edit is the only thing in this file that costs real time.
-/// The cut is stated as a constant so that lowering it is a visible reduction in what is covered rather than an invisible one.
+/// The sweep uses fewer edits for larger fixtures to bound copying costs.
 const LARGE_FIXTURE: usize = 8192;
 
 /// How much of a failing input an assertion message carries before it stops being readable.
@@ -222,15 +186,13 @@ fn crossed(octets: &[u8], refusal: ParseError) -> bool {
         ParseError::ValueTooLarge { limit } | ParseError::HeaderTooLarge { limit } => {
             held > u64::from(limit)
         },
-        // Every parameter is opened by a `;`, though not every `;` opens one.
+        // Every parameter starts with a semicolon.
         ParseError::TooManyParameters { limit } => count_octet(octets, b';') > u64::from(limit),
         // A fold is a terminator followed by `SP` or `HTAB`, and this counts exactly those.
         ParseError::TooManyFolds { limit } => continuations(octets) > u64::from(limit),
-        // Each item — property or component — occupies at least one terminated segment.
+        // Each property or component occupies at least one segment.
         ParseError::TooManyItems { limit } => segments(octets) > u64::from(limit),
-        // Each open component was opened by a line whose name is `BEGIN`, compared the way RFC 5545 section 3.1 compares a name — and counted after the folds are taken out,
-        // because section 3.1 folds at octets and `BEG\r\n IN:VEVENT` opens a component while carrying no `BEGIN` at all.
-        // Counting the raw octets made this arm miss those, which turned a sound refusal into an accusation against the reader.
+        // Unfold before counting `BEGIN` because a continuation can split the component marker.
         ParseError::TooDeep { limit } => {
             keyword_count(&unfolded(octets), b"BEGIN") > u64::from(limit)
         },
@@ -291,16 +253,12 @@ fn zone_storage_bound(octets: &[u8]) -> u64 {
         .fold(0, u64::saturating_add)
 }
 
-/// A count as a charge-sized number, saturating rather than wrapping.
-///
-/// `usize` is not `u64` on every target, and a count that does not fit is better compared as the largest number there is than as a wrapped small one.
+/// Convert an input count to charge units, saturating at the largest representable charge.
 fn as_units(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(u64::MAX)
 }
 
-/// How many times `wanted` occurs in `octets`.
-///
-/// Folded rather than counted through `filter(..).count()`, which `clippy::naive_bytecount` asks to replace with a crate this workspace does not take a dependency on.
+/// Count occurrences of `wanted` in the input.
 fn count_octet(octets: &[u8], wanted: u8) -> u64 {
     octets.iter().fold(0, |seen, held| {
         if *held == wanted {
@@ -311,10 +269,8 @@ fn count_octet(octets: &[u8], wanted: u8) -> u64 {
     })
 }
 
-/// How many times `keyword` occurs in `octets`, ignoring case as section 3.1 does.
-///
-/// An over-count, since it does not ask whether the occurrence began a line.
-/// That is the safe direction: the count is used as a ceiling on how deep the reader could have nested.
+/// Count case-insensitive occurrences of `keyword`.
+/// Matches inside a line give a conservative upper bound on nesting.
 fn keyword_count(octets: &[u8], keyword: &[u8]) -> u64 {
     as_units(
         octets
@@ -324,10 +280,8 @@ fn keyword_count(octets: &[u8], keyword: &[u8]) -> u64 {
     )
 }
 
-/// The input with RFC 5545 section 3.1's folds taken out.
-///
-/// A terminator followed by `SP` or `HTAB` is a continuation and not a line break, so the name a reader sees may be spelled across two physical lines.
-/// Every condition [`crossed`] states about names has to be stated over these octets rather than over the ones on disk; the counts stated about octets and terminators do not, because those are what the input holds either way.
+/// Remove folds as RFC 5545 section 3.1 specifies.
+/// A terminator followed by `SP` or `HTAB` can split a name across physical lines.
 fn unfolded(octets: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(octets.len());
     let mut at = 0_usize;
@@ -346,9 +300,7 @@ fn unfolded(octets: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The width of the terminator at `at`, or zero where there is none.
-///
-/// `CRLF` is one terminator and not two, which is the whole reason this is a function: a file written the way section 3.1 asks for would otherwise be counted as twice the lines it has.
+/// Return the width of one terminator, counting `CRLF` as a single terminator.
 fn terminator_width(octets: &[u8], at: usize) -> usize {
     match octets.get(at) {
         Some(&b'\r') => {
@@ -363,10 +315,7 @@ fn terminator_width(octets: &[u8], at: usize) -> usize {
     }
 }
 
-/// How many terminated segments the input holds, counting a last one that is empty.
-///
-/// An over-count on purpose.
-/// This is the ceiling on how many items a reader could have built out of the input, and a necessary condition wants the ceiling rather than the exact number.
+/// Count segments, including an empty final segment, to bound the number of items.
 fn segments(octets: &[u8]) -> u64 {
     let mut counted = 1_u64;
     let mut at = 0_usize;
@@ -401,10 +350,7 @@ fn continuations(octets: &[u8]) -> u64 {
     counted
 }
 
-/// Octets as something an assertion message can carry, with nothing left to guess at.
-///
-/// A failing sweep reports an input nobody wrote by hand, so the message has to be the input itself in a form that can be pasted straight back into a test as a fixed case.
-/// Long inputs are cut, because a hundred kilobytes of fold bomb in a failure message hides the failure.
+/// Render a bounded, reproducible byte sample for a failing assertion.
 fn render(octets: &[u8]) -> String {
     let mut out = String::from("b\"");
     for &held in octets.iter().take(RENDER_LIMIT) {
@@ -415,8 +361,6 @@ fn render(octets: &[u8]) -> String {
             b'\\' => out.push_str("\\\\"),
             b'"' => out.push_str("\\\""),
             _ if held == b' ' || held.is_ascii_graphic() => out.push(char::from(held)),
-            // `write!` rather than `push_str(&format!(..))`: the same octets without the intermediate `String` each one would otherwise allocate.
-            // Writing into a `String` cannot fail, and this helper is not a `#[test]` body, so the result is dropped rather than unwrapped.
             _ => {
                 let _ = write!(out, "\\x{held:02X}");
             },
@@ -429,14 +373,7 @@ fn render(octets: &[u8]) -> String {
     out
 }
 
-/// A deterministic source of draws, seeded from a committed constant.
-///
-/// `splitmix64`: one addition into the state, two multiply-and-shift rounds out of it.
-/// Enough mixing for a sweep and short enough to read, which matters more here than quality would,
-/// because what this generator has to be is reproducible.
-///
-/// Every step is a `wrapping_*` method rather than an operator.
-/// `arithmetic_side_effects` is an error in this workspace and a mixing function is the one place in it where a wrap is the intent rather than the bug the lint exists to catch.
+/// A seeded `splitmix64` stream provides reproducible draws.
 #[derive(Debug)]
 struct Stream {
     /// The whole state, advanced once per draw.
@@ -460,7 +397,7 @@ impl Stream {
 
     /// A number below `bound`, and zero when `bound` is zero.
     fn below(&mut self, bound: usize) -> usize {
-        // Masked to thirty-two bits before the conversion, so the draw fits a `usize` on the targets where one is not sixty-four bits wide and the sequence is the same on both.
+        // A 32-bit draw gives the same sequence on 32-bit and 64-bit targets.
         let drawn = usize::try_from(self.draw() & 0xFFFF_FFFF).unwrap_or(0);
         drawn.checked_rem(bound).unwrap_or(0)
     }
@@ -482,9 +419,7 @@ const NAMES: &[&[u8]] = &[
     b"",
 ];
 
-/// Parameter runs, written as they appear in a header rather than assembled from pieces.
-///
-/// Each is a shape RFC 5545 section 3.2 has an opinion about: a quoted value carrying every separator the quotes exist for, a quote that never closes, a name with no `=`, and an `=` with no name.
+/// Raw parameters include quoted delimiters, an unclosed quote, a missing value separator, and an empty name.
 const PARAMETERS: &[&[u8]] = &[
     b"",
     b";TZID=Etc/UTC",
@@ -507,9 +442,7 @@ const VALUES: &[&[u8]] = &[
     b"has a space",
 ];
 
-/// The three terminators section 3.1 leaves a reader to tell apart, and none at all.
-///
-/// `CRLF` appears twice so that the one the specification asks for is drawn about as often as the three deviations together, which is roughly the mix a real corpus has.
+/// Two `CRLF` entries give the standard terminator extra weight.
 const TERMINATORS: &[&[u8]] = &[b"\r\n", b"\r\n", b"\n", b"\r", b""];
 
 /// The ways a producer may introduce a continuation line.
@@ -522,11 +455,7 @@ fn extend(out: &mut Vec<u8>, chosen: Option<&&[u8]>) {
     }
 }
 
-/// Assemble one content line and fold it somewhere a producer would not have chosen.
-///
-/// The fold is inserted at an arbitrary octet of the assembled line rather than at a boundary the generator understands, so it lands inside a name, inside a quoted parameter value, or between the two octets of one codepoint as readily as anywhere else.
-/// That is the point:
-/// section 3.1 folds at octets and says nothing about what they spell.
+/// Insert a fold at an arbitrary octet, including inside a name, quoted value, or character.
 fn append_line(stream: &mut Stream, out: &mut Vec<u8>) {
     let mut assembled: Vec<u8> = Vec::new();
     extend(&mut assembled, stream.pick(NAMES));
@@ -534,7 +463,7 @@ fn append_line(stream: &mut Stream, out: &mut Vec<u8>) {
     for _ in 0..runs {
         extend(&mut assembled, stream.pick(PARAMETERS));
     }
-    // A line with no `:` at all is the degenerate case section 3.1 has no syntax for and every producer eventually writes, so one line in eight is drawn without one.
+    // One draw in eight omits the value separator.
     if stream.below(8) > 0 {
         assembled.push(b':');
     }
@@ -553,10 +482,7 @@ fn append_line(stream: &mut Stream, out: &mut Vec<u8>) {
     extend(out, stream.pick(TERMINATORS));
 }
 
-/// A whole calendar, or something shaped enough like one to be worth reading.
-///
-/// The wrapping boundaries are written rather than drawn, because nesting deep enough for the depth bound to be reachable never arrives by accident out of a fragment table.
-/// The lines between them close those boundaries only by accident, which is the case the reader has to survive: `docs/adr/0001` promises an `END` that never came and an `END` nobody opened are both kept and both diagnosed.
+/// Generate nested component boundaries and content lines, including incomplete calendars.
 fn calendar(stream: &mut Stream) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let wrapped = stream.below(4);
@@ -574,13 +500,10 @@ fn calendar(stream: &mut Stream) -> Vec<u8> {
     out
 }
 
-/// One octet-level edit to a committed fixture.
-///
-/// A calendar a real client exported is the only material here whose shape nobody chose, and the interesting inputs near one are the files a truncated download, a gateway that re-encoded the body, or a hand edit could produce from it.
-/// Each variant is one of those.
+/// A byte-level edit to a committed calendar fixture.
 #[derive(Clone, Copy, Debug)]
 enum Edit {
-    /// Replace one octet with one that decides how a line is read.
+    /// Replace one octet with a structural octet.
     Substitute,
     /// Remove one octet, which is what a fold looks like after a careless unfolder.
     Delete,
@@ -592,7 +515,7 @@ enum Edit {
     Truncate,
 }
 
-/// Every edit each fixture is put through, applied in this order so a failure is locatable.
+/// The fixed edit order makes a failing case reproducible.
 const EDITS: &[Edit] = &[
     Edit::Substitute,
     Edit::Delete,
@@ -669,9 +592,7 @@ impl Tally {
     }
 }
 
-/// The `index`th string of exactly `length` octets over [`ALPHABET`].
-///
-/// Counted in base twelve rather than recursed, so the order does not depend on a call stack and a failure can be reproduced from its length and its index alone.
+/// Count strings in base twelve so length and index identify each case.
 fn nth_input(length: usize, index: usize, out: &mut Vec<u8>) {
     out.clear();
     let mut left = index;
@@ -690,10 +611,7 @@ fn population(length: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// Every committed `.ics` fixture under this crate's `tests/fixtures`, in a stable order.
-///
-/// Read from disk rather than named one by one, so a fixture a later milestone commits is swept without this file being edited.
-/// Sorted by path, because a sweep whose order depends on the filesystem is a sweep whose failures depend on the filesystem.
+/// Read all committed `.ics` fixtures in stable path order.
 fn fixtures() -> Vec<(String, Vec<u8>)> {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.push("tests");
@@ -704,10 +622,8 @@ fn fixtures() -> Vec<(String, Vec<u8>)> {
     found
 }
 
-/// Append every `.ics` file at or under `directory`.
-///
-/// An unreadable entry is passed over rather than reported, because the count this sweep prints and the assertion that it found a corpus at all are what catch a directory that moved.
-/// A helper outside a test function is production code as far as the workspace lint profile is concerned, so nothing here unwraps.
+/// Collect readable `.ics` files recursively.
+/// The corpus check detects an empty directory.
 fn collect_fixtures(directory: &Path, found: &mut Vec<(String, Vec<u8>)>) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
@@ -769,7 +685,7 @@ enum Write {
     Remove,
 }
 
-/// Every write each fixture is put through, applied in this order so a failure is locatable.
+/// The fixed write order makes a failing case reproducible.
 const WRITES: &[Write] = &[
     Write::Value,
     Write::Replace,
@@ -792,9 +708,8 @@ struct WriteTally {
     absent: u64,
 }
 
-/// The component at `outer`, or the one at `inner` inside it, mutably.
-///
-/// Two levels rather than a walk to an arbitrary depth, and the reason is the corpus: one committed fixture nests sixteen thousand components, and a recursive search for the `n`th of them would overflow the stack inside this file rather than finding anything out about the crate under it.
+/// Borrow a top-level component or one immediate child.
+/// The fixture corpus includes nesting too deep for recursive selection.
 fn component_at(
     document: &mut Document,
     outer: usize,
@@ -846,9 +761,8 @@ fn property_count(document: &Document) -> usize {
     counted
 }
 
-/// Apply one write to `component`, answering how many properties the document should gain.
-///
-/// `None` is a refusal or an absence, which are answers rather than failures: what P3 is about is what happens to the file when a write *is* applied.
+/// Apply a write and return the expected change in property count.
+/// A refusal or missing target returns `None`.
 fn apply_write(
     stream: &mut Stream,
     component: &mut Component,
@@ -921,7 +835,7 @@ fn sweep_writes(
     Ok(())
 }
 
-/// One write into one component of one fixture, and the three things asked of it afterwards.
+/// Check serialization, nesting, and property count after a successful scoped write.
 fn sweep_one_write(
     stream: &mut Stream,
     original: &[u8],
@@ -935,7 +849,6 @@ fn sweep_one_write(
     };
     let shape = nesting(&document);
     let held = property_count(&document);
-    // Drawn against what the document actually holds, so a draw lands on a component rather than on a position no fixture has.
     let outer = stream.below(document.components().count());
     let nested = document
         .components()
@@ -1005,14 +918,11 @@ enum Anchor {
     Clean,
     /// The input comes back out unchanged and earns at least one diagnostic on the way.
     Diagnosed,
-    /// The input is refused, naming this bound.
+    /// The reader reports the expected limit.
     Refused(ParseError),
 }
 
-/// The octets this sweep's own machinery has to agree with a person about.
-///
-/// The table covers empty input, line termination, a missing value separator and a blank line.
-/// It includes headers at and above the ceiling and over-limit values, parameter counts, fold counts and item counts.
+/// Handwritten examples check terminators, blank lines, missing separators, and resource limits.
 const ANCHORS: &[(&str, &[u8], Limits, Anchor)] = &[
     ("the empty input", b"", Limits::DEFAULT, Anchor::Clean),
     // Section 3.8.8 permits the extension property in this clean fixture.
@@ -1099,10 +1009,7 @@ fn the_anchors_a_generated_corpus_cannot_supply() {
     println!("anchors: {} rows", ANCHORS.len());
 }
 
-/// The one place this file names a code rather than counting diagnostics.
-///
-/// A sweep that asserted a code per input would be asserting the emission table of units still being written, so everywhere else here says only that something was reported.
-/// These two are the exception because they are what the committed reader already reports, and because "a violation is a diagnostic and an error means nothing could be built" (`docs/adr/0009`) is the claim every count in this file rests on: if a bare `LF` were a refusal, the sweeps below would be counting refusals that are really violations and calling that a bound.
+/// Check diagnostic identities for malformed input that the reader preserves.
 #[test]
 fn a_violation_arrives_as_a_diagnostic_and_not_as_a_refusal() {
     let input: &[u8] = b"X:v\nY\r\n";
@@ -1127,11 +1034,7 @@ fn shard_stream(shard: usize) -> Stream {
     Stream::new(SEED.wrapping_add(offset))
 }
 
-/// Every input of at most [`EXHAUSTIVE_LENGTH`] octets over [`ALPHABET`], under two policies.
-///
-/// Exhaustive rather than sampled at this size, because the interesting inputs are the ones nobody would draw: a `DQUOTE` that opens where no value may begin, a `\` with nothing after it, a `CR` followed by a `CR`, a fold introduced before the first octet of the line.
-///
-/// At each length, the input index modulo [`EXHAUSTIVE_SHARDS`] determines its only shard.
+/// Check every string of up to [`EXHAUSTIVE_LENGTH`] octets over [`ALPHABET`] under both policies.
 fn exhaustive_shard(shard: usize) -> Result<(), String> {
     let mut tally = Tally::default();
     let mut octets: Vec<u8> = Vec::new();
@@ -1167,10 +1070,8 @@ fn exhaustive_shard(shard: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Calendars drawn from [`SEED`], read under a generous policy and a binding one.
-///
-/// Each generated calendar is checked under both policies for byte identity or a plausible refusal.
-/// Nothing here reads a clock, so the calendars are the same on every machine and a failure arrives with the seed that produced it.
+/// Read seeded calendars under generous and tight limits.
+/// Check byte identity or the reason for refusal.
 fn randomized_shard(shard: usize) -> Result<(), String> {
     let mut stream = shard_stream(shard);
     let mut tally = Tally::default();
@@ -1200,10 +1101,7 @@ fn randomized_shard(shard: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Every committed fixture this shard is responsible for, with its index.
-///
-/// Dealt out by position in the sorted corpus.
-/// A fixture committed later shifts the deal, which changes which shard examines it and not whether one does — the draws each shard makes are its own, so a fixture added at the end cannot move another fixture's inputs.
+/// Assign each fixture to a shard by its position in the sorted corpus.
 fn shard_of_corpus(shard: usize) -> Vec<(String, Vec<u8>)> {
     fixtures()
         .into_iter()
@@ -1213,13 +1111,8 @@ fn shard_of_corpus(shard: usize) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// Octet-level edits to every calendar already committed under `tests/fixtures`.
-///
-/// What this sweep adds is the claim the fixture files cannot make — that the inputs *around* a real export are preserved or refused just as the export is.
-///
-/// A fixture that does not hold on its own fails this sweep rather than being skipped past it.
-/// The earlier reading — that somebody else's failing case is somebody else's business — let a fixture that `examine` rejected be counted and printed rather than reported, and a corpus could have gone half unswept behind a `swept > skipped` guard.
-/// A committed fixture is part of the evidence or it is not committed.
+/// Check byte-level edits to committed calendars.
+/// Check the original fixture before any edits.
 fn generative_shard(shard: usize) -> Result<(), String> {
     let corpus = shard_of_corpus(shard);
     assert!(
@@ -1247,9 +1140,7 @@ fn generative_shard(shard: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// One scoped write of each kind, into every calendar this shard is responsible for.
-///
-/// Successful writes must yield a serialization fixed point, preserve component nesting and change the property count as expected.
+/// Apply scoped writes to each fixture and check serialization, nesting, and property count.
 fn write_shard(shard: usize) -> Result<(), String> {
     let corpus = shard_of_corpus(shard);
     assert!(
@@ -1278,10 +1169,7 @@ fn write_shard(shard: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Declare one `#[test]` that runs `leg` over shard `index` of that leg's inputs.
-///
-/// A macro rather than the same five lines eighteen times.
-/// Each shard has to be its own test function, because what a shard is for is being its own process with its own share of the time bound; a loop inside one test would put every shard back under one clock.
+/// Declare a separate test so nextest applies its time limit to each shard.
 macro_rules! shard {
     ($name:ident, $leg:ident, $index:expr) => {
         #[doc = concat!("Shard ", stringify!($index), " of `", stringify!($leg), "`.")]

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Scheduling preserves opaque values under [RFC 5545 section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
-//! Identifier comparison uses [TEXT values](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11).
+//! Identifier comparison uses [`TEXT` values](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.11).
 
 #![cfg(test)]
 

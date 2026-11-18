@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Contextual validation follows [RFC 5545 sections 3.6.1 and 3.6.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.1) and [section 3.8.2.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.4).
-//! Date-time forms follow [section 3.2.19](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.19), [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20), and the property definitions in [section 3.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8).
+//! [RFC 5545 sections 3.6.1 and 3.6.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.1) define event and task constraints.
+//! [Section 3.8.2.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.4) specifies the start property.
+//! Date-time parameters follow [section 3.2.19](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.19) and [section 3.2.20](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20).
+//! [Section 3.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8) defines the property value types.
 //! Endpoint relationships follow [sections 3.8.2.2 through 3.8.2.5](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.2.2) and [section 3.8.4.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.4.4).
 
 #![cfg(test)]
