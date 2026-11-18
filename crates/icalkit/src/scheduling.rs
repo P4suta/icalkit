@@ -707,7 +707,7 @@ fn apply_to(
     policy: ResourcePolicy,
 ) -> Result<(), Error> {
     let mut target = ComponentTarget::new(event, policy.limits);
-    for (at, change) in transition.changes() {
+    for (at, change) in transition.writes() {
         target
             .write_change(at, change)
             .map_err(|_| Error::single("icalkit.scheduling.apply-refused"))?;

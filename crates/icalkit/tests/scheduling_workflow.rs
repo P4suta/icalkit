@@ -608,6 +608,42 @@ fn one_review_applies_every_matching_component_in_a_scheduling_object() {
 }
 
 #[test]
+fn a_counter_can_remove_and_add_multiple_recurrence_dates() {
+    let held = include_str!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
+    let proposal = include_str!(
+        "../../icalkit-conformance/tests/fixtures/itip/counter_proposes_a_new_time.ics"
+    );
+    let dates = "RDATE:20260312T140000Z\r\nRDATE:20260314T140000Z\r\n";
+    let attendee = Actor::new("mailto:bo@example.com").unwrap();
+    for removing in [true, false] {
+        let with_dates = |source: &str, include| {
+            if include {
+                source.replace("RRULE:", &format!("{dates}RRULE:"))
+            } else {
+                source.to_owned()
+            }
+        };
+        let current = Calendar::parse(with_dates(held, removing).as_bytes()).unwrap();
+        let message = Message::read(with_dates(proposal, !removing).as_bytes()).unwrap();
+        let updated = message
+            .review(&current, &attendee)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap();
+        let bytes = updated.to_bytes();
+        let written = str::from_utf8(&bytes).unwrap();
+        let found: Vec<_> = written
+            .lines()
+            .filter(|line| line.starts_with("RDATE:"))
+            .collect();
+        let expected: Vec<_> = dates.lines().filter(|_| !removing).collect();
+        assert_eq!(found, expected);
+        assert!(written.contains("RRULE:FREQ=WEEKLY;COUNT=4\r\n"));
+    }
+}
+
+#[test]
 fn a_counter_proposes_a_new_time_until_the_organizer_accepts_it() {
     const HELD: &[u8] =
         include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");

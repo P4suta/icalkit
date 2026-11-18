@@ -128,6 +128,26 @@ impl Transition {
         self.changes.get(at)
     }
 
+    /// Update existing occurrences, remove them from the end, then append new occurrences.
+    pub(crate) fn writes(&self) -> impl Iterator<Item = (&PropertyOccurrence, &ProposedChange)> {
+        let edits = self.changes.iter().filter(|(_, change)| {
+            matches!(
+                change,
+                ProposedChange::Replace(_) | ProposedChange::SetParameters(_)
+            )
+        });
+        let removals = self
+            .changes
+            .iter()
+            .rev()
+            .filter(|(_, change)| matches!(change, ProposedChange::Remove));
+        let additions = self
+            .changes
+            .iter()
+            .filter(|(_, change)| matches!(change, ProposedChange::Add(_)));
+        edits.chain(removals).chain(additions)
+    }
+
     /// Every change, in occurrence order.
     #[must_use]
     pub fn changes(&self) -> Changes<'_> {

@@ -1189,6 +1189,29 @@ mod tests {
         assert_eq!(meter.diagnostics_dropped(), 0);
     }
 
+    #[test]
+    fn an_authorized_counter_removes_the_last_recurrence_date_first() {
+        let dated = str::from_utf8(HELD_SERIES).unwrap().replace(
+            "RRULE:",
+            "RDATE:20260312T140000Z\r\nRDATE:20260314T140000Z\r\nRRULE:",
+        );
+        let held = subject(dated.as_bytes(), None);
+        let proposal = subject(COUNTER_NEW_TIME, None);
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let message =
+            ItipMessage::read(&proposal, Limits::DEFAULT, &mut meter, &mut Vec::new()).unwrap();
+        let authorized = evaluate_message(&message, held.component(), PartyId::new(BO)).unwrap();
+        let mut target = Recorder::default();
+        assert!(apply_transition(&mut target, authorized).is_complete());
+        let removed: Vec<_> = target
+            .written
+            .iter()
+            .filter(|(at, change)| at.name() == b"RDATE" && *change == ProposedChange::Remove)
+            .map(|(at, _)| at.index())
+            .collect();
+        assert_eq!(removed, [1, 0]);
+    }
+
     /// The target can reject individual changes after it accepts earlier writes.
     #[test]
     fn an_authorized_transition_is_written_once_and_reports_what_it_took() {

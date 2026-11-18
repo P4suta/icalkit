@@ -842,7 +842,7 @@ pub fn apply_transition(
     let mut report = ApplyReport::new();
     // Consumed rather than borrowed, which is what makes the capability single-use: the description survives the call only if the caller asked for it back.
     let transition = authorized.into_transition();
-    for (at, change) in transition.changes() {
+    for (at, change) in transition.writes() {
         match target.write_change(at, change) {
             Ok(()) => report.note_applied(),
             Err(reason) => report.note_rejected(at.clone(), reason),
