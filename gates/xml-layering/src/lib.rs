@@ -136,6 +136,7 @@ pub fn roll_call() -> usize {
         xml::scan::split_name(b"D:href").is_ok(),
         xml::scan::check_encoding(b" encoding=\"utf-8\"").is_ok(),
         xml::chars::check_chars(b"ok").is_ok(),
+        xml::chars::read_reference(b"&amp;", 0).is_ok(),
     ] {
         named = named.saturating_add(usize::from(answered));
     }

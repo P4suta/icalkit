@@ -57,6 +57,7 @@ use crate::internal::dav::response::{
 use crate::internal::dav::sink::ByteSink;
 use crate::internal::dav::value::{ETag, Href, ResourceType, Status, SyncToken};
 use crate::internal::dav::writer::XmlWriter;
+use crate::internal::dav::xml::chars::read_reference;
 
 /// How deep the deepest element of a multistatus sits.
 ///
@@ -67,11 +68,6 @@ const MULTISTATUS_DEPTH: u16 = 6;
 
 /// How deep one property element sits, which is what a kept fragment nests below.
 const PROPERTY_DEPTH: u16 = 5;
-
-/// The most octets a reference may occupy, `&` and `;` included.
-///
-/// The ceiling `crate::internal::dav::text` scans a reference under, restated here because that constant is private to the module that reads: a `&` followed by megabytes of digits is not a reference anybody wrote, and it must not be written either.
-const MAX_REFERENCE_BYTES: usize = 12;
 
 #[derive(Debug)]
 enum ResponseBoundary {
@@ -619,8 +615,8 @@ fn check_fragment(octets: &[u8], depth_budget: u16, meter: &mut Meter) -> Result
     let mut depth: u16 = 0;
     while let Some(&byte) = octets.get(at) {
         if byte == b'&' {
-            check_reference(octets, at)?;
-            at = at.saturating_add(1);
+            let (_, after) = read_reference(octets, at).map_err(SyntaxError::from)?;
+            at = after;
             continue;
         }
         if byte != b'<' {
@@ -705,37 +701,6 @@ fn apply_shape(shape: TagShape, depth: u16, budget: u16) -> Result<u16, DavError
             .checked_sub(1)
             .ok_or(DavError::Syntax(SyntaxError::Malformed)),
     }
-}
-
-/// Refuse a `&` that does not begin a reference this crate's own reader would resolve.
-///
-/// Asking only whether a `;` appears within the scanning ceiling was two bugs at once.
-/// A value holding `AT&T` has no `;` nearby and was refused outright, so a response this crate had read could not be written at all; a value holding `a & b; c` has one, so a bare `&` reached the sink and the emitted document was not well-formed XML — this crate's own reader answered `SyntaxError::UndefinedEntity` on it, and so would any other.
-/// What has to hold is the actual property: every `&` in a fragment is the start of a reference a reader resolves.
-fn check_reference(octets: &[u8], start: usize) -> Result<(), DavError> {
-    let window = octets
-        .get(start..)
-        .map(|rest| {
-            rest.get(..MAX_REFERENCE_BYTES.min(rest.len()))
-                .unwrap_or(rest)
-        })
-        .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
-    let end = window
-        .iter()
-        .position(|byte| *byte == b';')
-        .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
-    let name = window
-        .get(1..end)
-        .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
-    if matches!(name, b"amp" | b"lt" | b"gt" | b"quot" | b"apos") {
-        return Ok(());
-    }
-    // A numeric character reference is resolvable exactly when the XML layer would resolve it,
-    // so the two doors agree on what a document may hold rather than on what it may say.
-    let mut resolved: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    crate::internal::dav::xml::chars::push_reference(octets, start, &mut resolved)
-        .map(|_| ())
-        .map_err(DavError::from)
 }
 
 #[cfg(test)]

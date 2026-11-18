@@ -17,12 +17,6 @@ use ical_core::LimitExceeded;
 
 use super::fault::{XmlFault, XmlSyntax};
 
-/// The most octets a reference may occupy, `&` and `;` included.
-///
-/// `&#x10FFFF;` is ten, and no predefined entity name is longer than `apos`.
-/// A `&` followed by megabytes of digits is not a reference anybody wrote, and scanning for its terminator without a ceiling is work an attacker chooses the size of.
-const MAX_REFERENCE_BYTES: usize = 12;
-
 #[derive(Clone, Copy, Debug)]
 enum AttributeSource<'a> {
     Literal(&'a [u8]),
@@ -242,11 +236,8 @@ pub(crate) fn push_reference(
     Ok(after)
 }
 
-fn read_reference(raw: &[u8], start: usize) -> Result<(char, usize), XmlSyntax> {
-    let window = raw
-        .get(start..)
-        .and_then(|rest| rest.get(..MAX_REFERENCE_BYTES.min(rest.len())))
-        .ok_or(XmlSyntax::Malformed)?;
+pub(crate) fn read_reference(raw: &[u8], start: usize) -> Result<(char, usize), XmlSyntax> {
+    let window = raw.get(start..).ok_or(XmlSyntax::Malformed)?;
     let semicolon = window
         .iter()
         .position(|byte| *byte == b';')

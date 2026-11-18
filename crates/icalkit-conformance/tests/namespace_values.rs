@@ -9,7 +9,8 @@
 use icalkit_conformance::internal::core::{IgnoreDiagnostics, LimitExceeded, Limits, Meter};
 use icalkit_conformance::internal::dav::{
     DavError, DecodeContext, ElementName, ExtensionName, MultiStatus, MultiStatusReader, Namespace,
-    PropName, QName, RequestBody, SyntaxError, WriteXml, XmlEvent, XmlPull, XmlReader, XmlWriter,
+    PropName, PropValue, QName, RequestBody, SyntaxError, WriteXml, XmlEvent, XmlPull, XmlReader,
+    XmlWriter,
 };
 
 fn namespace(body: &[u8]) -> Namespace<'_> {
@@ -77,6 +78,64 @@ fn decimal_references_identify_the_dav_vocabulary() {
         br#"<d:propfind xmlns:d="D&#65;V:"/>"#,
         ElementName::Propfind,
     );
+}
+
+#[test]
+fn zero_padded_numeric_references_identify_the_dav_vocabulary() {
+    for body in [
+        br#"<d:propfind xmlns:d="&#0000000000000000000000000068;AV:"/>"#.as_slice(),
+        br#"<d:propfind xmlns:d="&#x0000000000000000000000000044;AV:"/>"#,
+    ] {
+        assert_known_root(body, ElementName::Propfind);
+    }
+}
+
+#[test]
+fn padded_invalid_character_references_still_refuse_the_character() {
+    for body in [
+        br#"<root xmlns="&#0000000000000000000000000000;"/>"#.as_slice(),
+        br#"<root xmlns="&#x000000000000000000000000D800;"/>"#,
+        br#"<root xmlns="&#0000000000000000004294967296;"/>"#,
+        br#"<root xmlns="&#x0000000000000000000000110000;"/>"#,
+    ] {
+        let limits = Limits::DEFAULT;
+        let mut reader = XmlReader::new(body);
+        assert_eq!(
+            first(&mut reader, limits, &mut Meter::new(limits)),
+            Err(DavError::Syntax(SyntaxError::ForbiddenCharacter)),
+        );
+    }
+}
+
+#[test]
+fn padded_references_in_caller_markup_survive_writing_and_reading() {
+    let limits = Limits::DEFAULT;
+    let value = PropValue::Markup(
+        br#"<v:child xmlns:v="urn:example:values" flag="&#0000000000000000000000065;">&#x0000000000000000000000042;</v:child>"#.to_vec().into_boxed_slice(),
+    );
+    let mut wire = Vec::new();
+    value
+        .write_xml(&mut wire, limits, &mut Meter::new(limits))
+        .unwrap();
+    let mut reader = XmlReader::new(&wire);
+    let mut meter = Meter::new(limits);
+    assert!(matches!(
+        first(&mut reader, limits, &mut meter).unwrap(),
+        Some(XmlEvent::Start { .. })
+    ));
+    assert_eq!(
+        reader.attribute(QName::new(Namespace::from_uri(b""), b"flag")),
+        Some(b"A".as_slice())
+    );
+    let Some(XmlEvent::Text(decoded)) = first(&mut reader, limits, &mut meter).unwrap() else {
+        panic!("the numeric reference must produce character data");
+    };
+    assert_eq!(decoded.run.as_bytes(), b"B");
+    assert!(matches!(
+        first(&mut reader, limits, &mut meter).unwrap(),
+        Some(XmlEvent::End { .. })
+    ));
+    assert_eq!(first(&mut reader, limits, &mut meter).unwrap(), None);
 }
 
 #[test]
