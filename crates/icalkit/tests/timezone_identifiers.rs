@@ -7,7 +7,7 @@
 #![cfg(test)]
 
 use icalkit::caldav::{Match, Query};
-use icalkit::time::{DateTime, IcalDateTime, Timestamp};
+use icalkit::time::{IcalDateTime, Timestamp};
 use icalkit::{Calendar, Engine};
 
 fn calendar(properties: &str) -> String {
@@ -46,7 +46,7 @@ fn assert_projects(identifier: &str, extra: &str) {
     for (properties, expected) in [
         (
             "DTSTART:20240102T090000",
-            IcalDateTime::floating("2024-01-02T09:00:00".parse::<DateTime>().unwrap()),
+            IcalDateTime::utc("2024-01-02T07:00:00Z".parse::<Timestamp>().unwrap()),
         ),
         (
             "DTSTART:20240102T090000\r\nRRULE:FREQ=DAILY;COUNT=2",
