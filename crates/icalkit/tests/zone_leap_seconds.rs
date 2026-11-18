@@ -54,8 +54,13 @@ fn calendar(tzid: &str, second: u8, recurring: bool) -> Calendar {
 }
 
 fn query(property: bool, second: u8) -> Query {
+    let end = if second == 58 {
+        "19970630T235959Z"
+    } else {
+        "19970701T000000Z"
+    };
     let range = format!(
-        r#"<C:time-range start="19970630T2359{:02}Z" end="19970701T000000Z"/>"#,
+        r#"<C:time-range start="19970630T2359{:02}Z" end="{end}"/>"#,
         second.min(59)
     );
     let condition = if property {
@@ -155,6 +160,15 @@ fn projection_folds_zoned_leap_seconds_without_changing_the_source() {
 
 #[test]
 fn ordinary_seconds_keep_their_readings_in_every_workflow() {
+    for property in [false, true] {
+        let later = calendar("Test/Leap", 59, false);
+        assert_eq!(
+            query(property, 58)
+                .matches(&mut engine().session(), &later)
+                .unwrap(),
+            Match::Unmatched
+        );
+    }
     for second in [58, 59] {
         for recurring in [false, true] {
             let calendar = calendar("Test/Leap", second, recurring);

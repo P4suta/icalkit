@@ -379,7 +379,7 @@ fn single_zoned_durations_keep_their_placed_end_across_a_clock_change() {
         let projected = Calendar::parse(&bytes).unwrap();
         for (start, end, expected) in [
             ("20240310T153000Z", "20240310T160000Z", Match::Matched),
-            ("20240310T163000Z", "20240310T170000Z", Match::Unmatched),
+            ("20240310T160001Z", "20240310T170000Z", Match::Unmatched),
         ] {
             let query = Query::parse(
                 format!(

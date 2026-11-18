@@ -268,8 +268,9 @@ fn known_held_identifiers_of_every_kind_still_allow_distinct_objects() {
             .apply()
             .unwrap();
         let written = String::from_utf8(updated.to_bytes()).unwrap();
-        assert!(written.contains("BEGIN:VEVENT\r\nUID:series@example.test"));
-        assert!(written.contains(&format!("BEGIN:{kind}\r\nUID:other@example.test")));
+
+        assert!(written.contains("BEGIN:VEVENT\r\nUID:series@example.test\r\n"));
+        assert!(written.contains(&format!("BEGIN:{kind}\r\nUID:other@example.test\r\n")));
         assert_eq!(current.to_bytes(), source.as_bytes());
     }
 }
