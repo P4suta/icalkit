@@ -16,13 +16,16 @@ The [XML Information Set](https://www.w3.org/TR/xml-infoset/#infoitem.element) o
 Represent captured content as resource claims, text runs, or a serialized fragment.
 Create the fragment at the first child element, then append element and character events in order.
 Meter shared escaping chunks before buffer growth.
+Preserve source prefixes and [namespace scope](https://www.w3.org/TR/xml-names/#scoping) for opaque values.
+At each fragment root, merge inherited bindings with the writer's envelope bindings, giving the source precedence.
+Emit nested declarations on their original elements.
 Keep existing modeled value interpretation.
 
 ## Alternatives
 
 Dropping markup loses permitted content.
 Eager serialization inflates text-only values and can reject admitted text widths.
-A node tree needs more allocations without improving ordered output.
+Inferring QName values requires the extension's schema.
 
 ## Consequences
 

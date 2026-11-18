@@ -102,6 +102,48 @@ fn an_attribute_in_another_namespace_round_trips() {
 }
 
 #[test]
+fn opaque_values_keep_ancestor_bindings_and_nested_rebindings() {
+    let body = br#"<d:multistatus xmlns:d="DAV:" xmlns:v="urn:example:values" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:p="urn:outer" xmlns="urn:default" xmlns:X="urn:opaque"><d:response><d:href>/one</d:href><d:propstat><d:prop><v:custom><v:child xsi:type="p:Label"><inner xmlns:p="urn:inner" xsi:type="p:Label"><p:deep/></inner><v:after xsi:type="Label"/></v:child></v:custom></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+    let captured = read(body);
+    let limits = Limits::DEFAULT.with_max_prefix_bindings(14);
+    let mut encoded = Vec::new();
+    captured
+        .write_xml(&mut encoded, limits, &mut Meter::new(limits))
+        .unwrap();
+    let mut reader = XmlReader::new(&encoded);
+    let mut meter = Meter::new(limits);
+    let mut sink = IgnoreDiagnostics;
+    let mut context = DecodeContext::new(limits, &mut meter, &mut sink);
+    let mut seen = Vec::new();
+    while let Some(event) = reader.next_event(&mut context).unwrap() {
+        if let XmlEvent::Start { name, .. } = event {
+            let expected = match name.local_name {
+                b"child" | b"after" => b"urn:outer".as_slice(),
+                b"inner" | b"deep" => b"urn:inner",
+                _ => continue,
+            };
+            assert_eq!(reader.resolve_prefix(b"p").unwrap().uri(), expected);
+            assert_eq!(
+                reader.resolve_prefix(b"").unwrap().uri(),
+                b"urn:default".as_slice()
+            );
+            assert_eq!(
+                reader.resolve_prefix(b"X").unwrap().uri(),
+                b"urn:opaque".as_slice()
+            );
+            seen.push(name.local_name.to_vec());
+        }
+    }
+    assert_eq!(seen, [b"child".as_slice(), b"inner", b"deep", b"after"]);
+    let xml = std::str::from_utf8(&encoded).unwrap();
+    assert!(xml.contains("<v:child"));
+    assert!(xml.contains("xsi:type=\"p:Label\""));
+    assert!(xml.contains("<p:deep"));
+    assert_eq!(xml.matches("xmlns:p=").count(), 2);
+    assert_eq!(read(&encoded), captured);
+}
+
+#[test]
 fn an_attribute_in_the_element_namespace_round_trips() {
     assert_round_trip(
         br#"<v:child v:flag="yes"/>"#,

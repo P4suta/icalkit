@@ -18,7 +18,7 @@
 //! `PropValue` has no list variant and no tree, so a property carrying several `href`s or an extension this crate has no row for is kept whole and reported with `DiagnosticCode::DavPropertyUnmodeled`.
 //!
 //! Content containing elements becomes [`PropValue::Markup`], with element and character children serialized in document order.
-//! Each element declares its resolved namespace, and every text run is escaped.
+//! Fragment roots carry their namespace context, and nested elements keep local declarations.
 //! Text-only content becomes [`PropValue::Unmodeled`], with character data concatenated in document order and written back escaped.
 //! Escaped element syntax stays character data.
 //!
@@ -340,11 +340,11 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
                 XmlEvent::Start { name, known, depth } => {
                     let inner = Opened { name, known, depth };
                     // The start tag is recorded before the child is acted on, because acting on it may consume the whole subtree and the fragment has to stay balanced whichever branch was taken.
-                    parts.open_fragment(&*self.events, name, context)?;
+                    parts.open_fragment(&*self.events, child, depth, context)?;
                     self.in_property(&mut parts, inner, context)?;
                 },
-                XmlEvent::End { name, .. } => {
-                    parts.close_fragment(name, context)?;
+                XmlEvent::End { .. } => {
+                    parts.close_fragment(self.events.element_spelling(), context)?;
                 },
             }
         }
@@ -371,7 +371,7 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
             if let ValueContent::Markup(fragment) = &mut parts.content {
                 let octets = found.as_ref().map(Href::as_bytes).unwrap_or_default();
                 fragment.push_escaped(octets, false, context)?;
-                close_in_fragment(fragment, child.name, context)?;
+                close_in_fragment(fragment, self.events.element_spelling(), context)?;
             }
             if parts.first_href.is_none() {
                 parts.first_href = found;
@@ -811,8 +811,9 @@ impl<'body> ValueParts<'body> {
 
     fn open_fragment(
         &mut self,
-        events: &dyn XmlPull<'_>,
-        name: QName<'_>,
+        events: &dyn XmlPull<'body>,
+        property: Opened<'body>,
+        depth: u16,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
         match &mut self.content {
@@ -820,23 +821,25 @@ impl<'body> ValueParts<'body> {
             ValueContent::Text(text) => {
                 let mut fragment = Fragment(Vec::new());
                 fragment.push_escaped(text.bytes(), false, context)?;
-                open_in_fragment(events, &mut fragment, name, context)?;
+                open_in_fragment(events, &mut fragment, property, depth, context)?;
                 self.content = ValueContent::Markup(fragment);
                 Ok(())
             },
-            ValueContent::Markup(fragment) => open_in_fragment(events, fragment, name, context),
+            ValueContent::Markup(fragment) => {
+                open_in_fragment(events, fragment, property, depth, context)
+            },
         }
     }
 
     fn close_fragment(
         &mut self,
-        name: QName<'_>,
+        spelled: &[u8],
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
         match &mut self.content {
             ValueContent::Resource(_) => Ok(()),
             ValueContent::Text(_) => Err(SyntaxError::Malformed.into()),
-            ValueContent::Markup(fragment) => close_in_fragment(fragment, name, context),
+            ValueContent::Markup(fragment) => close_in_fragment(fragment, spelled, context),
         }
     }
 
@@ -930,77 +933,113 @@ impl<'body> ValueParts<'body> {
                 let kept = retain(text.bytes(), context)?;
                 Ok(PropValue::Unmodeled(kept))
             },
-            ValueContent::Markup(fragment) => Ok(PropValue::Markup(fragment.0.into_boxed_slice())),
+            ValueContent::Markup(fragment) => {
+                if fragment.0.len() == fragment.0.capacity() {
+                    return Ok(PropValue::Markup(fragment.0.into_boxed_slice()));
+                }
+                context
+                    .meter
+                    .try_charge_bytes(u64::try_from(fragment.0.len()).unwrap_or(u64::MAX))?;
+                Ok(PropValue::Markup(
+                    context.meter.admit(|| copy(&fragment.0))?,
+                ))
+            },
         }
     }
 }
 
-/// The prefix a kept fragment writes one namespace under.
-///
-/// This crate's own output prefixes for the three namespaces it has a table for, and one spelling for everything else.
-/// A prefix is the document's choice and never the vocabulary's,
-/// so re-spelling a peer's is not a loss — what would be a loss is writing the peer's prefix into a document that never bound it.
-fn fragment_prefix(namespace: Namespace<'_>) -> &'static [u8] {
-    match namespace {
-        Namespace::Dav => b"D",
-        Namespace::CalDav => b"C",
-        Namespace::CalendarServer => b"CS",
-        // XML Namespaces 1.0 section 3 binds this URI to `xml` and to nothing else, so a generated prefix for it would be a declaration the specification forbids.
-        Namespace::Other(uri) if uri == XML_URI => b"xml",
-        Namespace::Other(uri) if uri.is_empty() => b"",
-        Namespace::Other(_) => b"X",
-    }
-}
-
-/// Write one element's start tag into the fragment a property is keeping.
-///
-/// Every element declares the namespace it resolved to, so the fragment is self-contained: the peer's own bindings were scoped to the peer's document and do not travel with the octets.
-fn open_in_fragment(
-    events: &dyn XmlPull<'_>,
+fn open_in_fragment<'a>(
+    events: &dyn XmlPull<'a>,
     parts: &mut Fragment,
-    name: QName<'_>,
+    property: Opened<'a>,
+    depth: u16,
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
     parts.push_fragment(b"<", context)?;
-    push_qualified_name(parts, name, context)?;
-    push_declaration(
-        parts,
-        fragment_prefix(name.namespace),
-        name.namespace,
-        context,
-    )?;
+    parts.push_fragment(events.element_spelling(), context)?;
+    if depth.saturating_sub(1) == property.depth {
+        declare_fragment_root(events, parts, property, context)?;
+    } else {
+        for index in 0.. {
+            let Some((prefix, namespace)) = events.binding_at(index, false) else {
+                break;
+            };
+            push_declaration(parts, prefix, namespace, context)?;
+        }
+    }
     for index in 0..events.attribute_count() {
-        let Some((held, value)) = events.attribute_at(index) else {
-            continue;
-        };
-        push_fragment_attribute(parts, index, held, value, context)?;
+        let spelling = events
+            .attribute_spelling(index)
+            .ok_or(SyntaxError::Malformed)?;
+        let (_, value) = events.attribute_at(index).ok_or(SyntaxError::Malformed)?;
+        parts.push_fragment(b" ", context)?;
+        parts.push_fragment(spelling, context)?;
+        parts.push_fragment(b"=\"", context)?;
+        parts.push_escaped(value, true, context)?;
+        parts.push_fragment(b"\"", context)?;
     }
     parts.push_fragment(b">", context)
 }
 
-/// Write one element's end tag into the fragment a property is keeping.
+fn declare_fragment_root<'a>(
+    events: &dyn XmlPull<'a>,
+    fragment: &mut Fragment,
+    property: Opened<'a>,
+    context: &mut DecodeContext<'_>,
+) -> Result<(), DavError> {
+    let mut bindings = Vec::new();
+    let mut add = |prefix: &'a [u8], namespace: Namespace<'a>| -> Result<(), DavError> {
+        let order = bindings.len();
+        context.meter.try_charge_bytes(
+            u64::try_from(size_of::<(&[u8], usize, Namespace<'_>)>()).unwrap_or(u64::MAX),
+        )?;
+        context
+            .meter
+            .admit(|| bindings.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
+        bindings.push((prefix, order, namespace));
+        Ok(())
+    };
+    for namespace in [Namespace::Dav, Namespace::CalDav, Namespace::CalendarServer] {
+        add(namespace.write_prefix(), namespace)?;
+    }
+    let property_ns = property.name.namespace;
+    if property.known.is_none() && !property_ns.uri().is_empty() && property_ns.uri() != XML_URI {
+        add(b"X", property_ns)?;
+    }
+    for index in 0.. {
+        let Some((prefix, namespace)) = events.binding_at(index, true) else {
+            break;
+        };
+        add(prefix, namespace)?;
+    }
+    let width = bindings
+        .iter()
+        .map(|(prefix, _, _)| prefix.len())
+        .max()
+        .unwrap_or(0);
+    let count = u64::try_from(bindings.len()).unwrap_or(u64::MAX);
+    context.meter.try_charge(
+        count
+            .saturating_mul(u64::from(count.ilog2()) + 1)
+            .saturating_mul(u64::try_from(width).unwrap_or(u64::MAX)),
+    )?;
+    bindings.sort_unstable_by_key(|(prefix, order, _)| (*prefix, *order));
+    for scope in bindings.chunk_by(|left, right| left.0 == right.0) {
+        if let Some((prefix, _, namespace)) = scope.last() {
+            push_declaration(fragment, prefix, *namespace, context)?;
+        }
+    }
+    Ok(())
+}
+
 fn close_in_fragment(
     parts: &mut Fragment,
-    name: QName<'_>,
+    spelled: &[u8],
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
     parts.push_fragment(b"</", context)?;
-    push_qualified_name(parts, name, context)?;
+    parts.push_fragment(spelled, context)?;
     parts.push_fragment(b">", context)
-}
-
-/// Write a name under the prefix this crate spells its namespace with.
-fn push_qualified_name(
-    parts: &mut Fragment,
-    name: QName<'_>,
-    context: &mut DecodeContext<'_>,
-) -> Result<(), DavError> {
-    let prefix = fragment_prefix(name.namespace);
-    if !prefix.is_empty() {
-        parts.push_fragment(prefix, context)?;
-        parts.push_fragment(b":", context)?;
-    }
-    parts.push_fragment(name.local_name, context)
 }
 
 /// Declare one prefix on the element being written, unless the prefix declares itself.
@@ -1028,55 +1067,6 @@ fn push_declaration(
         }
     }
     parts.push_fragment(b"\"", context)
-}
-
-/// Write one attribute of a kept element, with whatever prefix its own namespace needs.
-///
-/// An unprefixed attribute is in no namespace (XML Namespaces 1.0 section 6.2) and is written back unprefixed.
-/// One that is in a namespace gets a prefix of its own — `A0`, `A1` — rather than the element's, because the two namespaces need not be the same and a shared prefix would silently move the attribute into the element's.
-fn push_fragment_attribute(
-    parts: &mut Fragment,
-    index: usize,
-    name: QName<'_>,
-    value: &[u8],
-    context: &mut DecodeContext<'_>,
-) -> Result<(), DavError> {
-    if name.namespace.uri().is_empty() {
-        parts.push_fragment(b" ", context)?;
-        parts.push_fragment(name.local_name, context)?;
-    } else {
-        let mut prefix: Vec<u8> = Vec::new();
-        if name.namespace.uri() == XML_URI {
-            prefix.extend_from_slice(b"xml");
-        } else {
-            prefix.push(b'A');
-            push_decimal(&mut prefix, index);
-        }
-        push_declaration(parts, &prefix, name.namespace, context)?;
-        parts.push_fragment(b" ", context)?;
-        parts.push_fragment(&prefix, context)?;
-        parts.push_fragment(b":", context)?;
-        parts.push_fragment(name.local_name, context)?;
-    }
-    parts.push_fragment(b"=\"", context)?;
-    parts.push_escaped(value, true, context)?;
-    parts.push_fragment(b"\"", context)
-}
-
-/// Append a number's decimal digits, which a generated prefix needs and nothing else does.
-fn push_decimal(out: &mut Vec<u8>, value: usize) {
-    let mut digits: Vec<u8> = Vec::new();
-    let mut left = value;
-    loop {
-        let digit = u8::try_from(left.checked_rem(10).unwrap_or(0)).unwrap_or(0);
-        digits.push(b'0'.saturating_add(digit));
-        left = left.checked_div(10).unwrap_or(0);
-        if left == 0 {
-            break;
-        }
-    }
-    digits.reverse();
-    out.extend_from_slice(&digits);
 }
 
 /// Record one child of a `DAV:resourcetype`.
@@ -1879,6 +1869,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
     /// It exists so that this unit's cases are wire bytes rather than hand-built events, and it is deliberately the smallest thing that reads the bodies above: it resolves prefixes through a scoped binding stack and hands character data to the landed `decode_text`, and it refuses nothing, because refusing is the shipped tokenizer's subject and not this unit's.
     /// Attribute values are read as far as the first whitespace, which every body here and every fixture stays inside.
     struct Pull<'body> {
+        spelled: &'body [u8],
         /// The octets being read.
         body: &'body [u8],
         /// How far into them the reader sits.
@@ -1896,6 +1887,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
     /// One open element.
     #[derive(Clone, Copy, Debug)]
     struct Frame<'body> {
+        spelled: &'body [u8],
         /// Its resolved name.
         name: QName<'body>,
         /// The row of the vocabulary it lands on, if any.
@@ -1918,6 +1910,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
     impl<'body> Pull<'body> {
         fn new(body: &'body [u8]) -> Self {
             Self {
+                spelled: &[],
                 body,
                 at: 0,
                 open: Vec::new(),
@@ -2048,7 +2041,13 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
             let (prefix, local) = Self::split_name(spelled);
             let name = QName::new(self.lookup(prefix), local);
             let known = name.known();
-            self.open.push(Frame { name, known, depth });
+            self.spelled = spelled;
+            self.open.push(Frame {
+                spelled,
+                name,
+                known,
+                depth,
+            });
             self.closing = empty;
             XmlEvent::Start { name, known, depth }
         }
@@ -2056,6 +2055,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
         /// Close the element on top of the stack and drop the bindings it declared.
         fn leave(&mut self) -> XmlEvent<'body> {
             let frame = self.open.pop().unwrap();
+            self.spelled = frame.spelled;
             self.bound.retain(|held| held.depth < frame.depth);
             XmlEvent::End {
                 name: frame.name,
@@ -2108,6 +2108,27 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
     }
 
     impl<'body> XmlPull<'body> for Pull<'body> {
+        fn element_spelling(&self) -> &'body [u8] {
+            self.spelled
+        }
+
+        fn attribute_spelling(&self, index: usize) -> Option<&'body [u8]> {
+            Some(self.attributes.get(index)?.prefix)
+        }
+
+        fn binding_at(
+            &self,
+            index: usize,
+            ancestors: bool,
+        ) -> Option<(&'body [u8], Namespace<'body>)> {
+            let binding = self
+                .bound
+                .iter()
+                .filter(|binding| ancestors || binding.depth == self.depth())
+                .nth(index)?;
+            Some((binding.prefix, Namespace::from_uri(binding.value)))
+        }
+
         fn next_event(
             &mut self,
             context: &mut DecodeContext<'_>,

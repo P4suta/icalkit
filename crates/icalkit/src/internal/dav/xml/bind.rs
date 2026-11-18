@@ -43,6 +43,20 @@ pub(crate) struct PrefixStack<'a> {
 }
 
 impl<'a> PrefixStack<'a> {
+    pub(crate) fn declarations(
+        &self,
+        local: Option<u16>,
+    ) -> impl DoubleEndedIterator<Item = (&'a [u8], AttributeValue<'a>)> + '_ {
+        let first = local.map_or(0, |count| {
+            self.bindings.len().saturating_sub(usize::from(count))
+        });
+        self.bindings
+            .get(first..)
+            .unwrap_or(&[])
+            .iter()
+            .map(|binding| (binding.prefix, binding.uri))
+    }
+
     /// An empty stack, which is what a document begins with.
     #[must_use]
     pub(crate) const fn new() -> Self {
@@ -97,13 +111,8 @@ impl<'a> PrefixStack<'a> {
     /// XML Namespaces 1.0 section 6.3 makes the *repeat on one element* the collision.
     #[must_use]
     pub(crate) fn declared_here(&self, declared: u16, prefix: &[u8]) -> bool {
-        let held = usize::from(declared);
-        let first = self.bindings.len().saturating_sub(held);
-        self.bindings
-            .get(first..)
-            .unwrap_or(&[])
-            .iter()
-            .any(|binding| binding.prefix == prefix)
+        self.declarations(Some(declared))
+            .any(|(held, _)| held == prefix)
     }
 
     /// The URI a prefix is bound to here, or `None` when nothing binds it.

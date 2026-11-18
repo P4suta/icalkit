@@ -858,6 +858,7 @@ mod tests {
     /// It refuses almost nothing — the refusal list is unit 1's, and asserting it here would be asserting a second reader.
     #[derive(Debug)]
     struct Tokenizer<'a> {
+        spelled: &'a [u8],
         /// The body.
         body: &'a [u8],
         /// How far into it the reader sits.
@@ -878,6 +879,7 @@ mod tests {
         /// A reader over `body`, positioned before its first event.
         fn new(body: &'a [u8]) -> Self {
             Self {
+                spelled: &[],
                 body,
                 at: 0,
                 depth: 0,
@@ -940,6 +942,7 @@ mod tests {
             };
             self.at = close.saturating_add(1);
             let (written, rest) = split_written_name(inner);
+            self.spelled = written;
             self.attributes.clear();
             parse_attributes(rest, &mut self.attributes)?;
             let bindings = self.bindings.len();
@@ -964,6 +967,7 @@ mod tests {
         /// Close the innermost open element and release the bindings it declared.
         fn pop_frame(&mut self, context: &mut DecodeContext<'_>) -> Result<XmlEvent<'a>, DavError> {
             let frame = self.frames.pop().ok_or(SyntaxError::MismatchedTag)?;
+            self.spelled = frame.written;
             while self.bindings.len() > frame.bindings {
                 self.bindings.pop();
                 context.meter.unbind_prefix();
@@ -1007,6 +1011,28 @@ mod tests {
     }
 
     impl<'a> XmlPull<'a> for Tokenizer<'a> {
+        fn element_spelling(&self) -> &'a [u8] {
+            self.spelled
+        }
+
+        fn attribute_spelling(&self, index: usize) -> Option<&'a [u8]> {
+            self.attributes
+                .iter()
+                .filter(|(written, _)| !written.starts_with(b"xmlns"))
+                .nth(index)
+                .map(|(name, _)| *name)
+        }
+
+        fn binding_at(&self, index: usize, ancestors: bool) -> Option<(&'a [u8], Namespace<'a>)> {
+            let start = if ancestors {
+                0
+            } else {
+                self.frames.last()?.bindings
+            };
+            let (prefix, uri) = self.bindings.get(start.checked_add(index)?)?;
+            Some((prefix, Namespace::from_uri(uri)))
+        }
+
         fn next_event(
             &mut self,
             context: &mut DecodeContext<'_>,

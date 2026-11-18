@@ -127,6 +127,7 @@ struct RawAttribute<'a> {
 /// so the value an attribute *has* appears nowhere contiguously in the octets it arrived in.
 #[derive(Clone, Copy, Debug)]
 struct Attribute<'a> {
+    spelled: &'a [u8],
     /// The resolved name: a namespace and a local name, never a prefix.
     name: QName<'a>,
     /// Where the normalized value starts.
@@ -152,6 +153,7 @@ enum Step<'a> {
 /// Every reading door takes the caller's [`DecodeContext`], and this type holds no policy and no ledger of its own: the bounds that apply to a body are the ones its reader passes, one call at a time, so many bodies under one [`Meter`] are bounded in aggregate.
 #[derive(Debug)]
 pub struct XmlReader<'a> {
+    spelled: &'a [u8],
     /// The whole body.
     body: &'a [u8],
     /// How far into it the reader sits.
@@ -184,6 +186,7 @@ impl<'a> XmlReader<'a> {
     #[must_use]
     pub const fn new(body: &'a [u8]) -> Self {
         Self {
+            spelled: &[],
             body,
             at: 0,
             stage: Stage::Prolog,
@@ -493,6 +496,7 @@ impl<'a> XmlReader<'a> {
         });
         self.at = end;
         self.pending_end = empty;
+        self.spelled = spelled;
         Ok(XmlEvent::Start {
             name,
             known,
@@ -529,6 +533,7 @@ impl<'a> XmlReader<'a> {
     fn end_event(&mut self, meter: &mut Meter) -> Option<XmlEvent<'a>> {
         let depth = self.level();
         let open = self.close_open(meter)?;
+        self.spelled = open.spelled;
         Some(XmlEvent::End {
             name: open.name,
             known: open.known,
@@ -681,6 +686,7 @@ impl<'a> XmlReader<'a> {
                     .map_err(|_| LimitExceeded::Budget)
             })?;
             self.resolved.push(Attribute {
+                spelled: attribute.name,
                 name: QName::new(namespace, local),
                 from,
                 to,
@@ -756,6 +762,24 @@ impl<'a> XmlReader<'a> {
 }
 
 impl<'a> XmlPull<'a> for XmlReader<'a> {
+    fn element_spelling(&self) -> &'a [u8] {
+        self.spelled
+    }
+
+    fn attribute_spelling(&self, index: usize) -> Option<&'a [u8]> {
+        Some(self.resolved.get(index)?.spelled)
+    }
+
+    fn binding_at(&self, index: usize, ancestors: bool) -> Option<(&'a [u8], Namespace<'a>)> {
+        let local = if ancestors {
+            None
+        } else {
+            Some(self.open.last()?.bindings)
+        };
+        let (prefix, uri) = self.bindings.declarations(local).nth(index)?;
+        Some((prefix, Namespace::from_attribute(uri)))
+    }
+
     fn next_event(
         &mut self,
         context: &mut DecodeContext<'_>,
