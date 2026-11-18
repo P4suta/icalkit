@@ -52,6 +52,12 @@ fn a_rule_is_strictly_parsed_and_unknown_extensions_remain_notes() {
 }
 
 #[test]
+fn a_cursor_can_be_copied_sent_and_shared() {
+    fn check<T: Copy + Send + Sync>() {}
+    check::<icalkit::recurrence::Cursor>();
+}
+
+#[test]
 fn occurrences_are_windowed_lazy_and_resumable_with_an_opaque_cursor() {
     let rule = Rule::parse("FREQ=DAILY;COUNT=3").unwrap();
     let window = Window::new(at(NEW_YEAR_2024), at(NEW_YEAR_2024 + 7 * 86_400)).unwrap();
