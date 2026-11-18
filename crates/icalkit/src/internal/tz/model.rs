@@ -2,30 +2,24 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `VTIMEZONE` as a finite table of transitions, and the rules that generate them.
-//!
-//! Specification: RFC 5545 section 3.6.5, the `VTIMEZONE` component, with section 3.8.3.3 and section 3.8.3.4 for `TZOFFSETFROM` and `TZOFFSETTO`, section 3.8.5.2 for `RDATE` and section 3.8.5.3 for `RRULE` <https://www.rfc-editor.org/rfc/rfc5545#section-3.6.5>.
+//! [RFC 5545 section 3.6.5](https://www.rfc-editor.org/rfc/rfc5545#section-3.6.5) defines the `VTIMEZONE` component.
+//! Sections 3.8.3.3 and 3.8.3.4 define the UTC offsets before and after a transition.
+//! Sections 3.8.5.2 and 3.8.5.3 define recurrence dates and recurrence rules.
 //!
 //! `RRULE` supplies computed transitions and `RDATE` supplies explicit transitions.
-//! Before [`TransitionTable::coverage_start`], answers carry [`AnswerBasis::BeforeKnownTransitions`].
-//! After [`TransitionTable::coverage_end`], answers carry [`AnswerBasis::BeyondKnownTransitions`].
+//! Answers before [`TransitionTable::coverage_start`] carry [`AnswerBasis::BeforeKnownTransitions`](crate::internal::tz::AnswerBasis::BeforeKnownTransitions).
+//! Answers after [`TransitionTable::coverage_end`] carry [`AnswerBasis::BeyondKnownTransitions`](crate::internal::tz::AnswerBasis::BeyondKnownTransitions).
 //! Coverage markers distinguish continuation of the nearest observance from a computed transition.
-//!
-//! [`AnswerBasis::BeforeKnownTransitions`]: crate::internal::tz::AnswerBasis::BeforeKnownTransitions
 //!
 //! # Closed-form rules
 //!
 //! [`YearlyRule`] represents a month-scoped day selector or a weekday ordinal counted within the year.
 //! Each pattern includes a wall clock, a nonzero year interval, and an optional inclusive last date.
 //! Arithmetic over the selected period answers each rule lookup without iterating candidate dates.
-//! The structural bound preserves [`ZoneSource::resolve`]'s contract without a recurrence meter.
+//! [`ZoneSource::resolve`](crate::internal::tz::ZoneSource::resolve) can query these patterns without a recurrence meter.
 //!
-//! A rule outside the supported patterns produces [`DiagnosticCode::VtimezoneRuleUnsupported`].
+//! A rule outside the supported patterns produces [`DiagnosticCode::VtimezoneRuleUnsupported`](crate::internal::core::DiagnosticCode::VtimezoneRuleUnsupported).
 //! Its observance's `DTSTART` remains an explicit transition.
-//!
-//! [`AnswerBasis::BeyondKnownTransitions`]: crate::internal::tz::AnswerBasis::BeyondKnownTransitions
-//! [`ZoneSource::resolve`]: crate::internal::tz::ZoneSource::resolve
-//! [`DiagnosticCode::VtimezoneRuleUnsupported`]: crate::internal::core::DiagnosticCode::VtimezoneRuleUnsupported
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -122,7 +116,7 @@ pub enum RuleDay {
     OnOrBefore {
         /// The weekday.
         weekday: Weekday,
-        /// The latest day of the month it may fall on.
+        /// The inclusive upper day of the month.
         day: u8,
     },
     /// A day counted backward from the month's final day, with position one naming that day.
@@ -139,12 +133,12 @@ pub(super) enum RuleDate {
 
 /// A closed-form yearly transition pattern.
 ///
-/// The wall clock in `at` is read against the observance's `TZOFFSETFROM`, which is what RFC 5545 section 3.6.5 means by the observance's own `DTSTART`: the transition happens when the clock that is still running reaches that time.
+/// RFC 5545 section 3.6.5 uses the offset before the transition, `TZOFFSETFROM`, to interpret the local onset time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct YearlyRule {
     date: RuleDate,
     interval: YearInterval,
-    /// The wall clock the transition happens at, read against `TZOFFSETFROM`.
+    /// The local onset time at `TZOFFSETFROM`.
     at: CivilTime,
     /// The inclusive rule end, absent when no finite end falls in the civil date range.
     through: Option<CivilDate>,
@@ -319,11 +313,10 @@ impl YearlyRule {
 /// One annual pattern or explicit date from a `STANDARD` or `DAYLIGHT` subcomponent.
 ///
 /// Compiled annual patterns share the source observance's original anchor.
-/// An `RDATE`-driven definition becomes one of these per date, sharing the offsets its subcomponent declared and carrying no rule.
-/// That is what makes a table a flat sorted list rather than a tree, and it is why running out of `RDATE`s is visible as the list simply ending.
+/// Each `RDATE` contributes an explicit transition with the offsets from its subcomponent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Observance {
-    /// When this observance begins, as a wall clock read against `offset_from`.
+    /// The local onset time at `offset_from`.
     start: CivilDateTime,
     /// The offset in force before it, from `TZOFFSETFROM`.
     offset_from: UtcOffset,
@@ -371,7 +364,7 @@ impl Observance {
         }
     }
 
-    /// When this observance begins, as a wall clock read against `offset_from`.
+    /// The local onset time at [`Self::offset_from`].
     #[must_use]
     pub const fn start(self) -> CivilDateTime {
         self.start
@@ -406,7 +399,8 @@ impl Observance {
 
     /// Whether the offsets on either side of this observance differ.
     ///
-    /// A transition that moves no clock is legal, common at the head of a table where the first observance states the zone's base offset against itself, and not a moment any wall clock is ambiguous or missing at.
+    /// A definition can establish its base offset with an observance whose two offsets match.
+    /// A transition with equal offsets creates neither a gap nor a fold.
     #[must_use]
     pub const fn moves_the_clock(self) -> bool {
         self.offset_from.seconds() != self.offset_to.seconds()
@@ -426,43 +420,40 @@ impl Observance {
     }
 }
 
-/// One zone's transitions, sorted, bounded, and honest about where its data stops.
+/// An immutable table of one zone's transitions in onset order.
 ///
-/// Built where untrusted input is read and immutable afterwards, which is what lets [`ZoneSource`] answer without a meter: the only unbounded quantity a `VTIMEZONE` has is how many transitions it declares, and that is charged here, once.
-///
-/// [`ZoneSource`]: crate::internal::tz::ZoneSource
+/// Construction charges the observance budget once.
+/// [`ZoneSource`](crate::internal::tz::ZoneSource) can query the resulting table without a meter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionTable {
     /// The identifier this table answers to, compared by exact bytes.
     tzid: Box<str>,
     /// The observances, ascending by the instant they begin.
     observances: Box<[Observance]>,
-    /// The observances that repeat by a rule, in the same order.
+    /// All recurring observances in onset order.
     ///
-    /// A second list rather than a filter at every lookup.
-    /// A rule is in force from its own `DTSTART` until something later supersedes it, so *every* rule in a definition has to be asked about a query however many dated transitions were written between the two — which is what a window over the sorted table got wrong, and what an `RDATE` list restating two years of a zone that moves twice a year was enough to trigger.
+    /// An explicit transition can separate a rule's anchor from a later occurrence of the same rule.
+    /// Indexing the rules keeps each one available for lookup.
     rules: Vec<Observance>,
-    /// Whether observances were dropped to hold the caller's bound.
+    /// Whether the resource limits cut the list short.
     truncated: bool,
-    /// The last supported date, absent when every kind of observance covers the civil range.
+    /// The final date of finite coverage.
     coverage_end: Option<CivilDate>,
     /// The date of the earliest transition this table records, absent when it records none.
     coverage_start: Option<CivilDate>,
 }
 
 impl TransitionTable {
-    /// A table for `tzid` over `observances`, charged to `meter`.
+    /// Build a table for `tzid` and charge the meter for each admitted observance.
     ///
-    /// The observances are sorted here rather than required sorted, because they arrive from several properties of several subcomponents and no producer orders them: `RDATE` lines interleave with rule anchors and neither knows about the other.
-    /// That is the one place this crate differs from `ical-recur`, which requires its caller-supplied lists sorted —
-    /// there the caller holds one list and sorting it silently would hide a cost the caller could have avoided, and here nobody holds one list at all.
+    /// Rule anchors and `RDATE` values can arrive in any order across subcomponents.
+    /// Sort each local `DTSTART` by its instant at `TZOFFSETFROM`.
+    /// Equal local times with different offsets can identify different instants.
+    /// The full observance breaks ties between equal instants and makes the order independent of the input.
     ///
-    /// Observances past `Limits::max_vtimezone_observances` are dropped from the end, which leaves the table's coverage ending earlier rather than leaving it with a hole, and [`DiagnosticCode::VtimezoneObservancesTruncated`] says so.
-    ///
-    /// The order is the instant each observance *begins*, which is its own `DTSTART` read against its own `TZOFFSETFROM`, and never the wall clock that `DTSTART` spells.
-    /// Two facts follow and both were wrong before.
-    /// A definition whose `DAYLIGHT` and `STANDARD` subcomponents declare one wall clock — legal, and written by producers that state a transition from both sides — sorted by an equal key, so which one the table held first was `sort_unstable`'s business and the answer changed with the order the producer wrote them in.
-    /// And an observance whose `TZOFFSETFROM` is further east than the previous one's begins *earlier* than a later wall clock suggests, which left the binary search below placing a query among onsets that did not ascend.
+    /// Keep the earliest onsets that fit the remaining budget.
+    /// Report [`DiagnosticCode::VtimezoneObservancesTruncated`] when the observance limit cuts the list short.
+    /// Report [`DiagnosticCode::ResourceBudgetExhausted`] when the shared budget runs out.
     #[must_use]
     pub fn new<S: DiagnosticSink + ?Sized>(
         tzid: Box<str>,
@@ -471,7 +462,6 @@ impl TransitionTable {
         sink: &mut S,
     ) -> Self {
         let mut kept = observances;
-        // The whole observance breaks the tie, so two beginning at one instant are ordered by what they say rather than by where they were written.
         kept.sort_unstable_by_key(|observance| OrderedObservance::new(*observance));
         let (admitted, breach) = admitted_count(kept.len(), meter);
         let truncated = admitted < kept.len();
@@ -526,7 +516,7 @@ impl TransitionTable {
 
     /// The observances that repeat by a rule, in the same order.
     ///
-    /// Every one of them is asked about every query, because a rule is in force from its own `DTSTART` until a later observance supersedes it and no count of dated transitions written beside it changes that.
+    /// Each query checks all recurring patterns, including rules with anchors before intervening explicit transitions.
     /// The observance meter bounds the number of compiled patterns, including month-specific patterns from one source rule.
     /// Each pattern contributes at most one computed onset per year.
     #[must_use]
@@ -534,7 +524,7 @@ impl TransitionTable {
         &self.rules
     }
 
-    /// Whether observances were dropped to hold the caller's bound.
+    /// Whether the meter refused any offered observance.
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
         self.truncated
@@ -553,12 +543,10 @@ impl TransitionTable {
         self.coverage_end
     }
 
-    /// The date of the earliest transition this table records, absent when it records none.
+    /// The first admitted anchor date, or `None` for an empty table.
     ///
-    /// A table has two ends.
-    /// A question before this date is answered by extending the earliest observance's `TZOFFSETFROM` backwards forever — the whole of what the file states about that era — and carries [`AnswerBasis::BeforeKnownTransitions`] saying so.
-    ///
-    /// [`AnswerBasis::BeforeKnownTransitions`]: crate::internal::tz::AnswerBasis::BeforeKnownTransitions
+    /// Before the first anchor, the table extends the first observance's `TZOFFSETFROM` to the past.
+    /// Answers carry [`AnswerBasis::BeforeKnownTransitions`](crate::internal::tz::AnswerBasis::BeforeKnownTransitions).
     #[must_use]
     pub const fn coverage_start(&self) -> Option<CivilDate> {
         self.coverage_start
@@ -573,10 +561,7 @@ impl TransitionTable {
     }
 }
 
-/// How many of `offered` observances the caller's policy admits.
-///
-/// Charged one at a time rather than as a block, because the answer wanted here is *where* the bound falls and a block charge only says that it does.
-/// The loop is bounded by the offered count, which is itself bounded by the parse that produced it.
+/// Charge one observance at a time and return the accepted count and the first refusal.
 fn admitted_count(offered: usize, meter: &mut Meter) -> (usize, Option<LimitExceeded>) {
     let mut admitted = 0_usize;
     while admitted < offered {
@@ -588,10 +573,8 @@ fn admitted_count(offered: usize, meter: &mut Meter) -> (usize, Option<LimitExce
     (admitted, None)
 }
 
-/// The instant an observance's own `DTSTART` names, which is the order a table is kept in.
-///
-/// RFC 5545 section 3.6.5 reads that `DTSTART` against `TZOFFSETFROM`: the transition happens when the clock that is still running reaches that wall time.
-/// `None` for a wall clock whose instant the timeline cannot express, which sorts before every observance that has one — the same place a date before the timeline would sort.
+/// Interpret an observance's local `DTSTART` using its `TZOFFSETFROM` under RFC 5545 section 3.6.5.
+/// An onset outside the timeline sorts before every representable instant.
 fn onset_of(observance: Observance) -> Option<Instant> {
     observance.start().at_offset(observance.offset_from())
 }
@@ -615,13 +598,11 @@ impl OrderedObservance {
     }
 }
 
-/// The last date `observances` are backed by real data for.
+/// The final date of coverage for a complete table.
 ///
-/// `None` only when every side covers the civil range, where a side is `STANDARD` against `DAYLIGHT`.
-/// A zone knows its own future when it can say both when summer begins and when it ends; a definition with an endless daylight rule and a finite list of standard onsets knows neither past the last of those onsets, because after it the alternation the zone runs on has one half missing.
-///
-/// Where some side does run out, the answer is the *latest* date any observance states outright, and not the earliest.
-/// A flat table of two dated transitions covers everything between them and stops after the second; taking the earlier of the two would report a July inside the table as an extrapolation past its end.
+/// Coverage remains open when each represented side has an open rule or a counted end beyond the civil range.
+/// If either kind runs out, coverage ends at the last finite date that any observance supports.
+/// For example, an endless daylight rule and a finite list of standard onsets cover the zone through the last standard onset.
 fn coverage_end_of(observances: &[Observance]) -> Option<CivilDate> {
     if sides_of(observances)
         .into_iter()
@@ -640,7 +621,7 @@ fn coverage_end_of(observances: &[Observance]) -> Option<CivilDate> {
     latest
 }
 
-/// What one side of a definition — its `STANDARD` or its `DAYLIGHT` observances — states.
+/// Coverage for either the `STANDARD` or the `DAYLIGHT` observances in a definition.
 #[derive(Clone, Copy, Debug)]
 struct Side {
     /// Whether the definition carries an observance of this kind at all.
@@ -665,9 +646,9 @@ fn sides_of(observances: &[Observance]) -> [Side; 2] {
     sides
 }
 
-/// Why a `VTIMEZONE` definition was not admitted into a set.
+/// The limit that prevented admission of a `VTIMEZONE` definition.
 ///
-/// The rejected table travels inside the error rather than being dropped, so a caller holding one still holds the definition the file wrote.
+/// The error holds the full table so the caller can inspect the refused definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ZoneSetError {
@@ -678,7 +659,7 @@ pub enum ZoneSetError {
 }
 
 impl ZoneSetError {
-    /// The definition that was not admitted.
+    /// The table that exceeded the admission limit.
     #[must_use]
     pub const fn table(&self) -> &TransitionTable {
         match self {
@@ -686,11 +667,9 @@ impl ZoneSetError {
         }
     }
 
-    /// The code an emitter reports this refusal under.
+    /// The diagnostic code for the resource limit that refused the definition.
     ///
-    /// The caller's own bound refused a definition the file carries, which is a fact about the wiring rather than about the file — and one that has to travel, because the identifiers the refused definition declares are otherwise indistinguishable from identifiers the calendar never defined.
-    /// `docs/adr/0003` amendment 6 said this refusal carried no code;
-    /// M2 found what the silence cost and gave it one.
+    /// A resource refusal can make a declared zone unavailable even when the calendar defines its identifier.
     #[must_use]
     pub const fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
@@ -707,10 +686,10 @@ impl ZoneSetError {
     }
 }
 
-/// How a definition was taken into a set.
+/// The result of admitting a time zone definition.
 ///
-/// The answer `VtimezoneSet::insert` gives where it used to hand a second definition back.
-/// A calendar declaring one `TZID` twice has two readings of one zone and RFC 5545 section 3.6.5 forbids it; dropping either is how a file with two readings acquires one nobody chose, and dropping the *second* meant an empty placeholder written above a full definition erased it.
+/// Under RFC 5545 section 3.8.3.1, a `TZID` identifies one definition within its calendar.
+/// The set keeps every definition under a repeated identifier so callers can inspect the conflict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ZoneAdmission {
@@ -734,7 +713,8 @@ impl ZoneAdmission {
 
 /// The zone definitions one calendar carries.
 ///
-/// Kept sorted by identifier so that a lookup is a binary search over exact bytes, which is the comparison `docs/adr/0003` requires and the only one that keeps identifier aliasing the caller's visible step.
+/// The set orders identifiers by their exact bytes for binary search.
+/// Callers handle identifier aliases as specified in `docs/adr/0003`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VtimezoneSet {
     /// The tables, ascending by identifier.
@@ -750,12 +730,11 @@ impl VtimezoneSet {
         Self { tables: Vec::new() }
     }
 
-    /// Admit `table`, charged to `meter`, saying whether its identifier was already here.
+    /// Admit `table` and charge the meter for one definition.
     ///
-    /// A second definition of one identifier is admitted beside the first, in the order the file wrote them, and [`ZoneAdmission::Repeated`] carries the code that says so.
-    /// The refusal this used to make cost more than it was worth: the file's second reading became unreachable from the value that came back, and a calendar opening with an empty placeholder `VTIMEZONE` had its real definition thrown away as the duplicate.
-    ///
-    /// The only refusal left is the caller's own zone-count bound.
+    /// The set preserves input order among definitions with the same identifier.
+    /// [`ZoneAdmission::Repeated`] identifies a duplicate, including one after an empty placeholder.
+    /// Resource exhaustion or the zone count limit returns the offered table in a [`ZoneSetError`].
     pub fn insert(
         &mut self,
         table: TransitionTable,
@@ -785,7 +764,7 @@ impl VtimezoneSet {
         } else {
             ZoneAdmission::Repeated
         };
-        // Past the last definition of this identifier, so equal keys keep file order and a reader taking the first of them takes the one the producer wrote first.
+        // Insert after all definitions with the same identifier to preserve their input order.
         let index = self
             .tables
             .partition_point(|held| held.tzid().as_str() <= table.tzid().as_str());
@@ -793,11 +772,10 @@ impl VtimezoneSet {
         admission
     }
 
-    /// The definition for `tzid` a lookup answers with, compared by exact bytes.
+    /// Find `tzid` by exact bytes and return its first definition with a transition.
     ///
-    /// The first definition that carries a transition, and the first definition otherwise.
-    /// A file may declare one identifier twice, and where it does the earlier reading is the one this answers with — except that a definition carrying no observance is not a reading of a zone at all, and letting an empty placeholder shadow the definition beside it would hide a zone the file states in full.
-    /// [`VtimezoneSet::definitions`] is where both stay reachable, and that is the accessor a caller comparing two readings wants.
+    /// If all matching definitions are empty, return the first one in file order.
+    /// [`VtimezoneSet::definitions`] returns every matching definition.
     #[must_use]
     pub fn table(&self, tzid: &str) -> Option<&TransitionTable> {
         let held = self.definitions(tzid);
@@ -818,15 +796,15 @@ impl VtimezoneSet {
         self.tables.get(first..past).unwrap_or(&[])
     }
 
-    /// Every definition, ascending by identifier and in file order within one.
+    /// All definitions in identifier order, preserving file order within each identifier.
     #[must_use]
     pub fn tables(&self) -> &[TransitionTable] {
         &self.tables
     }
 
-    /// How many zones this set holds.
+    /// The number of distinct zone identifiers.
     ///
-    /// Identifiers, not definitions: a calendar declaring `Europe/Berlin` twice carries one zone and two readings of it, and [`VtimezoneSet::tables`] is where the second one is.
+    /// Duplicate definitions count once here and each appears in [`VtimezoneSet::tables`].
     #[must_use]
     pub fn len(&self) -> usize {
         let mut counted = 0_usize;
@@ -951,7 +929,7 @@ mod tests {
         assert!(YearlyRule::new(12, RuleDay::DayOfMonth(31), two_am(), None).is_some());
     }
 
-    /// Observances arrive from several properties of several subcomponents and no producer orders them, so the table does.
+    /// Table construction sorts explicit transitions by onset.
     #[test]
     fn a_table_sorts_what_it_is_handed() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -969,7 +947,7 @@ mod tests {
         assert_eq!(built.tzid().as_str(), "Europe/Berlin");
     }
 
-    /// The `RDATE` table that runs out, which is the input this whole design turns on.
+    /// Explicit dates and rule end dates bound coverage.
     #[test]
     fn a_date_driven_table_stops_where_its_dates_do_and_a_rule_driven_one_does_not() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -995,7 +973,7 @@ mod tests {
         assert_eq!(expiring.coverage_end(), bounded);
     }
 
-    /// A bound nobody charges is decoration: a million `RDATE` transitions is a file somebody can write, and the table that reads one says it was cut.
+    /// Truncation keeps the earliest onsets and reports the observance limit.
     #[test]
     fn observances_past_the_caller_s_bound_are_dropped_from_the_end_and_reported() {
         let limits = Limits::DEFAULT.with_max_vtimezone_observances(2);
@@ -1020,7 +998,7 @@ mod tests {
         );
     }
 
-    /// A duplicate identifier is a reported fact and a second reading kept, never a lost one and never a silently preferred one.
+    /// Admission reports a duplicate identifier and preserves both definitions.
     #[test]
     fn a_second_definition_of_one_zone_is_kept_beside_the_first_and_reported() {
         let mut meter = Meter::new(Limits::DEFAULT);
