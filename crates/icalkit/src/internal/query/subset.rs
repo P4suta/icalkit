@@ -31,8 +31,9 @@ use crate::internal::core::{
 use crate::internal::dav::{CompSelection, TimeRange};
 
 use crate::internal::query::expand::{
-    EndKind, InstanceShape, component_overlaps, component_start, expand_related, has_recurrence,
-    occupancy_of, override_impacts, override_recurrence_id, placed_value,
+    EndKind, InstanceShape, component_overlaps, component_start, event_instance_at_key,
+    expand_related, has_recurrence, occupancy_of, override_impacts, override_recurrence_id,
+    placed_value, unique_reply_key,
 };
 use crate::internal::query::series_index::{Member, SeriesIndex, SiblingScope, is_override};
 use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
@@ -445,6 +446,175 @@ fn normalize_expanded_property(
         .edit_parameters()
         .retain(|parameter| !parameter.is_named(b"TZID"));
     Ok(Some(property))
+}
+
+pub(crate) struct ReplyOccurrence {
+    pub(crate) event: Component,
+    pub(crate) key: Instant,
+    pub(crate) stored_item: Option<usize>,
+}
+
+/// Build the stored occurrence whose participation an attendee answers.
+pub(crate) fn event_for_instance_reply(
+    master: &Component,
+    siblings: &[Item],
+    reply: &Component,
+    zones: Zones<'_>,
+    received_zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    notes: &mut Vec<crate::internal::core::Diagnostic>,
+) -> Result<ReplyOccurrence, QueryError> {
+    let index = SeriesIndex::new(siblings, budget.meter)?;
+    let related = index
+        .related(master, budget.meter)?
+        .map_err(|_| QueryError::Unrepresentable)?;
+    let identity = reply
+        .properties()
+        .find(|property| property.has_id(&PropertyId::RECURRENCE_ID))
+        .ok_or(QueryError::Unrepresentable)?;
+    let addressed = identity
+        .value::<DateTimeValue<'_>>()
+        .value()
+        .ok_or(QueryError::Unrepresentable)?;
+    let key = unique_reply_key(addressed, zones)?;
+    if unique_reply_key(addressed, received_zones)? != key {
+        return Err(QueryError::Unrepresentable);
+    }
+    let instance = event_instance_at_key(master, related, addressed, key, zones, budget, notes)?;
+    let mut stored_item = None;
+    for member in related {
+        let at = override_recurrence_id(master, member.component, zones)
+            .map_err(|_| QueryError::Unrepresentable)?;
+        let range = is_range_anchor(member.component);
+        if at == key {
+            let stored = member
+                .component
+                .get::<DateTimeValue<'_>>(&PropertyId::RECURRENCE_ID)
+                .value()
+                .ok_or(QueryError::Unrepresentable)?;
+            if range
+                || stored_item.replace(member.position).is_some()
+                || unique_reply_key(stored, zones)? != key
+                || matches!((stored, addressed), (DateTimeValue::Zoned {tzid: first, ..}, DateTimeValue::Zoned {tzid: second, ..}) if first != second)
+            {
+                return Err(QueryError::Unrepresentable);
+            }
+        }
+    }
+    charge_line(identity, budget.meter)?;
+    let mut event = effective_template(master, related, instance, zones, budget.meter)?;
+    set_reply_times(&mut event, instance, zones, budget.meter)?;
+    Ok(ReplyOccurrence {
+        event,
+        key,
+        stored_item,
+    })
+}
+
+fn set_reply_times(
+    event: &mut Component,
+    instance: crate::internal::query::Instance,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<(), QueryError> {
+    let InstanceShape::Event { end, .. } = instance.shape() else {
+        return Err(QueryError::Unrepresentable);
+    };
+    event.items_mut().retain(|entry| {
+        entry.as_property().is_none_or(|property| {
+            !is_recurrence_property(property)
+                && !property.has_id(&PropertyId::RECURRENCE_ID)
+                && (end == EndKind::Duration || !property.has_id(&PropertyId::DURATION))
+                && (end == EndKind::Explicit || !property.has_id(&PropertyId::DTEND))
+        })
+    });
+    for property in event
+        .items_mut()
+        .iter_mut()
+        .filter_map(Item::as_property_mut)
+    {
+        if property.has_id(&PropertyId::DTSTART) {
+            write_instance_time(property, instance.start(), zones, meter)?;
+        } else if property.has_id(&PropertyId::DTEND) {
+            write_instance_time(property, instance.end(), zones, meter)?;
+        }
+    }
+    if end == EndKind::Explicit && event.properties_named(&PropertyId::DTEND).next().is_none() {
+        let start = event
+            .properties()
+            .find(|property| property.has_id(&PropertyId::DTSTART))
+            .ok_or(QueryError::Unrepresentable)?;
+        charge_line(start, meter)?;
+        let parameters = start
+            .parameters()
+            .iter()
+            .filter(|p| p.is_named(b"TZID") || p.is_named(b"VALUE"))
+            .cloned()
+            .collect();
+        let mut finish = Property::create(b"DTEND", parameters, start.value_text().as_bytes())
+            .map_err(|_| QueryError::Unrepresentable)?;
+        write_instance_time(&mut finish, instance.end(), zones, meter)?;
+        insert_property(event, finish);
+    }
+    if end == EndKind::Duration
+        && occupancy_of(event, zones, &[])
+            .map_err(|_| QueryError::Unrepresentable)?
+            .duration_end
+            != Some(instance.end())
+    {
+        let seconds = instance
+            .start()
+            .checked_seconds_until(instance.end())
+            .ok_or(QueryError::Unrepresentable)?;
+        let mut value = ValueBuf::new();
+        Duration::new(0, seconds)
+            .encode_value(&mut value)
+            .map_err(|_| QueryError::Unrepresentable)?;
+        let duration = event
+            .items_mut()
+            .iter_mut()
+            .filter_map(Item::as_property_mut)
+            .find(|property| property.has_id(&PropertyId::DURATION))
+            .ok_or(QueryError::Unrepresentable)?;
+        meter.try_charge_bytes(octets(value.as_bytes().len()))?;
+        duration.set_value_text(value.into_raw_text());
+    }
+    Ok(())
+}
+
+fn write_instance_time(
+    property: &mut Property,
+    instant: Instant,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<(), QueryError> {
+    let original = property
+        .value::<DateTimeValue<'_>>()
+        .value()
+        .ok_or(QueryError::Unrepresentable)?;
+    let offset = if let DateTimeValue::Zoned { tzid, .. } = original {
+        let name = core::str::from_utf8(tzid).map_err(|_| QueryError::Unrepresentable)?;
+        zones
+            .offset_at(Some(name), instant)
+            .map_err(|_| QueryError::Unrepresentable)?
+            .offset
+    } else {
+        UtcOffset::UTC
+    };
+    let local = CivilDateTime::from_instant(instant, offset).ok_or(QueryError::Unrepresentable)?;
+    let projected = match original {
+        DateTimeValue::Date(_) => DateTimeValue::Date(local.date()),
+        DateTimeValue::Local(_) => DateTimeValue::Local(local),
+        DateTimeValue::Utc(_) => DateTimeValue::Utc(local),
+        DateTimeValue::Zoned { tzid, .. } => DateTimeValue::Zoned { stamp: local, tzid },
+    };
+    let mut value = ValueBuf::new();
+    projected
+        .encode_value(&mut value)
+        .map_err(|_| QueryError::Unrepresentable)?;
+    meter.try_charge_bytes(octets(value.as_bytes().len()))?;
+    property.set_value_text(value.into_raw_text());
+    Ok(())
 }
 
 /// Use the exact component when present, or compose the range anchors in force.

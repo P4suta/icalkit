@@ -1007,6 +1007,329 @@ fn a_vtodo_this_and_future_request_materializes_a_detached_anchor() {
 }
 
 #[test]
+fn a_message_cannot_create_two_answers_for_the_same_occurrence() {
+    let fields = "RECURRENCE-ID:20260317T140000Z\r\nORGANIZER:mailto:chair@example.test\r\n\
+                  ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n";
+    let body = scheduling_payload("REPLY", "range@example.test", "20260302T120000Z", 2, fields);
+    let text = str::from_utf8(&body).unwrap();
+    let event = text
+        .split_once("BEGIN:VEVENT\r\n")
+        .unwrap()
+        .1
+        .strip_suffix(WRAP_TAIL)
+        .unwrap();
+    let duplicate = text.replace(WRAP_TAIL, &format!("BEGIN:VEVENT\r\n{event}{WRAP_TAIL}"));
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    let reply = Message::read(duplicate.as_bytes()).unwrap();
+    assert!(reply.review(&current, &actor).is_err());
+}
+
+#[test]
+fn an_instance_reply_can_echo_the_occurrences_start_and_end() {
+    check_generated_reply_times(true).unwrap();
+}
+
+#[test]
+fn a_sparse_instance_reply_keeps_the_occurrences_start_and_end() {
+    check_generated_reply_times(false).unwrap();
+}
+
+fn check_generated_reply_times(echo: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let held = str::from_utf8(range_series::HELD)?.replace(
+        "DTSTART:20260310T140000Z\r\n",
+        "DTSTART:20260310T140000Z\r\nDTEND:20260310T150000Z\r\nX-STORED:keep me\r\n",
+    );
+    let current = Calendar::parse(held.as_bytes())?;
+    let times = "DTSTART:20260317T140000Z\r\nDTEND:20260317T150000Z\r\n";
+    let fields = format!(
+        "RECURRENCE-ID:20260317T140000Z\r\n{}ORGANIZER:mailto:chair@example.test\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n",
+        if echo { times } else { "" }
+    );
+    let bytes = scheduling_payload(
+        "REPLY",
+        "range@example.test",
+        "20260302T120000Z",
+        2,
+        &fields,
+    );
+    let message = Message::read(&bytes)?;
+    let actor = Actor::new("mailto:alice@example.test").ok_or("invalid attendee")?;
+    let review = message.review(&current, &actor)?;
+    let result = String::from_utf8(review.authorize().apply()?.to_bytes())?;
+    assert!(result.starts_with(held.strip_suffix(WRAP_TAIL).ok_or("missing calendar end")?));
+    let detached = result
+        .rsplit_once("BEGIN:VEVENT\r\n")
+        .ok_or("missing detached event")?
+        .1;
+    for line in times.lines() {
+        assert!(detached.lines().any(|found| found == line), "{detached}");
+    }
+    assert!(detached.contains("RECURRENCE-ID:20260317T140000Z\r\n"));
+    assert!(detached.contains("X-STORED:keep me\r\n"));
+    assert!(detached.contains("PARTSTAT=ACCEPTED"));
+    assert!(!detached.contains("RRULE:"));
+    Ok(())
+}
+
+#[test]
+fn an_instance_reply_keeps_date_and_floating_occurrences_in_their_clock() {
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    for (start, id, echo) in [
+        (
+            "DTSTART;VALUE=DATE:20260310",
+            "RECURRENCE-ID;VALUE=DATE:20260317",
+            "DTSTART;VALUE=DATE:20260317",
+        ),
+        (
+            "DTSTART:20260310T140000",
+            "RECURRENCE-ID:20260317T140000",
+            "DTSTART:20260317T140000",
+        ),
+    ] {
+        let held = str::from_utf8(range_series::HELD)
+            .unwrap()
+            .replace("DTSTART:20260310T140000Z", start);
+        let current = Calendar::parse(held.as_bytes()).unwrap();
+        let reply = instance_reply(id, echo).unwrap();
+        let bytes = reply
+            .review(&current, &actor)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap()
+            .to_bytes();
+        let detached = str::from_utf8(&bytes)
+            .unwrap()
+            .rsplit_once("BEGIN:VEVENT\r\n")
+            .unwrap()
+            .1;
+        for line in [id, echo] {
+            assert!(detached.lines().any(|found| found == line), "{detached}");
+        }
+    }
+}
+
+fn instance_reply(identity: &str, times: &str) -> Result<Message, icalkit::Error> {
+    let fields = format!(
+        "{identity}\r\n{times}\r\nORGANIZER:mailto:chair@example.test\r\n\
+                          ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n"
+    );
+    Message::read(&scheduling_payload(
+        "REPLY",
+        "range@example.test",
+        "20260302T120000Z",
+        2,
+        &fields,
+    ))
+}
+
+#[test]
+fn an_instance_reply_cannot_change_an_occurrence_or_target_an_excluded_key() {
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    let original = str::from_utf8(range_series::HELD).unwrap();
+    let held = original.replace("SUMMARY:", "DTEND:20260310T150000Z\r\nSUMMARY:");
+    let id = "RECURRENCE-ID:20260317T140000Z";
+    let changed = instance_reply(id, "DTEND:20260317T160000Z").unwrap();
+    assert!(
+        changed
+            .review(&Calendar::parse(held.as_bytes()).unwrap(), &actor)
+            .is_err()
+    );
+    let excluded = held.replace("SUMMARY:", "EXDATE:20260317T140000Z\r\nSUMMARY:");
+    let echo = instance_reply(id, "DTEND:20260317T150000Z").unwrap();
+    assert!(
+        echo.review(&Calendar::parse(excluded.as_bytes()).unwrap(), &actor)
+            .is_err()
+    );
+}
+
+#[test]
+fn an_instance_reply_uses_the_duration_of_an_included_period() {
+    let held = str::from_utf8(range_series::HELD).unwrap().replace(
+        "RRULE:",
+        "RDATE;VALUE=PERIOD:20260320T140000Z/PT2H\r\nRRULE:",
+    );
+    let current = Calendar::parse(held.as_bytes()).unwrap();
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    let time = "DTSTART:20260320T140000Z\r\nDTEND:20260320T160000Z";
+    let reply = instance_reply("RECURRENCE-ID:20260320T140000Z", time).unwrap();
+    let bytes = reply
+        .review(&current, &actor)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap()
+        .to_bytes();
+    let detached = str::from_utf8(&bytes)
+        .unwrap()
+        .rsplit_once("BEGIN:VEVENT\r\n")
+        .unwrap()
+        .1;
+    for line in time.lines() {
+        assert!(detached.lines().any(|found| found == line), "{detached}");
+    }
+    assert!(!detached.contains("RDATE"));
+}
+
+#[test]
+fn a_generated_instance_reply_cannot_choose_a_side_of_a_repeated_hour() {
+    let zone = "BEGIN:VTIMEZONE\r\nTZID:Private/Fold\r\nBEGIN:STANDARD\r\n\
+                DTSTART:20260317T150000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n\
+                END:STANDARD\r\nEND:VTIMEZONE\r\n";
+    let held = str::from_utf8(range_series::HELD)
+        .unwrap()
+        .replace("BEGIN:VEVENT\r\n", &format!("{zone}BEGIN:VEVENT\r\n"))
+        .replace(
+            "DTSTART:20260310T140000Z",
+            "DTSTART;TZID=Private/Fold:20260310T143000",
+        );
+    let current = Calendar::parse(held.as_bytes()).unwrap();
+    let reply = instance_reply(
+        "RECURRENCE-ID;TZID=Private/Fold:20260317T143000",
+        "SUMMARY:Original sync",
+    )
+    .unwrap();
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    assert!(reply.review(&current, &actor).is_err());
+}
+
+#[test]
+fn an_instance_reply_requires_the_original_date_or_time_form_of_the_key() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    let reply = instance_reply("RECURRENCE-ID:20260317T140000", "SUMMARY:Original sync").unwrap();
+    assert!(reply.review(&current, &actor).is_err());
+}
+
+#[test]
+fn an_instance_reply_uses_the_schedule_from_the_latest_range_request() {
+    let current = Calendar::parse(range_series::HELD).unwrap();
+    let organizer = Actor::new("mailto:chair@example.test").unwrap();
+    let changed = Message::read(range_series::REQUEST)
+        .unwrap()
+        .review(&current, &organizer)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let attendee = Actor::new("mailto:alice@example.test").unwrap();
+    let fields = "RECURRENCE-ID:20260324T140000Z\r\nDTSTART:20260324T160000Z\r\n\
+                  SUMMARY:Moved sync\r\nORGANIZER:mailto:chair@example.test\r\n\
+                  ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n";
+    let message = Message::read(&scheduling_payload(
+        "REPLY",
+        "range@example.test",
+        "20260303T120000Z",
+        3,
+        fields,
+    ))
+    .unwrap();
+    let written = String::from_utf8(
+        message
+            .review(&changed, &attendee)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    let detached = written.rsplit_once("BEGIN:VEVENT\r\n").unwrap().1;
+    for line in [
+        "RECURRENCE-ID:20260324T140000Z",
+        "DTSTART:20260324T160000Z",
+        "SUMMARY:Moved sync",
+        "SEQUENCE:3",
+    ] {
+        assert!(detached.lines().any(|found| found == line), "{detached}");
+    }
+    assert!(!detached.contains("RANGE="));
+    assert!(!detached.contains("RRULE:"));
+}
+
+#[test]
+fn a_detached_reply_keeps_the_stored_time_zone_and_local_clock() {
+    let zone = "BEGIN:VTIMEZONE\r\nTZID:Private/Schedule\r\nBEGIN:STANDARD\r\n\
+                DTSTART:19700101T000000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0400\r\n\
+                END:STANDARD\r\nEND:VTIMEZONE\r\n";
+    let held = str::from_utf8(range_series::HELD).unwrap()
+        .replace("BEGIN:VEVENT\r\n", &format!("{zone}BEGIN:VEVENT\r\n"))
+        .replace("DTSTART:20260310T140000Z", "DTSTART;TZID=Private/Schedule:20260310T100000\r\nDTEND;TZID=Private/Schedule:20260310T110000");
+    let current = Calendar::parse(held.as_bytes()).unwrap();
+    let fields = "RECURRENCE-ID;TZID=Private/Schedule:20260317T100000\r\n\
+                  DTSTART;TZID=Private/Schedule:20260317T100000\r\n\
+                  DTEND;TZID=Private/Schedule:20260317T110000\r\n\
+                  ORGANIZER:mailto:chair@example.test\r\n\
+                  ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n";
+    let bytes = scheduling_payload("REPLY", "range@example.test", "20260302T120000Z", 2, fields);
+    let message = Message::read(&bytes).unwrap();
+    let attendee = Actor::new("mailto:alice@example.test").unwrap();
+    let result = String::from_utf8(
+        message
+            .review(&current, &attendee)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    let detached = result.rsplit_once("BEGIN:VEVENT\r\n").unwrap().1;
+    for line in fields.lines().take(3) {
+        assert!(detached.lines().any(|found| found == line), "{detached}");
+    }
+    assert!(result.contains(zone));
+    let foreign_zone = zone.replace("-0400", "-0500");
+    let divergent = str::from_utf8(&bytes).unwrap().replace(
+        "BEGIN:VEVENT\r\n",
+        &format!("{foreign_zone}BEGIN:VEVENT\r\n"),
+    );
+    assert!(
+        Message::read(divergent.as_bytes())
+            .unwrap()
+            .review(&current, &attendee)
+            .is_err()
+    );
+    let repeat = scheduling_payload(
+        "REPLY",
+        "range@example.test",
+        "20260303T120000Z",
+        2,
+        "RECURRENCE-ID:20260317T140000Z\r\nORGANIZER:mailto:chair@example.test\r\n\
+         ATTENDEE;PARTSTAT=DECLINED:mailto:alice@example.test\r\n",
+    );
+    let updated = Calendar::parse(result.as_bytes()).unwrap();
+    let same_key = str::from_utf8(&repeat).unwrap().replace(
+        "RECURRENCE-ID:20260317T140000Z",
+        "RECURRENCE-ID;TZID=Private/Schedule:20260317T100000",
+    );
+    for input in [same_key.as_bytes(), repeat.as_slice()] {
+        let reapplied = Message::read(input)
+            .unwrap()
+            .review(&updated, &attendee)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap();
+        let bytes = reapplied.to_bytes();
+        let text = str::from_utf8(&bytes).unwrap();
+        assert_eq!(text.matches("BEGIN:VEVENT\r\n").count(), 2);
+        let detached = text.rsplit_once("BEGIN:VEVENT\r\n").unwrap().1;
+        let unfolded = detached.replace("\r\n ", "");
+        assert!(
+            unfolded
+                .lines()
+                .any(|line| line.starts_with("ATTENDEE;PARTSTAT=DECLINED;")
+                    && line.ends_with(":mailto:alice@example.test")),
+            "{detached}"
+        );
+        assert!(detached.contains("RECURRENCE-ID;TZID=Private/Schedule:20260317T100000\r\n"));
+    }
+}
+
+#[test]
 fn a_reply_for_an_unmaterialized_instance_creates_an_addressed_detached_state() {
     let current = Calendar::parse(range_series::HELD).unwrap();
     let reply = b"BEGIN:VCALENDAR\r\n\

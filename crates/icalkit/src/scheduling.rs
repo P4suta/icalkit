@@ -5,6 +5,8 @@
 //! Owned iTIP messages and a borrowed read-review-authorize-apply workflow.
 
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
@@ -23,8 +25,12 @@ use crate::internal::itip::{
 use crate::calendar::parse_calendar;
 use crate::failure::{Issue, IssueCode};
 use crate::internal::core::codec::decode_single_scalar_text;
-use crate::internal::query::{Budget, Match as KernelMatch, Zones, recurrence_set_contains};
-use crate::time::Timestamp;
+use crate::internal::query::{
+    Budget, Match as KernelMatch, ReplyOccurrence, Zones, event_for_instance_reply,
+    recurrence_set_contains,
+};
+use crate::internal::tz::FixedOffsetSource;
+use crate::time::{ResourceZones, Timestamp};
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// An owned scheduling message that has passed strict calendar and iTIP validation.
@@ -328,25 +334,29 @@ impl Message {
             return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
         }
         let mut used = Vec::new();
+        let mut answered = BTreeSet::new();
         let mut changes = Vec::with_capacity(payloads.len());
         for (payload_index, (source, payload)) in payloads.into_iter().enumerate() {
             let payload_view = ScheduledView::of(payload);
-            let mut exact = None;
-            for (item, current_component) in current_components.iter().copied() {
-                match compare_instances(
-                    payload_view.recurrence_id(),
-                    ScheduledView::of(current_component).recurrence_id(),
-                ) {
-                    InstanceMatch::Same if exact.is_none() => {
-                        exact = Some((item, current_component));
-                    },
-                    InstanceMatch::Same | InstanceMatch::Ambiguous => {
-                        return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
-                    },
-                    InstanceMatch::Different => {},
+            if self.method == Method::Reply
+                && message.kind() == crate::internal::core::ComponentKind::Event
+                && payload_view.recurrence_id().is_some()
+                && let Some((_, base)) = master
+            {
+                let occurrence = reply_occurrence(session, current, &self.calendar, base, payload)?;
+                if !answered.insert(occurrence.key) {
+                    return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
                 }
+                if let Some(change) =
+                    review_occurrence(occurrence, message, payload_index, source, actor)?
+                {
+                    changes.push(change);
+                }
+                continue;
             }
-            if let Some((item, current_component)) = exact {
+            if let Some((item, current_component)) =
+                stored_instance(payload_view.recurrence_id(), current_components)?
+            {
                 if used.contains(&item) {
                     return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
                 }
@@ -620,6 +630,14 @@ impl AuthorizedChange<'_> {
                             mark_cancelled(component)?;
                         }
                     },
+                    ChangeTarget::ReplyToOccurrence {
+                        mut occurrence,
+                        source,
+                    } => {
+                        apply_to(&mut occurrence, &change.transition, policy)?;
+                        copy_recurrence_id(&mut occurrence, &self.message.calendar, source)?;
+                        calendar.items_mut().push(Item::Component(*occurrence));
+                    },
                     ChangeTarget::Detach { master, source } => {
                         let mut detached = calendar
                             .items()
@@ -651,7 +669,7 @@ enum ReviewTarget<'a> {
 }
 
 /// Which component an authorized transition writes, including a not-yet-materialized range anchor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum ChangeTarget {
     /// Insert the authorized payload into a calendar that did not hold its identity.
     Create { source: usize },
@@ -659,14 +677,19 @@ enum ChangeTarget {
     Existing { item: usize },
     /// Clone the reviewed master, apply the property diff, and append a detached instance.
     Detach { master: usize, source: usize },
+    /// Store the reviewed occurrence with the attendee's answer.
+    ReplyToOccurrence {
+        occurrence: Box<Component>,
+        source: usize,
+    },
 }
 
 impl ChangeTarget {
     /// Apply indexed mutations before appending components, keeping every reviewed index stable.
-    const fn phase(self) -> u8 {
+    const fn phase(&self) -> u8 {
         match self {
             Self::Existing { .. } => 0,
-            Self::Create { .. } | Self::Detach { .. } => 1,
+            Self::Create { .. } | Self::Detach { .. } | Self::ReplyToOccurrence { .. } => 1,
         }
     }
 }
@@ -719,6 +742,86 @@ impl Display for Rejection {
 }
 
 impl core::error::Error for Rejection {}
+
+fn stored_instance<'a>(
+    identity: Option<InstanceRef>,
+    components: &[(usize, &'a Component)],
+) -> Result<Option<(usize, &'a Component)>, Rejection> {
+    let mut exact = None;
+    for &(item, component) in components {
+        match compare_instances(identity, ScheduledView::of(component).recurrence_id()) {
+            InstanceMatch::Same if exact.is_none() => exact = Some((item, component)),
+            InstanceMatch::Same | InstanceMatch::Ambiguous => {
+                return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+            },
+            InstanceMatch::Different => {},
+        }
+    }
+    Ok(exact)
+}
+
+fn review_occurrence(
+    occurrence: ReplyOccurrence,
+    message: &ItipMessage<'_>,
+    payload_index: usize,
+    source: usize,
+    actor: &Actor,
+) -> Result<Option<ReviewedChange>, Rejection> {
+    let transition = evaluate_new_instance_payload(
+        message,
+        &ScheduledView::of(&occurrence.event),
+        payload_index,
+        PartyId::new(actor.as_str()),
+    )
+    .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?
+    .into_transition();
+    if transition.is_empty() {
+        return Ok(None);
+    }
+    let target = if let Some(item) = occurrence.stored_item {
+        ChangeTarget::Existing { item }
+    } else {
+        ChangeTarget::ReplyToOccurrence {
+            occurrence: Box::new(occurrence.event),
+            source,
+        }
+    };
+    Ok(Some(ReviewedChange { target, transition }))
+}
+
+fn reply_occurrence(
+    session: &mut Session<'_>,
+    current: &Calendar,
+    received: &Calendar,
+    master: &Component,
+    payload: &Component,
+) -> Result<ReplyOccurrence, Rejection> {
+    let siblings = root_component(current)
+        .ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?
+        .items();
+    let limits = session.engine.policy.limits;
+    session.with_zone_source(|external, meter, notes| {
+        let source = ResourceZones::read(Some(current), external, meter, notes)
+            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+        let incoming = ResourceZones::read(Some(received), &source, meter, notes)
+            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+        // A floating occurrence keeps its civil time.
+        let civil = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+        let zones = Zones::new(&source).with_query_zone_source(civil.tzid(), &civil);
+        let mut budget = Budget::new(limits, meter);
+        let received_zones = Zones::new(&incoming).with_query_zone_source(civil.tzid(), &civil);
+        event_for_instance_reply(
+            master,
+            siblings,
+            payload,
+            zones,
+            received_zones,
+            &mut budget,
+            notes,
+        )
+        .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))
+    })
+}
 
 fn root_component(calendar: &Calendar) -> Option<&Component> {
     calendar.document.components().next()

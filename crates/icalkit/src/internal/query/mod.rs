@@ -68,6 +68,7 @@ pub use crate::internal::query::overlap::OVERLAP_SECTIONS;
 pub use crate::internal::query::prefilter::PREFILTER_SECTIONS;
 pub use crate::internal::query::prop::PROPERTY_FILTER_SECTIONS;
 pub(crate) use crate::internal::query::series_index::decoded_uid;
+pub(crate) use crate::internal::query::subset::{ReplyOccurrence, event_for_instance_reply};
 pub use crate::internal::query::subset::{
     SUBSELECTION_SECTIONS, expand_calendar, limit_freebusy_set, limit_recurrence_set,
     limit_recurrence_set_in_window, select, without_values,

@@ -881,23 +881,104 @@ fn expand_members(
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Expansion, QueryError> {
+    match with_related_series(
+        component,
+        related,
+        omitted,
+        zones,
+        budget,
+        |series, budget| {
+            expand(
+                series,
+                range,
+                zones,
+                budget,
+                &mut crate::internal::core::IgnoreDiagnostics,
+            )
+        },
+    )? {
+        Ok(expansion) => Ok(expansion),
+        Err(reason) => Ok(incomplete_expansion(reason)),
+    }
+}
+
+pub(super) fn unique_reply_key(
+    value: DateTimeValue<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, QueryError> {
+    if let DateTimeValue::Zoned { stamp, tzid } = value {
+        let name = core::str::from_utf8(tzid).map_err(|_| QueryError::Unrepresentable)?;
+        return match zones
+            .resolve(Some(name), stamp)
+            .map_err(|_| QueryError::Unrepresentable)?
+            .resolution
+        {
+            crate::internal::tz::LocalResolution::Unique { reading } => Ok(reading.instant),
+            _ => Err(QueryError::Unrepresentable),
+        };
+    }
+    placed_value(value, zones).map_err(|_| QueryError::Unrepresentable)
+}
+
+pub(super) fn event_instance_at_key<S: DiagnosticSink + ?Sized>(
+    master: &Component,
+    related: &[Member<'_>],
+    addressed: DateTimeValue<'_>,
+    target: Instant,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    sink: &mut S,
+) -> Result<Instance, QueryError> {
+    with_related_series(master, related, None, zones, budget, |series, budget| {
+        let kind = if matches!(addressed, DateTimeValue::Date(_)) {
+            ValueKind::Date
+        } else {
+            ValueKind::DateTime
+        };
+        let floating = matches!(addressed, DateTimeValue::Date(_) | DateTimeValue::Local(_));
+        if kind != series.dtstart_kind || floating != matches!(series.clock, SeriesClock::Floating)
+        {
+            return Err(QueryError::Unrepresentable);
+        }
+        let key = nominal_instant(target, series.clock, zones)
+            .map_err(|_| QueryError::Unrepresentable)?;
+        let start = occurrence_start_at(series, key, zones, budget, sink)?
+            .map_err(|_| QueryError::Unrepresentable)?
+            .ok_or(QueryError::Unrepresentable)?;
+        let instance =
+            placed(series, key, start, zones).map_err(|_| QueryError::Unrepresentable)?;
+        (target == instance.recurrence_id())
+            .then_some(instance)
+            .ok_or(QueryError::Unrepresentable)
+    })?
+    .map_err(|_| QueryError::Unrepresentable)
+}
+
+fn with_related_series<T>(
+    component: &Component,
+    related: &[Member<'_>],
+    omitted: Option<&Component>,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    project: impl FnOnce(Series<'_>, &mut Budget<'_>) -> Result<T, QueryError>,
+) -> Result<Result<T, Undecided>, QueryError> {
     macro_rules! decided {
         ($answer:expr) => {
             match $answer {
                 Ok(value) => value,
-                Err(reason) => return Ok(incomplete_expansion(reason)),
+                Err(reason) => return Ok(Err(reason)),
             }
         };
     }
 
     let Some(kind) = component.kind() else {
-        return Ok(incomplete_expansion(Undecided::OverlapUndefined));
+        return Ok(Err(Undecided::OverlapUndefined));
     };
     if !matches!(
         kind,
         ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
     ) {
-        return Ok(incomplete_expansion(Undecided::OverlapUndefined));
+        return Ok(Err(Undecided::OverlapUndefined));
     }
 
     let opening = decided!(required(component.dtstart()));
@@ -959,8 +1040,7 @@ fn expand_members(
     durations.sort_by_key(|entry| entry.key);
     durations.dedup_by_key(|entry| entry.key);
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
-    expand(
+    Ok(Ok(project(
         Series {
             dtstart,
             dtstart_kind,
@@ -977,11 +1057,8 @@ fn expand_members(
             exdates: &exdates,
             overrides,
         },
-        range,
-        zones,
         budget,
-        &mut diagnostics,
-    )
+    )?))
 }
 
 /// An expansion that could not establish all of its instances.
@@ -1062,8 +1139,29 @@ where
         exdates: &exdates,
         overrides: OverrideSet::empty(),
     };
-    if lone_instance(series).is_some_and(|(key, _)| key == anchor) {
-        return Ok(Match::Matched);
+    Ok(
+        match occurrence_start_at(series, anchor, zones, budget, sink)? {
+            Ok(Some(_)) => Match::Matched,
+            Ok(None) => Match::Unmatched,
+            Err(reason) => Match::Undecided(reason),
+        },
+    )
+}
+
+fn occurrence_start_at<S: DiagnosticSink + ?Sized>(
+    series: Series<'_>,
+    anchor: Instant,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    sink: &mut S,
+) -> Result<Result<Option<Instant>, Undecided>, QueryError> {
+    if budget.is_exhausted() {
+        return Ok(Err(Undecided::SearchExhausted));
+    }
+    if let Some((key, start)) = lone_instance(series)
+        && key == anchor
+    {
+        return Ok(Ok(Some(start)));
     }
     let end = anchor
         .checked_add_seconds(1)
@@ -1072,18 +1170,18 @@ where
     let input = match assemble(series, &mut *budget.meter) {
         Ok(input) => input,
         Err(Unassembled::Refused(error)) => return Err(error),
-        Err(Unassembled::Undecidable(reason)) => return Ok(Match::Undecided(reason)),
+        Err(Unassembled::Undecidable(reason)) => return Ok(Err(reason)),
     };
-    let admitted = move |key: Instant| clock.admits(key, zones);
+    let admitted = move |key: Instant| series.clock.admits(key, zones);
     let gated = input.admitting(&admitted);
     let mut search = gated.search(window, &mut *budget.meter, sink);
     loop {
         match query_step(search.next(), search.outcome()) {
             ControlFlow::Break(reason) => {
-                return Ok(reason.map_or(Match::Unmatched, Match::Undecided));
+                return Ok(reason.map_or(Ok(None), Err));
             },
             ControlFlow::Continue(occurrence) if occurrence.key() == anchor => {
-                return Ok(Match::Matched);
+                return Ok(Ok(Some(occurrence.start())));
             },
             ControlFlow::Continue(_) => {},
         }

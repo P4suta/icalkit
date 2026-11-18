@@ -40,7 +40,7 @@ pub(super) struct SeriesIndex<'a> {
 pub(super) struct Member<'a> {
     group: (ComponentKind, Role),
     uid: Option<Cow<'a, str>>,
-    position: usize,
+    pub(super) position: usize,
     pub(super) component: &'a Component,
 }
 
