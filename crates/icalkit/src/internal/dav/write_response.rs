@@ -209,7 +209,15 @@ impl WriteXml for MultiStatus {
         meter: &mut Meter,
     ) -> Result<(), DavError> {
         let mut writer = MultiStatusWriter::new(out, limits, meter)?;
-        for response in self.responses() {
+        let mut responses = self.responses().iter().peekable();
+        while let Some(response) = responses.next() {
+            if meter.responses() == meter.limits().max_responses()
+                && response.is_storage_status()
+                && responses.peek().is_none()
+                && self.sync_token.is_none()
+            {
+                return writer.finish_insufficient_storage(&response.href, meter);
+            }
             writer.push(response, meter)?;
         }
         writer.finish(self.sync_token.as_ref(), meter)

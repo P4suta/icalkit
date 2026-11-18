@@ -16,6 +16,7 @@ Zone insertion charges after observance truncation, so latching alone discards a
 Check shared exhaustion before every admission.
 Route protocol width and collection bounds through the meter, preserving the first failure and returning an exhausted error on retries.
 Keep cleanup and diagnostic accounting available.
+After the response cap, admit one final bare [507 status](https://www.rfc-editor.org/rfc/rfc4918.html#section-11.5) with its collection href under the remaining XML and byte limits.
 Reserve each zone slot before reading observances and consume its private reservation on insertion without another charge.
 XML failure responses need an available output budget.
 
@@ -28,7 +29,6 @@ Discarding partial tables loses admitted data.
 ## Consequences
 
 Later admissions stop across resource kinds.
-Reconsider when another adapter needs reserved admission.
 
 ## Confirmation
 

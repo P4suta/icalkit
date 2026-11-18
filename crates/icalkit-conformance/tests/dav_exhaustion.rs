@@ -473,6 +473,69 @@ fn an_owned_collection_refusal_keeps_its_prefix_and_latches() {
 }
 
 #[test]
+fn terminal_collection_status_round_trips_under_the_response_limit() {
+    for count in [0, 1] {
+        let limits = Limits::DEFAULT.with_max_responses(count);
+        let mut meter = Meter::new(limits);
+        let mut wire = Vec::new();
+        let mut writer = MultiStatusWriter::new(&mut wire, limits, &mut meter).unwrap();
+        for _ in 0..count {
+            let first = DavResponse::with_status(
+                Href::new(b"/one", limits, &mut meter).unwrap(),
+                Status::OK,
+            );
+            writer.push(&first, &mut meter).unwrap();
+        }
+        let collection = Href::new(b"/collection/", limits, &mut meter).unwrap();
+        writer
+            .finish_insufficient_storage(&collection, &mut meter)
+            .unwrap();
+        let mut reader = XmlReader::new(&wire);
+        let mut source = MultiStatusReader::new(&mut reader);
+        let mut meter = Meter::new(limits);
+        let mut notes = Vec::new();
+        let body = MultiStatus::read(
+            &mut source,
+            &mut DecodeContext::new(limits, &mut meter, &mut notes),
+        )
+        .unwrap();
+        assert_eq!(body.responses().len(), usize::try_from(count).unwrap() + 1);
+        assert_eq!(
+            body.responses().last(),
+            Some(&DavResponse::with_status(
+                collection,
+                Status::INSUFFICIENT_STORAGE
+            ))
+        );
+        assert!(!source.was_truncated());
+        assert!(!meter.is_exhausted());
+        assert_eq!(meter.responses(), count);
+        let mut encoded = Vec::new();
+        body.write_xml(&mut encoded, limits, &mut Meter::new(limits))
+            .unwrap();
+        assert_eq!(encoded, wire);
+    }
+}
+
+#[test]
+fn nonterminal_storage_status_cannot_extend_a_full_collection() {
+    let body = br#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/one</D:href><D:status>HTTP/1.1 507 </D:status></D:response><D:response><D:href>/two</D:href><D:status>HTTP/1.1 200 OK</D:status></D:response></D:multistatus>"#;
+    let limits = Limits::DEFAULT.with_max_responses(0);
+    let mut reader = XmlReader::new(body);
+    let mut source = MultiStatusReader::new(&mut reader);
+    let mut meter = Meter::new(limits);
+    let mut notes = Vec::new();
+    let body = MultiStatus::read(
+        &mut source,
+        &mut DecodeContext::new(limits, &mut meter, &mut notes),
+    )
+    .unwrap();
+    assert!(source.was_truncated());
+    assert!(meter.is_exhausted());
+    assert_eq!(body.responses(), []);
+}
+
+#[test]
 fn an_external_source_cut_withholds_the_token_without_exhausting_the_meter() {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);

@@ -164,6 +164,13 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         depth: u16,
         context: &mut DecodeContext<'_>,
     ) -> Result<Option<DavResponse>, DavError> {
+        if context.meter.responses() == context.meter.limits().max_responses()
+            && self.token.is_none()
+            && let Some(terminal) = self.terminal_status(depth, context)?
+        {
+            self.stage = Stage::Finished;
+            return Ok(Some(terminal));
+        }
         if !self.charge(context)? {
             return Ok(None);
         }
@@ -173,6 +180,36 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         }
         let at = self.events.offset();
         Ok(parts.finish(at, context))
+    }
+
+    fn terminal_status(
+        &mut self,
+        depth: u16,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<Option<DavResponse>, DavError> {
+        let Some(href) = self
+            .next_child(depth, context)?
+            .filter(|child| child.known == Some(ElementName::Href))
+        else {
+            return Ok(None);
+        };
+        let Some(href) = self.href_of(href.depth, context)? else {
+            return Ok(None);
+        };
+        let Some(status) = self
+            .next_child(depth, context)?
+            .filter(|child| child.known == Some(ElementName::Status))
+        else {
+            return Ok(None);
+        };
+        let status = self.status_of(status.depth, context)?;
+        if status != Status::INSUFFICIENT_STORAGE
+            || self.next_child(depth, context)?.is_some()
+            || self.next_child(depth.saturating_sub(1), context)?.is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(DavResponse::with_status(href, status)))
     }
 
     /// Charge one response against the shared ledger, and say whether to read it.

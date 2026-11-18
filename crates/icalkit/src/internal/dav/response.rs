@@ -241,6 +241,13 @@ pub struct DavResponse {
 }
 
 impl DavResponse {
+    pub(super) fn is_storage_status(&self) -> bool {
+        matches!(
+            self.body,
+            ResponseBody::Status(Status::INSUFFICIENT_STORAGE)
+        ) && self.error.is_none()
+    }
+
     /// A response carrying one status for the whole resource.
     #[must_use]
     pub const fn with_status(href: Href, status: Status) -> Self {
@@ -351,6 +358,17 @@ impl MultiStatus {
         let mut collected = Self::new(context.limits);
         let mut truncated = false;
         while let Some(response) = source.next_response(context)? {
+            if collected.responses.is_full()
+                && response.is_storage_status()
+                && source.next_response(context)?.is_none()
+                && !source.was_truncated()
+                && source.sync_token().is_none()
+            {
+                collected
+                    .responses
+                    .push_reserved_last(response, context.meter)?;
+                break;
+            }
             if let Err(breach) = context
                 .meter
                 .check_bound(!collected.responses.is_full(), LimitExceeded::Responses)

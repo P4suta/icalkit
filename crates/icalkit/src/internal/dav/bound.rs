@@ -47,6 +47,19 @@ impl<T> Bounded<T> {
     /// The octets an item points at are charged where they are read or built, which is the only place their length is known.
     pub fn push(&mut self, item: T, meter: &mut Meter) -> Result<(), DavError> {
         meter.check_bound(self.items.len() < self.cap, self.dimension)?;
+        self.append(item, meter)
+    }
+
+    pub(super) fn push_reserved_last(
+        &mut self,
+        item: T,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
+        meter.check_bound(self.items.len() == self.cap, self.dimension)?;
+        self.append(item, meter)
+    }
+
+    fn append(&mut self, item: T, meter: &mut Meter) -> Result<(), DavError> {
         meter.try_charge_bytes(u64::try_from(size_of::<T>()).unwrap_or(u64::MAX))?;
         meter.admit(|| self.items.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
         self.items.push(item);
