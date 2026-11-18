@@ -104,3 +104,97 @@ fn invalid_utf8_does_not_grant_a_series_identity() {
     source[at] = 0xff;
     assert_unreadable(&source);
 }
+
+#[test]
+fn finding_an_override_master_charges_the_query_budget() {
+    use icalkit_conformance::internal::core::LimitExceeded;
+    use icalkit_conformance::internal::query::QueryError;
+
+    let wire = concat!(
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:detached\r\n",
+        "RECURRENCE-ID:20240102T090000Z\r\nDTSTART:20240102T090000Z\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID;VALUE=INTEGER:123\r\nDTSTART:20240101T090000Z\r\n",
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+    let document =
+        Document::parse(wire.as_bytes(), Limits::DEFAULT, &mut IgnoreDiagnostics).unwrap();
+    let source = Selection::new(document, Reduction::FAITHFUL);
+    let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+    for (bytes, expected) in [
+        (0, QueryError::Limit(LimitExceeded::Budget)),
+        (1_000_000, QueryError::Unrepresentable),
+    ] {
+        let mut meter = Meter::with_budget(Limits::DEFAULT, bytes);
+        let result = query::expand_calendar(
+            &source,
+            window(),
+            Zones::new(&utc),
+            &mut Budget::new(Limits::DEFAULT, &mut meter),
+        );
+        assert_eq!(result.unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn limiting_detached_instances_scales_with_the_sibling_count() {
+    use std::fmt::Write;
+
+    let limits = Limits::DEFAULT;
+    let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+    let cost = |count, master_uid: &str| {
+        let mut wire = format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:{master_uid}\r\nDTSTART:20240101T090000Z\r\nEND:VEVENT\r\n"
+        );
+        for id in 0..count {
+            write!(
+                wire,
+                "BEGIN:VEVENT\r\nUID:orphan-{id:04}\r\nRECURRENCE-ID:20240102T090000Z\r\nEND:VEVENT\r\n"
+            )
+            .unwrap();
+        }
+        wire.push_str("END:VCALENDAR\r\n");
+        let doc = Document::parse(wire.as_bytes(), limits, &mut IgnoreDiagnostics).unwrap();
+        let source = Selection::new(doc, Reduction::FAITHFUL);
+        let mut meter = Meter::new(limits);
+        let result = query::limit_recurrence_set_in_window(
+            &source,
+            window(),
+            Zones::new(&utc),
+            &mut Budget::new(limits, &mut meter),
+        )
+        .unwrap();
+        assert_eq!(result.calendar().to_bytes(), wire.as_bytes());
+        meter.spent()
+    };
+    let small = cost(64, "other");
+    let large = cost(128, "other");
+    assert!(
+        large > small && large < small.saturating_mul(3),
+        "{small} and {large}"
+    );
+    assert!(cost(128, &"a".repeat(32_768)) < 1_000_000);
+}
+
+#[test]
+fn an_unreadable_master_keeps_an_override_even_after_a_matching_uid() {
+    let wire = concat!(
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series\r\nRECURRENCE-ID:20230102T090000Z\r\n",
+        "DTSTART:20230102T090000Z\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:series\r\nDTSTART:20230101T090000Z\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID;VALUE=INTEGER:123\r\nDTSTART:20230101T090000Z\r\n",
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+    let limits = Limits::DEFAULT;
+    let doc = Document::parse(wire.as_bytes(), limits, &mut IgnoreDiagnostics).unwrap();
+    let source = Selection::new(doc, Reduction::FAITHFUL);
+    let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+    let mut meter = Meter::new(limits);
+    let result = query::limit_recurrence_set_in_window(
+        &source,
+        window(),
+        Zones::new(&utc),
+        &mut Budget::new(limits, &mut meter),
+    )
+    .unwrap();
+    assert_eq!(result.calendar().to_bytes(), wire.as_bytes());
+}

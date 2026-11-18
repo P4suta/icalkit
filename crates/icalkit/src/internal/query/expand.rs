@@ -54,11 +54,9 @@
 //! - What a reduced calendar looks like as octets.
 //!   This unit answers instants; `subset` writes components.
 
-use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
@@ -73,6 +71,7 @@ use crate::internal::recur::{
 use crate::internal::tz::{nominal, wall_clock};
 
 use crate::internal::query::overlap::Occupancy;
+use crate::internal::query::series_index::{Member, SeriesIndex};
 use crate::internal::query::vocabulary::{
     Budget, BusyPeriod, BusyType, Match, QueryError, Reduction, Undecided, Zones,
 };
@@ -88,7 +87,7 @@ mod ids {
     pub(super) static RDATE: PropertyId = PropertyId::RDATE;
     pub(super) static EXDATE: PropertyId = PropertyId::EXDATE;
     pub(super) static RECURRENCE_ID: PropertyId = PropertyId::RECURRENCE_ID;
-    pub(super) static UID: PropertyId = PropertyId::UID;
+
     pub(super) static COMPLETED: PropertyId = PropertyId::from_static(b"COMPLETED");
     pub(super) static CREATED: PropertyId = PropertyId::from_static(b"CREATED");
 }
@@ -657,9 +656,9 @@ impl Expansion {
 /// A master component is read together with its sibling `RECURRENCE-ID` components.
 /// An override is evaluated on its own when no master is present.
 /// Non-recurring components go through RFC 4791 section 9.9's complete table, while recurring event, to-do and journal components are reduced to the single-instance span that the recurrence engine can move and repeat.
-pub(crate) fn component_overlaps<S>(
+pub(super) fn component_overlaps<S>(
     component: &Component,
-    siblings: &[Item],
+    index: &SeriesIndex<'_>,
     range: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
@@ -669,7 +668,7 @@ where
     S: DiagnosticSink + ?Sized,
 {
     if carries(component, &ids::RECURRENCE_ID) {
-        match override_master(component, siblings) {
+        match index.master(component, budget.meter)? {
             Ok(Some(_)) => return Ok(Match::Unmatched),
             Ok(None) => {},
             Err(reason) => return Ok(Match::Undecided(reason)),
@@ -678,7 +677,7 @@ where
     let Some(kind) = component.kind() else {
         return Ok(Match::Undecided(Undecided::OverlapUndefined));
     };
-    let related = match related_overrides(component, siblings) {
+    let related = match index.related(component, budget.meter)? {
         Ok(related) => related,
         Err(reason) => return Ok(Match::Undecided(reason)),
     };
@@ -894,6 +893,20 @@ pub(crate) fn expand_component(
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Expansion, QueryError> {
+    let index = SeriesIndex::new(siblings, budget.meter)?;
+    match index.related(component, budget.meter)? {
+        Ok(related) => expand_related(component, related, range, zones, budget),
+        Err(reason) => Ok(incomplete_expansion(reason)),
+    }
+}
+
+pub(super) fn expand_related(
+    component: &Component,
+    related: &[Member<'_>],
+    range: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Expansion, QueryError> {
     macro_rules! decided {
         ($answer:expr) => {
             match $answer {
@@ -912,7 +925,7 @@ pub(crate) fn expand_component(
     ) {
         return Ok(incomplete_expansion(Undecided::OverlapUndefined));
     }
-    let related = decided!(related_overrides(component, siblings));
+
     let opening = decided!(required(component.dtstart()));
     let clock = decided!(clock_of(opening));
     let dtstart = decided!(nominal_value(opening, clock, zones));
@@ -939,7 +952,8 @@ pub(crate) fn expand_component(
     entries
         .try_reserve(related.len())
         .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
-    for candidate in related {
+    for member in related {
+        let candidate = member.component;
         let addressed = decided!(required(
             candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
         ));
@@ -1111,7 +1125,7 @@ pub(crate) fn component_start(
 /// Assemble and search one component known to carry a recurrence set.
 fn recurring_component_overlaps<S>(
     component: &Component,
-    related: Vec<&Component>,
+    related: &[Member<'_>],
     kind: ComponentKind,
     range: TimeRange,
     zones: Zones<'_>,
@@ -1156,7 +1170,8 @@ where
     entries
         .try_reserve(related.len())
         .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
-    for candidate in related {
+    for member in related {
+        let candidate = member.component;
         let addressed = decided!(required(
             candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
         ));
@@ -1227,48 +1242,6 @@ fn input_error(error: InputError) -> QueryError {
 /// Whether `component` carries at least one property named by `id`.
 fn carries(component: &Component, id: &'static PropertyId) -> bool {
     component.properties_named(id).next().is_some()
-}
-
-/// Whether `candidate` is an override belonging to `master`.
-fn is_override_of(candidate: &Component, master: &Component) -> Result<bool, Undecided> {
-    if candidate.kind() != master.kind()
-        || master.kind().is_none()
-        || !carries(candidate, &ids::RECURRENCE_ID)
-        || carries(master, &ids::RECURRENCE_ID)
-    {
-        return Ok(false);
-    }
-    Ok(series_uid(master)? == series_uid(candidate)?)
-}
-
-fn series_uid(component: &Component) -> Result<Cow<'_, str>, Undecided> {
-    decode_single_scalar_text(component, &ids::UID).ok_or(Undecided::ValueUnreadable)
-}
-
-pub(crate) fn override_master<'a>(
-    candidate: &Component,
-    siblings: &'a [Item],
-) -> Result<Option<&'a Component>, Undecided> {
-    let mut found = None;
-    for master in siblings.iter().filter_map(Item::as_component) {
-        if is_override_of(candidate, master)? && found.is_none() {
-            found = Some(master);
-        }
-    }
-    Ok(found)
-}
-
-pub(crate) fn related_overrides<'a>(
-    master: &Component,
-    siblings: &'a [Item],
-) -> Result<Vec<&'a Component>, Undecided> {
-    let mut related = Vec::new();
-    for candidate in siblings.iter().filter_map(Item::as_component) {
-        if is_override_of(candidate, master)? {
-            related.push(candidate);
-        }
-    }
-    Ok(related)
 }
 
 pub(super) fn has_recurrence(component: &Component) -> bool {

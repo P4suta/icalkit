@@ -71,10 +71,10 @@ use crate::internal::core::{
 use crate::internal::dav::{CompSelection, TimeRange};
 
 use crate::internal::query::expand::{
-    EndKind, InstanceShape, component_overlaps, component_start, expand_component, has_recurrence,
-    occupancy_of, override_impacts, override_master, override_recurrence_id, placed_value,
-    related_overrides,
+    EndKind, InstanceShape, component_overlaps, component_start, expand_related, has_recurrence,
+    occupancy_of, override_impacts, override_recurrence_id, placed_value,
 };
+use crate::internal::query::series_index::{Member, SeriesIndex, SiblingScope, is_override};
 use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided, Zones};
 
 /// The identity [`zone_id`] looks up.
@@ -263,15 +263,20 @@ pub fn limit_recurrence_set_in_window(
 ) -> Result<Selection, QueryError> {
     let mut decisions = Vec::new();
     for calendar in source.calendar().components() {
+        let mut scope = SiblingScope::new(calendar.items());
         for candidate in calendar
             .components()
             .filter(|component| is_override(component))
         {
-            let answer = match override_master(candidate, calendar.items()) {
+            let index = scope.index(budget.meter)?;
+            let answer = match index.master(candidate, budget.meter)? {
                 Ok(Some(master)) => override_impacts(master, candidate, window, zones, budget)?,
                 Ok(None) => Match::Undecided(Undecided::OverlapUndefined),
                 Err(reason) => Match::Undecided(reason),
             };
+            budget
+                .meter
+                .admit(|| decisions.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
             decisions.push(answer);
         }
     }
@@ -334,6 +339,7 @@ fn expand_calendar_component(
     budget: &mut Budget<'_>,
 ) -> Result<Component, QueryError> {
     let siblings = calendar.items();
+    let index = SeriesIndex::new(siblings, budget.meter)?;
     let mut items = Vec::new();
     for entry in siblings {
         let Item::Component(master) = entry else {
@@ -344,34 +350,36 @@ fn expand_calendar_component(
             continue;
         }
         if is_override(master) {
-            if override_master(master, siblings)
+            if index
+                .master(master, budget.meter)?
                 .map_err(|_| QueryError::Unrepresentable)?
                 .is_some()
             {
                 continue;
             }
-            if let Some(instance) = single_in_window(master, siblings, window, zones, budget)? {
+            if let Some(instance) = single_in_window(master, &index, window, zones, budget)? {
                 items.push(Item::Component(instance));
             }
             continue;
         }
-        let related =
-            related_overrides(master, siblings).map_err(|_| QueryError::Unrepresentable)?;
+        let related = index
+            .related(master, budget.meter)?
+            .map_err(|_| QueryError::Unrepresentable)?;
         let recurring = has_recurrence(master) || !related.is_empty();
         if !recurring {
-            if let Some(instance) = single_in_window(master, siblings, window, zones, budget)? {
+            if let Some(instance) = single_in_window(master, &index, window, zones, budget)? {
                 items.push(Item::Component(instance));
             }
             continue;
         }
 
-        let expansion = expand_component(master, siblings, window, zones, budget)?;
+        let expansion = expand_related(master, related, window, zones, budget)?;
         if expansion.incomplete().is_some() {
             return Err(QueryError::Unrepresentable);
         }
         let initial = component_start(master, zones).map_err(|_| QueryError::Unrepresentable)?;
         for instance in expansion.instances() {
-            let template = effective_template(master, &related, *instance, zones)?;
+            let template = effective_template(master, related, *instance, zones)?;
             items.push(Item::Component(materialize_instance(
                 &template, *instance, initial,
             )?));
@@ -386,12 +394,12 @@ fn expand_calendar_component(
 
 fn single_in_window(
     component: &Component,
-    siblings: &[Item],
+    index: &SeriesIndex<'_>,
     window: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Option<Component>, QueryError> {
-    match component_overlaps(component, siblings, window, zones, budget, &mut Vec::new())? {
+    match component_overlaps(component, index, window, zones, budget, &mut Vec::new())? {
         Match::Matched => Ok(Some(single_template(component, zones, budget.meter)?)),
         Match::Unmatched => Ok(None),
         Match::Undecided(_) => Err(QueryError::Unrepresentable),
@@ -479,22 +487,26 @@ fn normalize_expanded_property(
 }
 
 /// Use the exact component when present, or compose the range anchors in force.
-pub(crate) fn effective_template(
+pub(super) fn effective_template(
     master: &Component,
-    related: &[&Component],
+    related: &[Member<'_>],
     instance: crate::internal::query::Instance,
     zones: Zones<'_>,
 ) -> Result<Component, QueryError> {
     let mut built = master.clone();
-    if let Some(exact) = related.iter().copied().find(|candidate| {
-        override_recurrence_id(master, candidate, zones).ok() == Some(instance.recurrence_id())
-    }) {
+    if let Some(exact) = related
+        .iter()
+        .map(|member| member.component)
+        .find(|candidate| {
+            override_recurrence_id(master, candidate, zones).ok() == Some(instance.recurrence_id())
+        })
+    {
         overlay_properties(&mut built, exact);
         return Ok(built);
     }
     let mut anchors: Vec<(Instant, &Component)> = related
         .iter()
-        .copied()
+        .map(|member| member.component)
         .filter(|candidate| is_range_anchor(candidate))
         .map(|candidate| {
             override_recurrence_id(master, candidate, zones)
@@ -1080,17 +1092,6 @@ where
         items,
         holder.end().cloned(),
     ))
-}
-
-/// Whether `component` is an "overridden component" as RFC 4791 section 9.6.6 names one.
-///
-/// A `RECURRENCE-ID` is what makes a component one instance of a series rather than the master of it, RFC 5545 section 3.8.4.4.
-/// Everything without one is returned unconditionally, which is what section 9.6.6's "in addition to the 'master component'" requires.
-pub(crate) fn is_override(component: &Component) -> bool {
-    component
-        .properties_named(&PropertyId::RECURRENCE_ID)
-        .next()
-        .is_some()
 }
 
 /// One component being rebuilt, while the component it came from is taken apart.

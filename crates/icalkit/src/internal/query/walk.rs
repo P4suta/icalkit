@@ -61,6 +61,7 @@ use crate::internal::core::{Component, Document, IgnoreDiagnostics, Item, LimitE
 use crate::internal::dav::{CompFilter, PropFilter, TextMatch, TimeRange};
 
 use crate::internal::query::prefilter::Exclusion;
+use crate::internal::query::series_index::{SiblingScope, is_override};
 use crate::internal::query::{Budget, Match, QueryError, Zones};
 
 /// What the component filter tree walk is reviewed against, one row per passage.
@@ -148,7 +149,7 @@ trait Leaves {
     fn overlaps(
         &self,
         component: &Component,
-        siblings: &[Item],
+        siblings: &mut SiblingScope<'_>,
         range: TimeRange,
         zones: Zones<'_>,
         budget: &mut Budget<'_>,
@@ -168,7 +169,7 @@ trait Leaves {
     fn recurring_properties(
         &self,
         _component: &Component,
-        _siblings: &[Item],
+        _siblings: &mut SiblingScope<'_>,
         _range: TimeRange,
         _filters: &[PropFilter],
         _zones: Zones<'_>,
@@ -201,7 +202,7 @@ impl Leaves for Units {
     fn overlaps(
         &self,
         component: &Component,
-        siblings: &[Item],
+        siblings: &mut SiblingScope<'_>,
         range: TimeRange,
         zones: Zones<'_>,
         budget: &mut Budget<'_>,
@@ -211,7 +212,7 @@ impl Leaves for Units {
         // because this crate's front door takes no sink — see the note on [`matches`].
         crate::internal::query::expand::component_overlaps(
             component,
-            siblings,
+            siblings.index(budget.meter)?,
             range,
             zones,
             budget,
@@ -232,7 +233,7 @@ impl Leaves for Units {
     fn recurring_properties(
         &self,
         component: &Component,
-        siblings: &[Item],
+        siblings: &mut SiblingScope<'_>,
         range: TimeRange,
         filters: &[PropFilter],
         zones: Zones<'_>,
@@ -240,14 +241,15 @@ impl Leaves for Units {
     ) -> Result<Option<Match>, QueryError> {
         use crate::internal::query::{expand, subset};
 
-        if subset::is_override(component) {
-            return Ok(match expand::override_master(component, siblings) {
+        let index = siblings.index(budget.meter)?;
+        if is_override(component) {
+            return Ok(match index.master(component, budget.meter)? {
                 Ok(Some(_)) => Some(Match::Unmatched),
                 Ok(None) => None,
                 Err(reason) => Some(Match::Undecided(reason)),
             });
         }
-        let related = match expand::related_overrides(component, siblings) {
+        let related = match index.related(component, budget.meter)? {
             Ok(related) => related,
             Err(reason) => return Ok(Some(Match::Undecided(reason))),
         };
@@ -256,10 +258,10 @@ impl Leaves for Units {
             return Ok(None);
         }
 
-        let expanded = expand::expand_component(component, siblings, range, zones, budget)?;
+        let expanded = expand::expand_related(component, related, range, zones, budget)?;
         let mut any = Match::Unmatched;
         for instance in expanded.instances() {
-            let effective = subset::effective_template(component, &related, *instance, zones)?;
+            let effective = subset::effective_template(component, related, *instance, zones)?;
             let mut all = Match::Matched;
             for filter in filters {
                 all = all.and(self.property(&effective, filter, zones, budget)?);
@@ -292,6 +294,7 @@ struct Frame<'a> {
     next: usize,
     /// The candidate under test, once one has been found.
     current: Option<&'a Component>,
+    children: SiblingScope<'a>,
     /// The next child filter to test against `current`.
     child: usize,
     /// The disjunction over the candidates settled so far.
@@ -322,6 +325,7 @@ fn opened<'a, L: Leaves>(
         scope,
         next: 0,
         current: None,
+        children: SiblingScope::new(&[]),
         child: 0,
         any: Match::Unmatched,
         all: Match::Unmatched,
@@ -351,8 +355,12 @@ fn walk<'a, L: Leaves>(
     budget.meter.try_enter_element()?;
     let mut top = opened(leaves, calendar, root, calendar.items(), zones, budget);
     let mut outer: Vec<Frame<'a>> = Vec::new();
+    let mut root_scope = SiblingScope::new(calendar.items());
     loop {
-        match advance(leaves, &mut top, zones, budget)? {
+        let siblings = outer
+            .last_mut()
+            .map_or(&mut root_scope, |parent| &mut parent.children);
+        match advance(leaves, &mut top, siblings, zones, budget)? {
             Advance::Descend(child, inside) => {
                 budget.meter.try_enter_element()?;
                 outer.try_reserve(1).map_err(|_| LimitExceeded::Depth)?;
@@ -377,11 +385,12 @@ fn walk<'a, L: Leaves>(
 fn advance<'a, L: Leaves>(
     leaves: &L,
     frame: &mut Frame<'a>,
+    siblings: &mut SiblingScope<'a>,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Advance<'a>, QueryError> {
     let Some(candidate) = frame.current else {
-        return open(leaves, frame, zones, budget);
+        return open(leaves, frame, siblings, zones, budget);
     };
     // Taken out of the frame before the arms write back into it: the child filters live in the filter tree rather than in the frame, so nothing here borrows what the arms mutate.
     let stated = frame.filter;
@@ -407,6 +416,7 @@ fn advance<'a, L: Leaves>(
 fn open<'a, L: Leaves>(
     leaves: &L,
     frame: &mut Frame<'a>,
+    siblings: &mut SiblingScope<'a>,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Advance<'a>, QueryError> {
@@ -424,8 +434,9 @@ fn open<'a, L: Leaves>(
         return Ok(Advance::Settled(Match::Unmatched));
     }
     // Answered before the frame is written to, so that the tests read a frame that still describes the candidate they are about.
-    let held = own_tests(leaves, frame, candidate, zones, budget)?;
+    let held = own_tests(leaves, frame, candidate, siblings, zones, budget)?;
     frame.current = Some(candidate);
+    frame.children = SiblingScope::new(candidate.items());
     frame.child = 0;
     frame.all = held;
     Ok(Advance::Continue)
@@ -469,6 +480,7 @@ fn own_tests<L: Leaves>(
     leaves: &L,
     frame: &Frame<'_>,
     candidate: &Component,
+    siblings: &mut SiblingScope<'_>,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Match, QueryError> {
@@ -478,7 +490,7 @@ fn own_tests<L: Leaves>(
             && !frame.filter.props().is_empty()
             && let Some(joined) = leaves.recurring_properties(
                 candidate,
-                frame.scope,
+                siblings,
                 range,
                 frame.filter.props(),
                 zones,
@@ -490,7 +502,7 @@ fn own_tests<L: Leaves>(
         held = held.and(if frame.excluded {
             Match::Unmatched
         } else {
-            leaves.overlaps(candidate, frame.scope, range, zones, budget)?
+            leaves.overlaps(candidate, siblings, range, zones, budget)?
         });
     }
     for wanted in frame.filter.props() {
@@ -558,15 +570,14 @@ mod tests {
     use alloc::vec::Vec;
 
     use crate::internal::core::{
-        Component, Document, IgnoreDiagnostics, Instant, Item, LimitExceeded, Limits, Meter,
-        UtcOffset,
+        Component, Document, IgnoreDiagnostics, Instant, LimitExceeded, Limits, Meter, UtcOffset,
     };
     use crate::internal::dav::{
         Collation, CompFilter, ParamFilter, PropFilter, TextMatch, TimeRange,
     };
     use crate::internal::tz::FixedOffsetSource;
 
-    use super::{Leaves, evaluate};
+    use super::{Leaves, SiblingScope, evaluate};
     use crate::internal::query::{Budget, Match, QueryError, Undecided, Zones};
 
     /// A calendar object holding one `VEVENT` and nothing else.
@@ -662,7 +673,7 @@ mod tests {
         fn overlaps(
             &self,
             component: &Component,
-            _siblings: &[Item],
+            _siblings: &mut SiblingScope<'_>,
             _range: TimeRange,
             _zones: Zones<'_>,
             _budget: &mut Budget<'_>,
