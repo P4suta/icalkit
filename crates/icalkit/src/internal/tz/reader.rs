@@ -75,7 +75,7 @@ use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
     DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject, UtcOffset,
-    Weekday, report_diagnostic,
+    ValueType, Weekday, report_diagnostic,
 };
 
 use crate::internal::tz::annual_clocks::{
@@ -460,10 +460,10 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     let mut written = component.properties_named(&wanted);
     let first = written.next()?;
     let rule = if written.next().is_some()
-        || first
-            .declared_value_type()
-            .is_some_and(|value_type| value_type.is_err())
-    {
+        || !matches!(
+            first.declared_value_type(),
+            None | Some(Ok(ValueType::Recur))
+        ) {
         None
     } else {
         parse_rule(first.value_text().as_bytes(), start, offset_from, capacity)

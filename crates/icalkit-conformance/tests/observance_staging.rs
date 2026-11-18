@@ -48,6 +48,42 @@ fn read(document: &Document, limit: u32, spent: u32) -> (VtimezoneSet, Meter, Ve
 }
 
 #[test]
+fn a_recurring_observance_requires_a_recurrence_value() {
+    for (parameter, supported) in [("", true), (";VALUE=RECUR", true), (";VALUE=TEXT", false)] {
+        let obs = format!(
+            "BEGIN:STANDARD\r\nDTSTART:20240310T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0000\r\nRRULE{parameter}:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU\r\nEND:STANDARD\r\n"
+        );
+        let doc = document(&[&obs]);
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let mut notes = Vec::new();
+        let mut observed = Vec::new();
+        let component = doc
+            .components()
+            .next()
+            .unwrap()
+            .components()
+            .next()
+            .unwrap();
+        let _ = component
+            .read_vtimezone(&mut meter, &mut notes, &mut observed)
+            .unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].rule().is_some(), supported, "{parameter}");
+        assert_eq!(
+            observed[0].start().date(),
+            CivilDate::from_ymd(2024, 3, 10).unwrap()
+        );
+        assert_eq!(
+            notes.iter().map(|note| note.code()).collect::<Vec<_>>(),
+            (!supported)
+                .then_some(DiagnosticCode::VtimezoneRuleUnsupported)
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn dropped_recurring_patterns_bound_later_coverage() {
     let standard = "BEGIN:STANDARD\r\nDTSTART:20240101T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0000\r\nRRULE:FREQ=YEARLY;BYMONTH=1,7;BYMONTHDAY=1\r\nEND:STANDARD\r\n";
     let daylight = "BEGIN:DAYLIGHT\r\nDTSTART:20240401T020000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYMONTH=4,10;BYMONTHDAY=1\r\nEND:DAYLIGHT\r\n";
