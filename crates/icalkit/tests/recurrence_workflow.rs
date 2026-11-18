@@ -191,6 +191,41 @@ END:VCALENDAR\r\n",
 }
 
 #[test]
+fn exhausted_sessions_keep_the_budget_error_for_valid_calendars_and_rules() {
+    let calendar = Calendar::parse(
+        concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n",
+            "BEGIN:VEVENT\r\nUID:limit@example.test\r\nDTSTAMP:20240101T000000Z\r\n",
+            "DTSTART:20240101T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let engine = Engine::builder()
+        .resource_policy(ResourcePolicy::secure().with_occurrences_per_search(0))
+        .build();
+    let mut session = engine.session();
+    let bounds = Window::new(january_2024(1, 0), january_2024(2, 0)).unwrap();
+    let rule = Rule::parse("FREQ=DAILY;COUNT=1").unwrap();
+    let mut search = rule
+        .occurrences(&mut session, january_2024(1, 9), bounds)
+        .unwrap();
+    assert_eq!(
+        search.try_next().unwrap_err().code().as_str(),
+        "icalkit.recurrence.budget-exhausted"
+    );
+    drop(search);
+    let error = calendar
+        .occurrences(&mut session, "limit@example.test", bounds)
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "icalkit.recurrence.budget-exhausted");
+    let error = rule
+        .occurrences(&mut session, january_2024(1, 9), bounds)
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "icalkit.recurrence.budget-exhausted");
+}
+
+#[test]
 fn cursors_cannot_cross_between_rule_and_calendar_streams() {
     let rule = Rule::parse("FREQ=DAILY;COUNT=1").unwrap();
     let window = Window::new(at(NEW_YEAR_2024), at(NEW_YEAR_2024 + 86_400)).unwrap();

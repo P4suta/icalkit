@@ -110,7 +110,7 @@ pub struct Override<'a> {
     recurrence_id: Instant,
     /// Whether it reaches later instances too.
     range: OverrideRange,
-    /// Where the instance moved to, absent when the override moved nothing.
+    /// The stated start, absent when the override omits it.
     moved_to: Option<Instant>,
     /// What it changed.
     diff: PropertyDiff<'a>,
@@ -145,7 +145,7 @@ impl<'a> Override<'a> {
         self.range
     }
 
-    /// Where the instance moved to, absent when it did not move.
+    /// The start stated by the override, including a start equal to its recurrence key.
     #[must_use]
     pub const fn moved_to(self) -> Option<Instant> {
         self.moved_to
@@ -163,16 +163,14 @@ impl<'a> Override<'a> {
         matches!(self.range, OverrideRange::ThisAndFuture)
     }
 
-    /// The time shift this override implies, derived rather than stored.
+    /// The stated start's shift from the recurrence key, including an explicit zero.
     ///
     /// `moved_to − recurrence_id`, checked.
     /// The shift is a *consequence* of the diff and never the diff itself: an override that changes only `LOCATION` has no shift, and one that changes only the time has a shift and an empty diff.
     /// Storing the number instead of deriving it is exactly the scalar-delta design `docs/adr/0002` overruled.
     #[must_use]
     pub fn shift_seconds(self) -> Option<i64> {
-        self.recurrence_id
-            .checked_seconds_until(self.moved_to?)
-            .filter(|shift| *shift != 0)
+        self.recurrence_id.checked_seconds_until(self.moved_to?)
     }
 }
 
@@ -208,6 +206,15 @@ impl InputError {
             _ => Self::TooMany(list, breach),
         }
     }
+    /// The refusal that prevented admission of the recurrence input.
+    pub(crate) const fn limit(self) -> Option<LimitExceeded> {
+        match self {
+            Self::Exhausted(_) => Some(LimitExceeded::Exhausted),
+            Self::TooMany(_, exceeded) => Some(exceeded),
+            Self::NotAscending(_) | Self::Duplicated(_) => None,
+        }
+    }
+
     /// Which list the complaint is about.
     #[must_use]
     pub const fn list(self) -> InputList {
@@ -247,9 +254,8 @@ impl<'a> OverrideSet<'a> {
     /// `crate::internal::tz::seam` walks the series' own wall clock, and the two halves of the hour a zone repeats are one wall clock, so `RECURRENCE-ID:20261101T053000Z` and `RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants that project onto one key.
     /// Refusing the series is a worse answer than applying one of them.
     ///
-    /// So the earlier entry of a collision is the one [`OverrideSet::exact_match`] answers with — file order, which for a fold is the earlier of the two instants — and the later one is inert.
-    /// That is a preference, and a preference nobody stated is the thing this crate is arranged against, so it is *counted*: [`OverrideSet::collisions`] reports how many entries were shadowed, and a caller that wants to tell a person reads it.
-    /// This constructor takes no sink and cannot report it itself.
+    /// [`OverrideSet::exact_match`] selects the first entry in file order for each key.
+    /// Later range entries can still affect subsequent instances.
     pub fn new(entries: &'a [Override<'a>], meter: &mut Meter) -> Result<Self, InputError> {
         let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
         meter
@@ -269,7 +275,7 @@ impl<'a> OverrideSet<'a> {
     /// How many entries name a `RECURRENCE-ID` an earlier entry already named.
     ///
     /// Zero for every set whose identifiers are distinct, which is every set a floating or UTC series produces.
-    /// A non-zero count means the projection onto this series' timeline was not injective — the fold in [`OverrideSet::new`]'s note — and that exactly this many overrides modify nothing.
+    /// Each collision counts one later entry that shares an earlier entry's exact-match key.
     #[must_use]
     pub fn collisions(self) -> usize {
         self.entries

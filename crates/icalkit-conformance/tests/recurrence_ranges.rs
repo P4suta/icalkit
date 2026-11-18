@@ -64,6 +64,7 @@ fn project(source: &str, start: &str, end: &str) -> Document {
     let engine = Engine::builder().zone_database(UtcZone).build();
     let mut session = engine.session();
     let projected = query.project(&mut session, &original).unwrap();
+    assert_eq!(original.to_bytes(), source.as_bytes());
     Document::parse(projected.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap()
 }
 
@@ -109,6 +110,25 @@ fn assert_shifted_addition(rdate: &str) {
 }
 
 #[test]
+fn date_only_anniversaries_use_the_same_correction() {
+    let source = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit skip//EN\r\n\
+        BEGIN:VEVENT\r\nUID:date@example.test\r\nDTSTAMP:20200101T000000Z\r\n\
+        DTSTART;VALUE=DATE:20200229\r\n\
+        RRULE:RSCALE=GREGORIAN;FREQ=YEARLY;SKIP=FORWARD;COUNT=3\r\n\
+        END:VEVENT\r\nEND:VCALENDAR\r\n";
+    let document = project(source, "20200101T000000Z", "20230101T000000Z");
+    let root = document.components().next().unwrap();
+    let dates: Vec<_> = root
+        .components()
+        .map(|event| text(event, b"DTSTART").unwrap())
+        .collect();
+    assert_eq!(
+        dates,
+        ["20200229T000000Z", "20210301T000000Z", "20220301T000000Z"]
+    );
+}
+
+#[test]
 fn range_shifts_apply_to_date_time_additions_in_both_directions() {
     assert_shifted_addition("RDATE:20240103T090000Z");
 }
@@ -137,6 +157,39 @@ fn range_shifts_apply_to_date_additions() {
     assert_eq!(text(instance, b"DTSTART"), Some("20240105T000000Z"));
     assert_eq!(text(instance, b"DTEND"), Some("20240107T000000Z"));
     assert_eq!(text(instance, b"RECURRENCE-ID"), Some("20240104T000000Z"));
+}
+
+#[test]
+fn a_range_can_reset_the_start_shift_and_omit_its_duration() {
+    let source = calendar(&format!(
+        "{}{}{}",
+        event(
+            "DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=5\r\nRDATE:20240106T150000Z\r\n"
+        ),
+        event(
+            "RECURRENCE-ID;RANGE=THISANDFUTURE:20240102T090000Z\r\nDTSTART:20240102T100000Z\r\nDURATION:PT3H\r\n"
+        ),
+        event("RECURRENCE-ID;RANGE=THISANDFUTURE:20240104T090000Z\r\nDTSTART:20240104T090000Z\r\n"),
+    ));
+    let document = project(&source, "20240104T000000Z", "20240107T000000Z");
+    let root = document.components().next().unwrap();
+    let times: Vec<_> = root
+        .components()
+        .map(|item| {
+            (
+                text(item, b"DTSTART").unwrap(),
+                text(item, b"DTEND").unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        times,
+        [
+            ("20240104T090000Z", "20240104T100000Z"),
+            ("20240105T090000Z", "20240105T120000Z"),
+            ("20240106T150000Z", "20240106T180000Z"),
+        ]
+    );
 }
 
 #[test]

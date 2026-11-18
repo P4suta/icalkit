@@ -61,10 +61,9 @@
 //!
 //! # The shift, composed rather than accumulated
 //!
-//! An anchor that moved its own instance states a shift, derived by [`crate::internal::recur::input::Override::shift_seconds`] from its `RECURRENCE-ID` to where it moved.
-//! That shift reaches later cadence keys the same way the anchor's `LOCATION` does: it is one stated field of one diff.
-//! So shifts compose by the rule the rest of the diff composes by — a later anchor's stated shift overwrites an earlier one's, and an anchor that moved nothing states no shift and therefore overwrites none.
-//! An anchor of one hour followed by one of half an hour leaves the tail half an hour from its cadence, never an hour and a half: both shifts are measured from a cadence key, so adding them would count the first one twice.
+//! [`Override::shift_seconds`] measures a stated start from its `RECURRENCE-ID`.
+//! A range anchor replaces the preceding shift when it states a start, including a start equal to the cadence key.
+//! Omitting the start preserves the preceding shift for later instances.
 //! An exact component keeps its own start, independently of preceding anchors.
 //!
 //! Range shifts reach rule instances and `RDATE` additions by recurrence identity under RFC 5545 section 3.8.4.4.
@@ -244,7 +243,7 @@ impl<'a> Merge<'a> {
             }
             if entry.is_anchor() {
                 self.nearest_anchor = Some(entry.recurrence_id());
-                // Omission is no opinion: an anchor that moved nothing leaves an earlier anchor's shift in force exactly as it leaves that anchor's `LOCATION`.
+                // A stated start replaces the previous shift, even when the new shift is zero.
                 if let Some(shift) = entry.shift_seconds() {
                     self.stated_shift = Some(shift);
                 }
@@ -729,6 +728,34 @@ mod tests {
             Vec::from(keys),
             "a move changes where an occurrence happens, never what addresses it"
         );
+    }
+
+    #[test]
+    fn an_omitted_range_start_preserves_the_preceding_shift() {
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let entries = [
+            entry(
+                at(0),
+                OverrideRange::ThisAndFuture,
+                Some(at(10)),
+                PropertyDiff::empty(),
+            ),
+            entry(
+                at(100),
+                OverrideRange::ThisAndFuture,
+                None,
+                PropertyDiff::empty(),
+            ),
+        ];
+        let overrides = OverrideSet::new(&entries, &mut meter).unwrap();
+        let input = input_over(at(0), &[], &[], overrides, &mut meter);
+        let produced = drive(
+            input,
+            &[at(0), at(100), at(200)],
+            &mut meter,
+            &mut Vec::new(),
+        );
+        assert_eq!(starts_of(&produced), [at(10), at(100), at(210)]);
     }
 
     /// An anchor that changes only a property moves nothing, on every later instance.

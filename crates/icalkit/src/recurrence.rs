@@ -121,7 +121,13 @@ impl Rule {
             OverrideSet::empty(),
             &mut session.meter,
         )
-        .map_err(|_| Error::single("icalkit.recurrence.invalid-input"))?;
+        .map_err(|error| {
+            Error::single(if error.limit().is_some() {
+                "icalkit.recurrence.budget-exhausted"
+            } else {
+                "icalkit.recurrence.invalid-input"
+            })
+        })?;
         session.recurrence_diagnostics.clear();
         let search = match cursor {
             Some(cursor) => input.resume(

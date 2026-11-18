@@ -56,6 +56,7 @@
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::core::{
@@ -65,9 +66,9 @@ use crate::internal::core::{
 };
 use crate::internal::dav::TimeRange;
 use crate::internal::recur::{
-    InputError, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
-    RecurrenceRule, RuleLimit, UntilClock, ValueKind, Window, generation_window,
-    max_absolute_shift,
+    InputError, Occurrence, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
+    RecurrenceRule, RuleLimit, SearchOutcome, SearchStep, UntilClock, ValueKind, Window,
+    generation_window, max_absolute_shift,
 };
 use crate::internal::tz::{nominal, wall_clock};
 
@@ -387,7 +388,6 @@ impl<'a> InstanceDurations<'a> {
             .components
             .iter()
             .find(|component| component.key == key)
-            && exact.range == OverrideRange::ThisOnly
         {
             return exact.stated.unwrap_or(base);
         }
@@ -395,7 +395,7 @@ impl<'a> InstanceDurations<'a> {
             .iter()
             .rev()
             .filter(|component| {
-                component.key <= key && component.range == OverrideRange::ThisAndFuture
+                component.key < key && component.range == OverrideRange::ThisAndFuture
             })
             .find_map(|component| component.stated)
             .unwrap_or(base)
@@ -1086,15 +1086,17 @@ where
     let admitted = move |key: Instant| clock.admits(key, zones);
     let gated = input.admitting(&admitted);
     let mut search = gated.search(window, &mut *budget.meter, sink);
-    for step in search.by_ref() {
-        let Some(occurrence) = step.occurrence() else {
-            return Ok(Match::Undecided(Undecided::SearchExhausted));
-        };
-        if occurrence.key() == anchor {
-            return Ok(Match::Matched);
+    loop {
+        match query_step(search.next(), search.outcome()) {
+            ControlFlow::Break(reason) => {
+                return Ok(reason.map_or(Match::Unmatched, Match::Undecided));
+            },
+            ControlFlow::Continue(occurrence) if occurrence.key() == anchor => {
+                return Ok(Match::Matched);
+            },
+            ControlFlow::Continue(_) => {},
         }
     }
-    Ok(Undecided::of_search(search.outcome()).map_or(Match::Unmatched, Match::Undecided))
 }
 
 /// The first instance's UTC recurrence identifier.
@@ -1217,10 +1219,9 @@ where
 
 /// Map the only caller-policy failure in a prepared recurrence list onto the query channel.
 fn input_error(error: InputError) -> QueryError {
-    match error {
-        InputError::TooMany(_, exceeded) => QueryError::Limit(exceeded),
-        _ => QueryError::Unrepresentable,
-    }
+    error
+        .limit()
+        .map_or(QueryError::Unrepresentable, QueryError::Limit)
 }
 
 /// Whether `component` carries at least one property named by `id`.
@@ -1900,12 +1901,7 @@ impl From<QueryError> for Unassembled {
 
 impl From<InputError> for Unassembled {
     fn from(error: InputError) -> Self {
-        match error {
-            InputError::TooMany(_, breach) => Self::Refused(QueryError::Limit(breach)),
-            // `InputError` is `#[non_exhaustive]`, so this arm is required rather than chosen.
-            // Undecidable is the conservative reading of a shape this unit cannot expand: it neither claims the resource matches nor claims that it does not.
-            _ => Self::Undecidable(Undecided::ValueUnreadable),
-        }
+        Self::from(input_error(error))
     }
 }
 
@@ -2064,26 +2060,26 @@ where
     let admitted = move |key: Instant| clock.admits(key, zones);
     let gated = input.admitting(&admitted);
     let mut search = gated.search(bounds.window, &mut *budget.meter, sink);
-    let mut incomplete = None;
-    let mut stopped_by_caller = false;
-    for step in &mut search {
-        // `SearchStep::occurrence` answers `None` for the terminal step, and for any terminal state a later `ical-recur` adds.
-        // Recording it rather than dropping it is the whole difference between the discard that type documents and this: a search stopped short never established that the range holds no instance.
-        let Some(occurrence) = step.occurrence() else {
-            incomplete = Some(Undecided::SearchExhausted);
-            break;
-        };
-        if !visit(placed(series, occurrence.key(), occurrence.start(), zones)) {
-            stopped_by_caller = true;
-            break;
+    loop {
+        match query_step(search.next(), search.outcome()) {
+            ControlFlow::Break(reason) => return Ok(reason),
+            ControlFlow::Continue(occurrence) => {
+                if !visit(placed(series, occurrence.key(), occurrence.start(), zones)) {
+                    return Ok(None);
+                }
+            },
         }
     }
-    if incomplete.is_none() && !stopped_by_caller {
-        // Only for a walk the caller let run out.
-        // A search stopped early leaves its outcome `SearchOutcome::Pending`, which `Undecided::of_search` reads as incomplete — true of the search and false of the question, which was answered.
-        incomplete = Undecided::of_search(search.outcome());
+}
+
+fn query_step(
+    step: Option<SearchStep<'_>>,
+    outcome: SearchOutcome,
+) -> ControlFlow<Option<Undecided>, Occurrence<'_>> {
+    match step.and_then(SearchStep::occurrence) {
+        Some(occurrence) => ControlFlow::Continue(occurrence),
+        None => ControlFlow::Break(Undecided::of_search(outcome)),
     }
-    Ok(incomplete)
 }
 
 /// Assemble the search input `series` describes, charging its lists to `meter`.
@@ -2886,6 +2882,44 @@ mod tests {
             let carried = Subject::new(reason.reason().as_bytes());
             assert!(!carried.is_truncated(), "{reason}");
             assert_eq!(carried.as_bytes(), reason.reason().as_bytes());
+        }
+    }
+
+    #[test]
+    fn terminal_steps_and_drained_searches_keep_the_same_query_reason() {
+        use crate::internal::recur::{BudgetExhausted, SearchOutcome, SearchStep};
+        let exhausted = BudgetExhausted::new(at(0), 1);
+        for (step, outcome, reason) in [
+            (
+                Some(SearchStep::CalendarArithmeticFailed),
+                SearchOutcome::CalendarArithmeticFailed,
+                Some(Undecided::ValueUnreadable),
+            ),
+            (
+                None,
+                SearchOutcome::CalendarArithmeticFailed,
+                Some(Undecided::ValueUnreadable),
+            ),
+            (
+                Some(SearchStep::BudgetExhausted(exhausted)),
+                SearchOutcome::BudgetExhausted(exhausted),
+                Some(Undecided::SearchExhausted),
+            ),
+            (
+                None,
+                SearchOutcome::BudgetExhausted(exhausted),
+                Some(Undecided::SearchExhausted),
+            ),
+            (None, SearchOutcome::RuleEnded, None),
+            (None, SearchOutcome::WindowEnded, None),
+            (None, SearchOutcome::CalendarEnded, None),
+            (
+                None,
+                SearchOutcome::Pending,
+                Some(Undecided::SearchExhausted),
+            ),
+        ] {
+            assert_eq!(super::query_step(step, outcome).break_value(), Some(reason));
         }
     }
 
