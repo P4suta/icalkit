@@ -1001,8 +1001,8 @@ fn push_fragment_attribute(
     value: &[u8],
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
-    parts.push_fragment(b" ", context)?;
     if name.namespace.uri().is_empty() {
+        parts.push_fragment(b" ", context)?;
         parts.push_fragment(name.local_name, context)?;
     } else {
         let mut prefix: Vec<u8> = Vec::new();
@@ -1012,10 +1012,11 @@ fn push_fragment_attribute(
             prefix.push(b'A');
             push_decimal(&mut prefix, index);
         }
+        push_declaration(parts, &prefix, name.namespace, context)?;
+        parts.push_fragment(b" ", context)?;
         parts.push_fragment(&prefix, context)?;
         parts.push_fragment(b":", context)?;
         parts.push_fragment(name.local_name, context)?;
-        push_declaration(parts, &prefix, name.namespace, context)?;
     }
     parts.push_fragment(b"=\"", context)?;
     let mut escaped: Vec<u8> = Vec::new();

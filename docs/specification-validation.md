@@ -44,6 +44,12 @@ Retained markup checks peak depth and charges each element before emitting the f
 Generated and retained markup share the running element count.
 Closing tags and escaped text consume no element slots.
 
+Retained property fragments write namespace declarations before their associated attribute pairs.
+Each pair follows the [start-tag grammar](https://www.w3.org/TR/xml/#sec-starttags).
+Response round trip tests check child attribute namespace names, local names, and normalized values.
+[RFC 4918 section 4.3](https://www.rfc-editor.org/rfc/rfc4918.html#section-4.3) requires preserving those fields for dead properties.
+Reserved `xml` attributes keep their predefined namespace binding.
+
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.
