@@ -372,9 +372,8 @@ pub enum DiagnosticCode {
     DavResponsesTruncated,
     /// A property mixed character data with elements, and the elements were not kept.
     ///
-    /// A property's value is character data or it is a fragment of elements; `PropValue` holds one or the other, because a single run of octets cannot say where a peer's markup sat among a peer's text without inventing an order between them.
-    /// A property that carries both keeps its character data and loses its elements, and this says so — the loss is a violation rather than a note because `docs/adr/0001`'s whole claim is that nothing is dropped without the caller being able to see it.
-    /// No mainstream server writes this shape; a body an intermediary annotated does.
+    /// Kept for compatibility with earlier readers that dropped mixed-content markup.
+    /// The current reader preserves mixed content in document order and no longer emits this code.
     DavPropertyMarkupDropped,
     /// A synchronization token was withheld because the answer it arrived with was truncated.
     ///

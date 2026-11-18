@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use icalkit::recurrence::Rule;
 use icalkit_conformance::internal::core::{
-    CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, Document, Limits, Meter,
-    UtcOffset,
+    CivilDate, CivilDateTime, CivilTime, Diagnostic, DiagnosticCode, Document, IgnoreDiagnostics,
+    LimitExceeded, Limits, Meter, UtcOffset,
 };
 use icalkit_conformance::internal::dav::{
-    DecodeContext, MultiStatus, MultiStatusReader, XmlPull, XmlReader,
+    DavError, DecodeContext, MultiStatus, MultiStatusReader, PropValue, XmlPull, XmlReader,
 };
 use icalkit_conformance::internal::tz::{Observance, TransitionTable, read_calendar_zones};
 
@@ -40,6 +40,9 @@ const MAX_REFUSED_RULE_BYTES: u64 = 1_024;
 const RDATE_OBSERVANCES: usize = 10_000;
 const MAX_OBSERVANCE_STAGING_BYTES: u64 = 64 * 1024;
 const MAX_CLOCK_PRODUCT_BYTES: u64 = 256 * 1024;
+const TEXT_PROPERTY_BYTES: usize = 256 * 1024;
+const FRAGMENT_TEXT_BYTES: usize = 24 * 1024;
+const MAX_REFUSED_FRAGMENT_BYTES: u64 = 64 * 1024;
 
 struct CountingAllocator;
 
@@ -196,6 +199,61 @@ fn comment_input() -> Vec<u8> {
     body.resize(body.len().saturating_add(COMMENT_BYTES), b'x');
     body.extend_from_slice(b"--><D:allprop/></D:propfind>");
     body
+}
+
+fn property_input(text_bytes: usize, nested: bool) -> Vec<u8> {
+    let mut body = br#"<D:multistatus xmlns:D="DAV:" xmlns:X="urn:example:values"><D:response><D:href>/one</D:href><D:propstat><D:prop><X:custom>"#.to_vec();
+    if nested {
+        body.extend_from_slice(b"<X:child>");
+    }
+    body.resize(body.len().saturating_add(text_bytes), b'>');
+    if nested {
+        body.extend_from_slice(b"</X:child>");
+    }
+    body.extend_from_slice(b"</X:custom></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>");
+    body
+}
+
+fn read_properties(body: &[u8], limits: Limits) -> Result<MultiStatus, DavError> {
+    let mut meter = Meter::new(limits);
+    let mut diagnostics = IgnoreDiagnostics;
+    let mut events = XmlReader::new(body);
+    let mut source = MultiStatusReader::new(&mut events);
+    MultiStatus::read(
+        &mut source,
+        &mut DecodeContext::new(limits, &mut meter, &mut diagnostics),
+    )
+}
+
+fn check_property_content() -> Result<(), Box<dyn std::error::Error>> {
+    let plain = property_input(TEXT_PROPERTY_BYTES, false);
+    let limits = Limits::DEFAULT.with_max_xml_text_bytes(u32::try_from(TEXT_PROPERTY_BYTES)?);
+    let (read, plain_allocation) = measure(|| read_properties(&plain, limits));
+    let read = read?;
+    let PropValue::Unmodeled(text) = &read.responses()[0].propstats()[0].props()[0].value else {
+        return Err("text-only property lost its character data shape".into());
+    };
+    assert_eq!(text.len(), TEXT_PROPERTY_BYTES);
+    assert!(text.iter().all(|byte| *byte == b'>'));
+    assert!(
+        plain_allocation.peak <= as_u64(TEXT_PROPERTY_BYTES).saturating_add(64 * 1024),
+        "text-only content created redundant storage: {plain_allocation:?}"
+    );
+    drop(read);
+
+    let nested = property_input(FRAGMENT_TEXT_BYTES, true);
+    let limits = Limits::DEFAULT.with_max_xml_text_bytes(32 * 1024);
+    let (refused, fragment_allocation) = measure(|| read_properties(&nested, limits));
+    assert_eq!(refused, Err(DavError::Limit(LimitExceeded::Text)));
+    assert!(
+        fragment_allocation.peak <= MAX_REFUSED_FRAGMENT_BYTES,
+        "escaped fragment grew before its width refusal: {fragment_allocation:?}"
+    );
+    println!(
+        "property content allocation: text_only_peak={}, refused_fragment_peak={}",
+        plain_allocation.peak, fragment_allocation.peak
+    );
+    Ok(())
 }
 
 fn oversized_rule_input() -> Result<String, Box<dyn std::error::Error>> {
@@ -371,6 +429,30 @@ fn check_supplied_observance_retention() -> Result<Allocation, Box<dyn std::erro
     Ok(allocation)
 }
 
+fn check_comments() -> Result<(usize, Allocation), Box<dyn std::error::Error>> {
+    let comment_bytes = comment_input();
+    let (events, comment_allocation) = measure(|| {
+        let limits = Limits::GENEROUS;
+        let mut meter = Meter::new(limits);
+        let mut diagnostics = Vec::<Diagnostic>::new();
+        let mut reader = XmlReader::new(&comment_bytes);
+        let mut context = DecodeContext::new(limits, &mut meter, &mut diagnostics);
+        let mut seen = 0_u32;
+        while reader.next_event(&mut context)?.is_some() {
+            seen = seen.saturating_add(1);
+        }
+        Ok::<_, DavError>((seen, diagnostics))
+    });
+    let events = events?;
+    assert_eq!(events.0, 4);
+    assert!(
+        comment_allocation.peak <= MAX_COMMENT_PEAK_BYTES,
+        "an {COMMENT_BYTES}-byte comment used {} peak bytes, ceiling {MAX_COMMENT_PEAK_BYTES}; {comment_allocation:?}",
+        comment_allocation.peak
+    );
+    Ok((comment_bytes.len(), comment_allocation))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calendar_bytes = calendar_input();
     let (calendar, property_allocation) = measure(|| {
@@ -430,27 +512,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     drop(multistatus);
 
-    let comment_bytes = comment_input();
-    let (events, comment_allocation) = measure(|| {
-        let limits = Limits::GENEROUS;
-        let mut meter = Meter::new(limits);
-        let mut diagnostics = Vec::<Diagnostic>::new();
-        let mut reader = XmlReader::new(&comment_bytes);
-        let mut context = DecodeContext::new(limits, &mut meter, &mut diagnostics);
-        let mut seen = 0_u32;
-        while reader.next_event(&mut context)?.is_some() {
-            seen = seen.saturating_add(1);
-        }
-        Ok::<_, icalkit_conformance::internal::dav::DavError>((seen, diagnostics))
-    });
-    let events = events?;
-    assert_eq!(events.0, 4);
-    assert!(
-        comment_allocation.peak <= MAX_COMMENT_PEAK_BYTES,
-        "an {COMMENT_BYTES}-byte comment used {} peak bytes, ceiling {MAX_COMMENT_PEAK_BYTES}; {comment_allocation:?}",
-        comment_allocation.peak
-    );
-
+    let (comment_input_bytes, comment_allocation) = check_comments()?;
+    check_property_content()?;
     let (rule_input_bytes, rule_allocation) = check_rule_refusal()?;
     let (staging_input_bytes, staging_allocation, supplied_allocation) =
         check_transition_allocations()?;
@@ -465,7 +528,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         xml_allocation.retained,
         xml_allocation.peak,
         xml_allocation.allocated,
-        comment_bytes.len(),
+        comment_input_bytes,
         comment_allocation.peak,
         rule_input_bytes,
         rule_allocation.peak,

@@ -50,6 +50,13 @@ Response round trip tests check child attribute namespace names, local names, an
 [RFC 4918 section 4.3](https://www.rfc-editor.org/rfc/rfc4918.html#section-4.3) requires preserving those fields for dead properties.
 Reserved `xml` attributes keep their predefined namespace binding.
 
+Unmodeled property values keep element and character children in document order.
+Mixed content and significant whitespace survive serialization.
+The [XML Information Set](https://www.w3.org/TR/xml-infoset/#infoitem.element) defines children as an ordered list.
+Fragment construction starts at the first child element, so text-only values keep their decoded width policy.
+Escaping enforces serialized width and shared budgets before buffer growth.
+The [property content decision](adr/retain-property-content-in-event-order.md) records the capture states and allocation boundary.
+
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.

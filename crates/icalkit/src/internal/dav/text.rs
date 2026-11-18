@@ -463,18 +463,29 @@ pub fn write_escaped_attribute(out: &mut dyn ByteSink, bytes: &[u8]) -> Result<(
 
 /// The escaping both doors share.
 fn write_escaped(out: &mut dyn ByteSink, bytes: &[u8], in_attribute: bool) -> Result<(), DavError> {
+    escape_chunks(bytes, in_attribute, |chunk| {
+        out.write(chunk)?;
+        Ok(())
+    })
+}
+
+pub(crate) fn escape_chunks(
+    bytes: &[u8],
+    in_attribute: bool,
+    mut emit: impl FnMut(&[u8]) -> Result<(), DavError>,
+) -> Result<(), DavError> {
     let mut run_start = 0;
     for (at, byte) in bytes.iter().enumerate() {
         let Some(replacement) = escape_for(*byte, in_attribute) else {
             continue;
         };
         let plain = bytes.get(run_start..at).ok_or(SyntaxError::Malformed)?;
-        out.write(plain)?;
-        out.write(replacement)?;
+        emit(plain)?;
+        emit(replacement)?;
         run_start = at.saturating_add(1);
     }
     let tail = bytes.get(run_start..).ok_or(SyntaxError::Malformed)?;
-    out.write(tail)?;
+    emit(tail)?;
     Ok(())
 }
 

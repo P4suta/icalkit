@@ -17,14 +17,10 @@
 //! **A property whose value has no modeled shape is kept and reported**, in one of the two shapes a property's value can be.
 //! `PropValue` has no list variant and no tree, so a property carrying several `href`s or an extension this crate has no row for is kept whole and reported with `DiagnosticCode::DavPropertyUnmodeled`.
 //!
-//! Which shape depends on what was inside the element, because a property's value is character data or it is elements.
-//! Content that is elements with nothing but layout between them is the peer's own structure and becomes [`PropValue::Markup`]: the subtree re-serialized in this crate's prefixes, each element declaring the namespace it resolved to, every text run escaped.
-//! Content that is character data becomes [`PropValue::Unmodeled`], the octets concatenated in document order, and it is written back *escaped* — text a peer escaped stays text, or a proxy would promote a peer's string into markup of its own.
-//!
-//! A property that carries both keeps its character data and reports `DiagnosticCode::DavPropertyMarkupDropped` at `Severity::Violation`.
-//! One `Box<[u8]>` cannot say where a peer's markup sat among a peer's text without inventing an order between them,
-//! and saying so is better than inventing one.
-//! No mainstream server writes that shape.
+//! Content containing elements becomes [`PropValue::Markup`], with element and character children serialized in document order.
+//! Each element declares its resolved namespace, and every text run is escaped.
+//! Text-only content becomes [`PropValue::Unmodeled`], with character data concatenated in document order and written back escaped.
+//! Escaped element syntax stays character data.
 //!
 //! **A response naming no resource is not delivered.** RFC 4918 section 14.24 requires an `href`, [`DavResponse::href`] is not an `Option`, and a response that names nothing cannot be matched to the request that asked for it — which is how one resource's `ETag` gets attributed to another.
 //! It is reported as `DiagnosticCode::DavResponseWithoutHref` and the read continues at the next response.
@@ -40,16 +36,14 @@ use crate::internal::core::{DiagnosticCode, LimitExceeded, Limits, Meter, Severi
 
 use crate::internal::dav::codec::{ResponseSource, XmlEvent, XmlPull};
 use crate::internal::dav::element::{ElementName, Namespace, QName};
-use crate::internal::dav::failure::DavError;
+use crate::internal::dav::failure::{DavError, SyntaxError};
 use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
 use crate::internal::dav::reader::XML_URI;
 use crate::internal::dav::request::PropName;
 use crate::internal::dav::response::{
     CalendarPayload, DavProperty, DavResponse, ErrorBody, PropStat, PropValue,
 };
-use crate::internal::dav::text::{
-    DecodedText, LineEndings, TextRun, write_escaped_attribute, write_escaped_text,
-};
+use crate::internal::dav::text::{DecodedText, LineEndings, TextRun, escape_chunks};
 use crate::internal::dav::value::{ETag, ExtensionName, Href, ResourceType, Status, copy};
 
 /// The status a group of properties carries when the server stated none this reader can read.
@@ -305,24 +299,15 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         while let Some(event) = self.events.next_event(context)? {
             match event {
                 XmlEvent::End { depth: at, .. } if at <= child.depth => break,
-                // A run belongs to the property itself only when nothing is open inside it.
-                // Text under a child element is that child's content, not character data beside it, so it does not make the property mixed.
-                XmlEvent::Text(run) => {
-                    let own = self.events.depth() <= child.depth;
-                    parts.absorb(run, own, context)?;
-                },
+                XmlEvent::Text(run) => parts.absorb(run, context)?,
                 XmlEvent::Start { name, known, depth } => {
                     let inner = Opened { name, known, depth };
                     // The start tag is recorded before the child is acted on, because acting on it may consume the whole subtree and the fragment has to stay balanced whichever branch was taken.
-                    if parts.markup {
-                        open_in_fragment(&*self.events, &mut parts, name, context)?;
-                    }
+                    parts.open_fragment(&*self.events, name, context)?;
                     self.in_property(&mut parts, inner, context)?;
                 },
                 XmlEvent::End { name, .. } => {
-                    if parts.markup {
-                        close_in_fragment(&mut parts, name, context)?;
-                    }
+                    parts.close_fragment(name, context)?;
                 },
             }
         }
@@ -338,20 +323,18 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
         parts.child_count = parts.child_count.saturating_add(1);
-        if let Some(holder) = parts.resource.as_mut() {
+        if let ValueContent::Resource(holder) = &mut parts.content {
             claim(holder, child, context.meter)?;
-            // A `resourcetype` answers with its claims and never with a fragment, so the one being built cannot be its value and is dropped rather than left half-written by the subtree this skips.
-            parts.drop_fragment();
             return self.events.skip_element(context);
         }
         if parts.shape == Shape::Reference && child.known == Some(ElementName::Href) {
             parts.href_count = parts.href_count.saturating_add(1);
             let found = self.href_of(child.depth, context)?;
             // `href_of` consumed the element's own end tag, so the fragment is closed here with the value that came out of it — a reference-shaped property whose children turn out not to be the one `href` this shape admits still has to be keepable.
-            if parts.markup {
+            if let ValueContent::Markup(fragment) = &mut parts.content {
                 let octets = found.as_ref().map(Href::as_bytes).unwrap_or_default();
-                parts.push_escaped_text(octets, context)?;
-                close_in_fragment(parts, child.name, context)?;
+                fragment.push_escaped(octets, false, context)?;
+                close_in_fragment(fragment, child.name, context)?;
             }
             if parts.first_href.is_none() {
                 parts.first_href = found;
@@ -697,25 +680,79 @@ impl Shape {
 struct ValueParts<'body> {
     /// The shape this property's name earns.
     shape: Shape,
-    /// The first run of character data that was not layout.
-    text: Option<DecodedText<'body>>,
-    /// Every run of character data, once a second one has proved there is more than one.
-    joined: Vec<u8>,
+    content: ValueContent<'body>,
     /// The first `DAV:href` child, for a reference-shaped property.
     first_href: Option<Href>,
-    /// A `DAV:resourcetype`'s claims, built only for that shape.
-    resource: Option<ResourceType>,
-    /// The peer's own elements, re-serialized in this crate's spelling.
-    fragment: Vec<u8>,
-    /// Whether that fragment is still a value this property could have.
-    ///
-    /// It starts true and is put out for one reason: a run of character data that is more than layout.
-    /// A property's value is text or it is elements, and one that carries both keeps its text — so the fragment stops being built at the first non-blank run rather than being grown to no purpose behind every `calendar-data` payload in a body.
-    markup: bool,
     /// Elements seen inside this property, at any depth.
     child_count: u32,
     /// `DAV:href` children seen.
     href_count: u32,
+}
+
+#[derive(Debug)]
+enum ValueContent<'body> {
+    Resource(ResourceType),
+    Text(TextRuns<'body>),
+    Markup(Fragment),
+}
+
+#[derive(Debug)]
+enum TextRuns<'body> {
+    Empty,
+    Single(DecodedText<'body>),
+    Joined(Vec<u8>),
+}
+
+impl<'body> TextRuns<'body> {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Empty => &[],
+            Self::Single(held) => held.run.as_bytes(),
+            Self::Joined(bytes) => bytes,
+        }
+    }
+
+    fn absorb(
+        &mut self,
+        decoded: DecodedText<'body>,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        match self {
+            Self::Empty => *self = Self::Single(decoded),
+            Self::Single(held) => {
+                let mut joined = Vec::new();
+                append(&mut joined, held.run.as_bytes(), context)?;
+                append(&mut joined, decoded.run.as_bytes(), context)?;
+                *self = Self::Joined(joined);
+            },
+            Self::Joined(bytes) => append(bytes, decoded.run.as_bytes(), context)?,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Fragment(Vec<u8>);
+
+impl Fragment {
+    fn push_fragment(
+        &mut self,
+        bytes: &[u8],
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        append(&mut self.0, bytes, context)
+    }
+
+    fn push_escaped(
+        &mut self,
+        bytes: &[u8],
+        in_attribute: bool,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        escape_chunks(bytes, in_attribute, |chunk| {
+            self.push_fragment(chunk, context)
+        })
+    }
 }
 
 impl<'body> ValueParts<'body> {
@@ -723,96 +760,70 @@ impl<'body> ValueParts<'body> {
     fn new(shape: Shape, limits: Limits) -> Self {
         Self {
             shape,
-            text: None,
-            joined: Vec::new(),
             first_href: None,
-            resource: match shape {
-                Shape::Resource => Some(ResourceType::new(limits)),
-                _ => None,
+            content: match shape {
+                Shape::Resource => ValueContent::Resource(ResourceType::new(limits)),
+                _ => ValueContent::Text(TextRuns::Empty),
             },
-            fragment: Vec::new(),
-            markup: true,
             child_count: 0,
             href_count: 0,
         }
     }
 
-    /// Stop building a fragment, and release what has been built.
-    fn drop_fragment(&mut self) {
-        self.markup = false;
-        self.fragment = Vec::new();
-    }
-
-    /// Append literal octets to the fragment, bounded and charged like any other retention.
-    fn push_fragment(
+    fn open_fragment(
         &mut self,
-        bytes: &[u8],
+        events: &dyn XmlPull<'_>,
+        name: QName<'_>,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
-        append(&mut self.fragment, bytes, context)
-    }
-
-    /// Append character data to the fragment, escaped as this crate escapes every other run.
-    ///
-    /// The escaping is what keeps the security property: a fragment holds markup a peer really sent, and text a peer sent stays text inside it rather than becoming a second element.
-    fn push_escaped_text(
-        &mut self,
-        bytes: &[u8],
-        context: &mut DecodeContext<'_>,
-    ) -> Result<(), DavError> {
-        let mut escaped: Vec<u8> = Vec::new();
-        write_escaped_text(&mut escaped, bytes)?;
-        self.push_fragment(&escaped, context)
-    }
-
-    /// The character data collected so far.
-    fn bytes(&self) -> &[u8] {
-        if self.joined.is_empty() {
-            match &self.text {
-                Some(held) => held.run.as_bytes(),
-                None => &[],
-            }
-        } else {
-            &self.joined
+        match &mut self.content {
+            ValueContent::Resource(_) => Ok(()),
+            ValueContent::Text(text) => {
+                let mut fragment = Fragment(Vec::new());
+                fragment.push_escaped(text.bytes(), false, context)?;
+                open_in_fragment(events, &mut fragment, name, context)?;
+                self.content = ValueContent::Markup(fragment);
+                Ok(())
+            },
+            ValueContent::Markup(fragment) => open_in_fragment(events, fragment, name, context),
         }
     }
 
-    /// Record one run of character data.
-    ///
-    /// Every run, whatever is in it.
-    /// A blank run used to be dropped as layout, on the reasoning that the newline a pretty-printer puts inside `<D:resourcetype>` is not a value — which is true of `resourcetype` and of nothing else.
-    /// Applied unconditionally it deleted the `CRLF` that terminates a content line whenever two comments left it alone in a run inside a `calendar-data`, welding two iCalendar properties into one and changing the object's `UID`; and it read a `DAV:displayname` whose value is a space as a property that arrived empty, which is a different fact.
-    /// The shapes that really do have layout around them — `resourcetype`, a reference-shaped property — answer out of their children and never out of this text at all.
+    fn close_fragment(
+        &mut self,
+        name: QName<'_>,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<(), DavError> {
+        match &mut self.content {
+            ValueContent::Resource(_) => Ok(()),
+            ValueContent::Text(_) => Err(SyntaxError::Malformed.into()),
+            ValueContent::Markup(fragment) => close_in_fragment(fragment, name, context),
+        }
+    }
+
     fn absorb(
         &mut self,
         decoded: DecodedText<'body>,
-        own: bool,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
-        if own && !is_blank(decoded.run.as_bytes()) {
-            self.drop_fragment();
-        } else if self.markup {
-            self.push_escaped_text(decoded.run.as_bytes(), context)?;
+        match &mut self.content {
+            ValueContent::Resource(_) => Ok(()),
+            ValueContent::Text(text) => text.absorb(decoded, context),
+            ValueContent::Markup(fragment) => {
+                fragment.push_escaped(decoded.run.as_bytes(), false, context)
+            },
         }
-        let Some(held) = self.text.take() else {
-            self.text = Some(decoded);
-            return Ok(());
-        };
-        if self.joined.is_empty() {
-            append(&mut self.joined, held.run.as_bytes(), context)?;
-        }
-        append(&mut self.joined, decoded.run.as_bytes(), context)?;
-        self.text = Some(held);
-        Ok(())
     }
 
     /// The value this content amounts to.
-    fn finish(mut self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
+    fn finish(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
         // A `resourcetype` answers with its claims even when it carries none: an empty one is a plain resource, which is a different fact from a property that arrived empty.
-        if let Some(claimed) = self.resource.take() {
+        if let ValueContent::Resource(claimed) = self.content {
             return Ok(PropValue::Resource(claimed));
         }
-        if self.child_count == 0 && self.bytes().is_empty() {
+        if let ValueContent::Text(text) = &self.content
+            && text.bytes().is_empty()
+        {
             return Ok(PropValue::Empty);
         }
         match self.shape {
@@ -825,13 +836,10 @@ impl<'body> ValueParts<'body> {
     }
 
     /// A `calendar-data` payload, with the line-ending witness the decode produced.
-    fn payload(mut self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
+    fn payload(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
         // The witness exists only on the run the decode produced, so a payload broken across runs by markup is one this reader cannot hand on as the octets the server stored.
-        if self.child_count == 0
-            && self.joined.is_empty()
-            && let Some(held) = self.text.take()
-        {
-            let carried = CalendarPayload::from_text(&held, context.limits, context.meter)?;
+        if let ValueContent::Text(TextRuns::Single(held)) = &self.content {
+            let carried = CalendarPayload::from_text(held, context.limits, context.meter)?;
             return Ok(PropValue::CalendarData(carried));
         }
         self.unmodeled(at, context)
@@ -839,11 +847,8 @@ impl<'body> ValueParts<'body> {
 
     /// An entity tag, if the content is the quoted string RFC 9110 section 8.8.3 requires.
     fn entity(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
-        if self.child_count == 0 && self.joined.is_empty() {
-            let parsed = self
-                .text
-                .as_ref()
-                .and_then(|held| ETag::parse(trim_xml(held.run.as_bytes())).ok());
+        if let ValueContent::Text(TextRuns::Single(held)) = &self.content {
+            let parsed = ETag::parse(trim_xml(held.run.as_bytes())).ok();
             if let Some(tag) = parsed {
                 return Ok(PropValue::Entity(tag));
             }
@@ -868,35 +873,24 @@ impl<'body> ValueParts<'body> {
 
     /// Character data, when that is all the element held.
     fn plain(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
-        if self.child_count == 0 {
-            let kept = retain(self.bytes(), context)?;
+        if let ValueContent::Text(text) = &self.content {
+            let kept = retain(text.bytes(), context)?;
             return Ok(PropValue::Text(kept));
         }
         self.unmodeled(at, context)
     }
 
     /// Keep what the property held and say that nothing interpreted it.
-    ///
-    /// Two answers, because a property's value is two different kinds of thing.
-    /// Elements with nothing but layout between them are the peer's own structure and are kept as a fragment — RFC 4918 section 9.1.3's own example is `<R:bigbox><R:BoxType>…`, and flattening that to `Box type A` is a loss the next reader cannot detect.
-    /// Character data is kept as character data and written back escaped, so that a string a peer wrote cannot become an element this crate did not receive.
-    ///
-    /// A property carrying both keeps the text and reports the elements dropped.
-    /// One `Box<[u8]>` cannot say where a peer's markup sat among a peer's text without inventing an order between them, and inventing one is worse than saying so.
     fn unmodeled(self, at: u64, context: &mut DecodeContext<'_>) -> Result<PropValue, DavError> {
         context.report(DiagnosticCode::DavPropertyUnmodeled, Severity::Note, at);
-        if self.child_count > 0 && self.markup {
-            return Ok(PropValue::Markup(self.fragment.into_boxed_slice()));
+        match self.content {
+            ValueContent::Resource(claimed) => Ok(PropValue::Resource(claimed)),
+            ValueContent::Text(text) => {
+                let kept = retain(text.bytes(), context)?;
+                Ok(PropValue::Unmodeled(kept))
+            },
+            ValueContent::Markup(fragment) => Ok(PropValue::Markup(fragment.0.into_boxed_slice())),
         }
-        if self.child_count > 0 {
-            context.report(
-                DiagnosticCode::DavPropertyMarkupDropped,
-                Severity::Violation,
-                at,
-            );
-        }
-        let kept = retain(self.bytes(), context)?;
-        Ok(PropValue::Unmodeled(kept))
     }
 }
 
@@ -922,7 +916,7 @@ fn fragment_prefix(namespace: Namespace<'_>) -> &'static [u8] {
 /// Every element declares the namespace it resolved to, so the fragment is self-contained: the peer's own bindings were scoped to the peer's document and do not travel with the octets.
 fn open_in_fragment(
     events: &dyn XmlPull<'_>,
-    parts: &mut ValueParts<'_>,
+    parts: &mut Fragment,
     name: QName<'_>,
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
@@ -945,7 +939,7 @@ fn open_in_fragment(
 
 /// Write one element's end tag into the fragment a property is keeping.
 fn close_in_fragment(
-    parts: &mut ValueParts<'_>,
+    parts: &mut Fragment,
     name: QName<'_>,
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
@@ -956,7 +950,7 @@ fn close_in_fragment(
 
 /// Write a name under the prefix this crate spells its namespace with.
 fn push_qualified_name(
-    parts: &mut ValueParts<'_>,
+    parts: &mut Fragment,
     name: QName<'_>,
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
@@ -970,7 +964,7 @@ fn push_qualified_name(
 
 /// Declare one prefix on the element being written, unless the prefix declares itself.
 fn push_declaration(
-    parts: &mut ValueParts<'_>,
+    parts: &mut Fragment,
     prefix: &[u8],
     namespace: Namespace<'_>,
     context: &mut DecodeContext<'_>,
@@ -984,9 +978,7 @@ fn push_declaration(
         parts.push_fragment(prefix, context)?;
     }
     parts.push_fragment(b"=\"", context)?;
-    let mut escaped: Vec<u8> = Vec::new();
-    write_escaped_attribute(&mut escaped, namespace.uri())?;
-    parts.push_fragment(&escaped, context)?;
+    parts.push_escaped(namespace.uri(), true, context)?;
     parts.push_fragment(b"\"", context)
 }
 
@@ -995,7 +987,7 @@ fn push_declaration(
 /// An unprefixed attribute is in no namespace (XML Namespaces 1.0 section 6.2) and is written back unprefixed.
 /// One that is in a namespace gets a prefix of its own — `A0`, `A1` — rather than the element's, because the two namespaces need not be the same and a shared prefix would silently move the attribute into the element's.
 fn push_fragment_attribute(
-    parts: &mut ValueParts<'_>,
+    parts: &mut Fragment,
     index: usize,
     name: QName<'_>,
     value: &[u8],
@@ -1019,9 +1011,7 @@ fn push_fragment_attribute(
         parts.push_fragment(name.local_name, context)?;
     }
     parts.push_fragment(b"=\"", context)?;
-    let mut escaped: Vec<u8> = Vec::new();
-    write_escaped_attribute(&mut escaped, value)?;
-    parts.push_fragment(&escaped, context)?;
+    parts.push_escaped(value, true, context)?;
     parts.push_fragment(b"\"", context)
 }
 
@@ -1087,16 +1077,6 @@ fn absorb_into(
         holding.push(condition.clone(), meter)?;
     }
     Ok(())
-}
-
-/// Whether a run of character data is layout rather than a value.
-///
-/// XML 1.0 section 2.3's `S` production, which is what a pretty-printer puts between elements.
-/// A value that is only whitespace is not one a caller can tell apart from the layout around it, so this reader reads it as an absence rather than as a value nobody can act on.
-fn is_blank(bytes: &[u8]) -> bool {
-    bytes
-        .iter()
-        .all(|byte| matches!(*byte, b' ' | b'\t' | b'\r' | b'\n'))
 }
 
 /// Drop the layout either side of a value that cannot contain any.
