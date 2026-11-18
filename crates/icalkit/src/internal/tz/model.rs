@@ -530,9 +530,10 @@ impl TransitionTable {
         self.truncated
     }
 
-    /// The last date supported by the admitted observances.
+    /// The date at which known transitions end.
     ///
     /// Truncation limits coverage to the last admitted anchor date.
+    /// Omitted transitions can fall on the same date.
     /// A complete table with observances has open coverage when each represented side covers the remaining civil years.
     /// An empty table has no end date and supplies no transition.
     /// Answers after a finite end carry [`AnswerBasis::BeyondKnownTransitions`].

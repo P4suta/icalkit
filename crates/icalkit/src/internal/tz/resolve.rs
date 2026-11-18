@@ -235,7 +235,7 @@ impl TransitionTable {
         let Some(known) = self.coverage_end() else {
             return AnswerBasis::Computed;
         };
-        if date.is_none_or(|asked| asked > known) {
+        if date.is_none_or(|asked| asked > known || (self.is_truncated() && asked == known)) {
             AnswerBasis::BeyondKnownTransitions(known)
         } else {
             AnswerBasis::Computed

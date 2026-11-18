@@ -102,13 +102,35 @@ fn dropped_recurring_patterns_bound_later_coverage() {
             .basis,
         AnswerBasis::Computed
     );
-    assert!(matches!(
+    assert_eq!(
         bounded.tables()[0]
             .resolve("Test/Staging", november)
             .unwrap()
             .basis,
-        AnswerBasis::BeyondKnownTransitions(_)
-    ));
+        AnswerBasis::BeyondKnownTransitions(CivilDate::from_ymd(2024, 4, 1).unwrap())
+    );
+}
+
+#[test]
+fn dropped_onsets_can_change_the_last_retained_date() {
+    let standard = "BEGIN:STANDARD\r\nDTSTART:20240701T000000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0000\r\nEND:STANDARD\r\n";
+    let daylight = "BEGIN:DAYLIGHT\r\nDTSTART:20240701T120000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0100\r\nEND:DAYLIGHT\r\n";
+    let source = document(&[standard, daylight]);
+    let date = CivilDate::from_ymd(2024, 7, 1).unwrap();
+    let local = CivilDateTime::new(date, CivilTime::from_hms(14, 0, 0).unwrap());
+    for (limit, expected) in [
+        (1, AnswerBasis::BeyondKnownTransitions(date)),
+        (2, AnswerBasis::Computed),
+    ] {
+        let (tables, _, _) = read(&source, limit, 0);
+        assert_eq!(
+            tables.tables()[0]
+                .resolve("Test/Staging", local)
+                .unwrap()
+                .basis,
+            expected
+        );
+    }
 }
 
 #[test]
