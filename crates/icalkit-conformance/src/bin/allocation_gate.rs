@@ -8,6 +8,7 @@
 //! The production crate remains `#![forbid(unsafe_code)]`; the unsafe implementation is confined to this unpublished measurement helper and delegates every operation directly to `System`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use icalkit::recurrence::Rule;
@@ -294,7 +295,10 @@ fn check_observance_staging() -> Result<(usize, Allocation), Box<dyn std::error:
                 input.push_str("\r\n ");
             }
         }
-        input.push_str("20240102T000000");
+        let hour = index / 3_600;
+        let minute = index / 60 % 60;
+        let second = index % 60;
+        write!(input, "20240102T{hour:02}{minute:02}{second:02}")?;
     }
     input.push_str("\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n");
     let document = Document::parse(input.as_bytes(), Limits::GENEROUS, &mut Vec::new())?;
@@ -315,6 +319,13 @@ fn check_observance_staging() -> Result<(usize, Allocation), Box<dyn std::error:
     );
     let table = zones.tables().first().ok_or("missing staged zone")?;
     assert_eq!(table.observances().len(), 1);
+    assert_eq!(
+        table.observances()[0].start(),
+        CivilDateTime::new(
+            CivilDate::from_ymd(2024, 1, 1).ok_or("invalid staging anchor")?,
+            CivilTime::MIDNIGHT,
+        )
+    );
     assert!(table.is_truncated());
     assert_eq!(meter.vtimezone_observances(), 1);
     assert_eq!(diagnostics.len(), 1);
