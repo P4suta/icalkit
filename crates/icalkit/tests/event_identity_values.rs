@@ -122,7 +122,7 @@ fn summary_edits_compare_decoded_identifiers_once_without_folding_or_trimming() 
         editor.set_summary(uid, "Changed").unwrap();
         editor.commit().unwrap();
         let expected = original.replace(&format!("SUMMARY:{name}\r\n"), "SUMMARY:Changed\r\n");
-        assert_eq!(calendar.to_bytes(), expected.as_bytes(), "{uid:?}");
+        assert_eq!(calendar.to_bytes(), expected.as_bytes(), "{name}");
     }
 }
 
