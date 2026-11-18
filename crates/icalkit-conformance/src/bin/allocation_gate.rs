@@ -586,7 +586,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{note_peak, release_counter};
+    use super::{arithmetic::released_count, note_peak, release_counter};
+
+    #[test]
+    fn releases_preserve_zero_exact_and_saturated_boundaries() {
+        for (current, bytes, expected) in [
+            (0, 0, 0),
+            (0, 1, 0),
+            (1, 0, 1),
+            (1, 1, 0),
+            (1, 2, 0),
+            (u64::MAX, 0, u64::MAX),
+            (u64::MAX, u64::MAX, 0),
+            (u64::MAX, u64::MAX - 1, 1),
+        ] {
+            assert_eq!(released_count(current, bytes), expected);
+        }
+    }
 
     #[test]
     fn release_counter_preserves_zero_exact_and_saturated_boundaries() {

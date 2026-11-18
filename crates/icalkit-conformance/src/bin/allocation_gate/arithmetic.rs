@@ -6,27 +6,6 @@ pub(super) const fn released_count(current: u64, bytes: u64) -> u64 {
     current.saturating_sub(bytes)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::released_count;
-
-    #[test]
-    fn releases_preserve_zero_exact_and_saturated_boundaries() {
-        for (current, bytes, expected) in [
-            (0, 0, 0),
-            (0, 1, 0),
-            (1, 0, 1),
-            (1, 1, 0),
-            (1, 2, 0),
-            (u64::MAX, 0, u64::MAX),
-            (u64::MAX, u64::MAX, 0),
-            (u64::MAX, u64::MAX - 1, 1),
-        ] {
-            assert_eq!(released_count(current, bytes), expected);
-        }
-    }
-}
-
 #[cfg(kani)]
 mod proofs {
     use super::released_count;
