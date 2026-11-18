@@ -389,7 +389,7 @@ mod cases {
             "the highest revision an integer can state is still a revision"
         );
         // A signed integer is what RFC 5545 section 3.3.8 writes, so `+9` is nine.
-        // Either reading lands in the refusing direction, so this row records which one and refuses neither.
+        // The test accepts authorization as revision nine or a `SequenceUnreadable` refusal.
         let signed = judge_files(HELD_SERIES, REQUEST_SIGNED, CHAIR);
         assert!(
             signed.is_allowed()

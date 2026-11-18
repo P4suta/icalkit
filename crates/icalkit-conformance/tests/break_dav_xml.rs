@@ -161,13 +161,6 @@ fn property_text(collected: &MultiStatus) -> Vec<u8> {
     }
 }
 
-/// Whether `needle` appears anywhere in `haystack`.
-fn holds(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
-}
-
 /// A root element wrapping `levels` nested `DAV:response` elements.
 fn nested(levels: usize) -> Vec<u8> {
     let mut body = Vec::from(&br#"<D:multistatus xmlns:D="DAV:">"#[..]);
@@ -206,11 +199,47 @@ fn escaped_text_does_not_become_markup_on_the_way_out() {
         "the decoded text is what the crate kept"
     );
     let wire = encode(&collected).expect("the multistatus re-encodes");
-    assert!(
-        !holds(&wire, b"<D:href>/calendars/ann/private/secret.ics</D:href>"),
-        "text was promoted to markup: {}",
-        String::from_utf8_lossy(&wire)
-    );
+    let limits = Limits::DEFAULT;
+    let mut meter = Meter::new(limits);
+    let mut diagnostics = IgnoreDiagnostics;
+    let mut context = DecodeContext::new(limits, &mut meter, &mut diagnostics);
+    let mut reader = XmlReader::new(&wire);
+    let mut property_depth = None;
+    let mut finished = false;
+    let mut children = Vec::new();
+    let mut text = Vec::new();
+    while let Some(event) = reader.next_event(&mut context).unwrap() {
+        match event {
+            XmlEvent::Start { name, depth, .. }
+                if property_depth.is_none()
+                    && name.namespace.uri() == b"urn:x:vendor".as_slice()
+                    && name.local_name == b"note" =>
+            {
+                property_depth = Some(depth);
+            },
+            XmlEvent::Start { name, .. } if property_depth.is_some() => children.push((
+                name.namespace
+                    .uri()
+                    .octets()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
+                name.local_name.to_vec(),
+            )),
+            XmlEvent::Text(decoded) if property_depth.is_some() => {
+                text.extend_from_slice(decoded.run.as_bytes());
+            },
+            XmlEvent::End { depth, .. } if property_depth == Some(depth) => {
+                finished = true;
+                break;
+            },
+            _ => {},
+        }
+    }
+    assert!(finished, "the property must be present and complete");
+    assert_eq!(text, b"<D:href>/calendars/ann/private/secret.ics</D:href>");
+    // The mark child was present in the input.
+    // The escaped href must remain character data.
+    assert_eq!(children, vec![(b"urn:x:vendor".to_vec(), b"mark".to_vec())]);
 }
 
 /// A complete property survives reading, writing, and reading again.

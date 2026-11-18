@@ -27,8 +27,8 @@ use icalkit_conformance::internal::core::{
 
 /// A calendar whose one property arrived below a fold at octet zero of its content line.
 ///
-/// RFC 5545 section 3.1 folds at octets and says nothing about what they spell, so a fold followed by `SP` and then `HTAB` unfolds to a content line whose first octet is `HTAB` —
-/// which is to say, to a property whose *name* begins with whitespace.
+/// A fold followed by `SP` and then `HTAB` unfolds to a content line whose first octet is `HTAB`.
+/// The property name therefore begins with whitespace.
 /// The file round trips.
 const FOLD_AT_OFFSET_ZERO: &[u8] = include_bytes!("fixtures/break_sweeps/fold_at_offset_zero.ics");
 

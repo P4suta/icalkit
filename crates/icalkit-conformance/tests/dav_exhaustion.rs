@@ -321,7 +321,7 @@ fn a_response_body_refusal_latches_before_lexical_reading() {
     let limits = Limits::DEFAULT.with_max_response_bytes(1);
     let mut meter = Meter::new(Limits::DEFAULT);
     let mut diagnostics = Vec::new();
-    let mut reader = XmlReader::new(b"<x/>");
+    let mut reader = XmlReader::new(b"<x");
     let result = reader.next_event(&mut DecodeContext::new(
         limits,
         &mut meter,

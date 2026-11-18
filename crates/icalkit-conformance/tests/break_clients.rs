@@ -13,10 +13,10 @@
 //!   The mutation tests exercise this contract from `ADR-0001`.
 //! - **P4**, diagnostics preserve: an input that earns a diagnostic still satisfies P1, so a violation is never "accepted" by quietly dropping the thing that violated.
 //!
-//! The fixtures beside this file stand in for the corpus that milestone M5 will collect.
-//! Each is synthetic and each is shaped like something a named client actually writes: a fold landing inside a quoted `X-APPLE-STRUCTURED-LOCATION` parameter that carries `=` and `,`,
-//! the `X-MICROSOFT-CDO-` family, a `/mozilla.org/`-prefixed `TZID` in a file terminated with bare line feeds, a Windows zone name with spaces, dots and parentheses both quoted and bare, an unfolded line several hundred octets long, unknown components nested three deep,
-//! an unknown property carrying an unknown parameter, and `CP1252` octets in a file that declares no charset — including the well-formed-`UTF-8`-wrong-codepoint case that neither failure channel can see.
+//! The synthetic fixtures include folded `X-APPLE-STRUCTURED-LOCATION` parameters and Microsoft extension properties.
+//! They cover `/mozilla.org/` identifiers, bare line feeds, and quoted and unquoted Windows zone names.
+//! Further fixtures contain long physical lines, nested unknown components, extension parameters, and `CP1252` bytes.
+//! One encoding case uses valid UTF-8 for an unintended code point.
 
 use std::collections::BTreeSet;
 
@@ -153,7 +153,7 @@ fn collect_lines(items: &[Item], out: &mut Vec<Vec<u8>>) {
 
 /// Write `text` over the first property named `id`, anywhere in the tree.
 ///
-/// Depth first and left to right, so the property found is the first one a reader walking the document in order would reach.
+/// Search direct properties before visiting children depth first and left to right.
 fn write_first(component: &mut Component, id: &PropertyId, text: &[u8]) -> bool {
     if component.properties_named(id).next().is_some()
         && let Some(mut guard) = component.get_mut::<TextValue<'_>>(id)
@@ -327,11 +327,14 @@ fn p2_five_generations_of_open_edit_and_save() {
             } else {
                 b"short"
             };
-            for id in EDITED {
-                if write_somewhere(&mut document, id, payload) {
-                    break;
-                }
-            }
+            let edited = EDITED
+                .iter()
+                .any(|id| write_somewhere(&mut document, id, payload));
+            assert!(
+                edited,
+                "{}: generation {generation} made no edit",
+                case.name
+            );
             let saved = document.to_bytes();
             let Ok(reread) = parse(&saved).document else {
                 panic!(

@@ -91,7 +91,7 @@ const BREAKS: &[Case] = &[
     },
     // The source on 2015-01-01 belongs to week 53 of 2014 and remains in the source period.
     Case {
-        name: "byweekno_week_53_wkst_su_absent.ics",
+        name: "byweekno-week-53-source-period",
         octets: include_bytes!("fixtures/break_recur_calendar/byweekno_week_53_wkst_su_absent.ics"),
         window: ((2015, 1, 1, 0, 0), (2015, 1, 4, 0, 0)),
         expected: &[(2015, 1, 1, 0, 0)],
