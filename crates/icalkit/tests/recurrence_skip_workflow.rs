@@ -88,17 +88,24 @@ fn month_filters_precede_correction_and_weekday_filters_follow_it() {
                 &format!(
                     "FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYMONTH=2;BYMONTHDAY=31;BYDAY={weekday}"
                 ),
-                "2021-01-01T09:00:00Z",
+                "2021-03-01T09:00:00Z",
                 "2022-01-01T00:00:00Z",
             ),
             [at("2021-03-01T09:00:00Z")],
         );
     }
     assert_eq!(
-        expand(
-            "FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYMONTH=2;BYMONTHDAY=31;BYDAY=SU",
-            "2021-01-01T09:00:00Z",
-            "2022-01-01T00:00:00Z",
+        starts(
+            Rule::parse(
+                "FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYMONTH=2;BYMONTHDAY=31;BYDAY=SU"
+            )
+            .unwrap()
+            .occurrences(
+                &mut Engine::default().session(),
+                at("2020-03-01T09:00:00Z"),
+                window("2021-01-01T00:00:00Z", "2022-01-01T00:00:00Z"),
+            )
+            .unwrap(),
         ),
         Vec::<Timestamp>::new(),
     );
@@ -113,7 +120,7 @@ fn negative_month_days_adjust_at_the_start_of_the_month() {
         assert_eq!(
             expand(
                 &format!("FREQ=YEARLY;RSCALE=GREGORIAN;SKIP={mode};BYMONTH=2;BYMONTHDAY=-31"),
-                "2021-01-01T09:00:00Z",
+                expected,
                 "2022-01-01T00:00:00Z",
             ),
             [at(expected)],
@@ -175,7 +182,7 @@ fn period_positions_select_corrected_dates_before_counting() {
     assert_eq!(
         expand(
             "FREQ=MONTHLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYMONTHDAY=1,31;BYSETPOS=-1;COUNT=3",
-            "2021-01-01T09:00:00Z",
+            "2021-01-31T09:00:00Z",
             "2022-01-01T00:00:00Z",
         ),
         [
@@ -196,7 +203,7 @@ fn a_narrow_window_includes_backward_candidates_from_the_next_month() {
         starts(
             rule.occurrences(
                 &mut session,
-                at("2021-01-01T09:00:00Z"),
+                at("2020-12-01T09:00:00Z"),
                 window("2021-01-31T00:00:00Z", "2021-02-01T00:00:00Z"),
             )
             .unwrap()

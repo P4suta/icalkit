@@ -170,7 +170,9 @@ pub(super) fn candidate_lower_bound(
     let mut frame = CalendarFrame::new(rule.calendar_scale());
     let span = day_extent(rule, period, &mut frame)?;
     let (mut date, _) = span.writable()?.ok_or(CalendarArithmeticError)?;
-    if rule.skip() != Skip::Omit && expands_year_days(rule, rule.parts_present()) {
+    let present = rule.parts_present();
+    let year_days = expands_year_days(rule, present);
+    if rule.skip() != Skip::Omit && year_days {
         let year = frame.fields(anchor.date())?.year;
         let span = frame.year_span(year)?;
         let mut earliest = None;
@@ -186,7 +188,11 @@ pub(super) fn candidate_lower_bound(
             date = earliest;
         }
     }
-    if rule.skip() == Skip::Backward && rule.has_part(RulePart::MonthDay) {
+    if rule.skip() == Skip::Backward
+        && !year_days
+        && rule.has_part(RulePart::MonthDay)
+        && effect(rule.freq(), RulePart::MonthDay, present).expands()
+    {
         let span = frame.fields(date)?.month_span;
         for value in rule.by_month_day().as_slice() {
             if let Some(candidate) = span
