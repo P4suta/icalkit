@@ -175,9 +175,7 @@ impl YearMetadata {
                 span: month_span,
             });
             reached = month_span.end();
-            current = current
-                .checked_add_months(1)
-                .ok_or(CalendarArithmeticError)?;
+            current = current.following_month().ok_or(CalendarArithmeticError)?;
         }
         if reached != span.end() {
             return Err(CalendarArithmeticError);

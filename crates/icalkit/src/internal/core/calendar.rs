@@ -279,7 +279,34 @@ impl CalendarCoordinates {
     }
 
     pub(crate) fn checked_add_months(&self, months: i32) -> Option<Self> {
+        if months == 0 {
+            return Some(self.clone());
+        }
+        let edge = if months.is_negative() {
+            Date::new(0, 1, 1).ok()?
+        } else {
+            Date::MAX
+        };
+        let edge = Self::from_gregorian(self.scale, edge)?;
+        let years = if months.is_negative() {
+            self.year().checked_sub(edge.year())?
+        } else {
+            edge.year().checked_sub(self.year())?
+        };
+        // Include both endpoint years when bounding the month count.
+        let maximum = u32::try_from(years)
+            .ok()?
+            .checked_add(1)?
+            .checked_mul(u32::from(self.scale.ranges().months))?;
+        if months.unsigned_abs() > maximum {
+            return None;
+        }
         self.checked_add(DateDuration::for_months(months))
+    }
+
+    /// Advance one bounded metadata step, including the terminal month boundary.
+    pub(crate) fn following_month(&self) -> Option<Self> {
+        self.checked_add(DateDuration::for_months(1))
     }
 
     pub(crate) fn checked_add_years(&self, years: i32) -> Option<Self> {
@@ -298,5 +325,26 @@ impl CalendarCoordinates {
             scale: self.scale,
             date,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CalendarCoordinates, CalendarScale};
+    use jiff::civil::Date;
+
+    #[test]
+    fn month_jumps_beyond_the_gregorian_domain_are_refused() {
+        let origin = CalendarCoordinates::from_gregorian(
+            CalendarScale::Hebrew,
+            Date::new(2024, 2, 1).unwrap(),
+        )
+        .unwrap();
+        for months in [250_000, -250_000] {
+            assert!(
+                origin.checked_add_months(months).is_none(),
+                "an impossible month jump reached calendar arithmetic: {months}"
+            );
+        }
     }
 }
