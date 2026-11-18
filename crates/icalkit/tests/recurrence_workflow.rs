@@ -191,6 +191,52 @@ END:VCALENDAR\r\n",
 }
 
 #[test]
+fn calendar_cursors_resume_in_start_and_key_order_across_windows() {
+    let calendar = Calendar::parse(concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit cursor tests//EN\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240102T090000Z\r\n",
+        "RDATE:20240111T090000Z,20240112T090000Z\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nRECURRENCE-ID:20240112T090000Z\r\n",
+        "DTSTART:20240102T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    ).as_bytes()).unwrap();
+    let first = Window::new(january_2024(1, 0), january_2024(10, 0)).unwrap();
+    let empty = Window::new(first.end(), january_2024(11, 0)).unwrap();
+    let later = Window::new(empty.end(), january_2024(14, 0)).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    let mut occurrences = calendar.occurrences(&mut session, "one", first).unwrap();
+    assert_eq!(
+        occurrences.try_next().unwrap().unwrap().key(),
+        january_2024(2, 9)
+    );
+    let cursor = occurrences.cursor();
+    drop(occurrences);
+    let mut same = calendar
+        .resume_occurrences(&mut session, "one", first, cursor)
+        .unwrap();
+    let tied = same.try_next().unwrap().unwrap();
+    assert_eq!(
+        (tied.start(), tied.key()),
+        (january_2024(2, 9), january_2024(12, 9))
+    );
+    assert_eq!(same.try_next().unwrap(), None);
+    let cursor = same.cursor();
+    drop(same);
+
+    let mut no_events = calendar
+        .resume_occurrences(&mut session, "one", empty, cursor)
+        .unwrap();
+    assert_eq!(no_events.try_next().unwrap(), None);
+    assert_eq!(no_events.cursor(), cursor);
+    drop(no_events);
+    let mut next = calendar
+        .resume_occurrences(&mut session, "one", later, cursor)
+        .unwrap();
+    assert_eq!(next.try_next().unwrap().unwrap().key(), january_2024(11, 9));
+    assert_eq!(next.try_next().unwrap(), None);
+}
+
+#[test]
 fn missing_calendar_uids_spend_the_lookup_budget() {
     let bounds = Window::new(january_2024(1, 0), january_2024(2, 0)).unwrap();
     for (uid, first_code) in [

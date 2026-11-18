@@ -210,7 +210,7 @@ pub struct Cursor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CursorInner {
     Rule(RuleCheckpoint),
-    Calendar { position: usize },
+    Calendar { after: Option<Occurrence> },
 }
 
 /// A fallible lazy occurrence stream.
@@ -223,6 +223,7 @@ enum OccurrenceSource<'a> {
     Calendar {
         occurrences: Vec<Occurrence>,
         position: usize,
+        after: Option<Occurrence>,
         terminal_error: Option<&'static str>,
     },
 }
@@ -249,10 +250,12 @@ impl Occurrences<'_> {
             OccurrenceSource::Calendar {
                 occurrences,
                 position,
+                after,
                 terminal_error,
             } => {
                 if let Some(occurrence) = occurrences.get(*position).copied() {
                     *position = position.saturating_add(1);
+                    *after = Some(occurrence);
                     return Ok(Some(occurrence));
                 }
                 if let Some(code) = terminal_error.take() {
@@ -268,9 +271,7 @@ impl Occurrences<'_> {
     pub fn cursor(&self) -> Cursor {
         let inner = match &self.source {
             OccurrenceSource::Rule(search) => CursorInner::Rule(search.rule_checkpoint()),
-            OccurrenceSource::Calendar { position, .. } => CursorInner::Calendar {
-                position: *position,
-            },
+            OccurrenceSource::Calendar { after, .. } => CursorInner::Calendar { after: *after },
         };
         Cursor { inner }
     }
@@ -301,10 +302,10 @@ pub(crate) fn resume_calendar_occurrences<'a>(
     window: Window,
     cursor: Cursor,
 ) -> Result<Occurrences<'a>, Error> {
-    let CursorInner::Calendar { position } = cursor.inner else {
+    let CursorInner::Calendar { after } = cursor.inner else {
         return Err(Error::single("icalkit.recurrence.cursor-mismatch"));
     };
-    start_calendar_occurrences(calendar, session, uid, window, Some(position))
+    start_calendar_occurrences(calendar, session, uid, window, after)
 }
 
 fn start_calendar_occurrences<'a>(
@@ -312,7 +313,7 @@ fn start_calendar_occurrences<'a>(
     session: &'a mut Session<'_>,
     uid: &str,
     window: Window,
-    position: Option<usize>,
+    after: Option<Occurrence>,
 ) -> Result<Occurrences<'a>, Error> {
     let (master, siblings) = recurrence_master(calendar, uid.as_bytes(), &mut session.meter)?;
     let range = TimeRange::new(Some(window.inner.start()), Some(window.inner.end()))
@@ -336,14 +337,14 @@ fn start_calendar_occurrences<'a>(
         })
         .collect::<Result<_, Error>>()?;
     occurrences.sort_by_key(|occurrence| (occurrence.start, occurrence.key));
-    let position = position.unwrap_or(0);
-    if position > occurrences.len() {
-        return Err(Error::single("icalkit.recurrence.cursor-mismatch"));
-    }
+    let position = after.map_or(0, |last| {
+        occurrences.partition_point(|entry| (entry.start, entry.key) <= (last.start, last.key))
+    });
     Ok(Occurrences {
         source: OccurrenceSource::Calendar {
             occurrences,
             position,
+            after,
             terminal_error,
         },
     })

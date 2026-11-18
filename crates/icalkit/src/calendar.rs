@@ -81,8 +81,8 @@ impl Calendar {
         crate::recurrence::calendar_occurrences(self, session, uid, window)
     }
 
-    /// Resume a recurrence set at an opaque cursor.
-    /// Supply the decoded `UID` text.
+    /// Resume in effective start order, breaking ties by recurrence identity.
+    /// Use the same calendar, decoded `UID`, and zone inputs for the same or a later window.
     pub fn resume_occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,
