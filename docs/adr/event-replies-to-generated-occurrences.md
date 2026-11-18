@@ -11,14 +11,15 @@ status: proposed
 
 ## Decision
 
-Resolve the key and apply range changes within budget.
+Resolve keys and ranges within budget.
 Compare stated times and parameters with the organizer's occurrence and keep omitted times.
-Keep each date, floating time, UTC time, or named local time in its original form.
+Preserve dates, floating times, UTC times, and named local times.
 Refuse a local start or end when [the first occurrence of its wall time](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.5) would change its instant.
-Stored and incoming time zone definitions must identify the same instant.
+Both time zone definitions must identify the same instant.
 Reject a local recurrence identifier when the clock repeats that hour.
 Update stored occurrences in place and preserve inherited attendee order.
 Compare [reply timestamps](https://www.rfc-editor.org/rfc/rfc5546.html#section-2.1.5) for the same attendee, recurrence key, and revision.
+Advancing the master expires timestamps on untouched occurrences with no `SEQUENCE`.
 Refuse replies at a stored [range](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.13) anchor whose attendance covers later occurrences.
 
 ## Alternatives

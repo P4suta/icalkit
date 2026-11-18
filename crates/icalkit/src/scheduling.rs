@@ -324,15 +324,9 @@ impl Message {
         if payloads.len() != message.payload_count() {
             return Err(Rejection::new("icalkit.scheduling.message-invalid"));
         }
-        let mut masters = current_components
-            .iter()
-            .copied()
-            .filter(|(_, component)| ScheduledView::of(component).recurrence_id().is_none());
-        let master = masters.next();
-        if masters.next().is_some() {
-            return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
-        }
+        let master = series_master(current_components)?;
         let mut used = Vec::new();
+        let mut master_advanced = false;
         let mut answered = BTreeSet::new();
         let mut changes = Vec::with_capacity(payloads.len());
         for (payload_index, (source, payload)) in payloads.into_iter().enumerate() {
@@ -369,6 +363,13 @@ impl Message {
                 let authorization =
                     evaluate_message(message, &current_view, PartyId::new(actor.as_str()))
                         .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+                if self.method == Method::Request
+                    && message.kind() == crate::internal::core::ComponentKind::Event
+                    && payload_view.recurrence_id().is_none()
+                {
+                    master_advanced = matches!((current_view.sequence().value(), payload_view.sequence().value()),
+                        (Some(previous), Some(offered)) if previous < offered);
+                }
                 changes.push(ReviewedChange {
                     target: ChangeTarget::existing(item),
                     transition: authorization.into_transition(),
@@ -412,6 +413,12 @@ impl Message {
         Ok(Review {
             message: self,
             target: ReviewTarget::Held(current),
+            expired_answers: if master_advanced {
+                find_expired_answers(current_components, &mut used, &mut session.meter)
+                    .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))?
+            } else {
+                Vec::new()
+            },
             changes,
         })
     }
@@ -446,6 +453,7 @@ impl Message {
         Ok(Review {
             message: self,
             target,
+            expired_answers: Vec::new(),
             changes,
         })
     }
@@ -548,15 +556,18 @@ pub struct Review<'a> {
     message: &'a Message,
     target: ReviewTarget<'a>,
     changes: Vec<ReviewedChange>,
+    expired_answers: Vec<(usize, usize)>,
 }
 
 impl<'a> Review<'a> {
     /// How many property occurrences would change.
     #[must_use]
     pub fn change_count(&self) -> usize {
-        self.changes.iter().fold(0, |count, change| {
-            count.saturating_add(change.transition.len())
-        })
+        self.changes
+            .iter()
+            .fold(self.expired_answers.len(), |count, change| {
+                count.saturating_add(change.transition.len())
+            })
     }
 
     /// The message this review describes.
@@ -573,6 +584,7 @@ impl<'a> Review<'a> {
             message: self.message,
             target: self.target,
             changes: self.changes,
+            expired_answers: self.expired_answers,
         }
     }
 }
@@ -583,6 +595,7 @@ pub struct AuthorizedChange<'a> {
     message: &'a Message,
     target: ReviewTarget<'a>,
     changes: Vec<ReviewedChange>,
+    expired_answers: Vec<(usize, usize)>,
 }
 
 impl AuthorizedChange<'_> {
@@ -613,6 +626,18 @@ impl AuthorizedChange<'_> {
                 .components_mut()
                 .next()
                 .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+            for (item, line) in self.expired_answers {
+                let attendee = calendar
+                    .items_mut()
+                    .get_mut(item)
+                    .and_then(Item::as_component_mut)
+                    .and_then(|event| event.items_mut().get_mut(line))
+                    .and_then(Item::as_property_mut)
+                    .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                attendee
+                    .edit_parameters()
+                    .retain(|parameter| !parameter.is_named(ANSWERED_AT));
+            }
             for change in self.changes {
                 match change.target {
                     ChangeTarget::Create { source } => {
@@ -775,6 +800,20 @@ impl Display for Rejection {
 
 impl core::error::Error for Rejection {}
 
+fn series_master<'a>(
+    components: &[(usize, &'a Component)],
+) -> Result<Option<(usize, &'a Component)>, Rejection> {
+    let mut masters = components
+        .iter()
+        .copied()
+        .filter(|(_, component)| ScheduledView::of(component).recurrence_id().is_none());
+    let master = masters.next();
+    if masters.next().is_some() {
+        return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+    }
+    Ok(master)
+}
+
 fn stored_instance<'a>(
     identity: Option<InstanceRef>,
     components: &[(usize, &'a Component)],
@@ -790,6 +829,64 @@ fn stored_instance<'a>(
         }
     }
     Ok(exact)
+}
+
+/// Find earlier answers on occurrences that still inherit the master's revision after the request.
+fn find_expired_answers(
+    components: &[(usize, &Component)],
+    addressed: &mut [usize],
+    meter: &mut Meter,
+) -> Result<Vec<(usize, usize)>, LimitExceeded> {
+    let units = |size| u64::try_from(size).unwrap_or(u64::MAX);
+    let count = units(addressed.len());
+    meter.try_charge(
+        count.saturating_mul(u64::from(u64::BITS.saturating_sub(count.leading_zeros()))),
+    )?;
+    addressed.sort_unstable();
+    let mut addressed = addressed.iter().copied().peekable();
+    let mut expired = Vec::new();
+    meter.try_charge(units(components.len()))?;
+    for &(item, event) in components {
+        if addressed.next_if_eq(&item).is_some() {
+            continue;
+        }
+        meter.try_charge(units(event.items().len()).saturating_mul(2))?;
+        if event
+            .properties_named(&PropertyId::SEQUENCE)
+            .next()
+            .is_some()
+        {
+            continue;
+        }
+        for (line, entry) in event.items().iter().enumerate() {
+            let Some(attendee) = entry
+                .as_property()
+                .filter(|line| line.has_id(&PropertyId::ATTENDEE))
+            else {
+                continue;
+            };
+            meter.try_charge(units(attendee.parameters().len()).saturating_mul(2))?;
+            if attendee.parameters_named(ANSWERED_AT).next().is_none() {
+                continue;
+            }
+            if expired.len() == expired.capacity() {
+                let extra = expired.len().max(1);
+                let bytes = expired
+                    .len()
+                    .checked_add(extra)
+                    .and_then(|capacity| capacity.checked_mul(size_of::<(usize, usize)>()))
+                    .ok_or_else(|| meter.refuse_limit(LimitExceeded::Budget))?;
+                meter.try_charge_bytes(units(bytes))?;
+                meter.admit(|| {
+                    expired
+                        .try_reserve_exact(extra)
+                        .map_err(|_| LimitExceeded::Budget)
+                })?;
+            }
+            expired.push((item, line));
+        }
+    }
+    Ok(expired)
 }
 
 fn review_occurrence(
@@ -1098,6 +1195,66 @@ mod tests {
     use super::{Actor, Message};
     use crate::{Calendar, Engine, Meter, ResourcePolicy};
     use alloc::{format, string::String, vec::Vec};
+
+    #[test]
+    fn a_master_revision_charges_each_expired_attendee_position() {
+        use core::fmt::Write as _;
+
+        let wrapper = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n";
+        let header = "BEGIN:VEVENT\r\nUID:r\r\nDTSTAMP:20260301T120000Z\r\n";
+        let master = format!(
+            "{header}DTSTART:20260310T140000Z\r\nSUMMARY:S\r\n\
+                             ORGANIZER:mailto:c@x\r\nATTENDEE:mailto:a@x\r\n\
+                             RRULE:FREQ=WEEKLY;COUNT=2\r\nSEQUENCE:2\r\nEND:VEVENT\r\n"
+        );
+        let request = format!(
+            "{wrapper}METHOD:REQUEST\r\n{}END:VCALENDAR\r\n",
+            master.replace("SEQUENCE:2", "SEQUENCE:3")
+        );
+        let message = Message::read(request.as_bytes()).unwrap();
+        let actor = Actor::new("mailto:c@x").unwrap();
+        let engine = Engine::default();
+        let count = 12;
+        let held = |parameter: &str| {
+            let mut attendees = String::new();
+            for n in 0..count {
+                write!(
+                    attendees,
+                    "ATTENDEE;{parameter}=20260302T120000Z:mailto:p{n}@x\r\n"
+                )
+                .unwrap();
+            }
+            let text = format!(
+                "{wrapper}{master}{header}RECURRENCE-ID:20260317T140000Z\r\n\
+                               DTSTART:20260317T160000Z\r\n{attendees}END:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            Calendar::parse(text.as_bytes()).unwrap()
+        };
+        let mut session = engine.session();
+        let changes = message
+            .review_in(&mut session, &held("X-ICALKIT-UNRELATED-X"), &actor)
+            .unwrap()
+            .change_count();
+        let slots = u64::try_from(count * size_of::<(usize, usize)>()).unwrap();
+        let budget = session.meter.spent() + slots - 1;
+        let mut session = engine.session();
+        session.meter = Meter::with_budget(ResourcePolicy::secure().limits, budget);
+        let current = held("X-ICALKIT-ANSWERED-AT");
+        assert_eq!(
+            message.review(&current, &actor).unwrap().change_count(),
+            changes + count
+        );
+        let before = current.to_bytes();
+        let error = message
+            .review_in(&mut session, &current, &actor)
+            .expect_err("unpaid positions");
+        assert_eq!(
+            error.code().as_str(),
+            "icalkit.scheduling.review-resource-limit"
+        );
+        assert!(session.meter.is_exhausted());
+        assert_eq!(current.to_bytes(), before);
+    }
 
     #[test]
     fn inherited_attendees_require_space_for_review_and_storage() {

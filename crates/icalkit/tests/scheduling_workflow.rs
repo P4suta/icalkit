@@ -1317,6 +1317,135 @@ fn a_generated_instance_reply_cannot_choose_a_side_of_a_repeated_hour() {
     assert!(reply.review(&current, &actor).is_err());
 }
 
+fn answered_revision_overrides(
+    master: &str,
+    alice: &Actor,
+) -> Result<Calendar, Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+
+    let mut events = String::new();
+    for (day, revision) in [("17", ""), ("24", "SEQUENCE:2\r\n"), ("31", "")] {
+        write!(
+            events,
+            "BEGIN:VEVENT\r\nUID:range@example.test\r\nDTSTAMP:20260301T120000Z\r\n\
+             RECURRENCE-ID:202603{day}T140000Z\r\nDTSTART:202603{day}T160000Z\r\n\
+             ORGANIZER:mailto:chair@example.test\r\n{revision}END:VEVENT\r\n"
+        )?;
+    }
+    let mut current = Calendar::parse(
+        master
+            .replace(WRAP_TAIL, &format!("{events}{WRAP_TAIL}"))
+            .as_bytes(),
+    )?;
+    for day in ["17", "24", "31"] {
+        current = revision_reply(day, "20260303T120000Z", 2)?
+            .review(&current, alice)?
+            .authorize()
+            .apply()?;
+    }
+    Ok(current)
+}
+
+fn revision_reply(day: &str, stamp: &str, sequence: u32) -> Result<Message, icalkit::Error> {
+    Message::read(&scheduling_payload(
+        "REPLY",
+        "range@example.test",
+        stamp,
+        sequence,
+        &format!(
+            "RECURRENCE-ID:202603{day}T140000Z\r\nORGANIZER:mailto:chair@example.test\r\n\
+                      ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n"
+        ),
+    ))
+}
+
+#[test]
+fn an_occurrence_answer_follows_the_revision_in_force_when_it_was_sent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let master = str::from_utf8(range_series::HELD)?.replace("ATTENDEE;", "ATTENDEE;CN=Alice;");
+    let alice = Actor::new("mailto:alice@example.test").unwrap();
+    let current = answered_revision_overrides(&master, &alice)?;
+    let (wrapper, event) = master.split_once("BEGIN:VEVENT\r\n").unwrap();
+    let body = format!("BEGIN:VEVENT\r\n{}", event.strip_suffix(WRAP_TAIL).unwrap())
+        .replace("DTSTAMP:20260301T120000Z", "DTSTAMP:20260302T010000Z");
+    let request = |events: &str| {
+        Message::read(format!("{wrapper}METHOD:REQUEST\r\n{events}{WRAP_TAIL}").as_bytes()).unwrap()
+    };
+    let organizer = Actor::new("mailto:chair@example.test").unwrap();
+    let unchanged = request(&body)
+        .review(&current, &organizer)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    assert!(
+        revision_reply("17", "20260302T120000Z", 2)?
+            .review(&unchanged, &alice)
+            .is_err()
+    );
+    let before = String::from_utf8(current.to_bytes()).unwrap();
+    let (_, last) = before.rsplit_once("BEGIN:VEVENT\r\n").unwrap();
+    let pinned = format!("BEGIN:VEVENT\r\n{}", last.strip_suffix(WRAP_TAIL).unwrap())
+        .replace("DTSTAMP:20260301T120000Z", "DTSTAMP:20260302T010000Z")
+        .replace(
+            "END:VEVENT\r\n",
+            "SUMMARY:Pinned\r\nSEQUENCE:2\r\nEND:VEVENT\r\n",
+        );
+    let next = body.replace("SEQUENCE:2", "SEQUENCE:3");
+    for combined in [format!("{next}{pinned}"), format!("{pinned}{next}")] {
+        let reviewed = request(&combined);
+        let revised = reviewed
+            .review(&current, &organizer)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap();
+        assert_eq!(current.to_bytes(), before.as_bytes());
+        let revised_text = String::from_utf8(revised.to_bytes())
+            .unwrap()
+            .replace("\r\n ", "");
+        let affected = revised_text
+            .split("BEGIN:VEVENT\r\n")
+            .find(|part| part.contains("RECURRENCE-ID:20260317T140000Z"))
+            .unwrap();
+        assert!(
+            affected.contains("ATTENDEE;CN=Alice;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n")
+        );
+        for unaffected in ["24", "31"] {
+            assert!(
+                revision_reply(unaffected, "20260302T120000Z", 2)?
+                    .review(&revised, &alice)
+                    .is_err()
+            );
+            assert!(
+                revision_reply(unaffected, "20260304T120000Z", 3)?
+                    .review(&revised, &alice)
+                    .is_err()
+            );
+            assert!(
+                revision_reply(unaffected, "20260304T120000Z", 2)?
+                    .review(&revised, &alice)
+                    .is_ok()
+            );
+        }
+        let updated = revision_reply("17", "20260302T120000Z", 3)?
+            .review(&revised, &alice)?
+            .authorize()
+            .apply()?;
+        assert!(
+            revision_reply("17", "20260302T110000Z", 3)?
+                .review(&updated, &alice)
+                .is_err()
+        );
+        assert!(
+            revision_reply("17", "20260304T120000Z", 2)?
+                .review(&updated, &alice)
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_series_answer_does_not_order_a_generated_occurrence() {
     check_instance_answer_order("").unwrap();
