@@ -4,6 +4,7 @@
 
 use std::env;
 use std::ffi::OsStr;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -14,6 +15,27 @@ use super::PUBLIC_API_TOOLCHAIN;
 struct PinnedCargo {
     executable: PathBuf,
     bin: PathBuf,
+}
+
+pub(super) struct ApiGeneration {
+    rustdoc: Command,
+    formatter: Command,
+    json: PathBuf,
+}
+
+impl ApiGeneration {
+    pub(super) fn output(&mut self) -> io::Result<Output> {
+        match fs::remove_file(&self.json) {
+            Ok(()) => {},
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error),
+        }
+        let generated = self.rustdoc.output()?;
+        if !generated.status.success() {
+            return Ok(generated);
+        }
+        self.formatter.output()
+    }
 }
 
 impl PinnedCargo {
@@ -60,24 +82,82 @@ impl PinnedCargo {
         workspace: &Path,
         no_default_features: bool,
         inherited_path: Option<&OsStr>,
+    ) -> io::Result<ApiGeneration> {
+        let host = self.host()?;
+        let directory = std::path::absolute(workspace)?
+            .join("target/public-api")
+            .join(if no_default_features {
+                "no-default"
+            } else {
+                "default"
+            });
+        let json = directory.join(&host).join("doc/icalkit.json");
+        let mut rustdoc = self.base_command(workspace, inherited_path)?;
+        rustdoc
+            .args(["rustdoc", "--locked", "--lib", "-p", "icalkit", "--target"])
+            .arg(&host)
+            .arg("--target-dir")
+            .arg(directory);
+        if no_default_features {
+            rustdoc.arg("--no-default-features");
+        }
+        rustdoc.args([
+            "--",
+            "-Z",
+            "unstable-options",
+            "--output-format",
+            "json",
+            "--cap-lints",
+            "deny",
+        ]);
+        let mut formatter = self.base_command(workspace, inherited_path)?;
+        formatter
+            .args(["public-api", "-sss", "--color", "never", "--rustdoc-json"])
+            .arg(&json);
+        Ok(ApiGeneration {
+            rustdoc,
+            formatter,
+            json,
+        })
+    }
+
+    fn host(&self) -> io::Result<String> {
+        let output = Command::new(self.bin.join(format!("rustc{}", env::consts::EXE_SUFFIX)))
+            .arg("-vV")
+            .env("RUSTUP_AUTO_INSTALL", "0")
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "cannot identify the pinned compiler host: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let text = String::from_utf8(output.stdout).map_err(io::Error::other)?;
+        let mut hosts = text.lines().filter_map(|line| line.strip_prefix("host: "));
+        let host = hosts.next().filter(|host| {
+            !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        });
+        match (host, hosts.next()) {
+            (Some(host), None) => Ok(host.to_owned()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pinned Rustc reported an invalid host",
+            )),
+        }
+    }
+
+    fn base_command(
+        &self,
+        workspace: &Path,
+        inherited_path: Option<&OsStr>,
     ) -> io::Result<Command> {
         let inherited = inherited_path.into_iter().flat_map(env::split_paths);
         let path = env::join_paths(std::iter::once(self.bin.clone()).chain(inherited))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut command = Command::new(&self.executable);
-        command.args([
-            "public-api",
-            "-p",
-            "icalkit",
-            "-sss",
-            "--color",
-            "never",
-            "--cap-lints",
-            "deny",
-        ]);
-        if no_default_features {
-            command.arg("--no-default-features");
-        }
         command
             .current_dir(workspace)
             .env("PATH", path)
@@ -93,12 +173,13 @@ impl PinnedCargo {
                 self.bin.join(format!("rustdoc{}", env::consts::EXE_SUFFIX)),
             )
             .env("RUSTDOCFLAGS", "-D warnings")
+            .env_remove("CARGO_BUILD_TARGET")
             .env_remove("CARGO_ENCODED_RUSTDOCFLAGS");
         Ok(command)
     }
 }
 
-pub(super) fn command(workspace: &Path, no_default_features: bool) -> io::Result<Command> {
+pub(super) fn command(workspace: &Path, no_default_features: bool) -> io::Result<ApiGeneration> {
     let output = Command::new("rustup")
         .args(["which", "--toolchain", PUBLIC_API_TOOLCHAIN, "cargo"])
         .env("RUSTUP_AUTO_INSTALL", "0")
@@ -134,6 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = executable.parent().ok_or("missing executable directory")?;
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
+        Some("-vV") => println!("rustc 1.0.0-nightly\nhost: fixture-host"),
         Some("--version") => {
             let name = executable.file_stem().ok_or("missing executable name")?.to_string_lossy();
             let version = std::fs::read_to_string(directory.join("version"))?;
@@ -156,6 +238,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("fixture: child toolchain installation remains enabled");
                 std::process::exit(44);
             }
+            let argument = |name: &str| arguments.windows(2).find_map(|pair| {
+                (pair[0] == name).then_some(pair[1].as_str())
+            });
+            match std::env::var("ICALKIT_API_PROBE_BOUNDARY").as_deref() {
+                Ok("locked") if arguments[0] == "public-api" && argument("--rustdoc-json").is_none() => {
+                    eprintln!("fixture: API generation delegated to unlocked Cargo");
+                    std::process::exit(45);
+                }
+                Ok("locked") if arguments[0] == "rustdoc" && !arguments.iter().take_while(|arg| *arg != "--").any(|arg| arg == "--locked") => {
+                    eprintln!("fixture: Rustdoc did not enforce the lockfile");
+                    std::process::exit(46);
+                }
+                Ok("target") if std::env::var_os("CARGO_BUILD_TARGET").is_some() => {
+                    eprintln!("fixture: inherited build target controls API output");
+                    std::process::exit(47);
+                }
+                Ok("target") if arguments[0] == "rustdoc" && argument("--target") != Some("fixture-host") => {
+                    eprintln!("fixture: configured build target was not overridden");
+                    std::process::exit(48);
+                }
+                _ => {}
+            }
+            if arguments[0] == "public-api" {
+                if let Some(json) = argument("--rustdoc-json") {
+                    io::stdout().write_all(&std::fs::read(json)?)?;
+                    return Ok(());
+                }
+            }
             if let Some(source) = std::env::var_os("ICALKIT_API_PROBE_SOURCE") {
                 let flags = match std::env::var("CARGO_ENCODED_RUSTDOCFLAGS") {
                     Ok(encoded) => encoded.split('\u{1f}').map(String::from).collect::<Vec<_>>(),
@@ -172,6 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .arg(source).status()?;
                 std::process::exit(status.code().unwrap_or(1));
             }
+            let mut generated = Vec::new();
             for (name, variable) in [("cargo", "CARGO"), ("rustc", "RUSTC"), ("rustdoc", "RUSTDOC")] {
                 let program = if name == "cargo" {
                     name.into()
@@ -182,9 +293,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !output.status.success() {
                     return Err(format!("{name} failed: {:?}", output).into());
                 }
-                io::stdout().write_all(&output.stdout)?;
+                generated.extend_from_slice(&output.stdout);
             }
-            println!("profile={}", if arguments.iter().any(|arg| arg == "--no-default-features") { "no-default" } else { "default" });
+            writeln!(generated, "profile={}", if arguments.iter().any(|arg| arg == "--no-default-features") { "no-default" } else { "default" })?;
+            if arguments[0] == "rustdoc" {
+                let output = std::path::Path::new(argument("--target-dir").ok_or("missing target directory")?)
+                    .join(argument("--target").ok_or("missing target")?).join("doc");
+                std::fs::create_dir_all(&output)?;
+                std::fs::write(output.join("icalkit.json"), generated)?;
+            } else {
+                io::stdout().write_all(&generated)?;
+            }
         }
     }
     Ok(())
@@ -273,6 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .args(["--exact", PROBE_TEST, "--nocapture"])
                 .env(PROBE_CARGO, fixture.program("pinned compiler", "cargo"))
                 .env(PROBE_PROFILE, profile)
+                .env(PROBE_WORKSPACE, &fixture.0)
                 .env("PATH", &search)
                 .env("CARGO", fixture.program("foreign compiler", "cargo"))
                 .env("RUSTC", fixture.program("foreign compiler", "rustc"))
@@ -353,7 +473,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .env(PROBE_SOURCE, &source)
                 .env(PROBE_RUSTDOC, &rustdoc)
                 .env("PATH", &search)
-                .env_remove(PROBE_WORKSPACE)
+                .env(PROBE_WORKSPACE, &fixture.0)
                 .env_remove("CARGO_ENCODED_RUSTDOCFLAGS");
             if let Some(flags) = encoded_flags {
                 probe.env("CARGO_ENCODED_RUSTDOCFLAGS", flags);
@@ -375,6 +495,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[test]
     fn encoded_flags_do_not_replace_api_warning_policy() -> io::Result<()> {
         check_documentation_warning(Some("-A\u{1f}warnings"))
+    }
+
+    fn check_generation_boundary(boundary: &str) -> io::Result<()> {
+        let fixture = ToolchainFixture::new()?;
+        let search = std::env::join_paths(
+            std::iter::once(fixture.0.join("pinned compiler").join("bin")).chain(
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+            ),
+        )
+        .map_err(io::Error::other)?;
+        fs::create_dir(fixture.0.join(".cargo"))?;
+        fs::write(
+            fixture.0.join(".cargo/config.toml"),
+            "[build]\ntarget = \"unavailable-configured-target\"\n",
+        )?;
+        for profile in ["default", "no-default"] {
+            let output = Command::new(std::env::current_exe()?)
+                .args(["--exact", PROBE_TEST, "--nocapture"])
+                .env(PROBE_CARGO, fixture.program("pinned compiler", "cargo"))
+                .env(PROBE_WORKSPACE, &fixture.0)
+                .env(PROBE_PROFILE, profile)
+                .env("PATH", &search)
+                .env("ICALKIT_API_PROBE_BOUNDARY", boundary)
+                .env("CARGO_BUILD_TARGET", "unavailable-environment-target")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{boundary} boundary failed for {profile}: {output:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn api_generation_enforces_the_inner_cargo_lockfile() -> io::Result<()> {
+        check_generation_boundary("locked")
+    }
+
+    #[test]
+    fn api_generation_uses_the_native_target_json_despite_external_target_settings()
+    -> io::Result<()> {
+        check_generation_boundary("target")
     }
 
     #[test]
