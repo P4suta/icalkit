@@ -174,7 +174,7 @@ fn explicit_dates_survive_singleton_counts() {
         "COUNT=1;BYMONTH=3;BYDAY=2SU",
         "20241103T030000",
         Some("COUNT=3;BYMONTH=11;BYDAY=1SU"),
-        ("RDATE:20250309T020000\r\n", ""),
+        ("RDATE:20250310T020000\r\n", ""),
     );
     assert_eq!(
         starts(
@@ -185,7 +185,7 @@ fn explicit_dates_survive_singleton_counts() {
         ),
         [
             "2025-03-08T09:00:00Z",
-            "2025-03-09T08:00:00Z",
+            "2025-03-09T09:00:00Z",
             "2025-03-10T08:00:00Z"
         ]
         .map(|value| value.parse::<Timestamp>().unwrap())

@@ -28,7 +28,8 @@ General recurrence expansion changes the metering contract.
 ## Consequences
 
 Admission uses a temporary buffer of 672 bytes.
-One source rule still stores at most 366 patterns.
+A date-only calendar-year rule stores at most 366 patterns.
+[Clock products](annual-clock-products-as-bounded-patterns.md) can store one pattern per selected clock and date.
 Lookup keeps fixed masks and bounded bit selection.
 
 ## Confirmation

@@ -116,7 +116,7 @@ fn unmatched_final_onsets_cannot_enter_query_plans() {
         "BYMONTH=3;BYDAY=2SU;UNTIL=20250310T070000Z",
         "INTERVAL=2;BYMONTH=3;BYDAY=2SU;UNTIL=20250309T070000Z",
         "BYMONTH=3;BYDAY=2SU;UNTIL=20230312T070000Z",
-        "BYMONTH=3;BYDAY=2SU;UNTIL=20250820T060000Z",
+        "BYMONTH=3;BYDAY=2SU;UNTIL=20250820T070000Z",
     ] {
         let zone = zone(parts, "RDATE:20250820T020000\r\n");
         let parsed =

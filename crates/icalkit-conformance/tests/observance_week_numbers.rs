@@ -494,6 +494,21 @@ fn explicit_dates_keep_their_clocks_and_years_outside_rule_limits() {
     assert_eq!(onsets(&zones, 2021), BTreeSet::from([date(2021, 3, 17)]));
     assert_eq!(onsets(&zones, 2022), BTreeSet::from([date(2022, 1, 3)]));
     assert_eq!(onsets(&zones, 2027), BTreeSet::from([date(2027, 3, 17)]));
+    let explicit: Vec<_> = zones
+        .table(TZID)
+        .unwrap()
+        .observances()
+        .iter()
+        .filter(|entry| entry.rule().is_none())
+        .map(|entry| entry.start())
+        .collect();
+    assert_eq!(
+        explicit,
+        [2021, 2027].map(|year| CivilDateTime::new(
+            date(year, 3, 17),
+            CivilTime::from_hms(4, 30, 0).unwrap()
+        ))
+    );
     for observance in zones.table(TZID).unwrap().rules() {
         assert_eq!(
             observance.start(),

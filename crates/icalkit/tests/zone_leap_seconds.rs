@@ -53,12 +53,15 @@ fn calendar(tzid: &str, second: u8, recurring: bool) -> Calendar {
     .unwrap()
 }
 
-fn query(property: bool) -> Query {
-    let range = r#"<C:time-range start="19970630T235958Z" end="19970701T000000Z"/>"#;
+fn query(property: bool, second: u8) -> Query {
+    let range = format!(
+        r#"<C:time-range start="19970630T2359{:02}Z" end="19970701T000000Z"/>"#,
+        second.min(59)
+    );
     let condition = if property {
         format!(r#"<C:prop-filter name="DTSTART">{range}</C:prop-filter>"#)
     } else {
-        range.to_owned()
+        range
     };
     Query::parse(
         format!(
@@ -93,7 +96,7 @@ fn assert_occurrence(session: &mut Session<'_>, calendar: &Calendar, expected: T
 }
 
 fn assert_projection(session: &mut Session<'_>, calendar: &Calendar, expected: Timestamp) {
-    let projection = query(false).project(session, calendar).unwrap();
+    let projection = query(false, 58).project(session, calendar).unwrap();
     let projected = Calendar::parse(projection.as_bytes()).unwrap();
     let mut events = projected.events();
     assert_eq!(
@@ -130,7 +133,7 @@ fn component_and_property_time_ranges_match_zoned_leap_seconds() {
         let original = calendar.to_bytes();
         for property in [false, true] {
             assert_eq!(
-                query(property)
+                query(property, 60)
                     .matches(&mut engine().session(), &calendar)
                     .unwrap(),
                 Match::Matched
@@ -161,7 +164,9 @@ fn ordinary_seconds_keep_their_readings_in_every_workflow() {
             assert_occurrence(&mut session, &calendar, expected(second));
             for property in [false, true] {
                 assert_eq!(
-                    query(property).matches(&mut session, &calendar).unwrap(),
+                    query(property, second)
+                        .matches(&mut session, &calendar)
+                        .unwrap(),
                     Match::Matched
                 );
             }
@@ -179,7 +184,7 @@ fn the_system_zone_port_accepts_a_zoned_leap_second() {
     let engine = Engine::default();
     let mut session = engine.session();
     assert_eq!(
-        query(true).matches(&mut session, &calendar).unwrap(),
+        query(true, 60).matches(&mut session, &calendar).unwrap(),
         Match::Matched
     );
     assert_occurrence(&mut session, &calendar, expected(60));

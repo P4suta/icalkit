@@ -360,10 +360,7 @@ fn what_a_caller_learns(
 // The cases.
 // ---------------------------------------------------------------------------------------------
 
-/// RFC 5545 section 3.6.5 requires an observance and files without one exist.
-/// `ical-tz`'s own `answer` module says `resolve` returns `None` "for exactly one condition: this source does not recognize this `TZID`" — so a definition that is present and empty must not answer `None`.
-///
-/// What a caller can see: a calendar declaring `Europe/Berlin` with no observance and a calendar declaring nothing at all produce the same outcome variant and the same diagnostics, so "the file says nothing about this zone" and "the file has no definition for this zone" arrive as one fact.
+/// The embedded source recognizes a declared zone with no observances.
 #[test]
 fn a_definition_with_no_observance_is_not_an_unrecognized_identifier() {
     let (zones, declared) = zones_of(BERLIN_WITHOUT_OBSERVANCE).unwrap();
@@ -382,12 +379,12 @@ fn a_definition_with_no_observance_is_not_an_unrecognized_identifier() {
     );
 }
 
-/// The same collapse as it reaches a caller through the pair: an empty definition and no definition at all produce the same outcome variant and the same reported codes, so the two facts a reader would act on differently arrive as one.
+/// The resolver distinguishes an undetermined local reading from an absent zone.
 #[test]
 fn an_empty_definition_and_a_missing_definition_are_two_different_facts() {
     let declared = what_a_caller_learns(BERLIN_WITHOUT_OBSERVANCE).unwrap();
     let absent = what_a_caller_learns(BERLIN_WITHOUT_DEFINITION).unwrap();
-    // Reading the file distinguishes them; resolving against a source does not.
+    // The reader and the resolver both distinguish the inputs.
     assert_eq!(declared.0, vec![DiagnosticCode::VtimezoneWithoutObservance]);
     assert_eq!(absent.0, vec![DiagnosticCode::MissingTimeZoneDefinition]);
     assert_ne!(
@@ -397,8 +394,7 @@ fn an_empty_definition_and_a_missing_definition_are_two_different_facts() {
     );
 }
 
-/// The same collapse from the other side: with no caller database wired in, an empty definition is reported as `unknown-time-zone` — a violation asserting that nobody supplied this zone,
-/// about a zone the file supplies.
+/// The combined source reports an unknown zone only when neither source recognizes its identifier.
 #[test]
 fn an_empty_definition_is_not_reported_as_a_zone_nobody_supplied() {
     let (zones, _) = zones_of(BERLIN_WITHOUT_OBSERVANCE).unwrap();
@@ -420,13 +416,7 @@ fn an_empty_definition_is_not_reported_as_a_zone_nobody_supplied() {
     );
 }
 
-/// `docs/adr/0003` amendment 5: a table whose transitions run out answers by continuing its final observance and says so on `AnswerBasis`.
-/// A table has two ends, and the claim is made about one.
-///
-/// The `RDATE` table here runs 2027 through 2029.
-/// Asked about 2035 it says `BeyondKnownTransitions`, which is the ADR working.
-/// Asked about July 2020 — seven years before its earliest transition — it answers `-05:00`, standard, `Computed`: the offset that observance's `TZOFFSETFROM` states, extended backwards forever.
-/// New York was on `-04:00` that July, so the answer is wrong, and nothing in it is distinguishable from an answer the table had data for.
+/// The table extrapolates its earliest offset for July 2020 and marks the reading as preceding known transitions.
 #[test]
 fn an_answer_from_before_a_tables_first_transition_says_so_too() {
     let (zones, codes) = zones_of(NEW_YORK_DATED).unwrap();
@@ -464,10 +454,7 @@ fn reading_offset(resolution: LocalResolution) -> Option<i32> {
     }
 }
 
-/// RFC 5545 section 3.6.5 with `docs/adr/0003`: one identifier, two definitions, and the ADR's whole subject is that a disagreement is reported and both readings stay reachable.
-///
-/// `VtimezoneSet::insert` does hand the refused table back — its own doc says "so a caller that wants the later of two definitions can take it" — but `read_calendar_zones`, the only whole-calendar entry point, drops it on the floor after reading its code.
-/// What reaches a caller is one definition, a code that names neither the identifier nor which definition was lost, and no route to the other reading at all.
+/// Both definitions remain accessible under the identifier named in the duplicate diagnostic.
 #[test]
 fn two_definitions_of_one_identifier_both_stay_reachable() {
     let (zones, codes) = zones_of(NEW_YORK_TWICE).unwrap();
@@ -492,10 +479,7 @@ fn two_definitions_of_one_identifier_both_stay_reachable() {
     );
 }
 
-/// The same loss with the stakes visible: a placeholder `VTIMEZONE` declared before the real one.
-///
-/// The empty definition is admitted first, the real definition is refused as a duplicate and dropped, and the zone the file fully defines now answers nothing.
-/// A caller wiring the file's zones against nothing is told `unknown-time-zone` about a zone the file defines with rules.
+/// Lookup prefers the first nonempty Berlin definition and retains the empty placeholder.
 #[test]
 fn a_placeholder_definition_does_not_swallow_the_real_one() {
     let (zones, codes) = zones_of(BERLIN_PLACEHOLDER_FIRST).unwrap();
@@ -519,11 +503,7 @@ fn a_placeholder_definition_does_not_swallow_the_real_one() {
     );
 }
 
-/// `docs/adr/0003`: "Every result says which source produced it."
-///
-/// The ordinary server wiring is an embedded `VTIMEZONE` against a database the caller holds —
-/// and a caller's database of zones is very often itself a set of `VTIMEZONE` definitions, which is what RFC 7808's time zone service distributes and what every CalDAV server stores.
-/// `TransitionTable`'s `ZoneSource` impl writes `ZoneProvenance::EmbeddedVtimezone` into every answer unconditionally, so wiring one as the caller's half produces a `Disagreed` whose two answers name the same source, and the fallback's answer names a source it did not come from.
+/// The combined source assigns caller database provenance to the fallback table's answer.
 #[test]
 fn a_table_wired_in_as_the_callers_database_does_not_claim_to_be_the_file_s_own() {
     let (file, _) = zones_of(NEW_YORK_OLD).unwrap();
@@ -674,10 +654,7 @@ fn a_text_escape_does_not_alias_literal_parameter_backslashes() {
     assert_eq!(codes, vec![DiagnosticCode::MissingTimeZoneDefinition]);
 }
 
-/// `docs/adr/0010` bounds how many zones one calendar may declare, and `docs/adr/0003` amendment 6 records that the refusal carries no code.
-/// What it does carry is a *different* code, about a different fact, that is false: the zones the bound refused are then reported as identifiers no `VTIMEZONE` defines.
-/// The file defines them.
-/// The caller's own policy dropped them.
+/// The zone-count limit reports the refused definition under the truncation diagnostic.
 #[test]
 fn a_zone_the_limit_refused_is_not_reported_as_one_the_file_never_defined() {
     let limits = Limits::DEFAULT.with_max_vtimezone_components(1);
@@ -687,14 +664,10 @@ fn a_zone_the_limit_refused_is_not_reported_as_one_the_file_never_defined() {
     let zones = read_calendar_zones(calendar(&document).unwrap(), &mut meter, &mut told);
     assert_eq!(zones.len(), 1, "the policy admitted one of the two");
     let codes: Vec<DiagnosticCode> = told.iter().copied().map(Diagnostic::code).collect();
-    assert!(
-        !codes.contains(&DiagnosticCode::MissingTimeZoneDefinition),
-        "this calendar defines both zones it references; what refused one was the limit"
-    );
+    assert_eq!(codes, [DiagnosticCode::VtimezoneComponentsTruncated]);
 }
 
-/// A `TZID` a calendar references and no `VTIMEZONE` defines is reported — and the report names neither the identifier nor anything else that tells one of them from another.
-/// Three undefined zones arrive as three diagnostics that are equal as values.
+/// Each undefined reference has the same diagnostic code and a distinct identifier as its subject.
 #[test]
 fn an_identifier_nothing_defines_is_reported_by_name() {
     let document =

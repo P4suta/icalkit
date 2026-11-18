@@ -42,8 +42,12 @@ fn fold_line(text: &str) -> String {
 }
 
 fn request(extra: &str, start: &str, end: &str) -> String {
-    let daylight = fold_line(&format!("RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU{extra}"));
-    let standard = fold_line(&format!("RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU{extra}"));
+    request_with_controls(extra, extra, start, end)
+}
+
+fn request_with_controls(spring: &str, autumn: &str, start: &str, end: &str) -> String {
+    let daylight = fold_line(&format!("RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU{spring}"));
+    let standard = fold_line(&format!("RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU{autumn}"));
     let zone = format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit rule controls//EN\r\n\
          BEGIN:VTIMEZONE\r\nTZID:Test/RuleControls\r\nBEGIN:DAYLIGHT\r\n\
@@ -132,10 +136,21 @@ fn malformed_controls_cannot_enter_a_query_plan() {
         ";WKST=",
         ";UNTIL=20260308",
         ";UNTIL=20260308T020000",
-        ";UNTIL=20260308T070000Z;until=20250309T070000Z",
     ] {
         let parsed =
             Query::parse(request(extra, "20250308T000000Z", "20250311T000000Z").as_bytes());
         assert!(parsed.is_err(), "{extra}: {parsed:?}");
+    }
+}
+
+#[test]
+fn duplicate_until_is_rejected_when_each_bound_is_valid() {
+    for (spring, valid) in [
+        (";UNTIL=20260308T070000Z", true),
+        (";until=20250309T070000Z", true),
+        (";UNTIL=20260308T070000Z;until=20250309T070000Z", false),
+    ] {
+        let xml = request_with_controls(spring, "", "20250308T000000Z", "20250311T000000Z");
+        assert_eq!(Query::parse(xml.as_bytes()).is_ok(), valid, "{spring}");
     }
 }

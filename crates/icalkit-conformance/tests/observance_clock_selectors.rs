@@ -87,6 +87,10 @@ fn clock_fields_default_independently_and_form_complete_products() {
         ),
     ] {
         let zones = admitted(parts, "20240510T021537");
+        assert_eq!(
+            zones.table(TZID).unwrap().rules().len(),
+            hours.len() * minutes.len() * seconds.len()
+        );
         let mut expected = BTreeSet::from([anchor]);
         for year in 2024..=2026 {
             for &hour in &hours {
@@ -247,9 +251,18 @@ fn until_accepts_a_selected_clock_in_utc_and_leaves_explicit_dates_independent()
 #[test]
 fn malformed_clock_terms_refuse_the_whole_rule() {
     for (field, bad) in [("BYHOUR", "24"), ("BYMINUTE", "60"), ("BYSECOND", "61")] {
-        for value in [bad, "+1", "-1", "001", "", "1,", ",1", "1,,2", " 1", "1 "] {
-            let parts = format!("BYMONTH=5;{field}={value}");
-            let (_, diagnostics) = read(&parts, "20240501T010000", "", 4096, 0);
+        let malformed = [bad, "+1", "-1", "001", "", "1,", ",1", "1,,2", " 1", "1 "]
+            .map(|value| format!("BYMONTH=5;{field}={value}"));
+        for parts in malformed
+            .into_iter()
+            .chain([format!("{field}=1;{field}=2")])
+        {
+            let (zones, diagnostics) = read(&parts, "20240501T010000", "", 4096, 0);
+            let [anchor] = zones.table(TZID).unwrap().observances() else {
+                panic!("{parts}")
+            };
+            assert!(anchor.rule().is_none());
+            assert_eq!(anchor.start(), stamp(2024, 5, 1, 1, 0, 0));
             assert_eq!(
                 diagnostics
                     .iter()
@@ -260,13 +273,6 @@ fn malformed_clock_terms_refuse_the_whole_rule() {
                 "{parts}"
             );
         }
-        let parts = format!("{field}=1;{field}=2");
-        let (_, diagnostics) = read(&parts, "20240501T010000", "", 4096, 0);
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(
-            diagnostics[0].code(),
-            DiagnosticCode::VtimezoneRuleUnsupported
-        );
     }
 }
 

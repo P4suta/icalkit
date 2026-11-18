@@ -493,21 +493,21 @@ fn year_scoped_weekday_lists_apply_later_ordinals() {
 fn numeric_weekdays_intersect_the_stated_month_days() {
     let timezone = timezone(
         "20240303T020000",
-        "BYMONTH=3,9;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=1SU",
+        "BYMONTH=3,9;BYMONTHDAY=3,7;BYDAY=1SU",
         "20240407T030000",
         "BYMONTH=4,10;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=1SU",
     );
     assert_eq!(
         starts(
             &timezone,
-            "20240831T090000",
-            "20240831T000000Z",
-            "20240903T000000Z"
+            "20240901T090000",
+            "20240901T000000Z",
+            "20240904T000000Z"
         ),
         [
-            at("2024-08-31T09:00:00Z"),
-            at("2024-09-01T08:00:00Z"),
-            at("2024-09-02T08:00:00Z")
+            at("2024-09-01T09:00:00Z"),
+            at("2024-09-02T09:00:00Z"),
+            at("2024-09-03T09:00:00Z")
         ]
     );
 }

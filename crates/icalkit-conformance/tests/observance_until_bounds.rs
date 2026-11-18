@@ -212,7 +212,14 @@ fn unselected_dates_and_interval_phases_refuse_the_whole_rule() {
         assert_refused(&zones, &diagnostics);
         assert_eq!(meter.vtimezone_observances(), 2, "{parts}");
         assert!(onsets(&zones, 2025).contains(&date(2025, 8, 20)));
-        assert_eq!(zones.table(TZID).unwrap().observances().len(), 2);
+        let written: Vec<_> = zones
+            .table(TZID)
+            .unwrap()
+            .observances()
+            .iter()
+            .map(|entry| stamp(entry.start()))
+            .collect();
+        assert_eq!(written, [start, "20250820T020000"]);
     }
 }
 

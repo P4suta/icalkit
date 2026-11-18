@@ -36,13 +36,10 @@ fn read(parts: &str, start: &str) -> (Observance, Vec<Diagnostic>) {
         &mut meter,
         &mut diagnostics,
     );
-    let observance = *zones
-        .table("Test/MonthDays")
-        .unwrap()
-        .observances()
-        .first()
-        .unwrap();
-    (observance, diagnostics)
+    let [observance] = zones.table("Test/MonthDays").unwrap().observances() else {
+        panic!("expected one observance for {parts}");
+    };
+    (*observance, diagnostics)
 }
 
 fn admitted(parts: &str) -> YearlyRule {

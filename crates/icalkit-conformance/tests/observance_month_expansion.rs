@@ -56,13 +56,17 @@ fn admitted(parts: &str, start: &str) -> VtimezoneSet {
 }
 
 fn compiled_dates(zones: &VtimezoneSet, year: u16) -> BTreeSet<CivilDate> {
-    zones
+    let mut dates = BTreeSet::new();
+    for date in zones
         .table("Test/Months")
         .unwrap()
         .rules()
         .iter()
         .filter_map(|observance| observance.rule().unwrap().occurrence_in(year))
-        .collect()
+    {
+        assert!(dates.insert(date), "duplicate pattern for {date:?}");
+    }
+    dates
 }
 
 fn expected_dates(year: u16, days: &[i8], weekday: Option<Weekday>) -> BTreeSet<CivilDate> {
