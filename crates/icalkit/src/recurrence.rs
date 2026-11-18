@@ -15,7 +15,7 @@ use crate::internal::core::{Component, ComponentKind, Diagnostic, Instant, Item,
 use crate::internal::dav::TimeRange;
 use crate::internal::query::{Budget, QueryError, Undecided, Zones, decoded_uid, expand_component};
 use crate::internal::recur::{
-    OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, RuleLimit, SearchCursor,
+    OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, RuleCheckpoint, RuleLimit,
     SearchStep, UntilClock, ValueKind,
 };
 
@@ -96,7 +96,7 @@ impl Rule {
         session: &'a mut Session<'_>,
         dtstart: Timestamp,
         window: Window,
-        cursor: Option<SearchCursor>,
+        cursor: Option<RuleCheckpoint>,
     ) -> Result<Occurrences<'a>, Error> {
         let start = instant(dtstart)
             .ok_or_else(|| Error::single("icalkit.recurrence.fractional-dtstart"))?;
@@ -128,7 +128,7 @@ impl Rule {
         session.recurrence_diagnostics.clear();
         let search = match cursor {
             Some(cursor) => input.resume(
-                cursor,
+                cursor.into(),
                 window.inner,
                 &mut session.meter,
                 &mut session.recurrence_diagnostics,
@@ -209,7 +209,7 @@ pub struct Cursor {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CursorInner {
-    Rule(SearchCursor),
+    Rule(RuleCheckpoint),
     Calendar { position: usize },
 }
 
@@ -267,7 +267,7 @@ impl Occurrences<'_> {
     #[must_use]
     pub fn cursor(&self) -> Cursor {
         let inner = match &self.source {
-            OccurrenceSource::Rule(search) => CursorInner::Rule(search.cursor()),
+            OccurrenceSource::Rule(search) => CursorInner::Rule(search.rule_checkpoint()),
             OccurrenceSource::Calendar { position, .. } => CursorInner::Calendar {
                 position: *position,
             },

@@ -54,12 +54,14 @@
 //!   A struct with no parameter at all could not hold a `&mut S` at all.
 //! - `Charges::new` is called and is not in unit 7's published signature list; a ledger with no constructor cannot be started.
 
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::fmt::{self, Formatter};
 use core::iter::FusedIterator;
 
 use crate::internal::core::{
-    CivilDateTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity, UtcOffset,
-    report_diagnostic,
+    CivilDateTime, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, LimitExceeded, Meter,
+    Severity, UtcOffset, report_diagnostic,
 };
 
 use crate::internal::recur::accounting::{Charges, generation_window};
@@ -73,68 +75,168 @@ use crate::internal::recur::search::{
 };
 use crate::internal::recur::setpos::{SelectedCandidates, select};
 
-/// How far into an expansion a search had got, as a value the caller can hold and hand back.
-///
-/// Opaque, with no accessor and no constructor of its own: this is a position in an algorithm and not a fact about the calendar.
-/// A caller obtains one from [`RecurrenceSearch::cursor`] and returns it to [`RecurrenceInput::resume`], and that is the whole contract.
-/// It is deliberately not serializable — freezing its encoding would freeze the expansion algorithm,
-/// and this crate's purity gate, which admits no `serde`, is a help rather than an obstacle here.
+/// Fixed-size state for a standalone rule with no additions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RuleCursorState {
-    /// The period the walk was inside, counted from the one holding `DTSTART`.
+pub(crate) struct RuleCheckpoint {
+    delivered: Option<Instant>,
+    produced: u32,
     period_index: u64,
-    /// Last rule key already counted, including keys the requested window excluded.
     counted_through: Option<Instant>,
 }
 
-/// Where a search stopped, so that another can carry on from it.
-///
-/// The counter is the load-bearing field.
-/// A `COUNT`-bounded rule describes a recurrence set relative to `DTSTART`, so a resumed search that started counting again from the resume point would produce a different set than the file describes — the same rule, expanded twice,
-/// yielding more occurrences than it has.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl From<RuleCheckpoint> for SearchCursor {
+    fn from(rule: RuleCheckpoint) -> Self {
+        Self {
+            rule,
+            additions: DeliveredAdditions::default(),
+        }
+    }
+}
+
+/// The opaque continuation state for a recurrence set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleCursorState {
+    period_index: u64,
+    counted_through: Option<Instant>,
+    additions: DeliveredAdditions,
+}
+
+/// The rule count and delivered additions at a search checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchCursor {
-    /// Cadence keys at or before this one belong to the search that produced this cursor.
-    resume_after: Option<Instant>,
-    /// Instances the rule has produced, which is what `COUNT` counts.
-    occurrences_emitted: u32,
-    /// Where the expansion algorithm had got to.
-    rule_cursor: RuleCursorState,
+    rule: RuleCheckpoint,
+    additions: DeliveredAdditions,
 }
 
 impl SearchCursor {
-    /// A cursor resuming after `resume_after`, having already produced `occurrences_emitted`.
+    /// Rebuild a checkpoint from its three parts.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         resume_after: Option<Instant>,
         occurrences_emitted: u32,
         rule_cursor: RuleCursorState,
     ) -> Self {
         Self {
-            resume_after,
-            occurrences_emitted,
-            rule_cursor,
+            rule: RuleCheckpoint {
+                delivered: resume_after,
+                produced: occurrences_emitted,
+                period_index: rule_cursor.period_index,
+                counted_through: rule_cursor.counted_through,
+            },
+            additions: rule_cursor.additions,
         }
     }
 
     /// The last occurrence delivered to the caller, if any.
     #[must_use]
-    pub const fn resume_after(self) -> Option<Instant> {
-        self.resume_after
+    pub const fn resume_after(&self) -> Option<Instant> {
+        self.rule.delivered
     }
 
-    /// Instances the rule has produced, which is what `COUNT` counts.
-    ///
-    /// Instances rather than steps a caller saw: an instance a window declined to show still counts, because RFC 5545 section 3.3.10 counts the recurrence set and not the view.
+    /// The rule keys that count toward the RFC 5545 recurrence limit.
     #[must_use]
-    pub const fn occurrences_emitted(self) -> u32 {
-        self.occurrences_emitted
+    pub const fn occurrences_emitted(&self) -> u32 {
+        self.rule.produced
     }
 
-    /// Where the expansion algorithm had got to.
+    /// The state needed to continue in a new window.
     #[must_use]
-    pub const fn rule_cursor(self) -> RuleCursorState {
-        self.rule_cursor
+    pub fn rule_cursor(&self) -> RuleCursorState {
+        RuleCursorState {
+            period_index: self.rule.period_index,
+            counted_through: self.rule.counted_through,
+            additions: self.additions.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DeliveredAdditions {
+    prefix: usize,
+    /// Snapshots share these marks until a later delivery needs to change one.
+    beyond: Option<Rc<Vec<u64>>>,
+}
+
+impl DeliveredAdditions {
+    fn contains(&self, index: usize) -> bool {
+        index < self.prefix
+            || self
+                .beyond
+                .as_ref()
+                .and_then(|words| words.get(index / 64))
+                .is_some_and(|word| word & (1_u64 << (index % 64)) != 0)
+    }
+
+    fn admit(
+        &mut self,
+        index: usize,
+        count: usize,
+        meter: &mut Meter,
+        charges: &mut Charges,
+    ) -> bool {
+        if index == self.prefix {
+            let mut next = index.saturating_add(1);
+            while self.contains(next) {
+                if meter.try_charge(1).is_err() {
+                    return false;
+                }
+                next = next.saturating_add(1);
+            }
+            if charges.occurrence(meter).is_err() {
+                return false;
+            }
+            self.prefix = next;
+            if next == count {
+                self.beyond = None;
+            }
+            return true;
+        }
+        if let Some(words) = self.beyond.as_mut().and_then(Rc::get_mut) {
+            return Self::mark(words, index, meter, charges);
+        }
+
+        let word_count = count.div_ceil(64);
+        let bytes = word_count
+            .saturating_mul(size_of::<u64>())
+            .saturating_add(size_of::<Vec<u64>>())
+            .saturating_add(size_of::<[usize; 2]>());
+        if meter
+            .try_charge_bytes(u64::try_from(bytes).unwrap_or(u64::MAX))
+            .is_err()
+        {
+            return false;
+        }
+        let mut words = Vec::new();
+        if meter
+            .admit(|| {
+                words
+                    .try_reserve_exact(word_count)
+                    .map_err(|_| LimitExceeded::Budget)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(old) = &self.beyond {
+            words.extend_from_slice(&old[..old.len().min(word_count)]);
+        }
+        words.resize(word_count, 0);
+        if !Self::mark(&mut words, index, meter, charges) {
+            return false;
+        }
+        self.beyond = Some(Rc::new(words));
+        true
+    }
+
+    fn mark(words: &mut [u64], index: usize, meter: &mut Meter, charges: &mut Charges) -> bool {
+        let Some(word) = words.get_mut(index / 64) else {
+            return false;
+        };
+        if charges.occurrence(meter).is_err() {
+            return false;
+        }
+        *word |= 1_u64 << (index % 64);
+        true
     }
 }
 
@@ -152,13 +254,13 @@ struct Cadence<'a> {
 
 impl<'a> Cadence<'a> {
     /// The walk `input` needs, or `None` when there is no rule to walk.
-    fn open(input: RecurrenceInput<'a>, cursor: Option<SearchCursor>) -> Option<Self> {
+    fn open(input: RecurrenceInput<'a>, cursor: Option<RuleCheckpoint>) -> Option<Self> {
         let rule = input.rule()?;
         // The caller resolved `DTSTART` onto the timeline, and the expansion works in civil fields; the conversion is at UTC because the zone was already applied by whoever resolved it (`docs/adr/0003`).
         let dtstart = CivilDateTime::from_instant(input.dtstart(), UtcOffset::UTC)?;
-        let period_index = cursor.map_or(0, |held| held.rule_cursor().period_index);
+        let period_index = cursor.map_or(0, |held| held.period_index);
         let walk = match cursor {
-            Some(held) => PeriodWalk::resume_at(dtstart, rule, held.rule_cursor().period_index),
+            Some(_) => PeriodWalk::resume_at(dtstart, rule, period_index),
             None => PeriodWalk::new(dtstart, rule),
         };
         Some(Self {
@@ -237,15 +339,15 @@ struct RuleStream<'a> {
 
 impl<'a> RuleStream<'a> {
     /// The stream `input` describes, resumed from `cursor` when there is one.
-    fn new(input: RecurrenceInput<'a>, cursor: Option<SearchCursor>) -> Self {
+    fn new(input: RecurrenceInput<'a>, cursor: Option<RuleCheckpoint>) -> Self {
         Self {
             cadence: Cadence::open(input, cursor),
             selected: None,
             position: 0,
             adjusted: AdjustedStream::default(),
-            produced: cursor.map_or(0, SearchCursor::occurrences_emitted),
+            produced: cursor.map_or(0, |position| position.produced),
             begins_at: input.dtstart(),
-            resume_after: cursor.and_then(|cursor| cursor.rule_cursor().counted_through),
+            resume_after: cursor.and_then(|position| position.counted_through),
             ended: false,
             input,
         }
@@ -474,22 +576,17 @@ impl<'a> RuleStream<'a> {
     }
 
     /// The last visited period, preserved when a resumed rule generates nothing.
-    fn cursor_state(&self, counted_through: Option<Instant>) -> RuleCursorState {
+    fn period_index(&self) -> u64 {
         let visited = self
             .cadence
             .as_ref()
             .map_or(0, |cadence| cadence.period_index);
-        let period_index = self
-            .adjusted
+        self.adjusted
             .pending
             .values()
             .copied()
             .chain(self.adjusted.offered_period)
-            .fold(visited, u64::min);
-        RuleCursorState {
-            period_index,
-            counted_through,
-        }
+            .fold(visited, u64::min)
     }
 }
 
@@ -534,8 +631,8 @@ pub struct RecurrenceSearch<'a, S: DiagnosticSink + ?Sized = dyn DiagnosticSink 
     offered: Option<Instant>,
     /// Whether the rule stream has finished.
     stream_done: bool,
-    /// Cadence keys at or before this one belong to an earlier search.
-    resume_after: Option<Instant>,
+    /// Additions already returned by this search or its predecessor.
+    additions: DeliveredAdditions,
     /// The last cadence key this search reached.
     reached: Instant,
     /// Last occurrence delivered to the caller.
@@ -570,7 +667,11 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             );
         }
         let generation = Self::widen(asked, input, &mut *meter, &mut *sink);
-        let delivered = cursor.and_then(SearchCursor::resume_after);
+        let (rule, additions) = cursor.map_or_else(
+            || (None, DeliveredAdditions::default()),
+            |cursor| (Some(cursor.rule), cursor.additions),
+        );
+        let delivered = rule.and_then(|position| position.delivered);
         let origin = delivered.unwrap_or(input.dtstart());
         let charges = Charges::new(origin, &*meter);
         Self {
@@ -579,14 +680,14 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             meter,
             sink,
             charges,
-            stream: RuleStream::new(input, cursor),
+            stream: RuleStream::new(input, rule),
             merge: Merge::new(input),
             offered: None,
             stream_done: false,
-            resume_after: delivered,
+            additions,
             reached: origin,
             delivered,
-            counted_through: cursor.and_then(|cursor| cursor.rule_cursor().counted_through),
+            counted_through: rule.and_then(|position| position.counted_through),
             outcome: SearchOutcome::Pending,
             finished: false,
         }
@@ -621,13 +722,22 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
     /// Where this search has got to, so another can carry on from it.
     #[must_use]
     pub fn cursor(&self) -> SearchCursor {
-        SearchCursor::new(
-            self.delivered,
-            self.stream
+        SearchCursor {
+            rule: self.rule_checkpoint(),
+            additions: self.additions.clone(),
+        }
+    }
+
+    pub(crate) fn rule_checkpoint(&self) -> RuleCheckpoint {
+        RuleCheckpoint {
+            delivered: self.delivered,
+            produced: self
+                .stream
                 .produced
                 .saturating_sub(u32::from(self.offered.is_some())),
-            self.stream.cursor_state(self.counted_through),
-        )
+            period_index: self.stream.period_index(),
+            counted_through: self.counted_through,
+        }
     }
 
     /// One turn: an occurrence, a reason to turn again, or a reason to stop.
@@ -722,15 +832,25 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             self.record(SearchOutcome::WindowEnded);
             return Progress::Stop;
         }
-        if !self.admits(occurrence) {
+        let addition = self.merge.last_addition_index(occurrence.key());
+        if addition.is_some_and(|index| self.additions.contains(index)) || !self.admits(occurrence)
+        {
             return Progress::Retry;
         }
-        if self.charges.occurrence(&mut *self.meter).is_err() {
+        let admitted = match addition {
+            Some(index) => self.additions.admit(
+                index,
+                self.stream.input.rdates().len(),
+                self.meter,
+                &mut self.charges,
+            ),
+            None => self.charges.occurrence(self.meter).is_ok(),
+        };
+        if !admitted {
             return Progress::Exhausted(self.exhausted());
         }
         if occurrence.key() > self.reached {
-            // An `RDATE` past the last key the rule produced is still something a resumed search must not produce again, and the merge has no cursor of its own.
-            // This is safe to advance over: every rule key below it was already generated, because the stream only stops at a key past the end of generation and this one is not.
+            // An addition can extend the reported search position beyond the last rule key.
             self.reached = occurrence.key();
         }
         Progress::Emit(occurrence)
@@ -741,14 +861,6 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
     /// Two questions, because an override moves a start away from the key that generated it in either direction.
     /// The key is asked first, since that is what the window bounds; the start is asked second, because an occurrence moved *into* the window has to appear.
     fn admits(&mut self, occurrence: Occurrence<'a>) -> bool {
-        if self
-            .resume_after
-            .is_some_and(|after| occurrence.key() <= after)
-        {
-            // An `RDATE` the earlier search already emitted.
-            // The merge restarts from the head of the list on resume and has no cursor of its own, so the skip is stated here.
-            return false;
-        }
         let by_key = self.asked.contains(occurrence.key());
         let by_start = occurrence.starts_within(self.asked);
         if by_key && !by_start {
@@ -1439,6 +1551,200 @@ mod tests {
                 additions[1..]
             );
         }
+    }
+
+    #[test]
+    fn resuming_keeps_unseen_additions_before_a_shifted_addition() {
+        let start = at(1997, 9, 2, 9);
+        let unseen = at(1997, 9, 11, 9);
+        let shifted = at(1997, 9, 12, 9);
+        let moved = at(1997, 9, 9, 9);
+        let additions = [start, unseen, shifted];
+        let entries = [Override::new(
+            shifted,
+            OverrideRange::ThisOnly,
+            Some(moved),
+            PropertyDiff::empty(),
+        )];
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let overrides = OverrideSet::new(&entries, &mut meter).unwrap();
+        let input = RecurrenceInput::new(
+            start,
+            ValueKind::DateTime,
+            None,
+            &additions,
+            &[],
+            overrides,
+            &mut meter,
+        )
+        .unwrap();
+        let first = Window::new(at(1997, 9, 1, 0), at(1997, 9, 10, 0)).unwrap();
+        let later = Window::new(first.end(), at(1997, 9, 20, 0)).unwrap();
+        let mut sink: Vec<Diagnostic> = Vec::new();
+        let cursor = {
+            let mut search = input.search(first, &mut meter, &mut sink);
+            assert_eq!(search.next().unwrap().occurrence().unwrap().key(), start);
+            assert_eq!(search.next().unwrap().occurrence().unwrap().start(), moved);
+            assert!(search.next().is_none());
+            search.cursor()
+        };
+        let mut fresh = Meter::new(Limits::DEFAULT);
+        assert_eq!(
+            drain(input.resume(cursor, later, &mut fresh, &mut sink)).starts,
+            [unseen]
+        );
+    }
+
+    #[test]
+    fn a_refused_history_copy_replays_multiple_shifted_additions() {
+        let start = at(1997, 9, 2, 9);
+        let additions = [
+            start,
+            at(1997, 9, 11, 9),
+            at(1997, 9, 12, 9),
+            at(1997, 9, 13, 9),
+            at(1997, 9, 14, 9),
+        ];
+        let first_move = at(1997, 9, 9, 9);
+        let second_move = at(1997, 9, 8, 9);
+        let entries = [
+            Override::new(
+                additions[2],
+                OverrideRange::ThisOnly,
+                Some(first_move),
+                PropertyDiff::empty(),
+            ),
+            Override::new(
+                additions[4],
+                OverrideRange::ThisOnly,
+                Some(second_move),
+                PropertyDiff::empty(),
+            ),
+        ];
+        let mut setup = Meter::new(Limits::DEFAULT);
+        let overrides = OverrideSet::new(&entries, &mut setup).unwrap();
+        let input = RecurrenceInput::new(
+            start,
+            ValueKind::DateTime,
+            None,
+            &additions,
+            &[],
+            overrides,
+            &mut setup,
+        )
+        .unwrap();
+        let first = Window::new(at(1997, 9, 1, 0), at(1997, 9, 10, 0)).unwrap();
+        let later = Window::new(first.end(), at(1997, 9, 20, 0)).unwrap();
+        let mut sink: Vec<Diagnostic> = Vec::new();
+        let mut one = Meter::new(Limits::DEFAULT.with_occurrences_per_search(1));
+        let mut limited_count = input.search(first, &mut one, &mut sink);
+        assert_eq!(
+            limited_count.next().unwrap().occurrence().unwrap().start(),
+            start
+        );
+        let before = limited_count.cursor();
+        assert!(matches!(
+            limited_count.next(),
+            Some(SearchStep::BudgetExhausted(_))
+        ));
+        assert_eq!(limited_count.cursor(), before);
+        drop(limited_count);
+        let mut measured = Meter::new(Limits::DEFAULT);
+        {
+            let mut search = input.search(first, &mut measured, &mut sink);
+            for expected in [start, first_move, second_move] {
+                assert_eq!(
+                    search.next().unwrap().occurrence().unwrap().start(),
+                    expected
+                );
+            }
+        }
+        let mut limited = Meter::with_budget(Limits::DEFAULT, measured.spent());
+        let mut search = input.search(first, &mut limited, &mut sink);
+        for expected in [start, first_move] {
+            assert_eq!(
+                search.next().unwrap().occurrence().unwrap().start(),
+                expected
+            );
+        }
+        let snapshot = search.cursor();
+        let repeated = search.cursor();
+        assert_eq!(repeated, snapshot);
+        assert!(alloc::rc::Rc::ptr_eq(
+            snapshot.additions.beyond.as_ref().unwrap(),
+            repeated.additions.beyond.as_ref().unwrap()
+        ));
+        assert!(matches!(
+            search.next(),
+            Some(SearchStep::BudgetExhausted(_))
+        ));
+        let refused = search.cursor();
+        assert_eq!(refused, snapshot);
+        drop(search);
+        for cursor in [snapshot, refused] {
+            let mut fresh = Meter::new(Limits::DEFAULT);
+            let mut resumed = input.resume(cursor, first, &mut fresh, &mut sink);
+            assert_eq!(
+                resumed.next().unwrap().occurrence().unwrap().start(),
+                second_move
+            );
+            let continued = resumed.cursor();
+            assert!(resumed.next().is_none());
+            drop(resumed);
+            assert_eq!(
+                drain(input.resume(continued, later, &mut fresh, &mut sink)).starts,
+                [additions[1], additions[3]]
+            );
+        }
+    }
+
+    #[test]
+    fn shifted_additions_keep_gaps_across_a_bitmap_word_boundary() {
+        let start = at(1997, 9, 1, 9);
+        let at_second = |offset| start.checked_add_seconds(offset).unwrap();
+        let additions: Vec<_> = (0..68).map(at_second).collect();
+        let entries = [65, 67].map(|index| {
+            Override::new(
+                additions[index],
+                OverrideRange::ThisOnly,
+                Some(start),
+                PropertyDiff::empty(),
+            )
+        });
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let overrides = OverrideSet::new(&entries, &mut meter).unwrap();
+        let input = RecurrenceInput::new(
+            start,
+            ValueKind::DateTime,
+            None,
+            &additions,
+            &[],
+            overrides,
+            &mut meter,
+        )
+        .unwrap();
+        let first = Window::new(start, at_second(64)).unwrap();
+        let later = Window::new(first.end(), at_second(68)).unwrap();
+        let mut sink: Vec<Diagnostic> = Vec::new();
+        let mut search = input.search(first, &mut meter, &mut sink);
+        let keys: Vec<_> = search
+            .by_ref()
+            .map(|step| step.occurrence().unwrap().key())
+            .collect();
+        assert_eq!(
+            keys,
+            additions[..64]
+                .iter()
+                .copied()
+                .chain([additions[65], additions[67]])
+                .collect::<Vec<_>>()
+        );
+        let cursor = search.cursor();
+        drop(search);
+        assert_eq!(
+            drain(input.resume(cursor, later, &mut meter, &mut sink)).starts,
+            [additions[64], additions[66]]
+        );
     }
 
     #[test]

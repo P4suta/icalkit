@@ -22,6 +22,7 @@ mod table;
 
 pub use accounting::{Charges, admit, generation_window, max_absolute_shift};
 pub use byparts::{CandidateSet, expand_period};
+pub(crate) use engine::RuleCheckpoint;
 pub use engine::{RecurrenceSearch, RuleCursorState, SearchCursor};
 pub(crate) use grammar::decode_positive_decimal;
 pub use grammar::{RulePartText, is_gregorian_scale, parse_recur, parts};

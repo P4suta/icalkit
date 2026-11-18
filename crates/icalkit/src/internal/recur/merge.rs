@@ -206,6 +206,12 @@ impl<'a> Merge<'a> {
         ))
     }
 
+    /// The addition consumed by the last merge step, including a coincidence with the rule.
+    pub(super) fn last_addition_index(&self, key: Instant) -> Option<usize> {
+        let index = self.rdates_merged.checked_sub(1)?;
+        (self.input.rdates().get(index) == Some(&key)).then_some(index)
+    }
+
     /// The next `RDATE` instant not yet merged.
     fn pending_addition(&self) -> Option<Instant> {
         self.input.rdates().get(self.rdates_merged).copied()
