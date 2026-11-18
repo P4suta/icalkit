@@ -37,6 +37,8 @@ pub struct Message {
 #[derive(Debug)]
 pub(crate) struct BusyTimeEnvelope<'a> {
     pub(crate) uid: Cow<'a, str>,
+    pub(crate) start: CivilDateTime,
+    pub(crate) end: CivilDateTime,
     pub(crate) originator: &'a str,
     pub(crate) recipients: Vec<&'a str>,
 }
@@ -96,6 +98,8 @@ impl Message {
         }
         (!recipients.is_empty()).then_some(BusyTimeEnvelope {
             uid,
+            start,
+            end,
             originator,
             recipients,
         })
@@ -576,10 +580,15 @@ impl AuthorizedChange<'_> {
     pub fn apply(mut self) -> Result<Calendar, Error> {
         let (mut document, policy) = match self.target {
             ReviewTarget::Held(current) => (current.document.clone(), current.policy),
-            ReviewTarget::Absent => (
-                creation_document(&self.message.calendar)?,
-                self.message.calendar.policy,
-            ),
+            ReviewTarget::Absent => {
+                let document = creation_document(&self.message.calendar)?;
+                let policy = self.message.calendar.policy;
+                return parse_calendar(
+                    &document.to_bytes(),
+                    policy,
+                    &mut Meter::new(policy.limits),
+                );
+            },
         };
         self.changes.sort_by_key(|change| change.target.phase());
         {
@@ -722,7 +731,6 @@ fn creation_document(message: &Calendar) -> Result<Document, Error> {
         !item
             .as_property()
             .is_some_and(|property| property.has_id(&PropertyId::METHOD))
-            && !item.as_component().is_some_and(is_scheduling_payload)
     });
     Ok(document)
 }

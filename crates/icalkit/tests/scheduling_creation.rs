@@ -14,7 +14,8 @@ const SOURCE: &str = concat!(
     "DTSTART:20260814T090000Z\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\n",
     "SUMMARY:Planning\r\n",
     "ORGANIZER:mailto:chair@example.test\r\nATTENDEE:mailto:one@example.test\r\n",
-    "SEQUENCE:1\r\nx-CoLoR;X-Meta=\"Keep\":plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    "SEQUENCE:1\r\nx-CoLoR;X-Meta=\"Keep\":plum\r\nEND:VEVENT\r\n",
+    "BEGIN:X-ARCHIVE\r\nX-NOTE:Kept after the event\r\nEND:X-ARCHIVE\r\nEND:VCALENDAR\r\n",
 );
 
 #[test]

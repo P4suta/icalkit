@@ -693,6 +693,8 @@ impl ScheduleResponse {
 
 struct ScheduleIdentity {
     uid: String,
+    start: CivilDateTime,
+    end: CivilDateTime,
     originator: String,
     recipients: BTreeSet<String>,
 }
@@ -702,6 +704,8 @@ impl ScheduleIdentity {
         let envelope = message.busy_time_envelope()?;
         Some(Self {
             uid: envelope.uid.into_owned(),
+            start: envelope.start,
+            end: envelope.end,
             originator: envelope.originator.to_string(),
             recipients: envelope
                 .recipients
@@ -723,15 +727,18 @@ impl ScheduleIdentity {
         {
             return Err(Error::single("icalkit.caldav.schedule-response-incomplete"));
         }
-        for message in response
-            .deliveries()
-            .iter()
-            .filter_map(ScheduleDelivery::calendar_data)
-        {
+        for delivery in response.deliveries() {
+            let Some(message) = delivery.calendar_data() else {
+                continue;
+            };
             let envelope = message
                 .busy_time_reply_envelope()
                 .ok_or_else(|| Error::single("icalkit.caldav.schedule-invalid"))?;
-            if envelope.uid != self.uid || envelope.originator != self.originator {
+            if envelope.uid != self.uid
+                || envelope.originator != self.originator
+                || (delivery.is_success()
+                    && (envelope.start > self.start || envelope.end < self.end))
+            {
                 return Err(Error::single("icalkit.caldav.schedule-invalid"));
             }
         }

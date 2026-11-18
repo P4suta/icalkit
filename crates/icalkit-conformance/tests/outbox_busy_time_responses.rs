@@ -53,7 +53,11 @@ fn document(children: &str) -> String {
 }
 
 fn decode(status: u16, body: &str) -> Result<ScheduleResponse, Error> {
-    let message = Message::read(ASK.as_bytes()).unwrap();
+    decode_for(ASK, status, body)
+}
+
+fn decode_for(request: &str, status: u16, body: &str) -> Result<ScheduleResponse, Error> {
+    let message = Message::read(request.as_bytes()).unwrap();
     let mut operation = Client::new().schedule("/outbox/alice/", &message).unwrap();
     operation.next_request().unwrap();
     operation.accept(WireResponse::new(
@@ -62,6 +66,49 @@ fn decode(status: u16, body: &str) -> Result<ScheduleResponse, Error> {
         body.as_bytes().to_vec(),
     ))?;
     operation.finish()
+}
+
+#[test]
+fn successful_replies_cover_the_entire_requested_interval() {
+    for (start, end, covered) in [
+        ("20240102T000001Z", "20240103T000000Z", false),
+        ("20240102T000000Z", "20240102T235959Z", false),
+        ("20240103T100000Z", "20240103T110000Z", false),
+        ("20240102T000000Z", "20240103T000000Z", true),
+        ("20240101T235959Z", "20240103T000001Z", true),
+    ] {
+        let data = ASK
+            .replace("METHOD:REQUEST", "METHOD:REPLY")
+            .replace("DTSTART:20240102T000000Z", &format!("DTSTART:{start}"))
+            .replace("DTEND:20240103T000000Z", &format!("DTEND:{end}"));
+        Message::read(data.as_bytes()).unwrap();
+        let body = document(&outcome(
+            "mailto:bob@example.test",
+            "2.0;Success",
+            Some(&data),
+        ));
+        assert_eq!(decode(200, &body).is_ok(), covered, "{start} to {end}");
+    }
+}
+
+#[test]
+fn nonempty_responses_include_every_requested_recipient() {
+    let request = ASK.replace(
+        "END:VFREEBUSY",
+        "ATTENDEE:mailto:carol@example.test\r\nEND:VFREEBUSY",
+    );
+    let bob = outcome("mailto:bob@example.test", "3.7;Invalid calendar user", None);
+    let carol = outcome(
+        "mailto:carol@example.test",
+        "3.7;Invalid calendar user",
+        None,
+    );
+    let error = decode_for(&request, 200, &document(&bob)).unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "icalkit.caldav.schedule-response-incomplete"
+    );
+    assert!(decode_for(&request, 200, &document(&format!("{bob}{carol}"))).is_ok());
 }
 
 #[test]

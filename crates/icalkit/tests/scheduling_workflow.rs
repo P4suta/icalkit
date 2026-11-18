@@ -386,6 +386,39 @@ END:VCALENDAR\r\n";
 }
 
 #[test]
+fn cancellation_preserves_a_single_event_end() {
+    for (stored, offered) in [
+        ("DURATION:PT1H", "DTEND:20260310T150000Z"),
+        ("DTEND:20260310T150000Z", "DURATION:PT1H"),
+    ] {
+        let source = str::from_utf8(range_series::HELD).unwrap().replace(
+            "SUMMARY:Original sync",
+            &format!("{stored}\r\nSUMMARY:Original sync"),
+        );
+        let current = Calendar::parse(source.as_bytes()).unwrap();
+        let cancel = format!(
+            "{WRAP_HEAD}METHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:range@example.test\r\n\
+             DTSTAMP:20260302T120000Z\r\nDTSTART:20260310T140000Z\r\n{offered}\r\n\
+             ORGANIZER:mailto:chair@example.test\r\nSTATUS:CANCELLED\r\nSEQUENCE:3\r\nEND:VEVENT\r\n{WRAP_TAIL}"
+        );
+        let message = Message::read(cancel.as_bytes()).unwrap();
+        let actor = Actor::new("mailto:chair@example.test").unwrap();
+        let updated = message
+            .review(&current, &actor)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap();
+        let written = String::from_utf8(updated.to_bytes()).unwrap();
+        assert!(written.contains("STATUS:CANCELLED\r\n"));
+        assert!(written.contains("SUMMARY:Original sync\r\n"));
+        assert!(written.lines().any(|line| line == stored));
+        assert!(!written.lines().any(|line| line == offered));
+        assert_eq!(current.to_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
 fn a_statusless_cancel_for_an_affected_attendee_cancels_the_recipient_copy() {
     let current = Calendar::parse(range_series::HELD).unwrap();
     let cancel = b"BEGIN:VCALENDAR\r\n\

@@ -63,8 +63,13 @@ pub fn describe_payload(
     });
     let mut transition = Transition::new(reason_for(method, current, moved));
     for (at, line) in &offered {
-        // RFC 5546 section 3.2.5 uses ATTENDEE to identify cancellation recipients.
-        if method == Method::Cancel && at.name().eq_ignore_ascii_case(b"ATTENDEE") {
+        // A cancellation identifies recipients and keeps the stored schedule.
+        if method == Method::Cancel
+            && matches!(
+                at.name(),
+                b"ATTENDEE" | b"DTSTART" | b"DTEND" | b"DUE" | b"DURATION"
+            )
+        {
             continue;
         }
         match held.get(at) {
