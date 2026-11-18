@@ -160,3 +160,36 @@ fn rejected_query_roots_release_their_live_scope() {
     assert!(session.parse(CALENDAR).is_ok());
     assert!(session.query(QUERY).is_ok());
 }
+
+#[test]
+fn malformed_queries_spend_the_shared_input_budget() {
+    let engine = Engine::builder()
+        .resource_policy(ResourcePolicy::secure().with_max_input_bytes(8))
+        .build();
+    let mut session = engine.session();
+    for _ in 0..8 {
+        assert_eq!(
+            session.query(b"<").unwrap_err().code().as_str(),
+            "icalkit.caldav.query-invalid"
+        );
+    }
+    assert!(session.import(b"").is_ok());
+    assert!(session.import(b"x").is_err());
+    assert!(session.import(b"").is_err());
+    assert!(engine.session().import(b"x").is_ok());
+}
+
+#[test]
+fn rejected_query_tails_spend_the_shared_input_budget() {
+    let mut body = b"<x>".to_vec();
+    body.extend_from_slice(&[b'a'; 512]);
+    body.extend_from_slice(b"</x>");
+    let budget = u64::try_from(body.len()).unwrap() - 1;
+    let engine = Engine::builder()
+        .resource_policy(ResourcePolicy::secure().with_max_input_bytes(budget))
+        .build();
+    let mut session = engine.session();
+    assert!(session.query(&body).is_err());
+    assert!(session.import(b"").is_err());
+    assert!(engine.session().import(b"").is_ok());
+}

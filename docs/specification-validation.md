@@ -30,6 +30,14 @@ Owned request and response decoders restore the entry values of live nesting and
 Cumulative work, diagnostics, and exhaustion survive cleanup.
 The [owned decoding decision](adr/release-live-counters-after-owned-decoding.md) records the lifetime boundary.
 
+XML readers admit supplied bodies under the shared input policy before lexical validation.
+Malformed input and protocol refusals keep the whole body's charge.
+The content phase carries a checked body value, and text decoding uses spans from that admitted body.
+Wire bytes count once across declarations, comments, markup, references, and character data.
+Text bounds and storage charges remain independent.
+Standalone text decoding retains its byte charge.
+The [wire admission decision](adr/charge-supplied-xml-before-lexical-validation.md) records the input and decoder boundaries.
+
 Empty XML elements contribute one nesting level under the project's depth policy.
 Both empty-element representations belong to the same `element` production in [XML 1.0 section 3.1](https://www.w3.org/TR/xml/#sec-starttags).
 Kept markup checks peak depth for both forms before emitting the fragment.

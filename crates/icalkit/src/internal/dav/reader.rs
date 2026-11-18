@@ -33,7 +33,7 @@
 //!   The two exceptions are stated rather than accidental: the elements [`ElementName::preserves_line_endings`] names, where this reader is already not a conformant processor, and `DAV:href`, whose value `value.rs` deliberately models as octets because a store may hold a path that is not UTF-8.
 //! - Everything else that is not the XML this crate reads — a `<` inside an attribute value, a second root element, a name carrying two colons, `xmlns:p=""`, which XML Namespaces 1.0 forbids while permitting `xmlns=""`: [`SyntaxError::Malformed`].
 //!
-//! Entity references and numeric character references are [`decode_text`]'s to refuse, and it does: nothing outside the five XML 1.0 predefines resolves, because with no `DOCTYPE` accepted nothing can ever have been declared.
+//! The character decoder refuses references outside the five XML 1.0 predefines, because with no `DOCTYPE` accepted nothing can ever have been declared.
 //!
 //! # Prefixes are the document's, namespaces are the vocabulary's
 //!
@@ -45,7 +45,7 @@
 //! # Two things this reader hands on rather than deciding
 //!
 //! **Character data is emitted as it lies, whitespace included.** Indentation between elements is character data, and a tokenizer that dropped it would be deciding significance on its caller's behalf; readers above it ignore a run they did not ask for.
-//! Every span goes to [`decode_text`] under the mode [`TextMode::of`] derives from the enclosing element and the caller's [`crate::internal::dav::TextPolicy`] — this file never chooses that mode, which is what keeps the `calendar-data` carve-out one element wide.
+//! `AdmittedXmlBody` decodes each span under the mode [`TextMode::of`] derives from the enclosing element and the caller's [`crate::internal::dav::TextPolicy`] — this file never chooses that mode, which is what keeps the `calendar-data` carve-out one element wide.
 //!
 //! **An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets between its quotes.** References are resolved and every literal tab, line feed and carriage return is replaced by one space, before [`XmlPull::attribute`] answers.
 //! This file used to hand back the raw span on the reasoning that the attributes this crate's vocabulary defines — a `time-range`'s `start` and `end`, a `comp-filter`'s `name`, a `text-match`'s `collation` —
@@ -68,7 +68,7 @@ use crate::internal::dav::codec::{XmlEvent, XmlPull};
 use crate::internal::dav::element::{ElementName, Namespace, QName};
 use crate::internal::dav::failure::{DavError, SyntaxError};
 use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
-use crate::internal::dav::text::{TextMode, check_chars, decode_text, normalize_attribute};
+use crate::internal::dav::text::{AdmittedXmlBody, TextMode, check_chars, normalize_attribute};
 // The lexical layer and the namespace binding stack are XML's rather than CalDAV's, so they live in the private module `gates/xml-layering` compiles alone (docs/adr/0012).
 // What stays in this file is the state machine, which is stated over `ElementName` and `Namespace` and is therefore the half of the tokenizer that layer may not name.
 use crate::internal::dav::xml::bind::PrefixStack;
@@ -84,12 +84,12 @@ use crate::internal::dav::xml::scan::{
 pub(crate) use crate::internal::dav::xml::scan::XML_URI;
 
 /// Where in the document the reader sits, which decides what is legal next.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage {
+#[derive(Clone, Copy, Debug)]
+enum Stage<'a> {
     /// Before the root element: a declaration, comments, and nothing else.
     Prolog,
     /// Inside the root element.
-    Content,
+    Content(AdmittedXmlBody<'a>),
     /// After the root element closed: comments and whitespace, and then the end.
     Epilog,
 }
@@ -155,7 +155,7 @@ pub struct XmlReader<'a> {
     /// How far into it the reader sits.
     at: usize,
     /// Which part of the document is being read.
-    stage: Stage,
+    stage: Stage<'a>,
     /// The elements currently open, outermost first.
     /// The explicit stack DP-14 promised.
     open: Vec<Open<'a>>,
@@ -209,16 +209,6 @@ impl<'a> XmlReader<'a> {
         self.at = space_end(self.body, self.at);
     }
 
-    /// Move the cursor past any whitespace, charging the octets it walked over.
-    ///
-    /// Whitespace outside the root element is octets a peer chose and a reader scanned, which is what `docs/adr/0010` means by work.
-    /// Free scanning is free scanning whether the octets are indentation or a comment.
-    fn eat_space_charged(&mut self, meter: &mut Meter) -> Result<(), DavError> {
-        let from = self.at;
-        self.eat_space();
-        charge_span(meter, from, self.at)
-    }
-
     /// How deep the reader sits, with the root element at one.
     fn level(&self) -> u16 {
         // The depth is bounded by `max_xml_depth`, which is itself a `u16`, so the saturation below is unreachable rather than lossy — and it is written anyway,
@@ -233,7 +223,7 @@ impl<'a> XmlReader<'a> {
 
     /// The next event, or `None` at the end of the document.
     fn pull(&mut self, context: &mut DecodeContext<'_>) -> Result<Option<XmlEvent<'a>>, DavError> {
-        if self.stage == Stage::Prolog {
+        if matches!(self.stage, Stage::Prolog) {
             self.read_prolog(context)?;
         }
         if self.pending_end {
@@ -253,9 +243,18 @@ impl<'a> XmlReader<'a> {
 
     /// One turn of the machine: look at the cursor, decide what is there, consume it.
     fn step(&mut self, context: &mut DecodeContext<'_>) -> Result<Step<'a>, DavError> {
-        if self.stage == Stage::Epilog {
-            return self.step_epilog(context.meter);
+        match self.stage {
+            Stage::Prolog => Err(SyntaxError::Malformed.into()),
+            Stage::Content(admitted) => self.step_content(admitted, context),
+            Stage::Epilog => self.step_epilog(),
         }
+    }
+
+    fn step_content(
+        &mut self,
+        admitted: AdmittedXmlBody<'a>,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<Step<'a>, DavError> {
         let Some(&byte) = self.body.get(self.at) else {
             // A body that ends with elements still open ended inside them.
             return if self.open.is_empty() {
@@ -265,13 +264,13 @@ impl<'a> XmlReader<'a> {
             };
         };
         if byte != b'<' || self.starts_with(CDATA_OPEN) {
-            return self.read_text(context).map(Step::Event);
+            return self.read_text(admitted, context).map(Step::Event);
         }
         if self.starts_with(b"</") {
             return self.read_end_tag(context).map(Step::Event);
         }
         if self.starts_with(COMMENT_OPEN) {
-            self.skip_comment(context.meter)?;
+            self.skip_comment()?;
             return Ok(Step::Skipped);
         }
         if self.starts_with(b"<!") {
@@ -284,14 +283,14 @@ impl<'a> XmlReader<'a> {
     }
 
     /// After the root element: whitespace and comments, and then nothing.
-    fn step_epilog(&mut self, meter: &mut Meter) -> Result<Step<'a>, DavError> {
+    fn step_epilog(&mut self) -> Result<Step<'a>, DavError> {
         loop {
-            self.eat_space_charged(meter)?;
+            self.eat_space();
             if self.at >= self.body.len() {
                 return Ok(Step::Done);
             }
             if self.starts_with(COMMENT_OPEN) {
-                self.skip_comment(meter)?;
+                self.skip_comment()?;
                 continue;
             }
             // A second root element, or text outside the one there was.
@@ -306,31 +305,24 @@ impl<'a> XmlReader<'a> {
 
     /// Consume everything before the root element's `<`, refusing what this crate does not read.
     fn read_prolog(&mut self, context: &mut DecodeContext<'_>) -> Result<(), DavError> {
-        let length = u64::try_from(self.body.len()).unwrap_or(u64::MAX);
-        context.meter.check_bound(
-            length <= context.limits.max_response_bytes(),
-            LimitExceeded::Budget,
-        )?;
+        let admitted = AdmittedXmlBody::admit(self.body, context.limits, context.meter)?;
         self.validate_lexical_grammar()?;
         if self.starts_with(BYTE_ORDER_MARK) {
             self.at = BYTE_ORDER_MARK.len();
-            charge_span(context.meter, 0, self.at)?;
         }
-        self.eat_space_charged(context.meter)?;
+        self.eat_space();
         if self.declaration_here() {
-            let opened = self.at;
             self.read_declaration()?;
-            charge_span(context.meter, opened, self.at)?;
         }
         loop {
-            self.eat_space_charged(context.meter)?;
+            self.eat_space();
             if !self.starts_with(COMMENT_OPEN) {
                 break;
             }
-            self.skip_comment(context.meter)?;
+            self.skip_comment()?;
         }
         self.check_root_follows()?;
-        self.stage = Stage::Content;
+        self.stage = Stage::Content(admitted);
         Ok(())
     }
 
@@ -412,13 +404,8 @@ impl<'a> XmlReader<'a> {
         }
     }
 
-    /// Consume a comment, charging its octets, and carry no event.
-    ///
-    /// The charge is the whole comment including its delimiters.
-    /// A comment is markup this reader scans octet by octet and hands nobody, and charging nothing for it made the aggregate ledger this type documents — "many bodies under one `Meter` are bounded in aggregate" — false for exactly the shape a peer would choose: eight mebibytes refused as character data cost nothing at all as `<!-- ... -->`, so a peer bought unmetered scanning at `max_response_bytes` a request, forever.
-    /// The scan happens either way; what changes is that the ledger now sees it.
-    fn skip_comment(&mut self, meter: &mut Meter) -> Result<(), DavError> {
-        let opened = self.at;
+    /// Consume one comment.
+    fn skip_comment(&mut self) -> Result<(), DavError> {
         let from = self.at.saturating_add(COMMENT_OPEN.len());
         let inside = self.body.get(from..).ok_or(SyntaxError::Truncated)?;
         let end = find(inside, COMMENT_CLOSE).ok_or(SyntaxError::Truncated)?;
@@ -427,27 +414,30 @@ impl<'a> XmlReader<'a> {
             .saturating_add(end)
             .saturating_add(COMMENT_CLOSE.len())
             .min(self.body.len());
-        charge_span(meter, opened, self.at)
+        Ok(())
     }
 
     /// Read one run of character data, `CDATA` sections and references included.
-    fn read_text(&mut self, context: &mut DecodeContext<'_>) -> Result<XmlEvent<'a>, DavError> {
+    fn read_text(
+        &mut self,
+        admitted: AdmittedXmlBody<'a>,
+        context: &mut DecodeContext<'_>,
+    ) -> Result<XmlEvent<'a>, DavError> {
         let from = self.at;
         let end = self.scan_text()?;
-        let span = self.body.get(from..end).ok_or(SyntaxError::Malformed)?;
         // The mode is derived from the element the data sits in and the caller's policy.
         // This file never picks one, which is what stops the `calendar-data` carve-out spreading.
         let known = self.open.last().and_then(|open| open.known);
         let mode = TextMode::of(known, context.text);
         let offset = u64::try_from(from).unwrap_or(u64::MAX);
-        let decoded = decode_text(span, mode, offset, context.meter, context.sink)?;
+        let decoded = admitted.decode_text(from..end, mode, offset, context.meter, context.sink)?;
         self.at = end;
         Ok(XmlEvent::Text(decoded))
     }
 
     /// Find where the character data at the cursor ends.
     ///
-    /// A `CDATA` section does not end it: `a<![CDATA[b]]>c` is one run of three octets, and handing it over as one span is what lets [`decode_text`] answer with the octets rather than with the markup around them.
+    /// A `CDATA` section does not end it: `a<![CDATA[b]]>c` is one run of three octets, and handing it over as one span is what lets `AdmittedXmlBody::decode_text` answer with the octets rather than with the markup around them.
     fn scan_text(&self) -> Result<usize, DavError> {
         let mut at = self.at;
         loop {
@@ -483,7 +473,6 @@ impl<'a> XmlReader<'a> {
         let from = self.at;
         let (spelled, after) = self.scan_name(from.saturating_add(1), is_name_end)?;
         let (end, empty) = self.scan_attributes(after, context.meter)?;
-        charge_span(context.meter, from, end)?;
         // The declarations on this element are in scope for this element, so they are bound before its own name is resolved: `<d:multistatus xmlns:d="DAV:">` binds `d` for the tag that carries it, which is how every server in `tests/fixtures/` writes its root.
         let declared = self.bind_declarations(context.meter)?;
         self.resolve_attributes(context.meter)?;
@@ -528,7 +517,6 @@ impl<'a> XmlReader<'a> {
         if open.spelled != spelled {
             return Err(SyntaxError::MismatchedTag.into());
         }
-        charge_span(context.meter, from, end)?;
         self.at = end;
         // The element the tag named is the one on top of the stack, which was just compared against it, so the event is the one closing that element produces.
         self.end_event(context.meter)
@@ -806,15 +794,6 @@ impl<'a> XmlPull<'a> for XmlReader<'a> {
         let held = self.resolved.get(index).copied()?;
         Some((held.name, self.value_of(held)?))
     }
-}
-
-/// Charge the octets between two positions against the caller's ledger.
-///
-/// Markup is charged here and character data is charged by [`decode_text`], so the body is charged once over rather than twice or not at all.
-fn charge_span(meter: &mut Meter, from: usize, to: usize) -> Result<(), DavError> {
-    let octets = u64::try_from(to.saturating_sub(from)).unwrap_or(u64::MAX);
-    meter.try_charge_bytes(octets)?;
-    Ok(())
 }
 
 /// Map the private lexer's vocabulary onto the stable public syntax vocabulary.

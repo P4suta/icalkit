@@ -39,9 +39,10 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use crate::internal::core::{
-    Diagnostic, DiagnosticCode, DiagnosticSink, LimitExceeded, Location, Meter, Severity,
+    Diagnostic, DiagnosticCode, DiagnosticSink, LimitExceeded, Limits, Location, Meter, Severity,
     report_diagnostic,
 };
 
@@ -240,6 +241,43 @@ pub struct DecodedText<'a> {
     pub line_endings: LineEndings,
 }
 
+/// XML wire bytes admitted under a shared meter.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AdmittedXmlBody<'a> {
+    octets: &'a [u8],
+}
+
+impl<'a> AdmittedXmlBody<'a> {
+    pub(crate) fn admit(
+        octets: &'a [u8],
+        limits: Limits,
+        meter: &mut Meter,
+    ) -> Result<Self, DavError> {
+        let length =
+            meter.admit(|| u64::try_from(octets.len()).map_err(|_| LimitExceeded::Budget))?;
+        meter.check_bound(length <= limits.max_response_bytes(), LimitExceeded::Budget)?;
+        meter.try_charge_bytes(length)?;
+        Ok(Self { octets })
+    }
+
+    pub(crate) fn decode_text(
+        self,
+        span: Range<usize>,
+        mode: TextMode,
+        offset: u64,
+        meter: &mut Meter,
+        sink: &mut dyn DiagnosticSink,
+    ) -> Result<DecodedText<'a>, DavError> {
+        let raw = self.octets.get(span).ok_or(SyntaxError::Malformed)?;
+        meter.check_width(
+            raw.len(),
+            meter.limits().max_xml_text_bytes(),
+            LimitExceeded::Text,
+        )?;
+        decode_admitted_text(raw, mode, offset, meter, sink)
+    }
+}
+
 /// Decode one element's character data span.
 ///
 /// `raw` is the span between an element's start tag and its end tag, `CDATA` sections and references included; finding that span is the tokenizer's job and resolving what is inside it is this function's.
@@ -259,7 +297,16 @@ pub fn decode_text<'a>(
         LimitExceeded::Text,
     )?;
     meter.try_charge_text(length)?;
+    decode_admitted_text(raw, mode, offset, meter, sink)
+}
 
+fn decode_admitted_text<'a>(
+    raw: &'a [u8],
+    mode: TextMode,
+    offset: u64,
+    meter: &mut Meter,
+    sink: &mut dyn DiagnosticSink,
+) -> Result<DecodedText<'a>, DavError> {
     // The span is held to XML 1.0 section 2.2's `Char` production and to section 4.3.3's requirement that the document entity be well-formed UTF-8, before anything is decoded and before the borrowed fast path below.
     // `&#0;` was already refused under its own name by `push_character_reference`; the literal octet is the same code point in the same position, and accepting one spelling while refusing the other handed a caller a run that is not text and re-emitted it into a document no peer can parse.
     if mode.checks_characters() {
