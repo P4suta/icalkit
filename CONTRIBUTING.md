@@ -77,6 +77,10 @@ mise x -- cargo run --locked -p icalkit --example golden_path
 
 The xtask tests exercise Lefthook's file selection rules.
 Keep root and nested source paths covered when changing hook responsibilities.
+Hook fixtures copy the project's pinned mise configuration and use an empty global configuration.
+Platform test runners install the helper tools used by the real hooks.
+Workflow checks install the pinned shellcheck helper alongside actionlint.
+The standalone compilation test checks the proof wrapper without Cargo edition defaults.
 
 The [roadmap](ROADMAP.md) records the remaining external observations.
 Use the [producer capture intake](crates/icalkit-conformance/CAPTURE.md) for the scenario and privacy requirements before collecting real-client evidence.

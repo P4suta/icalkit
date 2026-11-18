@@ -196,6 +196,11 @@ impl StagingRepository {
             local_environment: variables.lines().map(str::to_owned).collect(),
         };
         fs::write(repository.directory.join("empty.gitconfig"), "")?;
+        fs::write(repository.directory.join("empty.mise.toml"), "\n")?;
+        fs::write(
+            repository.directory.join("mise.toml"),
+            include_str!("../../mise.toml"),
+        )?;
         fs::write(
             repository.directory.join("lefthook.yml"),
             include_str!("../../lefthook.yml"),
@@ -246,6 +251,12 @@ impl StagingRepository {
         command
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", self.directory.join("empty.gitconfig"))
+            .env_remove("MISE_CONFIG_FILE")
+            .env(
+                "MISE_GLOBAL_CONFIG_FILE",
+                self.directory.join("empty.mise.toml"),
+            )
+            .env("MISE_TRUSTED_CONFIG_PATHS", &self.directory)
             .env_remove("GIT_TEMPLATE_DIR");
         command
     }
@@ -336,6 +347,26 @@ fn rust_format_hook_preserves_partial_staging() -> io::Result<()> {
         "pub fn value()->u8{1}\n\npub const SECOND: u8 = 2;\n",
         Some("Diff in"),
     )
+}
+
+#[test]
+fn hook_fixture_selects_tools_without_global_mise_defaults() -> io::Result<()> {
+    let repository = StagingRepository::new()?;
+    let configuration = repository.directory.join("empty.mise.toml");
+    fs::write(&configuration, "\n")?;
+    let output = repository
+        .command("mise")
+        .env("MISE_GLOBAL_CONFIG_FILE", configuration)
+        .args(["exec", "--", "just", "--list"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "fixture tools need project selection:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fmt-check"));
+    Ok(())
 }
 
 #[test]

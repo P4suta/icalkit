@@ -179,7 +179,7 @@ impl TrackedSource {
 
 impl CandidateRevision {
     pub(super) fn parse(value: &str) -> Option<Self> {
-        Self::from_bytes(value.as_bytes().try_into().ok()?)
+        Self::from_bytes(std::convert::TryInto::try_into(value.as_bytes()).ok()?)
     }
 
     fn from_bytes(bytes: [u8; COMMIT_BYTES]) -> Option<Self> {

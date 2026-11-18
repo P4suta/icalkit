@@ -747,6 +747,12 @@ fn mise_installation_violations(workflow: &str) -> Vec<String> {
             .split_once('#')
             .map_or(arguments, |(value, _)| value);
         let tools: Vec<_> = arguments.split_whitespace().collect();
+        if tools.contains(&"actionlint") && !tools.contains(&"shellcheck") {
+            violations.push(format!(
+                "actionlint requires shellcheck in mise install_args at line {}",
+                index.saturating_add(1)
+            ));
+        }
         if tools.iter().any(|tool| tool.starts_with("cargo:")) && !tools.contains(&"rust") {
             violations.push(format!(
                 "Cargo tools require configured Rust in mise install_args at line {}",
@@ -790,7 +796,36 @@ fn ci_source_violations(ci: &str, candidate: &str, justfile: &str, hooks: &str) 
     violations.extend(public_api_workflow_violations(candidate));
     violations.extend(mise_installation_violations(ci));
     violations.extend(mise_installation_violations(candidate));
+    violations.extend(platform_test_tool_violations(candidate));
     violations
+}
+
+fn platform_test_tool_violations(candidate: &str) -> Vec<String> {
+    let Some(platform) = workflow_job(candidate, "platform") else {
+        return Vec::new();
+    };
+    let tools: Vec<_> = platform
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("install_args:"))
+        .map(|arguments| {
+            arguments
+                .split_once('#')
+                .map_or(arguments, |(value, _)| value)
+        })
+        .flat_map(str::split_whitespace)
+        .collect();
+    [
+        "rust",
+        "just",
+        "lefthook",
+        "taplo",
+        "typos",
+        "cargo:cargo-nextest",
+    ]
+    .into_iter()
+    .filter(|tool| !tools.contains(tool))
+    .map(|tool| format!("candidate platform tests require {tool}"))
+    .collect()
 }
 
 fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
@@ -3816,6 +3851,39 @@ name = \"icalkit\"
     }
 
     #[test]
+    fn actionlint_installations_require_the_shellcheck_helper() {
+        for tools in ["actionlint", "actionlint # shellcheck"] {
+            let workflow = format!("install_args: {tools}\n");
+            assert!(
+                super::mise_installation_violations(&workflow)
+                    .iter()
+                    .any(|violation| violation.contains("actionlint requires shellcheck")),
+                "missing shellcheck admitted: {tools}"
+            );
+        }
+        assert_eq!(
+            super::mise_installation_violations("install_args: actionlint shellcheck\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn candidate_platform_tests_install_native_hook_helpers() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let broken = candidate.replace("taplo typos cargo-binstall", "taplo cargo-binstall");
+        assert!(
+            super::ci_source_violations(&ci, &broken, &justfile, &hooks)
+                .iter()
+                .any(|violation| violation.contains("platform tests require typos"))
+        );
+    }
+
+    #[test]
     fn ordinary_ci_does_not_start_candidate_qualification() {
         let root = super::workspace_root().unwrap();
         let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
@@ -3944,6 +4012,35 @@ name = \"icalkit\"
             assert!(
                 super::CandidateRevision::parse(invalid).is_none(),
                 "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_decisions_compile_in_the_standalone_proof_wrapper() {
+        let fixture = CandidateFixture::new();
+        std::fs::write(fixture.0.join("production.rs"), include_str!("ci.rs")).unwrap();
+        let wrapper = fixture.0.join("lib.rs");
+        std::fs::write(&wrapper, b"#[path = \"production.rs\"]\nmod production;\n").unwrap();
+        for edition in ["2015", "2024"] {
+            let output = std::process::Command::new("rustc")
+                .args([
+                    "--crate-type",
+                    "lib",
+                    "--emit",
+                    "metadata",
+                    "--edition",
+                    edition,
+                ])
+                .arg(&wrapper)
+                .arg("-o")
+                .arg(fixture.0.join(format!("proof-{edition}.rmeta")))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "standalone proof source failed in edition {edition}:\n{}",
+                String::from_utf8_lossy(&output.stderr)
             );
         }
     }

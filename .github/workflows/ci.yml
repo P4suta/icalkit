@@ -33,7 +33,7 @@ jobs:
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: v2026.11.7
-          install_args: rust just lefthook taplo typos uv actionlint zizmor cargo-binstall cargo:cargo-nextest cargo:cargo-deny cargo:cargo-shear
+          install_args: rust just lefthook taplo typos uv actionlint shellcheck zizmor cargo-binstall cargo:cargo-nextest cargo:cargo-deny cargo:cargo-shear
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just check
 

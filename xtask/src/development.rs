@@ -10,6 +10,10 @@ pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
     let mise = configured_toolchain(workspace, "mise.toml", "tools.rust.version")?;
     let rustup = configured_toolchain(workspace, "rust-toolchain.toml", "toolchain.channel")?;
     let mut violations = toolchain_violations(&mise, &rustup);
+    let shellcheck = configured_toolchain(workspace, "mise.toml", "tools.shellcheck")?;
+    if !exact_version(&shellcheck) {
+        violations.push("mise.toml: actionlint requires an exact shellcheck version".to_owned());
+    }
     for (file, table) in [
         ("mise.toml", "tools.rust"),
         ("rust-toolchain.toml", "toolchain"),
@@ -52,12 +56,7 @@ fn configured_toolchain(workspace: &Path, file: &str, key: &str) -> io::Result<S
 fn toolchain_violations(mise: &str, rustup: &str) -> Vec<String> {
     let mut violations = Vec::new();
     for (file, version) in [("mise.toml", mise), ("rust-toolchain.toml", rustup)] {
-        if version.split('.').count() != 3
-            || !version.split('.').all(|part| {
-                part.parse::<u32>()
-                    .is_ok_and(|value| value.to_string() == part)
-            })
-        {
+        if !exact_version(version) {
             violations.push(format!(
                 "{file}: Rust must use an exact major.minor.patch version"
             ));
@@ -68,6 +67,14 @@ fn toolchain_violations(mise: &str, rustup: &str) -> Vec<String> {
             .push("mise.toml and rust-toolchain.toml must select the same Rust version".to_owned());
     }
     violations
+}
+
+fn exact_version(version: &str) -> bool {
+    version.split('.').count() == 3
+        && version.split('.').all(|part| {
+            part.parse::<u32>()
+                .is_ok_and(|value| value.to_string() == part)
+        })
 }
 
 fn recipe_body<'a>(justfile: &'a str, name: &str) -> Vec<&'a str> {
@@ -152,7 +159,7 @@ test-core:
     cargo test --locked -p icalkit --doc --no-default-features
 ";
 
-    const INSTALLATION: &str = "[tools]\nrust = { version = \"1.99.0\", profile = \"minimal\", components = [\"rustfmt\", \"clippy\"] }\n";
+    const INSTALLATION: &str = "[tools]\nrust = { version = \"1.99.0\", profile = \"minimal\", components = [\"rustfmt\", \"clippy\"] }\nshellcheck = \"0.11.0\"\n";
     const RUSTUP: &str = "[toolchain]\nchannel = \"1.99.0\"\nprofile = \"minimal\"\ncomponents = [\"rustfmt\", \"clippy\"]\n";
 
     struct ConfigurationFixture(PathBuf);
@@ -194,6 +201,23 @@ test-core:
     fn explicit_matching_component_installations_are_admitted() -> io::Result<()> {
         let fixture = ConfigurationFixture::new(INSTALLATION, RUSTUP)?;
         assert_eq!(collect(&fixture.0)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn actionlint_requires_an_exact_shellcheck_installation() -> io::Result<()> {
+        for version in ["", "latest", "0.11", "0.011.0"] {
+            let mise = if version.is_empty() {
+                INSTALLATION.replace("shellcheck = \"0.11.0\"\n", "")
+            } else {
+                INSTALLATION.replace("0.11.0", version)
+            };
+            let fixture = ConfigurationFixture::new(&mise, RUSTUP)?;
+            assert!(
+                !matches!(collect(&fixture.0), Ok(violations) if violations.is_empty()),
+                "actionlint's helper lacks an exact installation: {version:?}"
+            );
+        }
         Ok(())
     }
 
