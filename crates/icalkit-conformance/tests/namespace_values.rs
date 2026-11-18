@@ -177,6 +177,13 @@ fn unknown_namespace_names_survive_response_round_trips() {
     };
     assert_eq!(name.namespace(), b"urn:example:a&b");
     let limits = Limits::DEFAULT;
+    let PropValue::Markup(fragment) = &property.value else {
+        panic!("expected the child element");
+    };
+    let mut child = XmlReader::new(fragment);
+    let mut meter = Meter::new(limits);
+    assert!(matches!(first(&mut child, limits, &mut meter).unwrap(),
+        Some(XmlEvent::Start { name, depth: 1, .. }) if name.local_name == b"child" && name.namespace.uri() == b"urn:example:a&b".as_slice()));
     let mut wire = Vec::new();
     read.write_xml(&mut wire, limits, &mut Meter::new(limits))
         .unwrap();

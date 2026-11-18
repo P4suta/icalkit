@@ -143,7 +143,7 @@ fn xml_namespace_attributes_need_no_redeclaration() {
 #[test]
 fn unprefixed_attributes_keep_the_empty_namespace() {
     assert_round_trip(
-        br#"<v:child flag="yes"/>"#,
+        br#"<child xmlns="urn:example:values" flag="yes"/>"#,
         vec![attribute(b"", b"flag", b"yes")],
     );
 }

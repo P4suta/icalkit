@@ -68,9 +68,8 @@ pub enum TextPolicy {
     /// The default, because it is the answer that cannot silently rewrite a resource.
     #[default]
     Verbatim,
-    /// Apply XML 1.0 section 2.11 everywhere, as a conformant processor must.
-    ///
-    /// Costs the `CR` of every `CRLF` inside `calendar-data`, and says so through a diagnostic each time.
+    /// Normalize literal line endings under XML 1.0 section 2.11.
+    /// Calendar payloads and `DAV:href` can still contain non-UTF-8 octets and characters outside the XML character set.
     Normalized,
 }
 

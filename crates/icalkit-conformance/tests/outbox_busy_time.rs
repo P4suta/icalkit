@@ -93,6 +93,16 @@ fn forged_routing_headers_cannot_replace_message_parties() {
     let mut operation = Server::new()
         .handle(request(BUSY, "REQUEST", &routing))
         .unwrap();
+    let authorization = operation.next_need().unwrap();
+    assert_eq!(authorization.code(), "caldav.authorize");
+    assert_eq!(
+        authorization.originator(),
+        Some("mailto:alice@example.test")
+    );
+    assert_eq!(
+        authorization.recipients(),
+        ["mailto:bob@example.test", "mailto:carol@example.test"]
+    );
     operation.supply(ServerAnswer::authorized(true)).unwrap();
     let delivery = operation.next_need().unwrap();
     assert_eq!(delivery.originator(), Some("mailto:alice@example.test"));

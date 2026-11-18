@@ -128,7 +128,8 @@ pub enum PropValue {
     /// What is kept is a *re-serialization* and not the octets off the wire: this crate's own prefixes, each element declaring the namespace it resolved to, every text run escaped by the same door every other value goes through.
     /// That is what makes the fragment self-contained — a peer's prefix bindings do not survive into this crate's document —
     /// and what makes copying it to the sink safe, since nothing inside it is octets a peer chose the *syntax* of.
-    /// A caller building one by hand is choosing markup, and the encoder refuses a fragment whose tags do not balance, that declares or instructs, or that carries a reference no reader would resolve.
+    /// Callers constructing markup must supply well-formed XML with matching start and end names.
+    /// The encoder checks nesting depth, declarations, instructions, and references.
     Markup(Box<[u8]>),
 }
 
