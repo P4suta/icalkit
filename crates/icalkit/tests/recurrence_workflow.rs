@@ -191,6 +191,34 @@ END:VCALENDAR\r\n",
 }
 
 #[test]
+fn missing_calendar_uids_spend_the_lookup_budget() {
+    let bounds = Window::new(january_2024(1, 0), january_2024(2, 0)).unwrap();
+    for (uid, first_code) in [
+        ("a", "icalkit.recurrence.component-not-found"),
+        (
+            r"an\,escaped\,identifier\,longer\,than\,the\,budget",
+            "icalkit.recurrence.budget-exhausted",
+        ),
+    ] {
+        let source = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tests//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240101T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let calendar = Calendar::parse(source.as_bytes()).unwrap();
+        let engine = Engine::builder()
+            .resource_policy(ResourcePolicy::secure().with_max_input_bytes(32))
+            .build();
+        let mut session = engine.session();
+        let mut lookup = || {
+            calendar
+                .occurrences(&mut session, "absent", bounds)
+                .unwrap_err()
+        };
+        assert_eq!(lookup().code().as_str(), first_code);
+        assert!((0..32).any(|_| lookup().code().as_str() == "icalkit.recurrence.budget-exhausted"));
+    }
+}
+
+#[test]
 fn exhausted_sessions_keep_the_budget_error_for_valid_calendars_and_rules() {
     let calendar = Calendar::parse(
         concat!(

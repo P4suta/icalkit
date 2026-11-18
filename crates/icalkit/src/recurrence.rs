@@ -11,12 +11,9 @@ pub use calendar::{CalendarDate, CalendarMonth, CalendarScale};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::internal::core::codec::decode_single_scalar_text;
-use crate::internal::core::{
-    Component, ComponentKind, Diagnostic, Instant, Item, Meter, PropertyId,
-};
+use crate::internal::core::{Component, ComponentKind, Diagnostic, Instant, Item, Meter};
 use crate::internal::dav::TimeRange;
-use crate::internal::query::{Budget, QueryError, Undecided, Zones, expand_component};
+use crate::internal::query::{Budget, QueryError, Undecided, Zones, decoded_uid, expand_component};
 use crate::internal::recur::{
     OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, RuleLimit, SearchCursor,
     SearchStep, UntilClock, ValueKind,
@@ -317,7 +314,7 @@ fn start_calendar_occurrences<'a>(
     window: Window,
     position: Option<usize>,
 ) -> Result<Occurrences<'a>, Error> {
-    let (master, siblings) = recurrence_master(calendar, uid.as_bytes())?;
+    let (master, siblings) = recurrence_master(calendar, uid.as_bytes(), &mut session.meter)?;
     let range = TimeRange::new(Some(window.inner.start()), Some(window.inner.end()))
         .map_err(|_| Error::single("icalkit.recurrence.invalid-window"))?;
     let limits = session.engine.policy.limits;
@@ -355,7 +352,13 @@ fn start_calendar_occurrences<'a>(
 fn recurrence_master<'a>(
     calendar: &'a Calendar,
     uid: &[u8],
+    meter: &mut Meter,
 ) -> Result<(&'a Component, &'a [Item]), Error> {
+    let exhausted = |_| Error::single("icalkit.recurrence.budget-exhausted");
+    let size = |len| u64::try_from(len).unwrap_or(u64::MAX);
+    meter
+        .try_charge(size(calendar.document.items().len()))
+        .map_err(exhausted)?;
     let root = calendar
         .document
         .components()
@@ -363,8 +366,11 @@ fn recurrence_master<'a>(
         .ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
     let mut selected = None;
     let mut ambiguous = false;
-    for component in root.components().filter(|component| {
-        matches!(
+    meter
+        .try_charge(size(root.items().len()))
+        .map_err(exhausted)?;
+    for component in root.components() {
+        if !matches!(
             component.kind(),
             Some(
                 ComponentKind::Event
@@ -372,11 +378,20 @@ fn recurrence_master<'a>(
                     | ComponentKind::Journal
                     | ComponentKind::FreeBusy
             )
-        ) && !component
+        ) {
+            continue;
+        }
+        meter
+            .try_charge(size(component.items().len()))
+            .map_err(exhausted)?;
+        if component
             .properties()
             .any(|property| property.is_named(b"RECURRENCE-ID"))
-    }) {
-        let known_uid = decode_single_scalar_text(component, &PropertyId::UID)
+        {
+            continue;
+        }
+        let known_uid = decoded_uid(component, meter)
+            .map_err(exhausted)?
             .ok_or_else(|| Error::single("icalkit.recurrence.identity-unreadable"))?;
         if known_uid.as_bytes() == uid && selected.replace(component).is_some() {
             ambiguous = true;

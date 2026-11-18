@@ -176,7 +176,7 @@ fn equal_members<'index, 'doc>(
     Ok(members.get(start..end).unwrap_or(&[]))
 }
 
-fn decoded_uid<'a>(
+pub(crate) fn decoded_uid<'a>(
     component: &'a Component,
     meter: &mut Meter,
 ) -> Result<Option<Cow<'a, str>>, LimitExceeded> {
