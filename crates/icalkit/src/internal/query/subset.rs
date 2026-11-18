@@ -270,7 +270,12 @@ pub fn limit_recurrence_set_in_window(
         {
             let index = scope.index(budget.meter)?;
             let answer = match index.master(candidate, budget.meter)? {
-                Ok(Some(master)) => override_impacts(master, candidate, window, zones, budget)?,
+                Ok(Some(master)) => match index.related(master, budget.meter)? {
+                    Ok(related) => {
+                        override_impacts(master, candidate, related, window, zones, budget)?
+                    },
+                    Err(reason) => Match::Undecided(reason),
+                },
                 Ok(None) => Match::Undecided(Undecided::OverlapUndefined),
                 Err(reason) => Match::Undecided(reason),
             };

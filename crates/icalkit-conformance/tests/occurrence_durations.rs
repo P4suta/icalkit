@@ -627,6 +627,51 @@ fn task_duration_instances_keep_their_duration_boundary_semantics() {
 }
 
 #[test]
+fn limiting_a_series_accounts_for_exact_and_range_siblings() {
+    let master =
+        event("DTSTART:20240101T090000Z\r\nDURATION:PT30M\r\nRRULE:FREQ=DAILY;COUNT=4\r\n");
+    let range = event(
+        "RECURRENCE-ID;RANGE=THISANDFUTURE:20240102T090000Z\r\nDTSTART:20240102T100000Z\r\nDURATION:PT30M\r\n",
+    );
+    let exact = event("RECURRENCE-ID:20240103T090000Z\r\nDTSTART:20240103T120000Z\r\n");
+    let morning = ("20240103T100000Z", "20240103T110000Z");
+    let noon = ("20240103T121500Z", "20240103T124500Z");
+    let engine = Engine::default();
+    for (siblings, retained, count, (start, end)) in [
+        (range.clone(), "20240102T090000Z", 1, morning),
+        (format!("{range}{exact}"), "20240103T090000Z", 0, morning),
+        (format!("{exact}{range}"), "20240103T090000Z", 0, morning),
+        (format!("{range}{exact}"), "20240103T090000Z", 1, noon),
+        (exact.clone(), "20240103T090000Z", 1, noon),
+    ] {
+        let request = format!(
+            r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:prop><C:calendar-data><C:limit-recurrence-set start="{start}" end="{end}"/></C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"/></C:filter></C:calendar-query>"#
+        );
+        let query = Query::parse(request.as_bytes()).unwrap();
+        let source = calendar(&format!("{master}{siblings}"));
+        let original = Calendar::parse(source.as_bytes()).unwrap();
+        let limited = query.project(&mut engine.session(), &original).unwrap();
+        let parsed = checked_projection(&limited);
+        let root = parsed.components().next().unwrap();
+        let ids = root
+            .components()
+            .filter_map(|event| property_text(event, b"RECURRENCE-ID"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [retained]);
+        let reduced = std::str::from_utf8(limited.as_bytes()).unwrap();
+        for input in [source.as_str(), reduced] {
+            let placed = projected_document(input, start, end);
+            assert_eq!(
+                placed.components().next().unwrap().components().count(),
+                count
+            );
+        }
+    }
+}
+
+#[test]
 fn limited_task_overrides_use_the_original_duration_boundary() {
     let source = calendar(&format!(
         "{}{}",
