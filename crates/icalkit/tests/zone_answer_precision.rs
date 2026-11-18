@@ -69,11 +69,17 @@ fn fractional_zone_answers_do_not_place_stored_occurrences() {
         "2024-01-02T09:00:00.999999999Z",
     ] {
         let result = occurrence(&engine(value));
-        assert!(
-            result.is_err(),
-            "rounded provider answer {value}: {result:?}"
+        assert_eq!(
+            result.unwrap_err().code().as_str(),
+            "icalkit.recurrence.zone-answer-unreadable",
+            "{value}"
         );
     }
+    let result = occurrence(&Engine::builder().build());
+    assert_eq!(
+        result.unwrap_err().code().as_str(),
+        "icalkit.recurrence.zone-unresolved"
+    );
 }
 
 #[test]

@@ -27,7 +27,9 @@ use crate::internal::core::{
 };
 use crate::internal::dav::Collation;
 use crate::internal::recur::SearchOutcome;
-use crate::internal::tz::{OffsetAnswer, ResolutionPolicy, ZoneAnswer, ZoneSource};
+use crate::internal::tz::{
+    LocalResolution, OffsetAnswer, ResolutionPolicy, ZoneAnswer, ZoneSource,
+};
 
 /// Whether a resource satisfies a filter, and the answer an evaluator may not invent.
 ///
@@ -126,6 +128,8 @@ pub enum Undecided {
     ZoneUnstated,
     /// A value named a `TZID` that no source the caller supplied recognizes.
     ZoneUnknown,
+    /// A known zone supplied a reading that calendar values cannot represent.
+    ZoneAnswerUnreadable,
     /// A wall clock fell in a gap or a fold and the caller's policy dropped it.
     ///
     /// Distinct from an unknown zone: the zone answered, and what it answered was "this local time names no instant" or "it names two".
@@ -175,6 +179,7 @@ impl Undecided {
         match self {
             Self::ZoneUnstated => "a floating value and no zone stated by the query",
             Self::ZoneUnknown => "a TZID no supplied source recognizes",
+            Self::ZoneAnswerUnreadable => "a zone answer has unsupported precision",
             Self::ZoneAmbiguous => "a wall clock the zone repeats or does not show",
             Self::SearchExhausted => "a recurrence search stopped at its budget",
             Self::ValueUnreadable => "a value that is present and does not decode",
@@ -613,9 +618,15 @@ impl<'a> Zones<'a> {
         local: CivilDateTime,
     ) -> Result<ZoneAnswer, Undecided> {
         let zone = self.source_for(tzid)?;
-        zone.source
+        let answer = zone
+            .source
             .resolve(zone.tzid, local)
-            .ok_or(Undecided::ZoneUnknown)
+            .ok_or(Undecided::ZoneUnknown)?;
+        if answer.resolution == LocalResolution::Unreadable {
+            Err(Undecided::ZoneAnswerUnreadable)
+        } else {
+            Ok(answer)
+        }
     }
 
     /// What offset the zone a value written with `tzid` is read in was running at `instant`.

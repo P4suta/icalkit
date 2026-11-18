@@ -92,6 +92,8 @@ pub enum LocalResolution {
     /// It carries nothing, because there is nothing: no offset, no reading, no transition either side.
     /// [`LocalResolution::pick`] answers `None` under every policy, and [`DiagnosticCode::TimeZoneWithoutTransitions`] is what travels.
     Undetermined,
+    /// The provider supplied an instant outside the supported precision.
+    Unreadable,
     /// The wall clock names no instant, because the zone sprang forward over it.
     Nonexistent {
         /// The last instant before the gap opened.
@@ -118,7 +120,10 @@ impl LocalResolution {
     pub const fn unambiguous(self) -> Option<Instant> {
         match self {
             Self::Unique { reading } => Some(reading.instant),
-            Self::Ambiguous { .. } | Self::Nonexistent { .. } | Self::Undetermined => None,
+            Self::Ambiguous { .. }
+            | Self::Nonexistent { .. }
+            | Self::Undetermined
+            | Self::Unreadable => None,
         }
     }
 
@@ -130,13 +135,13 @@ impl LocalResolution {
             | Self::Ambiguous {
                 earlier: reading, ..
             } => Some(reading.instant),
-            Self::Nonexistent { .. } | Self::Undetermined => None,
+            Self::Nonexistent { .. } | Self::Undetermined | Self::Unreadable => None,
         }
     }
 
     /// The instant this resolution names under a stated policy for the two awkward hours.
     ///
-    /// `None` only where the policy says to skip.
+    /// Returns `None` for undetermined or unreadable answers and for gaps skipped by policy.
     /// Every collapse of three states into one instant in this workspace goes through here, so that a caller reading two call sites sees one rule rather than two conventions.
     #[must_use]
     pub const fn pick(self, gaps: GapPolicy, folds: FoldPolicy) -> Option<Instant> {
@@ -155,7 +160,7 @@ impl LocalResolution {
             },
             // No policy applies.
             // A gap policy states what to do with a wall clock a zone sprang over, and this is a source with no zone data at all: there is no offset to read the clock with and nothing for a caller to choose between.
-            Self::Undetermined => None,
+            Self::Undetermined | Self::Unreadable => None,
         }
     }
 
@@ -178,7 +183,7 @@ impl LocalResolution {
     #[must_use]
     pub const fn diagnostic_code(self) -> Option<DiagnosticCode> {
         match self {
-            Self::Unique { .. } => None,
+            Self::Unique { .. } | Self::Unreadable => None,
             Self::Ambiguous { .. } => Some(DiagnosticCode::AmbiguousLocalTime),
             Self::Nonexistent { .. } => Some(DiagnosticCode::NonexistentLocalTime),
             Self::Undetermined => Some(DiagnosticCode::TimeZoneWithoutTransitions),
@@ -397,7 +402,8 @@ pub trait ZoneSource {
     /// "Recognized but out of data" is [`AnswerBasis::BeyondKnownTransitions`] on an answer that exists.
     fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer>;
 
-    /// What offset the zone `tzid` identifies was running at `instant`, or `None` if that is not a zone this source knows.
+    /// Return the offset at `instant`, or `None` when no offset is available.
+    /// Use [`ZoneSource::recognizes`] to check whether the source knows the identifier.
     fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer>;
 
     /// Whether this source recognizes `tzid` at all, whatever it can say about any instant.
@@ -480,7 +486,7 @@ impl<A: Copy> PolicyOutcome<A> {
     /// The answer a caller would act on, preferring the embedded source where both spoke.
     ///
     /// A convenience with its preference written on it, and deliberately not the only way to read the outcome: a caller that wants to warn a user about a disagreement matches on the variant instead.
-    /// `None` only for [`PolicyOutcome::Neither`].
+    /// Returns `None` for [`PolicyOutcome::Neither`] and [`PolicyOutcome::Undetermined`].
     #[must_use]
     pub const fn embedded_first(self) -> Option<A> {
         match self {

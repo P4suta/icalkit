@@ -178,9 +178,6 @@ impl<'a> ZoneAdapter<'a> {
     }
 
     fn reading(&self, tzid: &str, timestamp: Timestamp) -> Option<(Reading, bool)> {
-        if timestamp.subsec_nanosecond() != 0 {
-            return None;
-        }
         let database = self.0?;
         let offset = database.offset_at(tzid, timestamp)?;
         Some((
@@ -207,6 +204,18 @@ impl ZoneSource for ZoneAdapter<'_> {
         let database = self.0?;
         let local = jiff_date_time(local)?;
         let answer = database.resolve_local(tzid, local)?;
+        if answer
+            .earlier()
+            .into_iter()
+            .chain(answer.later())
+            .any(|instant| instant.subsec_nanosecond() != 0)
+        {
+            return Some(ZoneAnswer::new(
+                LocalResolution::Unreadable,
+                ZoneProvenance::CallerDatabase,
+                coverage_basis(answer.has_complete_coverage()),
+            ));
+        }
         let (resolution, offsets_complete) = match answer.kind() {
             LocalKind::Exact => {
                 let (reading, complete) = self.reading(tzid, answer.earlier()?)?;
@@ -539,7 +548,11 @@ mod tests {
                 true,
             ));
             let answer = ZoneAdapter::new(Some(&database)).resolve("Test/Precision", local());
-            assert!(answer.is_none(), "rounded {text}: {answer:?}");
+            assert_eq!(
+                answer.unwrap().resolution,
+                LocalResolution::Unreadable,
+                "{text}"
+            );
         }
     }
 
@@ -560,9 +573,10 @@ mod tests {
                 .unwrap(),
             );
             let answer = ZoneAdapter::new(Some(&database)).resolve("Test/Precision", local());
-            assert!(
-                answer.is_none(),
-                "rounded fold {earlier} / {later}: {answer:?}"
+            assert_eq!(
+                answer.unwrap().resolution,
+                LocalResolution::Unreadable,
+                "{earlier} / {later}"
             );
         }
     }

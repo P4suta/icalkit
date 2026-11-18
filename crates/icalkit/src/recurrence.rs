@@ -399,6 +399,7 @@ fn recurrence_query_error(error: QueryError) -> Error {
 const fn recurrence_incomplete(reason: Undecided) -> &'static str {
     match reason {
         Undecided::SearchExhausted => "icalkit.recurrence.budget-exhausted",
+        Undecided::ZoneAnswerUnreadable => "icalkit.recurrence.zone-answer-unreadable",
         Undecided::ZoneUnstated | Undecided::ZoneUnknown | Undecided::ZoneAmbiguous => {
             "icalkit.recurrence.zone-unresolved"
         },

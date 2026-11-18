@@ -67,6 +67,7 @@ fn unasserted_coverage_has_a_note_without_a_boundary() {
 #[test]
 fn scheduling_keeps_unasserted_coverage_distinct_from_dated_continuation() {
     let boundary = CivilDate::from_ymd(2024, 1, 1).unwrap();
+    let first = CivilDate::from_ymd(2024, 1, 3).unwrap();
     for (basis, expected_code, continued, nearest) in [
         (AnswerBasis::Computed, None, false, None),
         (
@@ -76,10 +77,10 @@ fn scheduling_keeps_unasserted_coverage_distinct_from_dated_continuation() {
             None,
         ),
         (
-            AnswerBasis::BeforeKnownTransitions(boundary),
+            AnswerBasis::BeforeKnownTransitions(first),
             Some(DiagnosticCode::SchedulingZoneContinued),
             true,
-            Some(boundary),
+            Some(first),
         ),
         (
             AnswerBasis::BeyondKnownTransitions(boundary),
