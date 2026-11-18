@@ -521,6 +521,9 @@ impl TreeBuilder {
         meter.charge_bytes(as_units(name.len()))?;
         meter.charge_bytes(as_units(value.len()))?;
         let stored = if has_value {
+            if let Some(zone) = Parameter::encoded_zone(name, value) {
+                meter.charge_bytes(as_units(zone.len()))?;
+            }
             Parameter::new(RawText::from_bytes(name), RawText::from_bytes(value))
         } else {
             // RFC 5545 section 3.2 has no such shape, and producers write it anyway.

@@ -15,18 +15,20 @@ Raw comparison misses escaped definitions and merges names containing literal qu
 
 Register definition identifiers through the shared scalar text decoder.
 Decode once and preserve literal quotes, case, prefixes, and stored bytes.
-Keep parameter quoting at the reference boundary.
-Refuse unreadable definition identities.
+Remove surrounding parameter quotes before decoding [RFC 6868 caret escapes](https://www.rfc-editor.org/rfc/rfc6868.html#section-3).
+Store the decoded bytes beside the wire value only for references with caret escapes.
+Date-time views borrow the identifier throughout the parameter's lifetime.
+Charge the decoding buffer before allocation.
 Apply decoded identities to lookup, duplicates, and refused-definition tracking.
 
 ## Alternatives
 
-Raw comparison preserves incorrect matches.
 Registering both spellings invents aliases and makes distinct definitions ambiguous.
+Decoding on lookup would require owned date-time views or decoding at every consumer.
 
 ## Consequences
 
-Escaped identifiers need decoded storage.
+Replacing a parameter constructs its decoded value from the replacement spelling.
 Quoted and unquoted property values identify different zones.
 Opaque identifiers no longer provide query time zones.
 Reconsider if a governing specification changes identifier encoding.
@@ -35,4 +37,3 @@ Reconsider if a governing specification changes identifier encoding.
 
 Regressions cover escapes, literal quotes, references, duplicates, limits, opacity, and byte preservation.
 Public query matching and projection exercise the reader.
-The shared ADR gate and maintained project checks must pass.

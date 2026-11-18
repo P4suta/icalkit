@@ -14,13 +14,14 @@
 //! [`Property::layout`] records the syntax of the line the property arrived on, because unfolding into a fresh buffer destroys the only record of where the producer folded, and a canonical refold would rewrite every file in the corpus on its first save.
 //! [`Component::end`] is optional, because a component whose `END` never arrived serializes without one, and an `END:vevent` that disagreed in case with its `BEGIN:VEVENT` serializes back in the case it was written.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Formatter};
 use core::hash::{Hash, Hasher};
 use core::{mem, slice};
 
-use crate::internal::core::{LineEnding, LineLayout};
+use crate::internal::core::{LineEnding, LineLayout, caret_needs_decoding, decode_caret_into};
 
 use crate::internal::core::ident::PropertyId;
 use crate::internal::core::octets::RawText;
@@ -83,14 +84,40 @@ impl Boundary {
 ///
 /// The value keeps any surrounding `DQUOTE`.
 /// RFC 5545 section 3.2 lets a producer quote a value that did not need quoting, and stripping the quotes at parse time would write back a line the producer did not send.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Parameter {
     /// The parameter name, as written.
     name: RawText,
-    /// The parameter value, quotes included, as written.
-    value: RawText,
-    /// Whether an `=` and a value were present at all.
-    has_value: bool,
+    value: ParameterValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ParameterValue {
+    Missing(RawText),
+    Written(RawText),
+    EncodedZone(Box<EncodedZone>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EncodedZone {
+    written: RawText,
+    decoded: Box<[u8]>,
+}
+
+impl Ord for Parameter {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.name(), self.value(), self.has_value()).cmp(&(
+            other.name(),
+            other.value(),
+            other.has_value(),
+        ))
+    }
+}
+
+impl PartialOrd for Parameter {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Parameter {
@@ -100,10 +127,20 @@ impl Parameter {
     /// The public door is [`Parameter::create`](crate::internal::core::Parameter::create), which chooses the spelling rather than trusting one.
     #[must_use]
     pub(crate) fn new(name: RawText, value: RawText) -> Self {
+        if let Some(zone) = Self::encoded_zone(name.as_bytes(), value.as_bytes()) {
+            let mut decoded = Vec::with_capacity(zone.len());
+            decode_caret_into(zone, &mut decoded);
+            return Self {
+                name,
+                value: ParameterValue::EncodedZone(Box::new(EncodedZone {
+                    written: value,
+                    decoded: decoded.into_boxed_slice(),
+                })),
+            };
+        }
         Self {
             name,
-            value,
-            has_value: true,
+            value: ParameterValue::Written(value),
         }
     }
 
@@ -114,8 +151,7 @@ impl Parameter {
     pub(crate) fn without_value(name: RawText) -> Self {
         Self {
             name,
-            value: RawText::default(),
-            has_value: false,
+            value: ParameterValue::Missing(RawText::default()),
         }
     }
 
@@ -128,13 +164,36 @@ impl Parameter {
     /// The parameter value, quotes included, as written.
     #[must_use]
     pub fn value(&self) -> &RawText {
-        &self.value
+        match &self.value {
+            ParameterValue::Written(value) | ParameterValue::Missing(value) => value,
+            ParameterValue::EncodedZone(zone) => &zone.written,
+        }
     }
 
     /// Whether an `=` and a value were present at all.
     #[must_use]
     pub fn has_value(&self) -> bool {
-        self.has_value
+        !matches!(self.value, ParameterValue::Missing(_))
+    }
+
+    pub(crate) fn remove_quotes(written: &[u8]) -> &[u8] {
+        written
+            .strip_prefix(b"\"")
+            .and_then(|inside| inside.strip_suffix(b"\""))
+            .unwrap_or(written)
+    }
+
+    pub(super) fn encoded_zone<'a>(name: &[u8], written: &'a [u8]) -> Option<&'a [u8]> {
+        let unquoted = Self::remove_quotes(written);
+        (name.eq_ignore_ascii_case(b"TZID") && caret_needs_decoding(unquoted)).then_some(unquoted)
+    }
+
+    /// Borrow the decoded identity of a `TZID` parameter.
+    pub(crate) fn zone_identifier(&self) -> &[u8] {
+        match &self.value {
+            ParameterValue::EncodedZone(zone) => &zone.decoded,
+            ParameterValue::Written(_) | ParameterValue::Missing(_) => self.unquoted(),
+        }
     }
 
     /// Whether this parameter is named `name`, compared as RFC 5545 compares a name.

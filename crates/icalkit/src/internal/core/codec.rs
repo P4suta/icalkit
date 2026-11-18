@@ -246,13 +246,13 @@ impl DecodeValue<'_> for CivilDateTime {
 
 /// The zone a property's `TZID` parameter names, or `None` when it names none.
 ///
-/// The first occurrence, and the octets with a section 3.2 `DQUOTE` pair removed, which is the form a zone source is handed.
+/// Zone sources receive the first occurrence after parameter unquoting and RFC 6868 decoding.
 /// A second `TZID` on one line is a defect this level cannot report — a decoder answers with a value or with one code — and both stay in storage and reachable through [`Property::parameters_named`].
 ///
 /// An empty `TZID` names no zone, so it is not one: `TZID=:` reads as a floating date-time and the parameter is still written back exactly as it arrived.
 fn zone_of(property: &Property) -> Option<&[u8]> {
     let named = property.parameters_named(b"TZID").next()?;
-    let tzid = named.unquoted();
+    let tzid = named.zone_identifier();
     (!tzid.is_empty()).then_some(tzid)
 }
 
@@ -1877,6 +1877,35 @@ mod tests {
                 ParameterEdit::set(b"TZID", b"Europe/Paris"),
             ],
         );
+    }
+
+    #[test]
+    fn replacing_a_zoned_value_updates_the_decoded_tzid_and_wire_spelling() {
+        let mut property = decorated(&[(b"TZID", b"^'First^'")], b"20260815T090000");
+        for (identity, wire) in [
+            (&b"Second^n"[..], &b"Second^^n"[..]),
+            (&b"Plain"[..], &b"Plain"[..]),
+            (&b"Line\nZone"[..], &b"Line^nZone"[..]),
+        ] {
+            let value = DateTimeValue::Zoned {
+                stamp: stamp(2026, 8, 15, 9, 0, 0),
+                tzid: identity,
+            };
+            PropertyMut::new(&mut property).set(&value).unwrap();
+            assert_eq!(
+                DateTimeValue::decode_property(&property).unwrap().tzid(),
+                Some(identity)
+            );
+            assert_eq!(
+                property
+                    .parameters_named(b"TZID")
+                    .next()
+                    .unwrap()
+                    .value()
+                    .as_bytes(),
+                wire
+            );
+        }
     }
 
     /// Moving a zoned date-time keeps the zone it named, which is the cycle the shape exists for: read the value, change the clock, write it back, and the `TZID` is still there.

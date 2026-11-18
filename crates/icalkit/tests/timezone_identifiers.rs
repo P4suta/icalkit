@@ -97,6 +97,23 @@ fn literal_quotes_in_query_definition_names_are_not_parameter_delimiters() {
     for property in ["TZID:\"\"", "TZID:\"Test/Zone\"", "TZID;VALUE=TEXT:\"\""] {
         assert_projects(property, "");
     }
+    let extra = event("DTSTART;TZID=Test/Zone:20240102T090000");
+    assert!(Query::parse(request("TZID:\"Test/Zone\"", &extra).as_bytes()).is_err());
+}
+
+#[test]
+fn zoned_event_values_decode_parameter_escapes_once() {
+    for (parameter, expected) in [
+        ("^'Test/Zone^'", "\"Test/Zone\""),
+        ("\"Test/^^n,Zone\"", "Test/^n,Zone"),
+        ("Test/^x", "Test/^x"),
+    ] {
+        let source = calendar(&event(&format!("DTSTART;TZID={parameter}:20240102T090000")));
+        let parsed = Calendar::parse(source.as_bytes()).unwrap();
+        let value = parsed.events().next().unwrap().dtstart().unwrap();
+        assert_eq!(value.as_zoned().unwrap().1, expected);
+        assert_eq!(parsed.to_bytes(), source.as_bytes());
+    }
 }
 
 #[test]

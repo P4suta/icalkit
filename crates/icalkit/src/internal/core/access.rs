@@ -73,11 +73,7 @@ impl Parameter {
     /// A parameter that arrived with no `=` at all has no value, and this reports the empty octets stored in place of one.
     #[must_use]
     pub fn unquoted(&self) -> &[u8] {
-        let written = self.value().as_bytes();
-        written
-            .strip_prefix(b"\"")
-            .and_then(|inside| inside.strip_suffix(b"\""))
-            .unwrap_or(written)
+        Self::remove_quotes(self.value().as_bytes())
     }
 }
 
