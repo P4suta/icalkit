@@ -78,14 +78,16 @@ use crate::internal::core::{
     Weekday, report_diagnostic,
 };
 
-use crate::internal::tz::annual_clocks::{self, ClockLimit, ClockSet, read_clock_field};
+use crate::internal::tz::annual_clocks::{
+    self, ClockLimit, ClockRules, ClockSet, read_clock_field,
+};
 use crate::internal::tz::annual_counts::{CountEnd, counted_end};
 use crate::internal::tz::annual_dates::{DateSelectors, MonthSet, YearDateMasks};
 use crate::internal::tz::annual_positions::AnnualPositions;
 use crate::internal::tz::earliest_observances::EarliestObservances;
 use crate::internal::tz::model::{
-    NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
-    ZoneSetError,
+    NthWeek, Observance, ObservanceReader, RuleDay, StagedDefinition, TransitionTable,
+    VtimezoneSet, YearlyRule, ZoneSetError,
 };
 use crate::internal::tz::month_days::MonthDaySet;
 use crate::internal::tz::week_years::{WeekNumbers, WeekYearMasks};
@@ -159,7 +161,7 @@ impl ObservanceReader for Component {
         meter: &mut Meter,
         sink: &mut dyn DiagnosticSink,
         out: &mut Vec<Observance>,
-    ) -> Option<Box<str>> {
+    ) -> Option<StagedDefinition> {
         read_definition(self, meter, sink, out)
     }
 }
@@ -173,10 +175,13 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
     meter: &mut Meter,
     sink: &mut S,
     out: &mut Vec<Observance>,
-) -> Option<Box<str>> {
+) -> Option<StagedDefinition> {
     let tzid = identifier(component)?;
-    read_observances(component, meter, sink, out, &tzid);
-    Some(tzid)
+    let exceeds_limit = read_observances(component, meter, sink, out, &tzid);
+    Some(StagedDefinition {
+        tzid,
+        exceeds_limit,
+    })
 }
 
 fn read_observances<S: DiagnosticSink + ?Sized>(
@@ -185,7 +190,7 @@ fn read_observances<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
     out: &mut Vec<Observance>,
     tzid: &str,
-) {
+) -> bool {
     let mut staged = EarliestObservances::new(meter);
     let mut declared = 0_usize;
     for inner in component.components() {
@@ -206,7 +211,9 @@ fn read_observances<S: DiagnosticSink + ?Sized>(
             Some(Subject::new(tzid.as_bytes())),
         );
     }
+    let exceeds_limit = staged.has_overflow_witness();
     out.extend(staged.into_observances());
+    exceeds_limit
 }
 
 /// The definition's nonempty scalar `TEXT` identifier, decoded once.
@@ -276,7 +283,15 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
         .value()
         .and_then(|value| wall_clock(value, offset_from));
     if let Some(start) = start {
-        let mut rules = read_rule(component, start, offset_from, meter, sink, out.capacity())
+        let rule = read_rule(component, start, offset_from, meter, sink, out.capacity());
+        let continues = matches!(
+            rule,
+            Some(YearlyRules {
+                patterns: YearlyPatterns::Clocks(ClockRules::NoRemainingCivilOnsets),
+                ..
+            })
+        );
+        let mut rules = rule
             .into_iter()
             .flat_map(YearlyRules::into_rules)
             .peekable();
@@ -287,13 +302,12 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
                 }),
             );
         } else {
-            out.push(Observance::new(
-                start,
-                offset_from,
-                offset_to,
-                daylight,
-                None,
-            ));
+            let anchor = Observance::new(start, offset_from, offset_to, daylight, None);
+            out.push(if continues {
+                anchor.with_count_beyond_civil_range()
+            } else {
+                anchor
+            });
         }
     }
     let dated = push_dated_transitions(component, offset_from, offset_to, daylight, out);
@@ -371,7 +385,7 @@ impl YearlyRules {
 
 #[derive(Debug)]
 enum YearlyPatterns {
-    Clocks(Vec<YearlyRule>),
+    Clocks(ClockRules),
     Single(YearlyRule),
     Months {
         months: Option<MonthSet>,
@@ -394,7 +408,8 @@ enum YearlyPatterns {
 impl YearlyPatterns {
     fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
         let (single, monthly, compiled, weeks, clocks) = match self {
-            Self::Clocks(rules) => (None, None, None, None, Some(rules)),
+            Self::Clocks(ClockRules::Patterns(rules)) => (None, None, None, None, Some(rules)),
+            Self::Clocks(ClockRules::NoRemainingCivilOnsets) => (None, None, None, None, None),
             Self::Single(rule) => (Some(rule), None, None, None, None),
             Self::Months {
                 months,
@@ -1176,7 +1191,7 @@ fn report_undefined<S: DiagnosticSink + ?Sized>(
     while let Some(component) = pending.pop() {
         for property in component.properties() {
             for parameter in property.parameters_named(b"TZID") {
-                let named = parameter.unquoted();
+                let named = parameter.zone_identifier();
                 // An empty `TZID` names no zone, which is the reading `ical-core` already gives it when it declines to make such a value a zoned one.
                 if !named.is_empty() && !is_defined(zones, refused, named) {
                     undefined.insert(named);
@@ -1930,7 +1945,9 @@ END:VTIMEZONE
         let mut reported: Vec<Diagnostic> = Vec::new();
         let mut out = Vec::new();
         let tzid = vtimezone.read_vtimezone(&mut meter, &mut reported, &mut out);
-        assert_eq!(tzid, Some(Box::from("America/New_York")));
+        let staged = tzid.unwrap();
+        assert_eq!(staged.tzid.as_ref(), "America/New_York");
+        assert!(!staged.exceeds_limit);
         assert_eq!(out.len(), 2);
         assert_eq!(reported.as_slice(), []);
         assert_eq!(

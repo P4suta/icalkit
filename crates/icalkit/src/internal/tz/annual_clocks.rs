@@ -271,6 +271,12 @@ impl<D: AnnualCandidates<Point = CivilDate>> AnnualCandidates for TimeCandidates
     }
 }
 
+#[derive(Debug)]
+pub(super) enum ClockRules {
+    Patterns(Vec<YearlyRule>),
+    NoRemainingCivilOnsets,
+}
+
 pub(super) fn compile<D: ClockDates>(
     dates: &D,
     clocks: ClockSet,
@@ -279,12 +285,13 @@ pub(super) fn compile<D: ClockDates>(
     interval: YearInterval,
     end: ClockLimit,
     capacity: usize,
-) -> Option<Vec<YearlyRule>> {
+) -> Option<ClockRules> {
     let candidates = TimeCandidates {
         dates,
         clocks,
         positions,
     };
+    let counted = matches!(end, ClockLimit::Count(_));
     let end = match end {
         ClockLimit::Unlimited => None,
         ClockLimit::Count(count) => match counted_end(&candidates, start, interval, count)? {
@@ -361,7 +368,11 @@ pub(super) fn compile<D: ClockDates>(
             }
         }
     }
-    Some(kept.into_sorted_vec())
+    Some(if counted && end.is_none() && kept.is_empty() {
+        ClockRules::NoRemainingCivilOnsets
+    } else {
+        ClockRules::Patterns(kept.into_sorted_vec())
+    })
 }
 
 struct Product {

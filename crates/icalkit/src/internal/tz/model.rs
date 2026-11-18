@@ -331,8 +331,15 @@ pub struct Observance {
     offset_to: UtcOffset,
     /// Whether this is the zone's daylight observance.
     daylight: bool,
-    /// The rule repeating it, absent for a date-driven transition.
-    rule: Option<YearlyRule>,
+    /// Recurrence and coverage remaining after the anchor.
+    recurrence: ObservanceRecurrence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum ObservanceRecurrence {
+    Dated,
+    CountBeyondCivilRange,
+    Annual(YearlyRule),
 }
 
 impl Observance {
@@ -350,7 +357,17 @@ impl Observance {
             offset_from,
             offset_to,
             daylight,
-            rule,
+            recurrence: match rule {
+                Some(rule) => ObservanceRecurrence::Annual(rule),
+                None => ObservanceRecurrence::Dated,
+            },
+        }
+    }
+
+    pub(super) const fn with_count_beyond_civil_range(self) -> Self {
+        Self {
+            recurrence: ObservanceRecurrence::CountBeyondCivilRange,
+            ..self
         }
     }
 
@@ -381,7 +398,10 @@ impl Observance {
     /// The rule repeating it, absent for a date-driven transition.
     #[must_use]
     pub const fn rule(self) -> Option<YearlyRule> {
-        self.rule
+        match self.recurrence {
+            ObservanceRecurrence::Annual(rule) => Some(rule),
+            ObservanceRecurrence::Dated | ObservanceRecurrence::CountBeyondCivilRange => None,
+        }
     }
 
     /// Whether the offsets on either side of this observance differ.
@@ -398,9 +418,10 @@ impl Observance {
     /// A rule-driven observance uses its inclusive end from `UNTIL` or `COUNT`.
     #[must_use]
     pub fn covered_through(self) -> Option<CivilDate> {
-        match self.rule {
-            None => Some(self.start.date()),
-            Some(rule) => rule.through(),
+        match self.recurrence {
+            ObservanceRecurrence::Dated => Some(self.start.date()),
+            ObservanceRecurrence::CountBeyondCivilRange => None,
+            ObservanceRecurrence::Annual(rule) => rule.through(),
         }
     }
 }
@@ -470,7 +491,11 @@ impl TransitionTable {
                 ),
             );
         }
-        let coverage_end = coverage_end_of(&kept);
+        let coverage_end = if truncated {
+            kept.last().map(|last| last.start().date())
+        } else {
+            coverage_end_of(&kept)
+        };
         let coverage_start = kept.first().map(|first| first.start().date());
         let rules = kept
             .iter()
@@ -515,14 +540,12 @@ impl TransitionTable {
         self.truncated
     }
 
-    /// The last date backed by real data, absent when this zone knows the future.
+    /// The last date supported by the admitted observances.
     ///
-    /// `None` means every kind of observance has a rule without a finite end within civil years 0000–9999.
-    /// A date means every question after it is answered by continuing the final observance, and carries [`AnswerBasis::BeyondKnownTransitions`] saying so.
-    ///
-    /// "Every kind" is `STANDARD` against `DAYLIGHT`, and it is the correction M2 made here.
-    /// A single endless rule used to make the whole table claim to know the future, so a definition whose daylight rule runs forever and whose standard transitions are three `RDATE` lines ending in 2029 answered midwinter 2031 with permanent summer time and called it computed.
-    /// Half of that table ran out; a zone that cannot say when its summer ends does not know its own future, whatever its other half states.
+    /// Truncation limits coverage to the last admitted anchor date.
+    /// A complete table with observances has open coverage when each represented side covers the remaining civil years.
+    /// An empty table has no end date and supplies no transition.
+    /// Answers after a finite end carry [`AnswerBasis::BeyondKnownTransitions`].
     ///
     /// [`AnswerBasis::BeyondKnownTransitions`]: crate::internal::tz::AnswerBasis::BeyondKnownTransitions
     #[must_use]
@@ -825,12 +848,22 @@ impl VtimezoneSet {
     }
 }
 
+/// The identifier and admission status of one staged time zone definition.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StagedDefinition {
+    /// Decoded identifier from the definition.
+    pub tzid: Box<str>,
+    /// Whether the staged candidates include a witness beyond the remaining limit.
+    pub exceeds_limit: bool,
+}
+
 /// Reading one `VTIMEZONE` out of whatever holds it.
 ///
 /// A trait rather than an inherent constructor because the thing that holds a `VTIMEZONE` is `crate::internal::core::Component`, and a caller with its own representation — a database row, a hand-built definition — should be able to feed this crate without going through the model.
 /// The identifier comes back separately from the observances because a `VTIMEZONE` with no `TZID` is a component this crate cannot file anywhere, which is a different answer from one that declared a zone with no transitions.
 pub trait ObservanceReader {
-    /// Append this definition's observances to `out` and answer with its identifier.
+    /// Append the earliest candidates within the remaining limit plus one overflow witness.
+    /// Table admission charges the meter and reports truncation.
     ///
     /// `None` when there is no usable `TZID`.
     /// Everything else survivable — an observance whose rule this crate does not evaluate, a definition with no observance at all — is a diagnostic on `sink` and a shorter list in `out`.
@@ -839,7 +872,7 @@ pub trait ObservanceReader {
         meter: &mut Meter,
         sink: &mut dyn DiagnosticSink,
         out: &mut Vec<Observance>,
-    ) -> Option<Box<str>>;
+    ) -> Option<StagedDefinition>;
 }
 
 #[cfg(test)]

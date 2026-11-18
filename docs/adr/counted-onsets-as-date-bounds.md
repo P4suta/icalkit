@@ -19,6 +19,7 @@ Gregorian dates repeat under the [400-year leap rule](https://aa.usno.navy.mil/f
 Clip stored masks after the anchor through a representable endpoint.
 Keep source anchors and explicit dates independent.
 An endpoint beyond civil years 0000–9999 leaves patterns without a finite bound inside that range.
+A counted clock series with no remaining civil onsets retains its anchor and coverage through year 9999.
 
 ## Alternatives
 

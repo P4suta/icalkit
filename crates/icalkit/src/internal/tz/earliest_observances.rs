@@ -43,6 +43,10 @@ impl EarliestObservances {
         self.capacity
     }
 
+    pub(super) fn has_overflow_witness(&self) -> bool {
+        self.entries.len() == self.capacity
+    }
+
     pub(super) fn into_observances(self) -> impl Iterator<Item = Observance> {
         self.entries
             .into_sorted_vec()

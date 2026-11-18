@@ -15,7 +15,9 @@ Tables select earliest UTC onsets, with complete values breaking ties.
 
 Use a bounded priority queue with the table's ordering key.
 Keep the earliest candidates within the remaining budget plus one overflow witness.
+Direct readers receive the identifier and whether the staged candidates exceed the remaining limit.
 Table admission charges the meter and reports truncation once.
+After truncation the last admitted anchor bounds coverage, including for recurring patterns.
 Store admitted values in an immutable slice without spare capacity.
 Track source readability independently of buffer length.
 

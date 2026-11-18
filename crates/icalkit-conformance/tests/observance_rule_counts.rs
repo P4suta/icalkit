@@ -70,6 +70,22 @@ fn admitted(parts: &str, start: &str) -> VtimezoneSet {
     zones
 }
 
+#[test]
+fn counted_clock_end_beyond_the_civil_range_preserves_coverage() {
+    for parts in ["COUNT=2", "COUNT=2;BYHOUR=2"] {
+        let zones = admitted(parts, "99960229T020000");
+        let table = zones.table(TZID).unwrap();
+        assert_eq!(table.coverage_end(), None, "{parts}");
+        assert_eq!(
+            table
+                .resolve(TZID, clock(date(9999, 6, 1), 12, 0))
+                .unwrap()
+                .basis,
+            AnswerBasis::Computed
+        );
+    }
+}
+
 fn onsets(zones: &VtimezoneSet, year: u16) -> BTreeSet<CivilDate> {
     zones
         .table(TZID)

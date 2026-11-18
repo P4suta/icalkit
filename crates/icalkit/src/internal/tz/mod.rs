@@ -42,8 +42,8 @@ pub use combine::{CombinedZoneSource, FixedOffsetSource};
 pub use exclusions::ResolvedExclusions;
 pub use ident::{Tzid, TzidForm};
 pub use model::{
-    NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
-    ZoneAdmission, ZoneSetError,
+    NthWeek, Observance, ObservanceReader, RuleDay, StagedDefinition, TransitionTable,
+    VtimezoneSet, YearlyRule, ZoneAdmission, ZoneSetError,
 };
 pub use overrides::{OrphanScan, WallClockShift, extra_widening};
 pub use reader::read_calendar_zones;

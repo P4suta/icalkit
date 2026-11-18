@@ -8,7 +8,7 @@
 #![cfg(test)]
 
 use icalkit_conformance::internal::core::{
-    Diagnostic, DiagnosticCode, Document, IgnoreDiagnostics, Limits, Meter,
+    ContentLineReader, Diagnostic, DiagnosticCode, Document, IgnoreDiagnostics, Limits, Meter,
 };
 use icalkit_conformance::internal::tz::{VtimezoneSet, read_calendar_zones};
 
@@ -18,6 +18,25 @@ fn definition(identifier: &str) -> String {
          DTSTART:20000101T000000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0200\r\n\
          END:STANDARD\r\nEND:VTIMEZONE\r\n"
     )
+}
+
+#[test]
+fn escaped_reference_storage_is_charged_before_retention() {
+    let limits = Limits::DEFAULT;
+    let read = |source: &[u8], budget| {
+        let mut meter = Meter::with_budget(limits, budget);
+        let mut lines = ContentLineReader::new(source, limits.grammar());
+        let result = Document::from_tokens(&mut lines, &mut meter, &mut IgnoreDiagnostics);
+        (result, meter.spent())
+    };
+    let plain = b"DTSTART;TZID=Test/AA:20240102T090000\r\n";
+    let encoded = b"DTSTART;TZID=Test/^^:20240102T090000\r\n";
+    let (plain_result, budget) = read(plain, u64::MAX);
+    plain_result.unwrap();
+    assert!(read(encoded, budget).0.is_err());
+    let (decoded, cost) = read(encoded, u64::MAX);
+    assert!(cost > budget);
+    assert_eq!(decoded.unwrap().to_bytes(), encoded);
 }
 
 fn reference(parameter: &str) -> String {
@@ -94,6 +113,12 @@ fn references_quote_parameters_instead_of_escaping_property_text() {
         (r"Test/Semi\;Zone", "\"Test/Semi;Zone\"", "Test/Semi;Zone"),
         (r"Test/Back\\Slash", r"Test/Back\Slash", r"Test/Back\Slash"),
         ("Test/Colon:Zone", "\"Test/Colon:Zone\"", "Test/Colon:Zone"),
+        ("\"Test/Zone\"", "^'Test/Zone^'", "\"Test/Zone\""),
+        (
+            r"Test/Line\n^Zone",
+            "\"Test/Line^n^^Zone\"",
+            "Test/Line\n^Zone",
+        ),
     ] {
         let body = format!(
             "{}{}",
@@ -103,6 +128,21 @@ fn references_quote_parameters_instead_of_escaping_property_text() {
         let (zones, diagnostics, _) = read(&body, Limits::DEFAULT);
         assert!(diagnostics.is_empty(), "{written}: {diagnostics:?}");
         assert!(zones.table(decoded).is_some(), "{decoded}");
+        let changed = format!(
+            "{}{}",
+            definition(&format!("TZID:{written}")),
+            reference("\"Test/Undefined,Zone\"")
+        );
+        let (_, diagnostics, _) = read(&changed, Limits::DEFAULT);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code(),
+            DiagnosticCode::MissingTimeZoneDefinition
+        );
+        assert_eq!(
+            diagnostics[0].subject().unwrap().as_bytes(),
+            b"Test/Undefined,Zone"
+        );
     }
 }
 
@@ -132,10 +172,11 @@ fn equivalent_text_escapes_share_duplicate_identity() {
 #[test]
 fn refused_decoded_definitions_do_not_appear_undefined() {
     let body = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         definition("TZID:Test/Admitted"),
         definition(r"TZID:Test/Refused\,Zone"),
-        reference("\"Test/Refused,Zone\"")
+        reference("\"Test/Refused,Zone\""),
+        reference("Test/Undefined")
     );
     let (zones, diagnostics, meter) = read(&body, Limits::DEFAULT.with_max_vtimezone_components(1));
     assert_eq!(zones.len(), 1);
@@ -146,11 +187,18 @@ fn refused_decoded_definitions_do_not_appear_undefined() {
             .copied()
             .map(Diagnostic::code)
             .collect::<Vec<_>>(),
-        [DiagnosticCode::VtimezoneComponentsTruncated]
+        [
+            DiagnosticCode::VtimezoneComponentsTruncated,
+            DiagnosticCode::MissingTimeZoneDefinition
+        ]
     );
     assert_eq!(
         diagnostics[0].subject().unwrap().as_bytes(),
         b"Test/Refused,Zone"
+    );
+    assert_eq!(
+        diagnostics[1].subject().unwrap().as_bytes(),
+        b"Test/Undefined"
     );
 }
 

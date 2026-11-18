@@ -97,10 +97,8 @@ impl TransitionTable {
         self.era_at(instant)?.observance
     }
 
-    /// The observances in force on either side of `local`, which is where a fold and a gap are.
-    ///
-    /// Read at the earliest and at the latest instant a wall clock showing `local` could name.
-    /// The two are the same observance every day of the year but two; where they differ, the zone moved its clock through `local`, and which of the two offsets govern the readings of it is what says whether the wall time happened twice or not at all.
+    /// Sample the observances at the earliest and latest instants the local time could name.
+    /// Use [`ZoneSource::resolve`] to classify the local time.
     #[must_use]
     pub fn observances_around(
         &self,
@@ -407,17 +405,12 @@ fn latest_rule_onset(observance: Observance, instant: Instant) -> Option<Instant
 
 /// Append every onset `observance`'s rule has after `from` and at or before `to`.
 ///
-/// The years the window can touch are its own two and one either side of them, because an observance's onset is read on its own clock and that clock can be a day the other side of midnight from UTC.
+/// The offset preceding the transition places both endpoints on the observance's clock.
 /// A yearly rule contributes at most one onset per year, so this pushes at most a handful whatever the window holds.
 fn push_rule_onsets(observance: Observance, from: Instant, to: Instant, out: &mut Vec<Instant>) {
-    let (Some(first), Some(last)) = (year_at(from), year_at(to)) else {
-        return;
-    };
-    let begins = observance.start().date().year();
-    for year in first.saturating_sub(1)..=last.saturating_add(1) {
-        if year < begins {
-            continue;
-        }
+    let first = onset_year(from, observance.offset_from()).max(observance.start().date().year());
+    let last = onset_year(to, observance.offset_from());
+    for year in first..=last {
         let asked = observance
             .transition_in(year)
             .and_then(|local| local.at_offset(observance.offset_from()));
@@ -427,19 +420,18 @@ fn push_rule_onsets(observance: Observance, from: Instant, to: Instant, out: &mu
     }
 }
 
-/// The year `instant` falls in on the UTC clock, absent outside the years RFC 5545 can write.
-fn year_at(instant: Instant) -> Option<u16> {
-    CivilDateTime::from_instant(instant, UtcOffset::UTC).map(|clock| clock.date().year())
+/// Clamp the search year to the civil range on the observance's clock.
+fn onset_year(instant: Instant, offset: UtcOffset) -> u16 {
+    CivilDateTime::from_instant(instant, offset).map_or_else(
+        || if instant < Instant::EPOCH { 0 } else { 9999 },
+        |clock| clock.date().year(),
+    )
 }
 
 /// The first year to ask `observance`'s rule about, absent when it repeats by no rule.
 fn probe_year(observance: Observance, instant: Instant) -> Option<u16> {
     let rule = observance.rule()?;
-    let queried = CivilDateTime::from_instant(instant, UtcOffset::UTC)?
-        .date()
-        .year();
-    // A year late, because an instant still in one year at UTC may already be in the next one on the zone's own clock, and a transition dated there would otherwise be missed.
-    let reachable = queried.saturating_add(1);
+    let reachable = onset_year(instant, observance.offset_from());
     // A rule with an `UNTIL` has no onset past it, so the scan starts at the last year it could have fired in rather than at years it certainly did not.
     Some(
         rule.through()
