@@ -19,6 +19,7 @@ Replay counted keys still eligible for later windows.
 Track delivered additions across gaps.
 Charge the session before storing or copying history.
 With unchanged inputs, calendar queries resume after the last start and identity.
+Retries charge the session again for earlier occurrences.
 On interruption, publish only entries known to precede unseen entries.
 For UTC, the greatest visited rule or addition key minus the largest shift bounds unseen starts.
 

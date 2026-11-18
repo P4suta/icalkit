@@ -83,6 +83,8 @@ impl Calendar {
 
     /// Resume in effective start order, breaking ties by recurrence identity.
     /// Use the same calendar, decoded `UID`, and zone inputs for the same or a later window.
+    /// Each retry charges the session for the requested window, including occurrences before the cursor.
+    /// A fresh session with the same limit can stop at the same cursor and report budget exhaustion again.
     pub fn resume_occurrences<'a>(
         &'a self,
         session: &'a mut Session<'_>,

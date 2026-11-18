@@ -167,7 +167,7 @@ END:VCALENDAR\r\n",
 }
 
 #[test]
-fn calendar_recurrence_budget_exhaustion_is_a_terminal_error_not_a_short_set() {
+fn calendar_retries_charge_the_requested_window_to_each_session() {
     let calendar = Calendar::parse(
         b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
@@ -181,19 +181,67 @@ END:VEVENT\r\n\
 END:VCALENDAR\r\n",
     )
     .unwrap();
-    let policy = ResourcePolicy::secure().with_occurrences_per_search(1);
-    let engine = Engine::builder().resource_policy(policy).build();
-    let mut session = engine.session();
+    let uid = "rare@example.test";
+    let exhausted = "icalkit.recurrence.budget-exhausted";
     let window = Window::new(january_2024(1, 0), january_2024(20, 0)).unwrap();
-    let mut occurrences = calendar
-        .occurrences(&mut session, "rare@example.test", window)
+    let policy = ResourcePolicy::secure().with_occurrences_per_search(2);
+    let engine = Engine::builder().resource_policy(policy).build();
+    let mut shared = engine.session();
+    let rule = Rule::parse("FREQ=DAILY;COUNT=1").unwrap();
+    let mut prior = rule
+        .occurrences(&mut shared, january_2024(1, 9), window)
         .unwrap();
+    assert_eq!(prior.try_next().unwrap().unwrap().key(), january_2024(1, 9));
+    drop(prior);
 
-    assert!(occurrences.try_next().unwrap().is_some());
+    let mut first = calendar.occurrences(&mut shared, uid, window).unwrap();
+    assert_eq!(first.try_next().unwrap().unwrap().key(), january_2024(1, 9));
+    let after_one = first.cursor();
+    assert_eq!(first.try_next().unwrap_err().code().as_str(), exhausted);
+    drop(first);
     assert_eq!(
-        occurrences.try_next().unwrap_err().code().as_str(),
-        "icalkit.recurrence.budget-exhausted"
+        calendar
+            .resume_occurrences(&mut shared, uid, window, after_one)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        exhausted
     );
+
+    let mut fresh = engine.session();
+    let mut second = calendar
+        .resume_occurrences(&mut fresh, uid, window, after_one)
+        .unwrap();
+    assert_eq!(
+        second.try_next().unwrap().unwrap().key(),
+        january_2024(2, 9)
+    );
+    let after_two = second.cursor();
+    assert_eq!(second.try_next().unwrap_err().code().as_str(), exhausted);
+    drop(second);
+
+    let mut fresh = engine.session();
+    let mut stalled = calendar
+        .resume_occurrences(&mut fresh, uid, window, after_two)
+        .unwrap();
+    assert_eq!(stalled.try_next().unwrap_err().code().as_str(), exhausted);
+    assert_eq!(stalled.cursor(), after_two);
+    drop(stalled);
+
+    let larger = Engine::builder()
+        .resource_policy(policy.with_occurrences_per_search(10))
+        .build();
+    let mut fresh = larger.session();
+    let mut rest = calendar
+        .resume_occurrences(&mut fresh, uid, window, after_two)
+        .unwrap();
+    for day in 3..=10 {
+        assert_eq!(
+            rest.try_next().unwrap().unwrap().key(),
+            january_2024(day, 9)
+        );
+    }
+    assert_eq!(rest.try_next().unwrap(), None);
 }
 
 #[test]
