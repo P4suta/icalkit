@@ -27,7 +27,7 @@
 
 use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, Diagnostic, DiagnosticCode, Document,
-    IgnoreDiagnostics, Instant, Limits, Meter, UtcOffset,
+    IgnoreDiagnostics, Instant, Limits, Meter, Subject, UtcOffset,
 };
 use icalkit_conformance::internal::tz::{
     AnswerBasis, CombinedZoneSource, LocalResolution, OffsetAnswer, PolicyOutcome, Reading, Tzid,
@@ -663,8 +663,11 @@ fn a_zone_the_limit_refused_is_not_reported_as_one_the_file_never_defined() {
     let mut told: Vec<Diagnostic> = Vec::new();
     let zones = read_calendar_zones(calendar(&document).unwrap(), &mut meter, &mut told);
     assert_eq!(zones.len(), 1, "the policy admitted one of the two");
-    let codes: Vec<DiagnosticCode> = told.iter().copied().map(Diagnostic::code).collect();
-    assert_eq!(codes, [DiagnosticCode::VtimezoneComponentsTruncated]);
+    let [refused] = told.as_slice() else {
+        panic!("expected one refused zone, got {told:?}");
+    };
+    assert_eq!(refused.code(), DiagnosticCode::VtimezoneComponentsTruncated);
+    assert_eq!(refused.subject(), Some(Subject::new(NEW_YORK.as_bytes())));
 }
 
 /// Each undefined reference has the same diagnostic code and a distinct identifier as its subject.
@@ -676,18 +679,16 @@ fn an_identifier_nothing_defines_is_reported_by_name() {
     let mut told: Vec<Diagnostic> = Vec::new();
     let zones = read_calendar_zones(calendar(&document).unwrap(), &mut meter, &mut told);
     assert!(zones.is_empty());
+    let mut reports: Vec<_> = told
+        .iter()
+        .map(|entry| (entry.code(), entry.subject()))
+        .collect();
+    reports.sort_unstable();
     assert_eq!(
-        told.iter()
-            .copied()
-            .map(Diagnostic::code)
-            .collect::<Vec<_>>(),
-        vec![DiagnosticCode::MissingTimeZoneDefinition; 3],
-        "one report per identifier, which is the half that works"
-    );
-    let first = *told.first().unwrap();
-    assert!(
-        told.iter().any(|entry| *entry != first),
-        "three different missing zones may not arrive as three identical values: a caller \
-         cannot say which zone it must go and find"
+        reports,
+        ["America/Denver", "Asia/Kolkata", "Pacific/Kiritimati"].map(|name| (
+            DiagnosticCode::MissingTimeZoneDefinition,
+            Some(Subject::new(name.as_bytes()))
+        ))
     );
 }
