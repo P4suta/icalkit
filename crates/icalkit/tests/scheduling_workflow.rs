@@ -1277,6 +1277,83 @@ fn an_instance_reply_requires_the_original_date_or_time_form_of_the_key() {
 }
 
 #[test]
+fn an_answer_at_a_range_anchor_cannot_change_later_participation() {
+    let master = Calendar::parse(range_series::HELD).unwrap();
+    let organizer = Actor::new("mailto:chair@example.test").unwrap();
+    let changed = Message::read(range_series::REQUEST)
+        .unwrap()
+        .review(&master, &organizer)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let original = changed.to_bytes();
+    let fields = "RECURRENCE-ID:20260317T140000Z\r\nDTSTART:20260317T160000Z\r\n\
+                  ORGANIZER:mailto:chair@example.test\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n";
+    let reply = Message::read(&scheduling_payload(
+        "REPLY",
+        "range@example.test",
+        "20260303T120000Z",
+        3,
+        fields,
+    ))
+    .unwrap();
+    let attendee = Actor::new("mailto:alice@example.test").unwrap();
+    let review = reply.review(&changed, &attendee);
+    let accepted = review.is_ok();
+    let after = match review {
+        Ok(review) => review.authorize().apply().unwrap(),
+        Err(error) => {
+            assert_eq!(
+                error.code().as_str(),
+                "icalkit.scheduling.authorization-denied"
+            );
+            assert_eq!(changed.to_bytes(), original);
+            changed
+        },
+    };
+    let written = String::from_utf8(after.to_bytes()).unwrap();
+    assert_eq!(
+        written
+            .matches("RECURRENCE-ID;RANGE=THISANDFUTURE:20260317T140000Z\r\n")
+            .count(),
+        1
+    );
+    assert!(!written.contains("RECURRENCE-ID:20260317T140000Z\r\n"));
+    let query = Query::parse(br#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:">
+<D:prop><C:calendar-data><C:expand start="20260317T000000Z" end="20260325T000000Z"/></C:calendar-data></D:prop>
+<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/></C:comp-filter></C:filter></C:calendar-query>"#).unwrap();
+    let engine = Engine::builder().build();
+    let projection = query.project(&mut engine.session(), &after).unwrap();
+    let text = str::from_utf8(projection.as_bytes())
+        .unwrap()
+        .replace("\r\n ", "");
+    for (date, status) in [
+        (
+            "20260317",
+            if accepted { "ACCEPTED" } else { "NEEDS-ACTION" },
+        ),
+        ("20260324", "NEEDS-ACTION"),
+    ] {
+        let event = text
+            .split("BEGIN:VEVENT\r\n")
+            .find(|event| event.contains(&format!("RECURRENCE-ID:{date}T140000Z\r\n")))
+            .unwrap();
+        assert!(
+            event.contains(&format!("DTSTART:{date}T160000Z\r\n")),
+            "{event}"
+        );
+        assert!(
+            event.lines().any(
+                |line| line.starts_with(&format!("ATTENDEE;PARTSTAT={status}"))
+                    && line.ends_with(":mailto:alice@example.test")
+            ),
+            "{date}: {event}"
+        );
+    }
+}
+
+#[test]
 fn an_instance_reply_uses_the_schedule_from_the_latest_range_request() {
     let current = Calendar::parse(range_series::HELD).unwrap();
     let organizer = Actor::new("mailto:chair@example.test").unwrap();
