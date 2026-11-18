@@ -952,11 +952,7 @@ mod tests {
         }
     }
 
-    /// A day is between 23 and 25 hours and this unit never assumes otherwise.
-    ///
-    /// The lengths are the zone's, computed where `docs/adr/0003` says they belong: 2026-03-08 in a zone that springs forward at 02:00 local runs 05:00Z to 04:00Z the following day, which is 23 hours, and 2026-11-01 in the same zone runs 04:00Z to 05:00Z the following day,
-    /// which is 25.
-    /// What is asserted here is that a report neither rounds them to 24 nor re-derives them: what `expand` placed is what comes back.
+    /// The report preserves the supplied 23-hour and 25-hour intervals.
     #[test]
     fn a_day_that_is_not_twenty_four_hours_long_survives_the_report_unchanged() {
         // 2026-03-08T05:00:00Z to 2026-03-09T04:00:00Z, and 2026-11-01T04:00:00Z to 2026-11-02T05:00:00Z.

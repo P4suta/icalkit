@@ -1433,13 +1433,8 @@ fn collect_purity_violations() -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// What the workspace says about the member that compiles the grammar alone.
-///
-/// That member is the layering guarantee.
-/// Deleted, the grammar is a directory inside `ical-core` again and `use crate::CivilDate;` from inside it compiles; nothing else here would notice,
-/// because every other mention of it is a comment, an `--exclude` that is not an error once the package is gone, or a membership walk that reports only a directory declaring `#![no_std]`.
-/// So each part the guarantee rests on is named and compared: the member line, the package name,
-/// `publish = false`, the two `[lib]` switches that keep the grammar's tests and docs from being counted twice, and the `#[path]` that reaches the real sources rather than a copy.
+/// Check the isolated layer's workspace member, manifest, and source linkage.
+/// The member compiles the production sources without the model to enforce the dependency boundary.
 fn layering_member_violations(workspace: &Path, gate: LayeringGate) -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let directory = workspace.join(gate.member);
@@ -2029,17 +2024,10 @@ fn declared_modules(source: &str) -> Vec<String> {
     modules
 }
 
-/// The paths in one file of the layer that resolve above the grammar root.
-///
-/// `mod.rs` *is* the root, so `super::` there names the crate; beside it `super::` names the root and `super::super::` names the crate.
-/// Comments and string literals are removed first,
-/// which is what lets a doc link keep writing `crate::Token`: the rendered documentation is `ical-core`'s, and that link is how a reader reaches the item.
-///
-/// Each line is then read with the whitespace around its `::` closed up, because `use crate
-/// ::Token;` is the same import as `use crate::Token;` and only `cargo fmt` stood between the two.
-/// The whitespace elsewhere on the line stays, because it is what tells `crate::` apart from the tail of `subcrate::`.
-/// Two declarations are refused outright beside the paths: `extern crate`,
-/// which is how the layer would acquire a name for the crate above it that is spelled like neither of them, and `#[path]`, which is how it would acquire a file this scan never opens.
+/// Report paths and declarations that resolve above the isolated layer.
+/// Ignore comments and string literals.
+/// Normalize spaces around `::` while preserving identifier boundaries.
+/// Reject `extern crate` and `#[path]` declarations.
 fn file_path_violations(gate: LayeringGate, name: &str, source: &str) -> Vec<String> {
     let LayeringGate {
         root: layer, owner, ..

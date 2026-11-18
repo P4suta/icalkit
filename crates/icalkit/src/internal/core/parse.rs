@@ -637,14 +637,10 @@ impl TreeBuilder {
         }
     }
 
-    /// Report every physical line of this content line that ran past what section 3.1 allows.
+    /// Report physical lines beyond the width recommended by RFC 5545 section 3.1.
     ///
-    /// Computed from the recorded folds and the unfolded length rather than from the input,
-    /// because those two are what a write reproduces: the number reported here is the width the serializer will put back, which is the only width a caller can act on.
-    ///
-    /// A fold that landed outside the unfolded line is clamped into it, exactly as the writer clamps it.
-    /// Neither is a repair — a fold there addresses an octet that does not exist,
-    /// and the two of them agreeing is what keeps a diagnostic from naming octets the file does not have.
+    /// Compute widths from recorded folds and the unfolded length to match serialization.
+    /// Clamp fold positions outside the unfolded line as the writer does.
     fn report_widths<S>(&self, layout: &LineLayout, meter: &mut Meter, sink: &mut S)
     where
         S: DiagnosticSink + ?Sized,

@@ -29,10 +29,9 @@
 //!
 //! That departure is real, it is deliberate, and it is scoped: inside it this reader is **not** a conformant XML 1.0 processor.
 //! Two documents that are equal as XML infosets come out of it as different octets, so it must never be used to canonicalize or to verify signed XML.
-//! A caller that wants strict conformance sets [`TextPolicy::Normalized`], gets section 2.11 applied everywhere, and is told through `DiagnosticCode::DavCalendarDataLineEndingsFolded` on every payload that lost a `CR` —
-//! because the choice being available is worth nothing if taking it is silent.
+//! [`TextPolicy::Normalized`] applies section 2.11 line-ending normalization throughout the document.
+//! Each payload that loses a `CR` reports `DiagnosticCode::DavCalendarDataLineEndingsFolded`.
 //!
-//! Writing is strictly conformant and needs no departure at all.
 //! A `CR` is written as the character reference `&#13;`, which section 2.11 does not reach because a reference is resolved after normalization, so any conformant processor — this one, `libxml2`, a peer's — recovers the `CR`.
 //! No `CDATA` section is ever emitted: it cannot carry a `CR` past a conformant reader, and it turns a literal `]]>` inside a `DESCRIPTION` into an escaping bug.
 //! `>` is escaped unconditionally, which makes that sequence unwritable by accident.
