@@ -95,6 +95,23 @@ fn invocations(output: &Output) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn shows_leak_status(arguments: &[String]) -> bool {
+    arguments
+        .split(|argument| argument == "--")
+        .next()
+        .is_some_and(|options| {
+            options
+                .windows(2)
+                .any(|pair| pair == ["--status-level", "leak"])
+        })
+}
+
+#[test]
+fn test_arguments_cannot_supply_nextest_status_options() {
+    let arguments = ["nextest", "run", "--", "--status-level", "leak"].map(String::from);
+    assert!(!shows_leak_status(&arguments));
+}
+
 #[test]
 fn maintained_recipes_keep_leak_status_visible_under_sparse_output() -> io::Result<()> {
     let fixture = RecipeFixture::new()?;
@@ -114,9 +131,7 @@ fn maintained_recipes_keep_leak_status_visible_under_sparse_output() -> io::Resu
             );
             for arguments in nextest {
                 assert!(
-                    arguments
-                        .windows(2)
-                        .any(|pair| pair == ["--status-level", "leak"]),
+                    shows_leak_status(arguments),
                     "{recipe} hides leak status when NEXTEST_STATUS_LEVEL={status}: {arguments:?}"
                 );
             }

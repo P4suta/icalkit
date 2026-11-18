@@ -4267,7 +4267,13 @@ name = \"icalkit\"
                 .join(format!("icalkit-candidate-{}-{serial}", std::process::id()));
             std::fs::create_dir(&path).unwrap();
             let fixture = Self(path);
-            fixture.git(&["init", "--quiet"]);
+            fixture.git(&[
+                "-c",
+                "init.defaultObjectFormat=sha256",
+                "init",
+                "--quiet",
+                "--object-format=sha1",
+            ]);
             if !configuration.is_empty() {
                 let path = fixture.0.join(".git/config");
                 let mut contents = std::fs::read_to_string(&path).unwrap();
@@ -4313,6 +4319,12 @@ name = \"icalkit\"
             "false"
         );
         assert!(!fixture.0.join(".git/index").exists());
+    }
+
+    #[test]
+    fn candidate_fixture_uses_the_sha1_commit_contract() {
+        let fixture = CandidateFixture::init("");
+        assert_eq!(fixture.git(&["hash-object", "--stdin"]).len(), 40);
     }
 
     #[test]
