@@ -71,7 +71,7 @@ fn failed_recurrence_queries_release_their_component_depth() {
     let calendar = Calendar::parse(CALENDAR).unwrap();
     let engine = Engine::default();
     let mut session = engine.session();
-    for _ in 0..40 {
+    for _ in 0..64 {
         assert!(failing.matches(&mut session, &bad).is_err());
     }
     assert_eq!(

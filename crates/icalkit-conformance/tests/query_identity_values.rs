@@ -106,10 +106,7 @@ fn invalid_utf8_does_not_grant_a_series_identity() {
 }
 
 #[test]
-fn finding_an_override_master_charges_the_query_budget() {
-    use icalkit_conformance::internal::core::LimitExceeded;
-    use icalkit_conformance::internal::query::QueryError;
-
+fn an_unreadable_master_prevents_calendar_expansion() {
     let wire = concat!(
         "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:detached\r\n",
         "RECURRENCE-ID:20240102T090000Z\r\nDTSTART:20240102T090000Z\r\nEND:VEVENT\r\n",
@@ -120,19 +117,14 @@ fn finding_an_override_master_charges_the_query_budget() {
         Document::parse(wire.as_bytes(), Limits::DEFAULT, &mut IgnoreDiagnostics).unwrap();
     let source = Selection::new(document, Reduction::FAITHFUL);
     let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
-    for (bytes, expected) in [
-        (0, QueryError::Limit(LimitExceeded::Budget)),
-        (1_000_000, QueryError::Unrepresentable),
-    ] {
-        let mut meter = Meter::with_budget(Limits::DEFAULT, bytes);
-        let result = query::expand_calendar(
-            &source,
-            window(),
-            Zones::new(&utc),
-            &mut Budget::new(Limits::DEFAULT, &mut meter),
-        );
-        assert_eq!(result.unwrap_err(), expected);
-    }
+    let mut meter = Meter::new(Limits::DEFAULT);
+    let result = query::expand_calendar(
+        &source,
+        window(),
+        Zones::new(&utc),
+        &mut Budget::new(Limits::DEFAULT, &mut meter),
+    );
+    assert_eq!(result.unwrap_err(), QueryError::Unrepresentable);
 }
 
 #[test]
@@ -141,10 +133,15 @@ fn limiting_detached_instances_scales_with_the_sibling_count() {
 
     let limits = Limits::DEFAULT;
     let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
-    let cost = |count, master_uid: &str| {
-        let mut wire = format!(
-            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:{master_uid}\r\nDTSTART:20240101T090000Z\r\nEND:VEVENT\r\n"
-        );
+    let cost = |count, masters: &[String]| {
+        let mut wire = String::from("BEGIN:VCALENDAR\r\n");
+        for uid in masters {
+            write!(
+                wire,
+                "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:20240101T090000Z\r\nEND:VEVENT\r\n"
+            )
+            .unwrap();
+        }
         for id in 0..count {
             write!(
                 wire,
@@ -166,13 +163,18 @@ fn limiting_detached_instances_scales_with_the_sibling_count() {
         assert_eq!(result.calendar().to_bytes(), wire.as_bytes());
         meter.spent()
     };
-    let small = cost(64, "other");
-    let large = cost(128, "other");
+    let masters = |count| {
+        (0..count)
+            .map(|id| format!("master-{id:04}"))
+            .collect::<Vec<_>>()
+    };
+    let small = cost(64, &masters(64));
+    let large = cost(128, &masters(128));
     assert!(
         large > small && large < small.saturating_mul(3),
         "{small} and {large}"
     );
-    assert!(cost(128, &"a".repeat(32_768)) < 1_000_000);
+    assert!(cost(128, &["a".repeat(32_768)]) < 1_000_000);
 }
 
 #[test]

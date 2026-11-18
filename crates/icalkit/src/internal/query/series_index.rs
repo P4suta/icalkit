@@ -201,3 +201,29 @@ fn comparison_cost(count: usize, width: usize) -> u64 {
 fn octets(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SeriesIndex;
+    use crate::internal::core::{Document, IgnoreDiagnostics, LimitExceeded, Limits, Meter};
+
+    #[test]
+    fn finding_an_override_master_charges_after_index_construction() {
+        let document = Document::parse(
+            b"BEGIN:VEVENT\r\nUID:detached\r\nRECURRENCE-ID:20240102T090000Z\r\nEND:VEVENT\r\n\
+              BEGIN:VEVENT\r\nUID;VALUE=INTEGER:123\r\nEND:VEVENT\r\n",
+            Limits::DEFAULT,
+            &mut IgnoreDiagnostics,
+        )
+        .unwrap();
+        let candidate = document.components().next().unwrap();
+        let mut measured = Meter::new(Limits::DEFAULT);
+        SeriesIndex::new(document.items(), &mut measured).unwrap();
+        let mut tight = Meter::with_budget(Limits::DEFAULT, measured.spent());
+        let index = SeriesIndex::new(document.items(), &mut tight).unwrap();
+        assert_eq!(
+            index.master(candidate, &mut tight).unwrap_err(),
+            LimitExceeded::Budget
+        );
+    }
+}
