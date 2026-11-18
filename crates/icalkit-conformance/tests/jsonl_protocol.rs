@@ -113,14 +113,14 @@ fn large_native_exchanges_preserve_order_and_bytes() -> Result<(), Box<dyn Error
     );
     let calendar = String::from_utf8(VALID.to_vec())?
         .replace("END:VEVENT\r\n", &format!("{description}END:VEVENT\r\n"));
-    let encoded = hex(calendar.as_bytes());
     let requests: Vec<Value> = (0..4)
         .map(|id| {
+            let payload = calendar.replacen("DESCRIPTION:", &format!("DESCRIPTION:{id}"), 1);
             json!({
                 "protocol": PROTOCOL,
                 "id": id.to_string(),
                 "operation": "strict-parse",
-                "input_hex": encoded,
+                "input_hex": hex(payload.as_bytes()),
             })
         })
         .collect();
@@ -130,7 +130,7 @@ fn large_native_exchanges_preserve_order_and_bytes() -> Result<(), Box<dyn Error
         assert_eq!(answer["protocol"], PROTOCOL);
         assert_eq!(answer["id"], request["id"]);
         assert_eq!(answer["outcome"], "accepted");
-        assert_eq!(answer["output_hex"], encoded);
+        assert_eq!(answer["output_hex"], request["input_hex"]);
     }
     Ok(())
 }

@@ -326,10 +326,12 @@ mod tests {
                 status: None,
             };
         }
+        let waited = child.stdin.is_none();
         let observed = observe_and_clean(&mut child)?;
+        assert!(waited, "scope exit did not close input through wait");
         assert!(
-            observed.is_some(),
-            "scope exit left the subject waiting for input"
+            observed.is_some_and(|status| !status.success()),
+            "scope exit must stop the subject before waiting: {observed:?}"
         );
         Ok(())
     }
@@ -339,11 +341,13 @@ mod tests {
         let mut child = waiting_subject()?;
         drop(child.stdout.take());
         let error = collect(&mut child, &[]).err();
+        let waited = child.stdin.is_none();
         let observed = observe_and_clean(&mut child)?;
         assert!(matches!(error, Some(SubjectError::MissingOutput)));
+        assert!(waited, "missing output did not close input through wait");
         assert!(
-            observed.is_some(),
-            "missing output left the subject waiting for input"
+            observed.is_some_and(|status| !status.success()),
+            "missing output must stop the subject before waiting: {observed:?}"
         );
         Ok(())
     }
@@ -358,11 +362,13 @@ mod tests {
             };
             std::panic::resume_unwind(Box::new(()));
         }));
+        let waited = child.stdin.is_none();
         let observed = observe_and_clean(&mut child)?;
         assert!(result.is_err());
+        assert!(waited, "unwinding did not close input through wait");
         assert!(
-            observed.is_some(),
-            "unwinding left the subject waiting for input"
+            observed.is_some_and(|status| !status.success()),
+            "unwinding must stop the subject before waiting: {observed:?}"
         );
         Ok(())
     }
