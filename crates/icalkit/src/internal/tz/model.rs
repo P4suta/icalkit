@@ -857,16 +857,13 @@ pub struct StagedDefinition {
     pub exceeds_limit: bool,
 }
 
-/// Reading one `VTIMEZONE` out of whatever holds it.
-///
-/// A trait rather than an inherent constructor because the thing that holds a `VTIMEZONE` is `crate::internal::core::Component`, and a caller with its own representation — a database row, a hand-built definition — should be able to feed this crate without going through the model.
-/// The identifier comes back separately from the observances because a `VTIMEZONE` with no `TZID` is a component this crate cannot file anywhere, which is a different answer from one that declared a zone with no transitions.
+/// Read a `VTIMEZONE` from a calendar component or another source.
 pub trait ObservanceReader {
-    /// Append the earliest candidates within the remaining limit plus one overflow witness.
-    /// Table admission charges the meter and reports truncation.
+    /// Append the earliest observances within the remaining limit and one overflow witness if present.
+    /// [`TransitionTable::new`] charges the meter and reports truncation.
     ///
-    /// `None` when there is no usable `TZID`.
-    /// Everything else survivable — an observance whose rule this crate does not evaluate, a definition with no observance at all — is a diagnostic on `sink` and a shorter list in `out`.
+    /// Return `None` when the definition lacks a usable `TZID`.
+    /// Report unsupported rules and missing observances through `sink`.
     fn read_vtimezone(
         &self,
         meter: &mut Meter,
