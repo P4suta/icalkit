@@ -25,7 +25,7 @@ impl HookConfiguration {
                 "expected one maintained command for {job}"
             )));
         }
-        // Check selection without staging files or recursively building xtask.
+        // The version output shows whether Lefthook ran the selected job.
         let source = source.replacen(&command, "run: rustc --version", 1);
         let repository = StagingRepository::new()?;
         let path = repository.directory.join("scope.yml");
