@@ -15,7 +15,9 @@ use icalkit::time::Timestamp;
 use icalkit::{Calendar, Engine};
 use icalkit_conformance::internal::core::{Document, Instant, Limits, Meter};
 use icalkit_conformance::internal::dav::{FreeBusyQuery, TimeRange};
-use icalkit_conformance::internal::query::{Budget, Placement, Undecided, free_busy};
+use icalkit_conformance::internal::query::{
+    Budget, Placement, Reduction, Selection, Undecided, free_busy, limit_freebusy_set,
+};
 
 fn calendar(kind: &str, property: &str) -> String {
     let zone = if property.contains("Test/Zone") {
@@ -246,6 +248,117 @@ fn unknown_freebusy_value_types_cannot_be_trimmed_by_projection() {
     let mut session = engine.session();
     let projected = query.project(&mut session, &calendar).unwrap();
     assert_eq!(projected.as_bytes(), source.as_bytes());
+}
+
+#[test]
+fn freebusy_reports_and_limits_use_only_utc_periods() {
+    let limits = Limits::DEFAULT;
+    let window = TimeRange::new(
+        Some(Instant::from_unix_seconds(1_786_752_000)),
+        Some(Instant::from_unix_seconds(1_786_838_400)),
+    )
+    .unwrap();
+    for (parameters, valid) in [
+        ("", true),
+        (";VALUE=PERIOD", true),
+        (";VALUE=TEXT", false),
+        (";FBTYPE=FREE;VALUE=TEXT", false),
+        (";VALUE=X-FUTURE", false),
+        (";TZID=Test/Zone", false),
+    ] {
+        let periods = "20260814T090000Z/PT1H,20260815T090000Z/PT1H";
+        let source = calendar("VFREEBUSY", &format!("FREEBUSY{parameters}:{periods}"));
+        let document = Document::parse(source.as_bytes(), limits, &mut Vec::new()).unwrap();
+        let component = document
+            .components()
+            .next()
+            .unwrap()
+            .components()
+            .next()
+            .unwrap();
+        let mut meter = Meter::new(limits);
+        let mut budget = Budget::new(limits, &mut meter);
+        let answer = free_busy(
+            FreeBusyQuery { range: window },
+            &[Placement {
+                component,
+                instances: &[],
+                incomplete: None,
+            }],
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(
+            answer.report().periods().len(),
+            usize::from(valid),
+            "{parameters}"
+        );
+        assert_eq!(
+            answer.unplaced().first().map(|entry| entry.reason),
+            (!valid).then_some(Undecided::ValueUnreadable),
+            "{parameters}"
+        );
+        let selection = Selection::new(document, Reduction::FAITHFUL);
+        let trimmed = limit_freebusy_set(&selection, window, &mut budget).unwrap();
+        if valid {
+            let result = trimmed
+                .calendar()
+                .components()
+                .next()
+                .unwrap()
+                .components()
+                .next()
+                .unwrap();
+            assert_eq!(
+                result.freebusy().next().unwrap().value_text().as_bytes(),
+                b"20260815T090000Z/PT1H"
+            );
+        } else {
+            assert_eq!(
+                trimmed.calendar().to_bytes(),
+                source.as_bytes(),
+                "{parameters}"
+            );
+        }
+    }
+}
+
+#[test]
+fn limiting_periods_preserves_empty_unreadable_fields() {
+    let limits = Limits::DEFAULT;
+    let window = TimeRange::new(Some(Instant::from_unix_seconds(1_786_752_000)), None).unwrap();
+    for (fields, expected) in [
+        (",20260814T090000Z/PT1H", b"".as_slice()),
+        (
+            ",20260814T090000Z/PT1H,20260815T090000Z/PT1H",
+            ",20260815T090000Z/PT1H".as_bytes(),
+        ),
+    ] {
+        let source = calendar("VFREEBUSY", &format!("FREEBUSY:{fields}"));
+        let document = Document::parse(source.as_bytes(), limits, &mut Vec::new()).unwrap();
+        let mut meter = Meter::new(limits);
+        let limited = limit_freebusy_set(
+            &Selection::new(document, Reduction::FAITHFUL),
+            window,
+            &mut Budget::new(limits, &mut meter),
+        )
+        .unwrap();
+        let freebusy = limited
+            .calendar()
+            .components()
+            .next()
+            .unwrap()
+            .components()
+            .next()
+            .unwrap();
+        assert_eq!(
+            freebusy
+                .freebusy()
+                .next()
+                .map(|line| line.value_text().as_bytes()),
+            Some(expected)
+        );
+    }
 }
 
 #[test]

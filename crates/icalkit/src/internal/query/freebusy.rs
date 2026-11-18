@@ -60,7 +60,7 @@ use alloc::vec::Vec;
 
 use crate::internal::core::{
     Component, ComponentKind, DateTimeValue, DecodeValue, DiagnosticCode, Instant, LimitExceeded,
-    Meter, Period, Property, UtcOffset,
+    Meter, Parameter, Period, Property, UtcOffset,
 };
 use crate::internal::dav::FreeBusyQuery;
 
@@ -350,23 +350,41 @@ fn collect_free_busy(
 ) -> Result<(), Refusal> {
     for property in component.freebusy() {
         let kind = free_busy_kind(property)?;
-        if matches!(kind, BusyType::Free) {
-            // `FREE` states the absence of busy time.
-            // Aggregating it as busy would invert it, and emitting it beside an overlapping `BUSY` would state two contradictory things about one hour.
-            continue;
-        }
-        // Section 3.8.2.6 writes `fbvalue = period *("," period)`, so one line carries a list.
-        for text in property
-            .value_text()
-            .as_bytes()
-            .split(|&octet| octet == b',')
-        {
-            let written = Period::decode_property_field(property, text)
-                .map_err(|_| Undecided::ValueUnreadable)?;
-            coalesced.insert(clip(utc_period(written, kind)?, window))?;
+        for (_, period) in freebusy_fields(
+            property.value_text().as_bytes(),
+            property.parameters().iter(),
+        ) {
+            let period = utc_period(period.ok_or(Undecided::ValueUnreadable)?, kind)?;
+            if kind != BusyType::Free {
+                coalesced.insert(clip(period, window))?;
+            }
         }
     }
     Ok(())
+}
+
+pub(super) fn freebusy_fields<'a>(
+    value: &'a [u8],
+    mut parameters: impl Iterator<Item = &'a Parameter>,
+) -> impl Iterator<Item = (&'a [u8], Option<Period<'a>>)> {
+    let mut explicit = false;
+    let valid = parameters.all(|parameter| {
+        if parameter.is_named(b"VALUE") {
+            return !core::mem::replace(&mut explicit, true)
+                && parameter.unquoted().eq_ignore_ascii_case(b"PERIOD");
+        }
+        !parameter.is_named(b"TZID")
+    });
+    value.split(|&byte| byte == b',').map(move |field| {
+        (
+            field,
+            if valid {
+                Period::decode_value(field).ok()
+            } else {
+                None
+            },
+        )
+    })
 }
 
 /// Which type a `FREEBUSY` line states, RFC 5545 section 3.2.9.
@@ -544,6 +562,20 @@ mod tests {
     use super::{BusyAnswer, Placement, free_busy};
     use crate::internal::query::expand::Instance;
     use crate::internal::query::vocabulary::{Budget, BusyType, Undecided};
+
+    #[test]
+    fn freebusy_parameters_are_read_once_per_line() {
+        let extension = super::Parameter::create(b"X-LABEL", b"room").unwrap();
+        let parameters = core::iter::repeat_n(&extension, 8);
+        let visited = core::cell::Cell::new(0);
+        let fields = b"20260815T090000Z/PT1H,20260815T100000Z/PT1H,20260815T110000Z/PT1H";
+        let periods = super::freebusy_fields(
+            fields,
+            parameters.inspect(|_| visited.set(visited.get() + 1)),
+        );
+        assert_eq!(periods.filter(|(_, period)| period.is_some()).count(), 3);
+        assert_eq!(visited.get(), 8);
+    }
 
     /// 2026-01-01T00:00:00Z, where every window below opens.
     const WINDOW_START: i64 = 1_767_225_600;
