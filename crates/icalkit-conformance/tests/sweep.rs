@@ -147,6 +147,23 @@ enum Verdict {
     Refused(ParseError),
 }
 
+#[test]
+fn a_decoded_zone_identifier_can_exceed_the_wire_length_budget() {
+    let escaped = b"DTSTART;TZID=Test/^^:20240102T090000\r\n";
+    let plain = b"DTSTART;TZID=Test/AA:20240102T090000\r\n";
+    let limit = as_units(escaped.len());
+    let limits = Limits::GENEROUS.with_max_input_bytes(limit);
+    assert_eq!(
+        examine(escaped, limits).unwrap(),
+        Verdict::Refused(ParseError::InputTooLarge { limit })
+    );
+    assert!(matches!(
+        examine(plain, limits).unwrap(),
+        Verdict::Preserved { .. }
+    ));
+    assert!(!crossed(plain, ParseError::InputTooLarge { limit }));
+}
+
 /// Put one input through the three claims this whole file exists to check.
 ///
 /// [`crossed`] checks whether the input could account for the reported refusal.
@@ -197,10 +214,10 @@ fn crossed(octets: &[u8], refusal: ParseError) -> bool {
     let held = as_units(octets.len());
     match refusal {
         ParseError::Exhausted => false,
-        // Every octet charged against the ledger is an octet of the input — a name, a parameter, a value chunk, or the terminator and continuation whitespace of a fold —
-        // and none of them is charged twice.
-        // A budget a parse crossed is therefore a budget smaller than the input, and a failure here says the ledger charged for octets the caller never supplied, which is a finding rather than a false alarm.
-        ParseError::InputTooLarge { limit } => held > limit,
+        // An escaped `TZID` needs space for both its written and decoded values.
+        ParseError::InputTooLarge { limit } => {
+            held.saturating_add(zone_storage_bound(octets)) > limit
+        },
         // A value and a header are both runs of octets taken out of the input.
         ParseError::ValueTooLarge { limit } | ParseError::HeaderTooLarge { limit } => {
             held > u64::from(limit)
@@ -218,6 +235,60 @@ fn crossed(octets: &[u8], refusal: ParseError) -> bool {
             keyword_count(&unfolded(octets), b"BEGIN") > u64::from(limit)
         },
     }
+}
+
+fn zone_storage_bound(octets: &[u8]) -> u64 {
+    if !octets.contains(&b'^') {
+        return 0;
+    }
+    unfolded(octets)
+        .split(|byte| matches!(byte, b'\r' | b'\n'))
+        .map(|line| {
+            let mut parameters = line.splitn(2, |byte| matches!(byte, b';' | b':'));
+            let name = parameters.next().unwrap_or_default();
+            let mut remaining = parameters.next().unwrap_or_default();
+            let mut total = 0_u64;
+            if line.get(name.len()) != Some(&b';') {
+                return total;
+            }
+            while !remaining.is_empty() {
+                let mut quoted = false;
+                let mut in_value = false;
+                let mut value_start = false;
+                let end = remaining
+                    .iter()
+                    .position(|&byte| {
+                        if quoted {
+                            quoted = byte != b'"';
+                        } else if matches!(byte, b';' | b':') {
+                            return true;
+                        } else if !in_value && byte == b'=' {
+                            in_value = true;
+                            value_start = true;
+                        } else {
+                            quoted = value_start && byte == b'"';
+                            value_start = in_value && byte == b',';
+                        }
+                        false
+                    })
+                    .unwrap_or(remaining.len());
+                let field = &remaining[..end];
+                if let Some((name, raw)) = field.split_at_checked(5)
+                    && name.eq_ignore_ascii_case(b"TZID=")
+                    && raw
+                        .windows(2)
+                        .any(|pair| matches!(pair, [b'^', b'n' | b'^' | b'\'']))
+                {
+                    total = total.saturating_add(as_units(raw.len()));
+                }
+                if remaining.get(end) != Some(&b';') {
+                    break;
+                }
+                remaining = &remaining[end.saturating_add(1)..];
+            }
+            total
+        })
+        .fold(0, u64::saturating_add)
 }
 
 /// A count as a charge-sized number, saturating rather than wrapping.
