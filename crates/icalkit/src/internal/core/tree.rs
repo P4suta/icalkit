@@ -176,6 +176,15 @@ impl Parameter {
         !matches!(self.value, ParameterValue::Missing(_))
     }
 
+    pub(crate) fn value_storage_len(&self) -> usize {
+        match &self.value {
+            ParameterValue::EncodedZone(zone) => {
+                zone.written.len().saturating_add(zone.decoded.len())
+            },
+            ParameterValue::Written(value) | ParameterValue::Missing(value) => value.len(),
+        }
+    }
+
     pub(crate) fn remove_quotes(written: &[u8]) -> &[u8] {
         written
             .strip_prefix(b"\"")

@@ -1435,7 +1435,7 @@ fn line_octets(line: &Property) -> u64 {
     for parameter in line.parameters() {
         total = total
             .saturating_add(octets(parameter.name().len()))
-            .saturating_add(octets(parameter.value().len()));
+            .saturating_add(octets(parameter.value_storage_len()));
     }
     total
 }
@@ -1477,6 +1477,35 @@ mod tests {
         SUBSELECTION_SECTIONS, limit_freebusy_set, limit_recurrence_set, select, without_values,
     };
     use crate::internal::query::{Budget, Match, QueryError, Reduction, Selection, Undecided};
+
+    #[test]
+    fn copying_an_encoded_time_zone_counts_its_decoded_storage() {
+        use crate::internal::core::{Parameter, Property};
+
+        for (name, encoded, decoded) in [
+            (
+                b"Zone^Name".as_slice(),
+                b"Zone^^Name".len(),
+                b"Zone^Name".len(),
+            ),
+            (b"Zone/Name".as_slice(), b"Zone/Name".len(), 0),
+        ] {
+            let zone = Parameter::create(b"TZID", name).unwrap();
+            let stamp = b"20260317T100000";
+            let line = Property::create(b"DTSTART", vec![zone], stamp).unwrap();
+            let bytes =
+                u64::try_from(b"DTSTART".len() + b"TZID".len() + encoded + decoded + stamp.len())
+                    .unwrap();
+            let mut short = Meter::with_budget(Limits::DEFAULT, bytes - 1);
+            assert_eq!(
+                super::charge_line(&line, &mut short),
+                Err(QueryError::Limit(LimitExceeded::Budget))
+            );
+            let mut exact = Meter::with_budget(Limits::DEFAULT, bytes);
+            assert!(super::charge_line(&line, &mut exact).is_ok());
+            assert_eq!(exact.spent(), bytes);
+        }
+    }
 
     /// RFC 4791 Appendix B, `abcd2.ics`, carrying the second overridden component that section 7.8.1's own response for that resource shows and section 7.8.2's narration counts.
     const RECURRING: &[u8] = b"BEGIN:VCALENDAR\r\n\
