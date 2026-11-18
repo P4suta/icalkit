@@ -156,6 +156,40 @@ fn local_time_admission_remains_separate_from_calendar_correction() {
 }
 
 #[test]
+fn resuming_an_adjusted_rule_starts_at_the_unopened_boundary() {
+    let mut meter = Meter::new(Limits::DEFAULT);
+    let rule = RecurrenceRule::decode_value(
+        b"FREQ=DAILY;RSCALE=GREGORIAN;SKIP=BACKWARD;BYMONTH=1;BYMONTHDAY=1",
+    )
+    .unwrap();
+    let first = instant(2024, 1, 1);
+    let second = instant(2025, 1, 1);
+    let input = RecurrenceInput::new(
+        first,
+        ValueKind::DateTime,
+        Some(&rule),
+        &[],
+        &[],
+        OverrideSet::empty(),
+        &mut meter,
+    )
+    .unwrap();
+    let mut sink = IgnoreDiagnostics;
+    let mut search = input.search(
+        NativeWindow::new(first, second).unwrap(),
+        &mut meter,
+        &mut sink,
+    );
+    assert_eq!(search.next().unwrap().occurrence().unwrap().key(), first);
+    assert!(search.next().is_none());
+    let cursor = search.cursor();
+    let next = NativeWindow::new(second, instant(2025, 1, 2)).unwrap();
+    let mut fresh = Meter::with_budget(Limits::DEFAULT, 8);
+    let mut resumed = input.resume(cursor, next, &mut fresh, &mut sink);
+    assert_eq!(resumed.next().unwrap().occurrence().unwrap().key(), second);
+}
+
+#[test]
 fn resuming_after_an_addition_keeps_a_corrected_key_on_offer() {
     let mut meter = Meter::new(Limits::DEFAULT);
     let rule = RecurrenceRule::decode_value(b"FREQ=MONTHLY;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=2")
