@@ -4,37 +4,24 @@
 
 //! The content-line reader: unfolding, line splitting and parameter lexing in one pass.
 //!
-//! Specification: RFC 5545 section 3.1, "Content Lines"
-//! <https://www.rfc-editor.org/rfc/rfc5545#section-3.1>.
+//! Specification: RFC 5545 section 3.1, "Content Lines" <https://www.rfc-editor.org/rfc/rfc5545#section-3.1>.
 //!
-//! One pass rather than an unfold stage feeding a separate lexer. Two stages need a second
-//! owned copy of the whole input to hand the first stage's output to the second, and the fold
-//! positions the serializer needs would have to be carried across the seam anyway. A separate
-//! unfold stage is also a second place that decides what a fold is, and the two decisions
-//! disagree on the first bare `CR` that arrives followed by a space.
+//! One pass rather than an unfold stage feeding a separate lexer.
+//! Two stages need a second owned copy of the whole input to hand the first stage's output to the second, and the fold positions the serializer needs would have to be carried across the seam anyway.
+//! A separate unfold stage is also a second place that decides what a fold is, and the two decisions disagree on the first bare `CR` that arrives followed by a space.
 //!
-//! What is buffered and what is not is the asymmetry the whole module is arranged around. A
-//! name and its parameters are reassembled across folds into a scratch buffer, because they
-//! are bounded by [`GrammarLimits::max_header_bytes`] and because a parameter split across a
-//! fold would otherwise reach the consumer as two slices it has to join — reintroducing, one
-//! layer up, the unfolding this layer exists to perform. A value is never buffered: its chunks
-//! are the runs between folds and they borrow the caller's octets, so a 400 MB inline
-//! `ATTACH` costs this layer one slice (`docs/adr/0008`).
+//! What is buffered and what is not is the asymmetry the whole module is arranged around.
+//! A name and its parameters are reassembled across folds into a scratch buffer, because they are bounded by [`GrammarLimits::max_header_bytes`] and because a parameter split across a fold would otherwise reach the consumer as two slices it has to join — reintroducing, one layer up, the unfolding this layer exists to perform.
+//! A value is never buffered: its chunks are the runs between folds and they borrow the caller's octets, so a 400 MB inline `ATTACH` costs this layer one slice (`docs/adr/0008`).
 //!
-//! Nothing here judges a calendar. A line with no `:`, a bare `LF`, a quoted parameter value
-//! whose closing `DQUOTE` never arrives — each is lexed into tokens that still reconstruct the
-//! octets it was given, and each is diagnosed by the consumer, which is where the sink is. The
-//! reader has none, and the only failure it can report is a bound the caller stated
-//! (`docs/adr/0009`).
+//! Nothing here judges a calendar.
+//! A line with no `:`, a bare `LF`, a quoted parameter value whose closing `DQUOTE` never arrives — each is lexed into tokens that still reconstruct the octets it was given, and each is diagnosed by the consumer, which is where the sink is.
+//! The reader has none, and the only failure it can report is a bound the caller stated (`docs/adr/0009`).
 //!
 //! The token sequence is what a serializer inverts, so the shape is written down once here.
-//! Per logical line: one [`Token::Name`], one [`Token::Parameter`] per parameter in the order
-//! written, one [`Token::Value`] chunk per run between folds when a `:` was present, and one
-//! [`Token::EndOfLine`]. Writing the name, then `;` and each parameter and `=` where
-//! `has_value`, then `:` where `has_separator`, then every chunk in order, reproduces the
-//! unfolded line. Inserting each fold's terminator and whitespace octet at its recorded offset
-//! and appending the recorded terminator reproduces the input exactly, which is the round-trip
-//! guarantee of `docs/adr/0001` as this layer can state it.
+//! Per logical line: one [`Token::Name`], one [`Token::Parameter`] per parameter in the order written, one [`Token::Value`] chunk per run between folds when a `:` was present, and one [`Token::EndOfLine`].
+//! Writing the name, then `;` and each parameter and `=` where `has_value`, then `:` where `has_separator`, then every chunk in order, reproduces the unfolded line.
+//! Inserting each fold's terminator and whitespace octet at its recorded offset and appending the recorded terminator reproduces the input exactly, which is the round-trip guarantee of `docs/adr/0001` as this layer can state it.
 
 use alloc::vec::Vec;
 
@@ -42,9 +29,7 @@ use super::{ContentLineSource, FoldPoint, GrammarLimits, LineEnding, ParseError,
 
 /// Whether `octet` is whitespace that may introduce a folded continuation line.
 ///
-/// RFC 5545 section 3.1 allows exactly `SP` and `HTAB`, and which one arrived is recorded
-/// rather than normalized: producers differ, and rewriting a tab as a space would change a
-/// file nobody asked to change.
+/// RFC 5545 section 3.1 allows exactly `SP` and `HTAB`, and which one arrived is recorded rather than normalized: producers differ, and rewriting a tab as a space would change a file nobody asked to change.
 #[must_use]
 pub const fn is_fold_whitespace(octet: u8) -> bool {
     matches!(octet, b' ' | b'\t')
@@ -52,10 +37,8 @@ pub const fn is_fold_whitespace(octet: u8) -> bool {
 
 /// The terminator beginning at `at`, and the number of octets it occupies.
 ///
-/// A `CR` immediately followed by an `LF` is one terminator and not two. That is the only
-/// place the three spellings interact; everywhere downstream a bare `CR` and a bare `LF` are
-/// handled exactly as a `CRLF` is, because recording which one arrived is what lets the
-/// violation be a diagnostic rather than a rewrite.
+/// A `CR` immediately followed by an `LF` is one terminator and not two.
+/// That is the only place the three spellings interact; everywhere downstream a bare `CR` and a bare `LF` are handled exactly as a `CRLF` is, because recording which one arrived is what lets the violation be a diagnostic rather than a rewrite.
 fn terminator_at(input: &[u8], at: usize) -> Option<(LineEnding, usize)> {
     match input.get(at) {
         Some(&b'\r') if input.get(at.saturating_add(1)) == Some(&b'\n') => {
@@ -69,12 +52,10 @@ fn terminator_at(input: &[u8], at: usize) -> Option<(LineEnding, usize)> {
 
 /// Where the header lexer stands inside one line's name and parameters.
 ///
-/// The quoted state is the one that earns its place. RFC 5545 section 3.2 lets a parameter
-/// value be a quoted string, and `DELEGATED-TO="mailto:a","mailto:b":value` puts a `:` inside
-/// one — so the octet that ends the header cannot be recognized without knowing whether the
-/// reader is inside quotes. A `DQUOTE` opens a quoted string only where a value may begin,
-/// which keeps one unbalanced quote in the middle of a `CN` from swallowing the rest of the
-/// line.
+/// The quoted state is the one that earns its place.
+/// RFC 5545 section 3.2 lets a parameter value be a quoted string, and `DELEGATED-TO="mailto:a","mailto:b":value` puts a `:` inside one — so the octet that ends the header cannot be recognized without knowing whether the reader is inside quotes.
+/// A `DQUOTE` opens a quoted string only where a value may begin,
+/// which keeps one unbalanced quote in the middle of a `CN` from swallowing the rest of the line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeaderState {
     /// Inside the property name, before any `;` or `:`.
@@ -91,8 +72,7 @@ enum HeaderState {
 
 /// One parameter's position inside the reassembled header.
 ///
-/// Offsets rather than slices, because the buffer they point into is still growing when they
-/// are recorded and a slice would borrow a buffer the next octet may reallocate.
+/// Offsets rather than slices, because the buffer they point into is still growing when they are recorded and a slice would borrow a buffer the next octet may reallocate.
 #[derive(Clone, Copy, Debug)]
 struct ParameterSpan {
     /// Where the parameter name begins, just past the `;`.
@@ -122,9 +102,8 @@ impl ParameterSpan {
 
 /// What the reader hands back next, named as positions rather than as borrows.
 ///
-/// The reader has to mutate itself to work out what comes next and then borrow itself to hand
-/// the answer over. Naming the answer in owned data keeps those two apart, so a token is
-/// always built from a reader that nothing is writing to.
+/// The reader has to mutate itself to work out what comes next and then borrow itself to hand the answer over.
+/// Naming the answer in owned data keeps those two apart, so a token is always built from a reader that nothing is writing to.
 #[derive(Clone, Copy, Debug)]
 enum Emit {
     /// The property name, from the scratch buffer.
@@ -163,8 +142,7 @@ enum Stage {
 
 /// A pull reader over `.ics` octets, yielding one line's tokens at a time.
 ///
-/// Construction reads nothing: every octet is examined during the [`ContentLineSource`] call
-/// that needs it, so a caller that stops early has paid for what it read and no more.
+/// Construction reads nothing: every octet is examined during the [`ContentLineSource`] call that needs it, so a caller that stops early has paid for what it read and no more.
 #[derive(Debug)]
 pub struct ContentLineReader<'a> {
     /// The octets the caller handed in, never copied and never modified.
@@ -187,9 +165,7 @@ pub struct ContentLineReader<'a> {
     name_end: usize,
     /// Octets of the current line, unfolded, that have already been accounted for.
     ///
-    /// This is what a [`FoldPoint::offset`] is measured in, so it counts the header, the `:`
-    /// and every value chunk, and it counts neither the terminators nor the whitespace octets
-    /// that folding removes.
+    /// This is what a [`FoldPoint::offset`] is measured in, so it counts the header, the `:` and every value chunk, and it counts neither the terminators nor the whitespace octets that folding removes.
     line_offset: u32,
     /// The terminator the current line actually carried.
     ending: Option<LineEnding>,
@@ -241,8 +217,7 @@ impl<'a> ContentLineReader<'a> {
                         self.stage = Stage::Parameter(index.saturating_add(1));
                         return Some(Ok(Emit::Parameter(index)));
                     }
-                    // A line with no `:` has no value at all, which is not the same claim as
-                    // a value of zero octets and must not be delivered as one.
+                    // A line with no `:` has no value at all, which is not the same claim as a value of zero octets and must not be delivered as one.
                     self.stage = if self.has_separator {
                         Stage::Value
                     } else {
@@ -264,9 +239,8 @@ impl<'a> ContentLineReader<'a> {
 
     /// Read the next line's header, or answer that the input is finished.
     ///
-    /// A bound crossed here ends the reader. The alternative is to resume at the next
-    /// terminator, and there is no honest way to find one: the octets that would be skipped
-    /// are exactly the octets that were too large to examine.
+    /// A bound crossed here ends the reader.
+    /// The alternative is to resume at the next terminator, and there is no honest way to find one: the octets that would be skipped are exactly the octets that were too large to examine.
     fn start_line(&mut self) -> Option<Result<(), ParseError>> {
         if self.cursor >= self.input.len() {
             self.stage = Stage::Done;
@@ -285,8 +259,8 @@ impl<'a> ContentLineReader<'a> {
         }
     }
 
-    /// Forget the previous line. Nothing may borrow it: the token that carried its folds
-    /// borrowed this reader, so the caller has dropped it to be able to ask for another.
+    /// Forget the previous line.
+    /// Nothing may borrow it: the token that carried its folds borrowed this reader, so the caller has dropped it to be able to ask for another.
     fn begin_line(&mut self) {
         self.scratch.clear();
         self.parameters.clear();
@@ -370,16 +344,12 @@ impl<'a> ContentLineReader<'a> {
 
     /// Consume a terminator at the cursor as a fold, or leave the cursor where it is.
     ///
-    /// Any of the three terminators may introduce a continuation. RFC 5545 section 3.1 spells
-    /// a fold `CRLF` followed by one whitespace octet, and a file written with bare `LF`s
-    /// folds with bare `LF`s; recording which one arrived is what lets it be written back.
+    /// Any of the three terminators may introduce a continuation.
+    /// RFC 5545 section 3.1 spells a fold `CRLF` followed by one whitespace octet, and a file written with bare `LF`s folds with bare `LF`s; recording which one arrived is what lets it be written back.
     ///
-    /// Recording it is also what has to be bounded. A value's chunks borrow the input and cost
-    /// this reader nothing, so a line of nothing but continuations is one octet of value and no
-    /// header — and the only thing that grows with it is this vector, one entry per fold, with
-    /// no bound of its own until [`GrammarLimits::max_folds_per_line`] states one. The refusal
-    /// arrives at the fold that crosses the bound rather than after the line is resident, which
-    /// is the same posture the header ceiling above takes (`docs/adr/0010`).
+    /// Recording it is also what has to be bounded.
+    /// A value's chunks borrow the input and cost this reader nothing, so a line of nothing but continuations is one octet of value and no header — and the only thing that grows with it is this vector, one entry per fold, with no bound of its own until [`GrammarLimits::max_folds_per_line`] states one.
+    /// The refusal arrives at the fold that crosses the bound rather than after the line is resident, which is the same posture the header ceiling above takes (`docs/adr/0010`).
     fn take_fold(&mut self, newline: LineEnding, width: usize) -> Result<bool, ParseError> {
         let after = self.cursor.saturating_add(width);
         let Some(&octet) = self.input.get(after) else {
@@ -403,9 +373,7 @@ impl<'a> ContentLineReader<'a> {
 
     /// Count `octets` more of the unfolded line.
     ///
-    /// Saturating, because a fold past the last offset a [`FoldPoint`] can address cannot be
-    /// recorded faithfully and a wrap would place it near the start of the line instead — a
-    /// position that is wrong rather than merely unreachable.
+    /// Saturating, because a fold past the last offset a [`FoldPoint`] can address cannot be recorded faithfully and a wrap would place it near the start of the line instead — a position that is wrong rather than merely unreachable.
     fn advance_line_offset(&mut self, octets: usize) {
         let counted = u32::try_from(octets).unwrap_or(u32::MAX);
         self.line_offset = self.line_offset.saturating_add(counted);
@@ -414,8 +382,7 @@ impl<'a> ContentLineReader<'a> {
     /// Append one octet to the header and let the header lexer see it.
     fn append_header_octet(&mut self, octet: u8) -> Result<(), ParseError> {
         let ceiling = self.limits.max_header_bytes();
-        // Compared as a `u32` rather than casting the ceiling up, so a header longer than a
-        // `u32` can count is refused rather than silently compared against a wrapped bound.
+        // Compared as a `u32` rather than casting the ceiling up, so a header longer than a `u32` can count is refused rather than silently compared against a wrapped bound.
         if !u32::try_from(self.scratch.len()).is_ok_and(|used| used < ceiling) {
             return Err(ParseError::HeaderTooLarge { limit: ceiling });
         }
@@ -443,8 +410,7 @@ impl<'a> ContentLineReader<'a> {
     /// Move the header lexer for an octet that is neither a `;` nor inside quotes.
     fn step_unquoted(&mut self, octet: u8, at: usize) {
         match self.header_state {
-            // The name runs until a delimiter the caller already handled, and a quoted value
-            // never reaches here: the step above this one answers that state first.
+            // The name runs until a delimiter the caller already handled, and a quoted value never reaches here: the step above this one answers that state first.
             HeaderState::Name | HeaderState::Quoted => {},
             HeaderState::ParameterName => {
                 if octet == b'=' {
@@ -460,8 +426,7 @@ impl<'a> ContentLineReader<'a> {
                 };
             },
             HeaderState::ValueText => {
-                // A comma separates the values of a multi-valued parameter, and each of them
-                // may be quoted independently, so it returns to where a quote may open.
+                // A comma separates the values of a multi-valued parameter, and each of them may be quoted independently, so it returns to where a quote may open.
                 if octet == b',' {
                     self.header_state = HeaderState::ValueStart;
                 }
@@ -500,8 +465,7 @@ impl<'a> ContentLineReader<'a> {
 
     /// Close the parameter under construction at `end`, or end the name there.
     ///
-    /// One helper for both because which of the two is open is the same question: before the
-    /// first `;` the octets belong to the name, and after it they belong to a parameter.
+    /// One helper for both because which of the two is open is the same question: before the first `;` the octets belong to the name, and after it they belong to a parameter.
     fn close_pending(&mut self, end: usize) {
         if let Some(mut span) = self.pending.take() {
             if span.has_value {
@@ -534,8 +498,8 @@ impl<'a> ContentLineReader<'a> {
 
     /// The parameter at `index`, or an empty one if no such parameter was recorded.
     fn parameter_token(&self, index: usize) -> Token<'_> {
-        // An index this module did not record cannot exist. Answering with an empty parameter
-        // rather than indexing keeps a bug here from becoming a panic inside a caller's parser.
+        // An index this module did not record cannot exist.
+        // Answering with an empty parameter rather than indexing keeps a bug here from becoming a panic inside a caller's parser.
         let Some(span) = self.parameters.get(index) else {
             return Token::Parameter {
                 name: &[],
@@ -558,8 +522,7 @@ impl<'a> ContentLineReader<'a> {
 
 impl ContentLineSource for ContentLineReader<'_> {
     fn next_token(&mut self) -> Option<Result<Token<'_>, ParseError>> {
-        // Bound before the match, so that the write half of the reader is finished with
-        // before the read half hands a borrow of it to the caller.
+        // Bound before the match, so that the write half of the reader is finished with before the read half hands a borrow of it to the caller.
         let step = self.advance();
         match step {
             None => None,
@@ -581,8 +544,8 @@ mod tests {
 
     /// One token, detached from the reader that produced it.
     ///
-    /// A token borrows the reader it came from, so two of them cannot be held at once. Owning
-    /// the payload is what lets a test state a whole line's expected sequence in one value.
+    /// A token borrows the reader it came from, so two of them cannot be held at once.
+    /// Owning the payload is what lets a test state a whole line's expected sequence in one value.
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Owned {
         Name(Vec<u8>),
@@ -604,9 +567,8 @@ mod tests {
 
     /// Every token `input` lexes into, in order.
     ///
-    /// `Token` is `#[non_exhaustive]`, but that binds consumers of this crate rather than this
-    /// crate, so the match below is exhaustive and a catch-all arm would be dead code. A test
-    /// living beside the enum is the one place a new variant should stop compiling.
+    /// `Token` is `#[non_exhaustive]`, but that binds consumers of this crate rather than this crate, so the match below is exhaustive and a catch-all arm would be dead code.
+    /// A test living beside the enum is the one place a new variant should stop compiling.
     fn lex(input: &[u8], limits: GrammarLimits) -> Result<Vec<Owned>, ParseError> {
         let mut reader = ContentLineReader::new(input, limits);
         let mut tokens = Vec::new();
@@ -655,8 +617,7 @@ mod tests {
 
     /// Rebuild the input from its tokens alone, the way a serializer has to.
     ///
-    /// This is the round-trip property stated in the terms this layer can state it: no octet
-    /// of the original may be reachable only through the input the reader was handed.
+    /// This is the round-trip property stated in the terms this layer can state it: no octet of the original may be reachable only through the input the reader was handed.
     fn rebuild(input: &[u8], limits: GrammarLimits) -> Result<Vec<u8>, ParseError> {
         let mut out: Vec<u8> = Vec::new();
         let mut line: Vec<u8> = Vec::new();
@@ -708,8 +669,7 @@ mod tests {
 
     /// Inputs whose octets must survive being taken apart and put back together.
     ///
-    /// Every one of them is either something a real producer writes or something the corpus
-    /// of `docs/adr/0006` says a real producer wrote once.
+    /// Every one of them is either something a real producer writes or something the corpus of `docs/adr/0006` says a real producer wrote once.
     const ROUND_TRIP_CASES: &[&[u8]] = &[
         b"",
         b"BEGIN:VEVENT\r\n",
@@ -806,8 +766,7 @@ mod tests {
         assert_eq!(
             ending,
             Owned::EndOfLine {
-                // "D:0123" is six octets unfolded, "D:01234567" is ten; the tab is the second
-                // continuation's, and it is recorded rather than rewritten as a space.
+                // "D:0123" is six octets unfolded, "D:01234567" is ten; the tab is the second continuation's, and it is recorded rather than rewritten as a space.
                 folds: vec![
                     FoldPoint {
                         offset: 6,
@@ -970,10 +929,9 @@ mod tests {
 
     #[test]
     fn a_line_a_consumer_has_to_diagnose_is_still_lexed_into_tokens() {
-        // An unterminated quote, a bare `LF` and a missing `:` are three violations of
-        // RFC 5545 section 3.1 in one line. None of them is this layer's to report — it has
-        // no sink, and a reader that refused them would discard the rest of the file. What it
-        // owes instead is a sequence the original octets can be rebuilt from.
+        // An unterminated quote, a bare `LF` and a missing `:` are three violations of RFC 5545 section 3.1 in one line.
+        // None of them is this layer's to report — it has no sink, and a reader that refused them would discard the rest of the file.
+        // What it owes instead is a sequence the original octets can be rebuilt from.
         let malformed: &[u8] = b"X;A=\"oops\n";
         let tokens = lex(malformed, GrammarLimits::DEFAULT).unwrap();
         assert_eq!(
@@ -1047,8 +1005,7 @@ mod tests {
             rebuild(b"X;A=1;B=2:v\r\n", limits).unwrap(),
             b"X;A=1;B=2:v\r\n"
         );
-        // The count is reported, not the octet ceiling: raising the wrong one leaves the
-        // refusal exactly where it was.
+        // The count is reported, not the octet ceiling: raising the wrong one leaves the refusal exactly where it was.
         assert_eq!(
             rebuild(b"X;A=1;B=2;C=3:v\r\n", limits),
             Err(ParseError::TooManyParameters { limit: 2 })
@@ -1057,8 +1014,7 @@ mod tests {
 
     #[test]
     fn a_reader_that_has_reported_a_bound_stops_rather_than_resuming() {
-        // The octets that would be skipped to find the next line are exactly the octets that
-        // were too large to examine, so there is no boundary left to resume from.
+        // The octets that would be skipped to find the next line are exactly the octets that were too large to examine, so there is no boundary left to resume from.
         let limits = GrammarLimits::DEFAULT.with_max_header_bytes(2);
         let mut reader = ContentLineReader::new(b"ABC:v\r\nX:1\r\n", limits);
         assert_eq!(
@@ -1070,15 +1026,14 @@ mod tests {
 
     #[test]
     fn a_value_is_never_bounded_by_the_header_ceiling() {
-        // A value is delivered in chunks the reader never buffers, so the bound that applies
-        // to a reassembled header does not apply to it.
+        // A value is delivered in chunks the reader never buffers, so the bound that applies to a reassembled header does not apply to it.
         let limits = GrammarLimits::DEFAULT.with_max_header_bytes(2);
         let input: &[u8] = b"X:a value far longer than any header this reader would accept\r\n";
         assert_eq!(rebuild(input, limits).unwrap(), input);
     }
 
-    /// A value is unbounded here and a fold is not, because a chunk borrows the input and a
-    /// fold is retained. The bound applies wherever the fold fell, header or value alike.
+    /// A value is unbounded here and a fold is not, because a chunk borrows the input and a fold is retained.
+    /// The bound applies wherever the fold fell, header or value alike.
     #[test]
     fn one_fold_past_the_per_line_ceiling_is_refused() {
         let limits = GrammarLimits::DEFAULT.with_max_folds_per_line(2);
@@ -1097,9 +1052,8 @@ mod tests {
         );
     }
 
-    /// The shape no other bound sees: one item, one octet of value, no header, and a hundred
-    /// continuations. The fold ceiling is the only thing standing between it and memory
-    /// proportional to the input rather than to the caller's policy.
+    /// The shape no other bound sees: one item, one octet of value, no header, and a hundred continuations.
+    /// The fold ceiling is the only thing standing between it and memory proportional to the input rather than to the caller's policy.
     #[test]
     fn a_line_of_nothing_but_continuations_is_refused_at_the_fold_that_crosses_the_bound() {
         let limits = GrammarLimits::DEFAULT.with_max_folds_per_line(8);
