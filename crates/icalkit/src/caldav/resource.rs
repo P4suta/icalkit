@@ -4,8 +4,56 @@
 
 //! Resource identity for WebDAV response hrefs.
 
+/// RFC 9110 section 4.3.1 identifies an origin by scheme, host, and normalized port.
+struct HttpOrigin<'a> {
+    scheme: &'a str,
+    host: &'a str,
+    port: &'a str,
+}
+
+impl<'a> HttpOrigin<'a> {
+    fn parse(scheme: &'a str, authority: &'a str) -> Option<Self> {
+        let default_port = if scheme.eq_ignore_ascii_case("https") {
+            "443"
+        } else if scheme.eq_ignore_ascii_case("http") {
+            "80"
+        } else {
+            return None;
+        };
+        let host_end = if authority.starts_with('[') {
+            authority.find(']')?.checked_add(1)?
+        } else {
+            authority.find(':').unwrap_or(authority.len())
+        };
+        let (host, suffix) = authority.split_at(host_end);
+        if host.is_empty() || authority.contains('@') {
+            return None;
+        }
+        let port = match suffix {
+            "" | ":" => default_port,
+            suffix => {
+                let digits = suffix.strip_prefix(':')?;
+                if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+                match digits.trim_start_matches('0') {
+                    "" => "0",
+                    port => port,
+                }
+            },
+        };
+        Some(Self { scheme, host, port })
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.scheme.eq_ignore_ascii_case(other.scheme)
+            && self.host.eq_ignore_ascii_case(other.host)
+            && self.port == other.port
+    }
+}
+
 struct ResourceReference<'a> {
-    origin: Option<&'a str>,
+    origin: Option<HttpOrigin<'a>>,
     path: &'a str,
     query: Option<&'a str>,
 }
@@ -19,20 +67,9 @@ impl<'a> ResourceReference<'a> {
             (None, uri)
         } else {
             let (scheme, rest) = uri.split_once("://")?;
-            let port = if scheme.eq_ignore_ascii_case("https") {
-                ":443"
-            } else if scheme.eq_ignore_ascii_case("http") {
-                ":80"
-            } else {
-                return None;
-            };
             let end = rest.find(['/', '?']).unwrap_or(rest.len());
             let (authority, rest) = rest.split_at(end);
-            if authority.is_empty() || authority.contains('@') {
-                return None;
-            }
-            let origin = uri.strip_suffix(rest)?;
-            (Some(origin.strip_suffix(port).unwrap_or(origin)), rest)
+            (Some(HttpOrigin::parse(scheme, authority)?), rest)
         };
         let (path, query) = rest
             .split_once('?')
@@ -52,15 +89,22 @@ pub(super) fn same_resource(target: &str, href: &str) -> bool {
     ) else {
         return false;
     };
-    path_octets(left.path).eq(path_octets(right.path))
-        && left.query == right.query
+    let same_query = match (left.query, right.query) {
+        (Some(one), Some(other)) => normalized_octets(one).eq(normalized_octets(other)),
+        (None, None) => true,
+        _ => false,
+    };
+    normalized_octets(left.path).eq(normalized_octets(right.path))
+        && same_query
         && left
             .origin
             .zip(right.origin)
-            .is_none_or(|(one, other)| one.eq_ignore_ascii_case(other))
+            .is_none_or(|(one, other)| one.matches(&other))
 }
-fn path_octets(path: &str) -> impl Iterator<Item = (bool, u8)> + '_ {
-    let mut remaining = path.as_bytes();
+
+/// RFC 3986 section 2.3 permits escaped unreserved octets to match their literal forms.
+fn normalized_octets(component: &str) -> impl Iterator<Item = (bool, u8)> + '_ {
+    let mut remaining = component.as_bytes();
     core::iter::from_fn(move || {
         if let [b'%', hi, lo, rest @ ..] = remaining
             && let (Some(hi), Some(lo)) =

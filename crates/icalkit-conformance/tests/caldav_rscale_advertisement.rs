@@ -58,7 +58,43 @@ fn advertisement_requires_the_probed_resource() {
             "https://other.test/cal/",
             false,
         ),
+        ("http://dav.example/cal/", "http://dav.example:/cal/", true),
+        (
+            "https://dav.example:/cal/",
+            "https://dav.example:443/cal/",
+            true,
+        ),
+        (
+            "http://DAV.example:080/cal/",
+            "HTTP://dav.example/cal/",
+            true,
+        ),
+        ("http://[::1]:/cal/", "http://[::1]:80/cal/", true),
+        (
+            "https://dav.example:8443/cal/",
+            "https://dav.example:08443/cal/",
+            true,
+        ),
+        (
+            "http://dav.example:/cal/",
+            "http://dav.example:443/cal/",
+            false,
+        ),
+        (
+            "https://dav.example:/cal/",
+            "http://dav.example:/cal/",
+            false,
+        ),
+        ("https://dav.example/cal/", "ftp://dav.example:/cal/", false),
+        ("/cal/", "http://:/cal/", false),
         ("/cal/?view=1", "/cal/?view=2", false),
+        ("/cal/?view=%61", "/cal/?view=a", true),
+        ("/cal/?range=a%2fb", "/cal/?range=a%2Fb", true),
+        ("/cal/?range=a%2Fb", "/cal/?range=a/b", false),
+        ("/cal/?q=a%26b", "/cal/?q=a&b", false),
+        ("/cal/?q=a+b", "/cal/?q=a%20b", false),
+        ("/cal/?", "/cal/", false),
+        ("/cal/?", "/cal/?", true),
         ("/users/~alice/c/", "/users/%7ealice/%63/", true),
         ("/a%2fb/", "/a%2Fb/", true),
         ("/a/b/", "/a%2Fb/", false),
@@ -67,12 +103,21 @@ fn advertisement_requires_the_probed_resource() {
         let body = response("<supported-rscale-set xmlns=\"urn:ietf:params:xml:ns:caldav\"/>");
         let xml = std::str::from_utf8(body.body())
             .unwrap()
-            .replace(">/cal/<", &format!(">{href}<"));
+            .replace(">/cal/<", &format!(">{}<", href.replace('&', "&amp;")));
         let mut operation = Client::new().supported_rscales(probe).unwrap();
         operation
             .accept(WireResponse::new(207, Vec::new(), xml.into_bytes()))
             .unwrap();
-        assert_eq!(operation.finish().is_ok(), accepted, "{probe} {href}");
+        let result = operation.finish();
+        if accepted {
+            assert_eq!(result.unwrap(), Some(Vec::new()), "{probe} {href}");
+        } else {
+            assert_eq!(
+                result.unwrap_err().code().as_str(),
+                "icalkit.caldav.rscale-advertisement-invalid",
+                "{probe} {href}"
+            );
+        }
     }
 }
 
