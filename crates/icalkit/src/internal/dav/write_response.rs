@@ -73,6 +73,12 @@ const PROPERTY_DEPTH: u16 = 5;
 /// The ceiling `crate::internal::dav::text` scans a reference under, restated here because that constant is private to the module that reads: a `&` followed by megabytes of digits is not a reference anybody wrote, and it must not be written either.
 const MAX_REFERENCE_BYTES: usize = 12;
 
+#[derive(Debug)]
+enum ResponseBoundary {
+    Complete,
+    Partial,
+}
+
 /// A multistatus written one response at a time.
 ///
 /// The encoding primitive, of which [`MultiStatus`]'s own [`WriteXml`] is one consumer.
@@ -88,6 +94,7 @@ pub struct MultiStatusWriter<'a> {
     limits: Limits,
     /// How many responses have been written.
     written: u32,
+    boundary: ResponseBoundary,
 }
 
 impl<'a> MultiStatusWriter<'a> {
@@ -108,14 +115,28 @@ impl<'a> MultiStatusWriter<'a> {
             writer,
             limits,
             written: 0,
+            boundary: ResponseBoundary::Complete,
         })
     }
 
     /// Write one more response.
+    /// A failure after output starts requires discarding the stream.
     pub fn push(&mut self, response: &DavResponse, meter: &mut Meter) -> Result<(), DavError> {
-        write_dav_response(&mut self.writer, self.limits, meter, response)?;
+        self.require_response_boundary(meter)?;
+        meter.try_charge_response()?;
+        self.boundary = ResponseBoundary::Partial;
+        write_response_element(&mut self.writer, self.limits, meter, response)?;
+        self.boundary = ResponseBoundary::Complete;
         self.written = self.written.saturating_add(1);
         Ok(())
+    }
+
+    fn require_response_boundary(&self, meter: &mut Meter) -> Result<(), DavError> {
+        meter.admit(|| Ok(()))?;
+        match self.boundary {
+            ResponseBoundary::Complete => Ok(()),
+            ResponseBoundary::Partial => Err(SyntaxError::Malformed.into()),
+        }
     }
 
     /// How many responses have been written.
@@ -132,6 +153,7 @@ impl<'a> MultiStatusWriter<'a> {
         sync_token: Option<&SyncToken>,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
+        self.require_response_boundary(meter)?;
         if let Some(token) = sync_token {
             let octets = token.as_bytes();
             check_text_bound(octets, meter)?;
@@ -151,11 +173,14 @@ impl<'a> MultiStatusWriter<'a> {
     /// The refusal is not charged against the response count, because it is what a server sends *when* that count is reached and a bound that swallowed its own escape hatch would leave the server with nothing to say.
     /// Output still needs an available meter.
     /// Finish before a charge refuses, or supply a separate output budget explicitly.
+    /// Recovery requires a boundary between complete responses.
+    /// A failed partial response requires discarding the stream.
     pub fn finish_insufficient_storage(
         mut self,
         collection: &Href,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
+        self.require_response_boundary(meter)?;
         let limits = self.limits;
         self.writer.open(ElementName::Response, meter)?;
         write_href(&mut self.writer, limits, meter, collection)?;
@@ -172,6 +197,7 @@ impl Debug for MultiStatusWriter<'_> {
             .debug_struct("MultiStatusWriter")
             .field("limits", &self.limits)
             .field("written", &self.written)
+            .field("boundary", &self.boundary)
             .finish_non_exhaustive()
     }
 }
@@ -289,6 +315,15 @@ fn write_dav_response(
     response: &DavResponse,
 ) -> Result<(), DavError> {
     meter.try_charge_response()?;
+    write_response_element(writer, limits, meter, response)
+}
+
+fn write_response_element(
+    writer: &mut XmlWriter<'_>,
+    limits: Limits,
+    meter: &mut Meter,
+    response: &DavResponse,
+) -> Result<(), DavError> {
     writer.open(ElementName::Response, meter)?;
     write_href(writer, limits, meter, &response.href)?;
     write_response_body(writer, limits, meter, &response.body)?;

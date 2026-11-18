@@ -369,14 +369,6 @@ impl MultiStatus {
             collected.push(response, context.meter)?;
         }
         let source_truncated = source.was_truncated();
-        if source_truncated && !context.meter.is_exhausted() {
-            context.meter.refuse_limit(LimitExceeded::Exhausted);
-            context.report(
-                DiagnosticCode::ResourceBudgetExhausted,
-                Severity::LimitReached,
-                0,
-            );
-        }
         truncated |= source_truncated;
         if truncated {
             if source.sync_token().is_some() {

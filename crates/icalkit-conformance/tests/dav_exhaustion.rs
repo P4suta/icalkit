@@ -10,10 +10,10 @@ use core::fmt::Debug;
 
 use icalkit_conformance::internal::core::{DiagnosticCode, LimitExceeded, Limits, Meter};
 use icalkit_conformance::internal::dav::{
-    Bounded, CalendarPayload, CompFilter, DavError, DavProperty, DavResponse, DecodeContext,
-    ElementName, Href, MultiStatus, MultiStatusReader, MultiStatusWriter, PropName, PropStat,
-    PropValue, RequestBody, ResponseSource, Status, SyncToken, WriteXml, XmlPull, XmlReader,
-    XmlWriter,
+    Bounded, ByteSink, CalendarPayload, CompFilter, DavError, DavProperty, DavResponse,
+    DecodeContext, ElementName, Href, MultiStatus, MultiStatusReader, MultiStatusWriter, PropName,
+    PropStat, PropValue, RequestBody, ResponseSource, SinkFull, Status, SyncToken, WriteXml,
+    XmlPull, XmlReader, XmlWriter,
 };
 
 fn assert_refusal<T: Debug>(
@@ -122,6 +122,102 @@ fn an_xml_text_refusal_latches_and_keeps_later_errors_distinct() {
         writer.text(b"xx", &mut meter),
         Err(DavError::Limit(LimitExceeded::Exhausted))
     );
+}
+
+#[test]
+fn an_attribute_retry_reports_the_exhausted_meter_before_duplicate_names() {
+    let limits = Limits::DEFAULT;
+    let mut out = Vec::new();
+    let mut writer = XmlWriter::fragment(&mut out);
+    writer
+        .open(ElementName::CompFilter, &mut Meter::new(limits))
+        .unwrap();
+    let mut meter = Meter::with_budget(limits, 0);
+    assert_eq!(
+        writer.attribute(b"name", b"VEVENT", &mut meter),
+        Err(DavError::Limit(LimitExceeded::Budget))
+    );
+    assert_eq!(
+        writer.attribute(b"name", b"VEVENT", &mut meter),
+        Err(DavError::Limit(LimitExceeded::Exhausted))
+    );
+}
+
+#[test]
+fn a_partial_response_cannot_be_finished_with_a_fresh_meter() {
+    let limits = Limits::DEFAULT.with_max_href_bytes(2);
+    let mut building = Meter::new(Limits::DEFAULT);
+    let response = DavResponse::with_status(
+        Href::new(b"/too-long", Limits::DEFAULT, &mut building).unwrap(),
+        Status::OK,
+    );
+    let collection = Href::new(b"/", Limits::DEFAULT, &mut building).unwrap();
+    for insufficient_storage in [false, true] {
+        let mut out = Vec::new();
+        let mut writer = MultiStatusWriter::new(&mut out, limits, &mut Meter::new(limits)).unwrap();
+        assert_eq!(
+            writer.push(&response, &mut Meter::new(limits)),
+            Err(DavError::Limit(LimitExceeded::Href))
+        );
+        assert_eq!(writer.written(), 0);
+        let mut fresh = Meter::new(limits);
+        let result = if insufficient_storage {
+            writer.finish_insufficient_storage(&collection, &mut fresh)
+        } else {
+            writer.finish(None, &mut fresh)
+        };
+        assert!(
+            result.is_err(),
+            "insufficient_storage={insufficient_storage}"
+        );
+        assert!(!fresh.is_exhausted());
+    }
+}
+
+struct FailResponseClose {
+    bytes: Vec<u8>,
+    failed: bool,
+}
+
+impl ByteSink for FailResponseClose {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
+        if !self.failed && self.bytes.ends_with(b"</D:response") && bytes == b">" {
+            self.failed = true;
+            return Err(SinkFull);
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_failed_response_close_cannot_be_recovered_from_stack_depth_alone() {
+    let limits = Limits::DEFAULT;
+    let collection = Href::new(b"/", limits, &mut Meter::new(limits)).unwrap();
+    let response = DavResponse::with_status(collection.clone(), Status::OK);
+    for insufficient_storage in [false, true] {
+        let mut sink = FailResponseClose {
+            bytes: Vec::new(),
+            failed: false,
+        };
+        let mut meter = Meter::new(limits);
+        let mut writer = MultiStatusWriter::new(&mut sink, limits, &mut meter).unwrap();
+        assert_eq!(
+            writer.push(&response, &mut meter),
+            Err(DavError::Output(SinkFull))
+        );
+        assert_eq!(writer.written(), 0);
+        assert!(writer.push(&response, &mut meter).is_err());
+        let result = if insufficient_storage {
+            writer.finish_insufficient_storage(&collection, &mut meter)
+        } else {
+            writer.finish(None, &mut meter)
+        };
+        assert!(
+            result.is_err(),
+            "insufficient_storage={insufficient_storage}"
+        );
+    }
 }
 
 #[test]
@@ -333,10 +429,21 @@ impl ResponseSource for ResponseBatch {
 
 fn response_batch(count: usize, truncated: bool) -> ResponseBatch {
     let mut meter = Meter::new(Limits::DEFAULT);
-    let href = Href::new(b"/first", Limits::DEFAULT, &mut meter).unwrap();
-    let response = DavResponse::with_status(href, Status::OK);
+    let responses = (0..count)
+        .map(|index| {
+            let href = if index == 0 {
+                b"/first".as_slice()
+            } else {
+                b"/later"
+            };
+            DavResponse::with_status(
+                Href::new(href, Limits::DEFAULT, &mut meter).unwrap(),
+                Status::OK,
+            )
+        })
+        .collect::<Vec<_>>();
     ResponseBatch {
-        items: vec![response; count].into_iter(),
+        items: responses.into_iter(),
         token: Some(b"token"),
         truncated,
         pulls: 0,
@@ -366,7 +473,7 @@ fn an_owned_collection_refusal_keeps_its_prefix_and_latches() {
 }
 
 #[test]
-fn an_external_source_cut_latches_without_inventing_a_collection_limit() {
+fn an_external_source_cut_withholds_the_token_without_exhausting_the_meter() {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
     let mut source = response_batch(1, true);
@@ -378,9 +485,55 @@ fn an_external_source_cut_latches_without_inventing_a_collection_limit() {
     .unwrap();
     assert_eq!(body.responses().len(), 1);
     assert!(body.sync_token.is_none());
-    assert!(meter.is_exhausted());
+    assert!(!meter.is_exhausted());
+    assert_eq!(meter.try_charge_bytes(0), Ok(()));
     assert!(
         diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code() == DiagnosticCode::DavSyncTokenWithheld)
+    );
+    assert!(!diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic.code(),
+        DiagnosticCode::ResourceBudgetExhausted | DiagnosticCode::DavResponsesTruncated
+    )));
+}
+
+#[test]
+fn an_already_truncated_reader_does_not_exhaust_a_fresh_collection_meter() {
+    let body = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/first</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response><d:response><d:href>/later</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response></d:multistatus>"#;
+    let limits = Limits::DEFAULT.with_max_responses(1);
+    let mut events = XmlReader::new(body);
+    let mut source = MultiStatusReader::new(&mut events);
+    let mut diagnostics = Vec::new();
+    let mut first = Meter::new(limits);
+    {
+        let mut context = DecodeContext::new(limits, &mut first, &mut diagnostics);
+        assert_eq!(
+            source
+                .next_response(&mut context)
+                .unwrap()
+                .unwrap()
+                .href
+                .as_bytes(),
+            b"/first"
+        );
+        assert!(source.next_response(&mut context).unwrap().is_none());
+    }
+    assert!(source.was_truncated());
+    assert!(first.is_exhausted());
+    diagnostics.clear();
+    let mut fresh = Meter::new(limits);
+    let result = MultiStatus::read(
+        &mut source,
+        &mut DecodeContext::new(limits, &mut fresh, &mut diagnostics),
+    )
+    .unwrap();
+    assert_eq!(result.responses(), []);
+    assert!(result.sync_token.is_none());
+    assert!(!fresh.is_exhausted());
+    assert_eq!(fresh.try_charge_bytes(1), Ok(()));
+    assert!(
+        !diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code() == DiagnosticCode::ResourceBudgetExhausted)
     );

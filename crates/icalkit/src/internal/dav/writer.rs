@@ -260,6 +260,7 @@ impl<'a> XmlWriter<'a> {
         value: &[u8],
         meter: &mut Meter,
     ) -> Result<(), DavError> {
+        meter.admit(|| Ok(()))?;
         if !self.pending {
             // An attribute belongs to a start tag, and there is no start tag still open.
             return Err(SyntaxError::Malformed.into());
