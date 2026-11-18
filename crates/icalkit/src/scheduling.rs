@@ -14,7 +14,8 @@ use core::str;
 
 use crate::internal::core::{
     CivilDateTime, Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
-    Document, Instant, Item, Meter, Property, PropertyId, TextValue, UriValue, UtcOffset,
+    Document, Instant, Item, LimitExceeded, Meter, Property, PropertyId, TextValue, UriValue,
+    UtcOffset,
 };
 use crate::internal::itip::{
     ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method, PartyId,
@@ -345,9 +346,14 @@ impl Message {
                 if !answered.insert(occurrence.key) {
                     return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
                 }
-                if let Some(change) =
-                    review_occurrence(occurrence, message, payload_index, source, actor)?
-                {
+                if let Some(change) = review_occurrence(
+                    occurrence,
+                    message,
+                    payload_index,
+                    source,
+                    actor,
+                    &mut session.meter,
+                )? {
                     changes.push(change);
                 }
                 continue;
@@ -627,6 +633,10 @@ impl AuthorizedChange<'_> {
                             .and_then(Item::as_component_mut)
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
                         if !inherited_attendees.is_empty() {
+                            component
+                                .items_mut()
+                                .try_reserve_exact(inherited_attendees.len())
+                                .map_err(|_| Error::single("icalkit.scheduling.apply-refused"))?;
                             let at = component
                                 .items()
                                 .iter()
@@ -788,6 +798,7 @@ fn review_occurrence(
     payload_index: usize,
     source: usize,
     actor: &Actor,
+    meter: &mut Meter,
 ) -> Result<Option<ReviewedChange>, Rejection> {
     let transition = evaluate_new_instance_payload(
         message,
@@ -801,28 +812,10 @@ fn review_occurrence(
         return Ok(None);
     }
     let target = if let Some((item, stored)) = occurrence.stored_item {
-        let inherited_attendees = if stored
-            .properties_named(&PropertyId::ATTENDEE)
-            .next()
-            .is_none()
-        {
-            occurrence
-                .event
-                .items_mut()
-                .drain(..)
-                .filter_map(|entry| match entry {
-                    Item::Property(property) if property.has_id(&PropertyId::ATTENDEE) => {
-                        Some(property)
-                    },
-                    _ => None,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
         ChangeTarget::Existing {
             item,
-            inherited_attendees,
+            inherited_attendees: take_inherited_attendees(&mut occurrence.event, stored, meter)
+                .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))?,
         }
     } else {
         ChangeTarget::ReplyToOccurrence {
@@ -831,6 +824,51 @@ fn review_occurrence(
         }
     };
     Ok(Some(ReviewedChange { target, transition }))
+}
+
+fn take_inherited_attendees(
+    event: &mut Component,
+    stored: &Component,
+    meter: &mut Meter,
+) -> Result<Vec<Property>, LimitExceeded> {
+    let mut attendees = Vec::new();
+    if stored
+        .properties_named(&PropertyId::ATTENDEE)
+        .next()
+        .is_some()
+    {
+        return Ok(attendees);
+    }
+    let count = event.properties_named(&PropertyId::ATTENDEE).count();
+    charge_attendee_slots(meter, count, stored.items().len())?;
+    meter.admit(|| {
+        attendees
+            .try_reserve_exact(count)
+            .map_err(|_| LimitExceeded::Budget)
+    })?;
+    attendees.extend(event.items_mut().drain(..).filter_map(|entry| match entry {
+        Item::Property(property) if property.has_id(&PropertyId::ATTENDEE) => Some(property),
+        _ => None,
+    }));
+    Ok(attendees)
+}
+
+/// Charge the review's attendee slots and the full item buffer the stored occurrence may need.
+fn charge_attendee_slots(
+    meter: &mut Meter,
+    count: usize,
+    stored: usize,
+) -> Result<(), LimitExceeded> {
+    let transfer = count.checked_mul(size_of::<Property>());
+    let destination = stored
+        .checked_add(count)
+        .and_then(|slots| slots.checked_mul(size_of::<Item>()));
+    let bytes = transfer
+        .zip(destination)
+        .and_then(|(left, right)| left.checked_add(right))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| meter.refuse_limit(LimitExceeded::Budget))?;
+    meter.try_charge_bytes(bytes)
 }
 
 fn reply_occurrence<'a>(
@@ -1038,6 +1076,74 @@ mod tests {
     use super::{Actor, Message};
     use crate::{Calendar, Engine, Meter, ResourcePolicy};
     use alloc::{format, string::String, vec::Vec};
+
+    #[test]
+    fn inherited_attendees_require_space_for_review_and_storage() {
+        use crate::internal::core::{Item, Property};
+        use core::fmt::Write as _;
+
+        let calendar = |method: &str, events: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n{method}{events}END:VCALENDAR\r\n"
+            )
+        };
+        let event_start = "BEGIN:VEVENT\r\nUID:s\r\nDTSTAMP:20260301T120000Z\r\n";
+        let organizer = "ORGANIZER:mailto:chair@x\r\n";
+        let count = 128;
+        let mut master = format!(
+            "{event_start}DTSTART:20260310T140000Z\r\nSUMMARY:S\r\n{organizer}RRULE:FREQ=WEEKLY;COUNT=2\r\n"
+        );
+        for index in 0..count {
+            write!(master, "ATTENDEE:mailto:p{index}@x\r\n").unwrap();
+        }
+        master.push_str("END:VEVENT\r\n");
+        let key = "RECURRENCE-ID:20260317T140000Z\r\n";
+        let stored = format!("{event_start}{key}DTSTART:20260317T160000Z\r\nEND:VEVENT\r\n");
+        let held = calendar("", &format!("{master}{stored}"));
+        let current = Calendar::parse(held.as_bytes()).unwrap();
+        let incoming = format!(
+            "{event_start}{key}{organizer}ATTENDEE;PARTSTAT=ACCEPTED:mailto:p1@x\r\nEND:VEVENT\r\n"
+        );
+        let message = Message::read(calendar("METHOD:REPLY\r\n", &incoming).as_bytes()).unwrap();
+        let actor = Actor::new("mailto:p1@x").unwrap();
+        let engine = Engine::default();
+        let mut session = engine.session();
+        message.review_in(&mut session, &current, &actor).unwrap();
+        let total = session.meter.spent();
+        let rows = count * (size_of::<Property>() + size_of::<Item>());
+        for budget in [u64::try_from(rows - 1).unwrap(), total - 1] {
+            let mut session = engine.session();
+            session.meter = Meter::with_budget(ResourcePolicy::secure().limits, budget);
+            let Some(error) = message.review_in(&mut session, &current, &actor).err() else {
+                panic!("review accepted {budget} bytes");
+            };
+            assert_eq!(
+                error.code().as_str(),
+                "icalkit.scheduling.review-resource-limit"
+            );
+            assert!(session.meter.is_exhausted());
+            assert!(message.review_in(&mut session, &current, &actor).is_err());
+            assert_eq!(current.to_bytes(), held.as_bytes());
+        }
+    }
+
+    #[test]
+    fn an_unrepresentable_attendee_allocation_exhausts_the_session() {
+        use crate::internal::core::{Item, LimitExceeded};
+
+        for (count, stored) in [
+            (usize::MAX, 0),
+            (1, usize::MAX),
+            (1, usize::MAX / size_of::<Item>()),
+        ] {
+            let mut meter = Meter::new(ResourcePolicy::secure().limits);
+            assert_eq!(
+                super::charge_attendee_slots(&mut meter, count, stored),
+                Err(LimitExceeded::Budget)
+            );
+            assert!(meter.is_exhausted());
+        }
+    }
 
     #[test]
     fn held_identity_review_charges_the_session_for_each_uid() {
