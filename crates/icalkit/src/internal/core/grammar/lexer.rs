@@ -70,6 +70,29 @@ enum HeaderState {
     Quoted,
 }
 
+impl HeaderState {
+    const fn after_octet(self, octet: u8) -> Self {
+        match (self, octet) {
+            (Self::ParameterName, b'=') | (Self::ValueStart | Self::ValueText, b',') => {
+                Self::ValueStart
+            },
+            (Self::ValueStart, b'"') => Self::Quoted,
+            (Self::ValueStart, _) | (Self::Quoted, b'"') => Self::ValueText,
+            _ => self,
+        }
+    }
+}
+
+/// Whether the next delimiter ends a parameter after its raw value octets.
+#[must_use]
+pub fn parameter_value_accepts_delimiter(value: &[u8]) -> bool {
+    value
+        .iter()
+        .copied()
+        .fold(HeaderState::ValueStart, HeaderState::after_octet)
+        != HeaderState::Quoted
+}
+
 /// One parameter's position inside the reassembled header.
 ///
 /// Offsets rather than slices, because the buffer they point into is still growing when they are recorded and a slice would borrow a buffer the next octet may reallocate.
@@ -394,44 +417,14 @@ impl<'a> ContentLineReader<'a> {
 
     /// Move the header lexer over the octet now sitting at `at`.
     fn step_header_state(&mut self, octet: u8, at: usize) -> Result<(), ParseError> {
-        if self.header_state == HeaderState::Quoted {
-            if octet == b'"' {
-                self.header_state = HeaderState::ValueText;
-            }
-            return Ok(());
-        }
-        if octet == b';' {
+        if self.header_state != HeaderState::Quoted && octet == b';' {
             return self.open_parameter(at);
         }
-        self.step_unquoted(octet, at);
-        Ok(())
-    }
-
-    /// Move the header lexer for an octet that is neither a `;` nor inside quotes.
-    fn step_unquoted(&mut self, octet: u8, at: usize) {
-        match self.header_state {
-            // The name runs until a delimiter the caller already handled, and a quoted value never reaches here: the step above this one answers that state first.
-            HeaderState::Name | HeaderState::Quoted => {},
-            HeaderState::ParameterName => {
-                if octet == b'=' {
-                    self.begin_parameter_value(at);
-                    self.header_state = HeaderState::ValueStart;
-                }
-            },
-            HeaderState::ValueStart => {
-                self.header_state = match octet {
-                    b'"' => HeaderState::Quoted,
-                    b',' => HeaderState::ValueStart,
-                    _ => HeaderState::ValueText,
-                };
-            },
-            HeaderState::ValueText => {
-                // A comma separates the values of a multi-valued parameter, and each of them may be quoted independently, so it returns to where a quote may open.
-                if octet == b',' {
-                    self.header_state = HeaderState::ValueStart;
-                }
-            },
+        if self.header_state == HeaderState::ParameterName && octet == b'=' {
+            self.begin_parameter_value(at);
         }
+        self.header_state = self.header_state.after_octet(octet);
+        Ok(())
     }
 
     /// Close whatever the `;` at `at` ended and open a parameter after it.

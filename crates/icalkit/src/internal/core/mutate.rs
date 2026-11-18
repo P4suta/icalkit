@@ -30,8 +30,8 @@ use alloc::vec::Vec;
 
 use crate::internal::core::{
     ContentLineReader, ContentLineSource, Limits, LineEnding, LineLayout, Token, encode_caret,
-    parameter_is_representable, parameter_name_is_representable, property_name_is_representable,
-    quote_parameter_into,
+    parameter_is_representable, parameter_name_is_representable, parameter_value_accepts_delimiter,
+    property_name_is_representable, quote_parameter_into,
 };
 
 use crate::internal::core::change::{ParameterEdit, ProposedChange};
@@ -234,6 +234,24 @@ fn assign_parameter(parameters: &mut Vec<Parameter>, name: &[u8], value: &[u8]) 
     }
 }
 
+/// A colonless line can end inside its last parameter's quoted value.
+/// Keeping that parameter would make the emitted value separator part of the header.
+fn refuse_unclosed_parameter(
+    property: &Property,
+    edits: &[ParameterEdit],
+) -> Result<(), MutationError> {
+    if property.layout().has_separator() {
+        return Ok(());
+    }
+    if let Some(last) = property.parameters().last()
+        && !parameter_value_accepts_delimiter(last.value().as_bytes())
+        && !edits.iter().any(|edit| last.is_named(edit.name()))
+    {
+        return Err(MutationError::NotRepresentable);
+    }
+    Ok(())
+}
+
 /// Apply one ordered list of parameter edits, leaving every other parameter where it was.
 ///
 /// The caller has already run [`refuse_unwritable_edits`] over the whole list, which is what makes this total: an edit list is applied entirely or not at all, and a property is never left carrying the first three edits of five.
@@ -357,6 +375,7 @@ impl<T> PropertyMut<'_, T> {
     /// Write `bytes` as this property's value, refusing any ASCII control character.
     ///
     /// The value's text and this line's recorded fold layout go; the property's name, its parameters, its terminator, and every other line in the component stay exactly as they were.
+    /// An unclosed quote in a retained parameter prevents the reader from reaching the value and returns [`MutationError::NotRepresentable`].
     /// A refused write changes nothing at all, because the refusal comes first.
     ///
     /// A property named `BEGIN` or `END` is refused rather than written.
@@ -365,6 +384,7 @@ impl<T> PropertyMut<'_, T> {
     pub fn set_raw(&mut self, bytes: &[u8]) -> Result<(), MutationError> {
         refuse_component_boundary(self.property().name().as_bytes())?;
         refuse_control_characters(bytes)?;
+        refuse_unclosed_parameter(self.property(), &[])?;
         self.property_mut()
             .set_value_text(RawText::from_bytes(bytes));
         Ok(())
@@ -375,6 +395,7 @@ impl<T: EncodeValue> PropertyMut<'_, T> {
     /// Write `value` as this property's value, and the parameters its shape implies.
     ///
     /// The coupled parameters are applied before the value so that the property is never observable in a state where the two disagree, and both come after the encoding and the refusal, so that a value which cannot be written leaves the property as it was.
+    /// This write also returns [`MutationError::NotRepresentable`] if the coupled edits retain an unclosed parameter quote.
     pub fn set(&mut self, value: &T) -> Result<(), MutationError> {
         refuse_component_boundary(self.property().name().as_bytes())?;
         let mut encoded = ValueBuf::new();
@@ -386,6 +407,7 @@ impl<T: EncodeValue> PropertyMut<'_, T> {
         // A coupled parameter is the value's own answer rather than the caller's, so this refusal is a claim about a value type rather than about untrusted octets — a `TZID` carrying a `DQUOTE` is a zone identifier no line could name.
         // It is checked here anyway, and before anything is written, so that a value type added later cannot make a property half written by being wrong about its own parameters.
         refuse_unwritable_edits(&coupled)?;
+        refuse_unclosed_parameter(self.property(), &coupled)?;
 
         let property = self.property_mut();
         apply_parameter_edits(property.edit_parameters(), &coupled);
@@ -416,8 +438,11 @@ impl Component {
     /// Apply one described change to the property `id` names.
     ///
     /// `Limits` is here because a replacement line is octets off the wire like any other, and it is read through the same content-line reader a file is.
-    /// A replacement that is empty,
-    /// that this crate cannot read, that names another property, or that is more than one line is [`MutationError::MalformedReplacement`]; a change to a property that is not in this component is [`MutationError::Absent`]; a change addressed to `BEGIN` or `END` is [`MutationError::ComponentBoundary`], since none of these four variants is a way to restructure a document; and a value past the caller's per-value bound is [`MutationError::ValueTooLarge`], refused rather than truncated.
+    /// A replacement must parse as one content line with the addressed name or it returns [`MutationError::MalformedReplacement`].
+    /// An edit requiring an existing property returns [`MutationError::Absent`] if none exists.
+    /// Writing a `BEGIN` or `END` property returns [`MutationError::ComponentBoundary`].
+    /// A replacement value exceeding the caller's bound returns [`MutationError::ValueTooLarge`].
+    /// A parameter edit retaining an unclosed quote returns [`MutationError::NotRepresentable`] before changing any occurrence.
     ///
     /// Every variant addresses the *identity* `id` names rather than one occurrence of it.
     /// A component carrying two `DTSTART`s is a component this crate reports [`DiagnosticCode::DuplicateProperty`](crate::internal::core::DiagnosticCode::DuplicateProperty) about and refuses to pick a winner in; a change that wrote one of the two and said nothing would leave the identity the caller addressed carrying two different values,
@@ -446,6 +471,9 @@ impl Component {
                 refuse_component_boundary(id.as_bytes())?;
                 // Refused before the property is reached, so a refused change leaves the component exactly as it was — layout included, since asking a property for its parameters is itself what discards the recorded folds.
                 refuse_unwritable_edits(edits)?;
+                for property in self.properties_named(id) {
+                    refuse_unclosed_parameter(property, edits)?;
+                }
                 // The value's text is untouched, which is the whole reason this variant exists.
                 // The line's layout goes anyway, because the parameters were part of the line the folds were positions into.
                 let reached = self.for_each_property_with_id(id, |property| {
@@ -504,6 +532,7 @@ impl Component {
                 // Refused before the property is reached, so a refused change leaves the component exactly as it was, for the reason `Component::apply` gives.
                 refuse_unwritable_edits(edits)?;
                 let property = self.occurrence_mut(id, index)?;
+                refuse_unclosed_parameter(property, edits)?;
                 apply_parameter_edits(property.edit_parameters(), edits);
                 Ok(())
             },
@@ -1037,6 +1066,108 @@ mod tests {
             vec![(&b"RANGE"[..], &b"THISANDFUTURE"[..])]
         );
         assert_eq!(written.value_text().as_bytes(), b"20260815T090000");
+    }
+
+    #[test]
+    fn a_parameter_edit_cannot_extend_an_unclosed_quoted_parameter() {
+        use crate::internal::core::Document;
+
+        let change = ProposedChange::SetParameters(vec![ParameterEdit::set(b"X", b"a:b")]);
+        for prefix in ["", "P:keep\r\n"] {
+            let source = alloc::format!("BEGIN:C\r\n{prefix}P;Q=\"\r\nEND:C\r\n");
+            for occurrence in [false, true] {
+                let mut document =
+                    Document::parse(source.as_bytes(), Limits::DEFAULT, &mut vec![]).unwrap();
+                let component = document.items_mut()[0].as_component_mut().unwrap();
+                let id = PropertyId::from_name(b"P");
+                let position = usize::from(!prefix.is_empty());
+                let property = component.items()[position].as_property().unwrap();
+                assert_eq!(property.value_text().as_bytes(), b"");
+                let result = if occurrence {
+                    component.apply_to_occurrence(&id, position, &change, Limits::DEFAULT)
+                } else {
+                    component.apply(&id, &change, Limits::DEFAULT)
+                };
+                let written = document.to_bytes();
+                let reopened = Document::parse(&written, Limits::DEFAULT, &mut vec![]).unwrap();
+                let property = reopened.items()[0].as_component().unwrap().items()[position]
+                    .as_property()
+                    .unwrap();
+                assert_eq!(
+                    property.value_text().as_bytes(),
+                    b"",
+                    "input {} output {}",
+                    source.as_bytes().escape_ascii(),
+                    written.escape_ascii(),
+                );
+                assert_eq!(result, Err(MutationError::NotRepresentable));
+                assert_eq!(written, source.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn a_value_write_requires_a_reachable_value_separator() {
+        use crate::internal::core::Document;
+
+        let source = b"BEGIN:C\r\nP;Q=ok,\"\r\nEND:C\r\n";
+        for raw in [false, true] {
+            let mut document = Document::parse(source, Limits::DEFAULT, &mut vec![]).unwrap();
+            let property = document.items_mut()[0]
+                .as_component_mut()
+                .unwrap()
+                .items_mut()[0]
+                .as_property_mut()
+                .unwrap();
+            let mut guard = PropertyMut::new(property);
+            let result = if raw {
+                guard.set_raw(b"text")
+            } else {
+                guard.set(&TextValue::from_bytes(b"text"))
+            };
+            assert_eq!(result, Err(MutationError::NotRepresentable));
+            assert_eq!(document.to_bytes(), source);
+        }
+    }
+
+    #[test]
+    fn a_parameter_edit_can_repair_a_colonless_header() {
+        use crate::internal::core::Document;
+
+        for (original, edit, expected) in [
+            ("Q=\"", ParameterEdit::remove(b"q"), "P:"),
+            ("Q=\"", ParameterEdit::set(b"q", b"ok"), "P;q=ok:"),
+            (
+                "Q=a\"b",
+                ParameterEdit::set(b"X", b"a:b"),
+                "P;Q=a\"b;X=\"a:b\":",
+            ),
+            (
+                "Q=\"a,b\",c",
+                ParameterEdit::set(b"X", b"ok"),
+                "P;Q=\"a,b\",c;X=ok:",
+            ),
+        ] {
+            let source = alloc::format!("BEGIN:C\r\nP;{original}\r\nEND:C\r\n");
+            let mut document =
+                Document::parse(source.as_bytes(), Limits::DEFAULT, &mut vec![]).unwrap();
+            let component = document.items_mut()[0].as_component_mut().unwrap();
+            component
+                .apply(
+                    &PropertyId::from_name(b"P"),
+                    &ProposedChange::SetParameters(vec![edit]),
+                    Limits::DEFAULT,
+                )
+                .unwrap();
+            let expected = alloc::format!("BEGIN:C\r\n{expected}\r\nEND:C\r\n");
+            assert_eq!(document.to_bytes(), expected.as_bytes());
+            let reopened =
+                Document::parse(expected.as_bytes(), Limits::DEFAULT, &mut vec![]).unwrap();
+            let property = reopened.items()[0].as_component().unwrap().items()[0]
+                .as_property()
+                .unwrap();
+            assert_eq!(property.value_text().as_bytes(), b"");
+        }
     }
 
     /// RFC 5545 section 3.2 excludes `:` `;` and `,` from `SAFE-CHAR` and includes them in `QSAFE-CHAR`, so a value carrying one is written inside a `DQUOTE` pair.
