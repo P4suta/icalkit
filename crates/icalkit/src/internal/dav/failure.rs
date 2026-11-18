@@ -229,6 +229,7 @@ pub enum ValueError {
     /// An element did not carry an attribute its grammar requires.
     ///
     /// `comp-filter`, `prop-filter`, `param-filter`, `comp` and `prop` each require a `name` (RFC 4791 sections 9.6 and 9.7).
+    /// `expand`, `limit-recurrence-set` and `limit-freebusy-set` require both range bounds.
     /// A body missing one is well-formed XML that states no filter, so it is a value refusal and not a syntax one.
     AttributeMissing,
     /// An attribute carried a value outside the enumeration its specification declares.

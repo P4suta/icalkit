@@ -235,6 +235,13 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
+    pub(crate) fn require_bounded(self) -> Result<Self, DavError> {
+        if self.start.is_none() || self.end.is_none() {
+            return Err(DavError::Invalid(ValueError::AttributeMissing));
+        }
+        Ok(self)
+    }
+
     /// A window with the bounds it was given, which must not be neither and must not invert.
     pub const fn new(start: Option<Instant>, end: Option<Instant>) -> Result<Self, DavError> {
         match (start, end) {
@@ -281,10 +288,13 @@ impl TimeRange {
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CalendarDataRequest {
     /// `CALDAV:expand` — return instances rather than the recurrence rule, over this window.
+    /// Both bounds are required by RFC 4791 section 9.6.5.
     pub expand: Option<TimeRange>,
     /// `CALDAV:limit-recurrence-set` — keep only the overrides inside this window.
+    /// Both bounds are required by RFC 4791 section 9.6.6.
     pub limit_recurrence_set: Option<TimeRange>,
     /// `CALDAV:limit-freebusy-set` — keep only the `VFREEBUSY` periods inside this window.
+    /// Both bounds are required by RFC 4791 section 9.6.7.
     pub limit_freebusy_set: Option<TimeRange>,
     /// The component subtree to return.
     /// Absent asks for the whole object.

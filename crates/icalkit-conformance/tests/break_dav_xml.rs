@@ -12,11 +12,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use icalkit_conformance::internal::core::{
-    Diagnostic, IgnoreDiagnostics, LimitExceeded, Limits, Meter,
+    Diagnostic, IgnoreDiagnostics, Instant, LimitExceeded, Limits, Meter,
 };
 use icalkit_conformance::internal::dav::{
-    DavError, DecodeContext, MultiStatus, MultiStatusReader, PropValue, RequestBody, SyntaxError,
-    WriteXml, XmlEvent, XmlPull, XmlReader,
+    CalendarDataRequest, CalendarMultiget, DavError, DecodeContext, MultiStatus, MultiStatusReader,
+    PropValue, RequestBody, SyntaxError, TimeRange, WriteXml, XmlEvent, XmlPull, XmlReader,
 };
 
 /// The octets of one fixture in this attacker's directory.
@@ -66,6 +66,48 @@ fn encode(value: &dyn WriteXml) -> Result<Vec<u8>, DavError> {
     let mut meter = Meter::new(limits);
     value.write_xml(&mut out, limits, &mut meter)?;
     Ok(out)
+}
+
+#[test]
+fn calendar_data_projection_reading_requires_both_bounds() {
+    for element in ["expand", "limit-recurrence-set", "limit-freebusy-set"] {
+        for attributes in ["start=\"20260101T000000Z\"", "end=\"20260102T000000Z\"", ""] {
+            let body = format!(
+                "<C:calendar-multiget xmlns:C=\"urn:ietf:params:xml:ns:caldav\" xmlns:D=\"DAV:\"><D:prop><C:calendar-data><C:{element} {attributes}/></C:calendar-data></D:prop><D:href>/one</D:href></C:calendar-multiget>"
+            );
+            assert!(
+                read_request(body.as_bytes()).is_err(),
+                "{element}: {attributes}"
+            );
+        }
+        let body = format!(
+            "<C:calendar-multiget xmlns:C=\"urn:ietf:params:xml:ns:caldav\" xmlns:D=\"DAV:\"><D:prop><C:calendar-data><C:{element} start=\"20260101T000000Z\" end=\"20260102T000000Z\"/></C:calendar-data></D:prop><D:href>/one</D:href></C:calendar-multiget>"
+        );
+        assert!(read_request(body.as_bytes()).is_ok(), "{element}");
+    }
+}
+
+#[test]
+fn calendar_data_projection_writing_requires_both_bounds() {
+    let from = Instant::EPOCH;
+    let until = Instant::from_unix_seconds(86_400);
+    for field in 0..3 {
+        for (window, valid) in [
+            (TimeRange::starting_at(from), false),
+            (TimeRange::ending_before(until), false),
+            (TimeRange::new(Some(from), Some(until)).unwrap(), true),
+        ] {
+            let mut wanted = CalendarDataRequest::default();
+            match field {
+                0 => wanted.expand = Some(window),
+                1 => wanted.limit_recurrence_set = Some(window),
+                _ => wanted.limit_freebusy_set = Some(window),
+            }
+            let mut request = CalendarMultiget::new(Limits::DEFAULT);
+            request.props.calendar_data = Some(wanted);
+            assert_eq!(encode(&request).is_ok(), valid, "field {field}: {window:?}");
+        }
+    }
 }
 
 /// Drain a body through the tokenizer alone, answering the first refusal or `Ok`.

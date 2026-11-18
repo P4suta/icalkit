@@ -378,14 +378,16 @@ fn read_calendar_data(
             Some(ElementName::CalendarDataComp) => {
                 wanted.comp = Some(read_comp_selection(events, context, 0)?);
             },
-            // Section 9.6.5 requires both bounds of an `expand`; `TimeRange::new` requires one.
-            // The stricter cardinality is a server's to enforce against its own recurrence layer, which this crate does not depend on and cannot expand for.
-            Some(ElementName::Expand) => wanted.expand = Some(read_time_range(events, context)?),
+            Some(ElementName::Expand) => {
+                wanted.expand = Some(read_time_range(events, context)?.require_bounded()?);
+            },
             Some(ElementName::LimitRecurrenceSet) => {
-                wanted.limit_recurrence_set = Some(read_time_range(events, context)?);
+                wanted.limit_recurrence_set =
+                    Some(read_time_range(events, context)?.require_bounded()?);
             },
             Some(ElementName::LimitFreebusySet) => {
-                wanted.limit_freebusy_set = Some(read_time_range(events, context)?);
+                wanted.limit_freebusy_set =
+                    Some(read_time_range(events, context)?.require_bounded()?);
             },
             Some(other) => return Err(DavError::Unexpected(other)),
             None => skip_foreign(events, context)?,
