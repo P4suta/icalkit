@@ -366,7 +366,7 @@ impl Message {
                     evaluate_message(message, &current_view, PartyId::new(actor.as_str()))
                         .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
                 changes.push(ReviewedChange {
-                    target: ChangeTarget::Existing { item },
+                    target: ChangeTarget::existing(item),
                     transition: authorization.into_transition(),
                 });
                 continue;
@@ -395,7 +395,7 @@ impl Message {
             let no_change = authorization.transition().is_empty();
             changes.push(ReviewedChange {
                 target: if no_change {
-                    ChangeTarget::Existing { item: master_item }
+                    ChangeTarget::existing(master_item)
                 } else {
                     ChangeTarget::Detach {
                         master: master_item,
@@ -619,12 +619,26 @@ impl AuthorizedChange<'_> {
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
                         calendar.items_mut().push(Item::Component(payload));
                     },
-                    ChangeTarget::Existing { item } => {
+                    ChangeTarget::Existing {
+                        item,
+                        inherited_attendees,
+                    } => {
                         let component = calendar
                             .items_mut()
                             .get_mut(item)
                             .and_then(Item::as_component_mut)
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                        if !inherited_attendees.is_empty() {
+                            let at = component
+                                .items()
+                                .iter()
+                                .position(|item| item.as_component().is_some())
+                                .unwrap_or(component.items().len());
+                            component.items_mut().splice(
+                                at..at,
+                                inherited_attendees.into_iter().map(Item::Property),
+                            );
+                        }
                         apply_to(component, &change.transition, policy)?;
                         if self.message.method == Method::Cancel {
                             mark_cancelled(component)?;
@@ -674,7 +688,10 @@ enum ChangeTarget {
     /// Insert the authorized payload into a calendar that did not hold its identity.
     Create { source: usize },
     /// Mutate the component that was reviewed.
-    Existing { item: usize },
+    Existing {
+        item: usize,
+        inherited_attendees: Vec<Property>,
+    },
     /// Clone the reviewed master, apply the property diff, and append a detached instance.
     Detach { master: usize, source: usize },
     /// Store the reviewed occurrence with the attendee's answer.
@@ -685,6 +702,13 @@ enum ChangeTarget {
 }
 
 impl ChangeTarget {
+    fn existing(item: usize) -> Self {
+        Self::Existing {
+            item,
+            inherited_attendees: Vec::new(),
+        }
+    }
+
     /// Apply indexed mutations before appending components, keeping every reviewed index stable.
     const fn phase(&self) -> u8 {
         match self {
@@ -761,7 +785,7 @@ fn stored_instance<'a>(
 }
 
 fn review_occurrence(
-    occurrence: ReplyOccurrence,
+    mut occurrence: ReplyOccurrence<'_>,
     message: &ItipMessage<'_>,
     payload_index: usize,
     source: usize,
@@ -778,8 +802,30 @@ fn review_occurrence(
     if transition.is_empty() {
         return Ok(None);
     }
-    let target = if let Some(item) = occurrence.stored_item {
-        ChangeTarget::Existing { item }
+    let target = if let Some((item, stored)) = occurrence.stored_item {
+        let inherited_attendees = if stored
+            .properties_named(&PropertyId::ATTENDEE)
+            .next()
+            .is_none()
+        {
+            occurrence
+                .event
+                .items_mut()
+                .drain(..)
+                .filter_map(|entry| match entry {
+                    Item::Property(property) if property.has_id(&PropertyId::ATTENDEE) => {
+                        Some(property)
+                    },
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        ChangeTarget::Existing {
+            item,
+            inherited_attendees,
+        }
     } else {
         ChangeTarget::ReplyToOccurrence {
             occurrence: Box::new(occurrence.event),
@@ -789,13 +835,13 @@ fn review_occurrence(
     Ok(Some(ReviewedChange { target, transition }))
 }
 
-fn reply_occurrence(
+fn reply_occurrence<'a>(
     session: &mut Session<'_>,
-    current: &Calendar,
+    current: &'a Calendar,
     received: &Calendar,
     master: &Component,
     payload: &Component,
-) -> Result<ReplyOccurrence, Rejection> {
+) -> Result<ReplyOccurrence<'a>, Rejection> {
     let siblings = root_component(current)
         .ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?
         .items();

@@ -448,22 +448,22 @@ fn normalize_expanded_property(
     Ok(Some(property))
 }
 
-pub(crate) struct ReplyOccurrence {
+pub(crate) struct ReplyOccurrence<'a> {
     pub(crate) event: Component,
     pub(crate) key: Instant,
-    pub(crate) stored_item: Option<usize>,
+    pub(crate) stored_item: Option<(usize, &'a Component)>,
 }
 
 /// Build the stored occurrence whose participation an attendee answers.
-pub(crate) fn event_for_instance_reply(
+pub(crate) fn event_for_instance_reply<'a>(
     master: &Component,
-    siblings: &[Item],
+    siblings: &'a [Item],
     reply: &Component,
     zones: Zones<'_>,
     received_zones: Zones<'_>,
     budget: &mut Budget<'_>,
     notes: &mut Vec<crate::internal::core::Diagnostic>,
-) -> Result<ReplyOccurrence, QueryError> {
+) -> Result<ReplyOccurrence<'a>, QueryError> {
     let index = SeriesIndex::new(siblings, budget.meter)?;
     let related = index
         .related(master, budget.meter)?
@@ -493,7 +493,9 @@ pub(crate) fn event_for_instance_reply(
                 .value()
                 .ok_or(QueryError::Unrepresentable)?;
             if range
-                || stored_item.replace(member.position).is_some()
+                || stored_item
+                    .replace((member.position, member.component))
+                    .is_some()
                 || unique_reply_key(stored, zones)? != key
                 || matches!((stored, addressed), (DateTimeValue::Zoned {tzid: first, ..}, DateTimeValue::Zoned {tzid: second, ..}) if first != second)
             {

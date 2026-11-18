@@ -1318,6 +1318,68 @@ fn a_generated_instance_reply_cannot_choose_a_side_of_a_repeated_hour() {
 }
 
 #[test]
+fn a_reply_updates_inherited_attendees_in_the_stored_occurrence() {
+    let other = "ATTENDEE;CN=Pat:mailto:pat@example.test\r\n";
+    let master = str::from_utf8(range_series::HELD)
+        .unwrap()
+        .strip_suffix(WRAP_TAIL)
+        .unwrap()
+        .replace("ATTENDEE;", &format!("{other}ATTENDEE;X-TEAM=Blue;"));
+    let stored = "BEGIN:VEVENT\r\nUID:range@example.test\r\nDTSTAMP:20260301T120000Z\r\n\
+                  RECURRENCE-ID:20260317T140000Z\r\nDTSTART:20260317T160000Z\r\n\
+                  X-LOCAL:keep this order\r\n";
+    let alarm = "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\n\
+                 DESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\n";
+    let later = "BEGIN:VEVENT\r\nUID:range@example.test\r\nDTSTAMP:20260301T120000Z\r\n\
+                 RECURRENCE-ID:20260324T140000Z\r\nDTSTART:20260324T170000Z\r\nEND:VEVENT\r\n";
+    let prefix = format!("{master}{stored}");
+    let suffix = format!("{alarm}{later}{WRAP_TAIL}");
+    let original = format!("{prefix}{suffix}");
+    let mut current = Calendar::parse(original.as_bytes()).unwrap();
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    for (date, status) in [("02", "ACCEPTED"), ("03", "DECLINED")] {
+        let fields = format!(
+            "RECURRENCE-ID:20260317T140000Z\r\nDTSTART:20260317T160000Z\r\n\
+             ORGANIZER:mailto:chair@example.test\r\nATTENDEE;PARTSTAT={status}:mailto:alice@example.test\r\n"
+        );
+        let bytes = scheduling_payload(
+            "REPLY",
+            "range@example.test",
+            &format!("202603{date}T120000Z"),
+            2,
+            &fields,
+        );
+        let reply = Message::read(&bytes).unwrap();
+        let before = current.to_bytes();
+        let updated = reply
+            .review(&current, &actor)
+            .unwrap()
+            .authorize()
+            .apply()
+            .unwrap();
+        assert_eq!(current.to_bytes(), before);
+        let written = String::from_utf8(updated.to_bytes()).unwrap();
+        let attendees = written
+            .strip_prefix(&prefix)
+            .unwrap()
+            .strip_suffix(&suffix)
+            .unwrap();
+        let answered = attendees.strip_prefix(other).unwrap().replace("\r\n ", "");
+        assert_eq!(answered.lines().count(), 1, "{answered}");
+        assert!(answered.starts_with("ATTENDEE;X-TEAM=Blue;"), "{answered}");
+        assert!(
+            answered.contains(&format!(";PARTSTAT={status};")),
+            "{answered}"
+        );
+        assert!(
+            answered.ends_with(":mailto:alice@example.test\r\n"),
+            "{answered}"
+        );
+        current = updated;
+    }
+}
+
+#[test]
 fn an_instance_reply_requires_the_original_date_or_time_form_of_the_key() {
     let current = Calendar::parse(range_series::HELD).unwrap();
     let actor = Actor::new("mailto:alice@example.test").unwrap();
