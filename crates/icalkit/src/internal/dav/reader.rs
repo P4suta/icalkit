@@ -435,7 +435,14 @@ impl<'a> XmlReader<'a> {
         let known = self.open.last().and_then(|open| open.known);
         let mode = TextMode::of(known, context.text);
         let offset = u64::try_from(from).unwrap_or(u64::MAX);
-        let decoded = admitted.decode_text(from..end, mode, offset, context.meter, context.sink)?;
+        let decoded = admitted.decode_text(
+            from..end,
+            mode,
+            offset,
+            context.limits.max_xml_text_bytes(),
+            context.meter,
+            context.sink,
+        )?;
         self.at = end;
         Ok(XmlEvent::Text(decoded))
     }

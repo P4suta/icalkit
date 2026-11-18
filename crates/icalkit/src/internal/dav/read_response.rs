@@ -166,10 +166,19 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
     ) -> Result<Option<DavResponse>, DavError> {
         if context.meter.responses() == context.meter.limits().max_responses()
             && self.token.is_none()
-            && let Some(terminal) = self.terminal_status(depth, context)?
         {
-            self.stage = Stage::Finished;
-            return Ok(Some(terminal));
+            match self.terminal_status(depth, context) {
+                Ok(Some(terminal)) => {
+                    self.stage = Stage::Finished;
+                    return Ok(Some(terminal));
+                },
+                Ok(None) => {},
+                Err(DavError::Limit(_)) => {
+                    self.truncate(context);
+                    return Ok(None);
+                },
+                Err(error) => return Err(error),
+            }
         }
         if !self.charge(context)? {
             return Ok(None);
@@ -221,18 +230,21 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
         match context.meter.try_charge_response() {
             Ok(()) => Ok(true),
             Err(LimitExceeded::Responses) => {
-                let at = self.events.offset();
-                context.report(
-                    DiagnosticCode::DavResponsesTruncated,
-                    Severity::LimitReached,
-                    at,
-                );
-                self.stage = Stage::Finished;
-                self.truncated = true;
+                self.truncate(context);
                 Ok(false)
             },
             Err(other) => Err(DavError::Limit(other)),
         }
+    }
+
+    fn truncate(&mut self, context: &mut DecodeContext<'_>) {
+        context.report(
+            DiagnosticCode::DavResponsesTruncated,
+            Severity::LimitReached,
+            self.events.offset(),
+        );
+        self.stage = Stage::Finished;
+        self.truncated = true;
     }
 
     /// Act on one child of a `DAV:response`.

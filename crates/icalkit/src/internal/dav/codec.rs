@@ -134,8 +134,8 @@ pub trait ResponseSource {
 
     /// The `DAV:sync-token` the body carried, once it has been reached.
     ///
-    /// RFC 6578 section 3 puts the token after the responses, so this answers `None` until the source has been drained.
-    /// Reading it early is not an error and not a promise.
+    /// A token can precede responses in the input.
+    /// Drain the source successfully and check [`Self::was_truncated`] before saving it.
     fn sync_token(&self) -> Option<&[u8]>;
 
     /// Whether this source stopped short of the body's own end.

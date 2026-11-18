@@ -263,13 +263,14 @@ impl<'a> AdmittedXmlBody<'a> {
         span: Range<usize>,
         mode: TextMode,
         offset: u64,
+        text_limit: u32,
         meter: &mut Meter,
         sink: &mut dyn DiagnosticSink,
     ) -> Result<DecodedText<'a>, DavError> {
         let raw = self.octets.get(span).ok_or(SyntaxError::Malformed)?;
         meter.check_width(
             raw.len(),
-            meter.limits().max_xml_text_bytes(),
+            text_limit.min(meter.limits().max_xml_text_bytes()),
             LimitExceeded::Text,
         )?;
         decode_admitted_text(raw, mode, offset, meter, sink)

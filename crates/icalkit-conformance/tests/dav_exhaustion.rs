@@ -563,7 +563,7 @@ fn an_external_source_cut_withholds_the_token_without_exhausting_the_meter() {
 
 #[test]
 fn an_already_truncated_reader_does_not_exhaust_a_fresh_collection_meter() {
-    let body = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/first</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response><d:response><d:href>/later</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response></d:multistatus>"#;
+    let body = br#"<d:multistatus xmlns:d="DAV:"><d:sync-token>data:,held</d:sync-token><d:response><d:href>/first</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response><d:response><d:href>/later</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response></d:multistatus>"#;
     let limits = Limits::DEFAULT.with_max_responses(1);
     let mut events = XmlReader::new(body);
     let mut source = MultiStatusReader::new(&mut events);
@@ -584,6 +584,7 @@ fn an_already_truncated_reader_does_not_exhaust_a_fresh_collection_meter() {
     }
     assert!(source.was_truncated());
     assert!(first.is_exhausted());
+    assert_eq!(source.sync_token(), Some(b"data:,held".as_slice()));
     diagnostics.clear();
     let mut fresh = Meter::new(limits);
     let result = MultiStatus::read(
@@ -596,10 +597,55 @@ fn an_already_truncated_reader_does_not_exhaust_a_fresh_collection_meter() {
     assert!(!fresh.is_exhausted());
     assert_eq!(fresh.try_charge_bytes(1), Ok(()));
     assert!(
+        diagnostics
+            .iter()
+            .any(|note| note.code() == DiagnosticCode::DavSyncTokenWithheld)
+    );
+    assert!(
         !diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code() == DiagnosticCode::ResourceBudgetExhausted)
     );
+}
+
+#[test]
+fn an_oversized_terminal_href_keeps_the_completed_response() {
+    let xml = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/a</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response><d:response><d:href>/collection/</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status></d:response></d:multistatus>"#;
+    let limits = Limits::DEFAULT.with_max_responses(1).with_max_href_bytes(2);
+    let mut meter = Meter::new(limits);
+    let mut diagnostics = Vec::new();
+    let mut events = XmlReader::new(xml);
+    let mut source = MultiStatusReader::new(&mut events);
+    let body = MultiStatus::read(
+        &mut source,
+        &mut DecodeContext::new(limits, &mut meter, &mut diagnostics),
+    )
+    .unwrap();
+    assert_eq!(body.responses().len(), 1);
+    assert_eq!(body.responses()[0].href.as_bytes(), b"/a");
+    assert!(body.sync_token.is_none());
+    assert!(source.was_truncated());
+    assert!(meter.is_exhausted());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|entry| entry.code() == DiagnosticCode::DavResponsesTruncated)
+    );
+}
+
+#[test]
+fn the_context_limits_each_raw_text_span_before_decoding() {
+    let limits = Limits::DEFAULT.with_max_xml_text_bytes(4);
+    let mut meter = Meter::new(Limits::DEFAULT);
+    let mut diagnostics = Vec::new();
+    let mut reader = XmlReader::new(b"<doc><![CDATA[a]]></doc>");
+    let mut context = DecodeContext::new(limits, &mut meter, &mut diagnostics);
+    reader.next_event(&mut context).unwrap();
+    assert_eq!(
+        reader.next_event(&mut context).unwrap_err(),
+        DavError::Limit(LimitExceeded::Text)
+    );
+    assert!(meter.is_exhausted());
 }
 
 #[test]
