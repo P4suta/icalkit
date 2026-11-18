@@ -16,8 +16,11 @@ The [zone source decision](0003-caller-supplied-time-zones.md) keeps zone data i
 Keep a validated, bounded definition with each query that supplies one.
 Reuse the maintained observance reader and transition resolver.
 Route dates and floating values to the query definition.
-Resolve an explicit `TZID` with the [stored definition](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.5) when present, then consult the caller's source for other identifiers.
-Expand floating date-times in the query zone and preserve elapsed durations across transitions.
+Resolve explicit `TZID` values with the matching [resource definition](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.5) when present.
+Use the caller's source for other identifiers.
+Compile resource definitions for time-range filters.
+Expand floating date-times in the query zone.
+Apply nominal days before elapsed hours, minutes, and seconds across transitions under the [duration decision](occurrence-duration-semantics.md).
 Reject malformed or unsupported query definitions without an implicit fallback.
 
 ## Alternatives
@@ -33,4 +36,4 @@ Revisit support when the observance reader gains other rule forms.
 ## Confirmation
 
 Tests must cover absent and conflicting external sources, clock changes, query operations, and resource limits.
-The maintained checks must pass with default features and without default features.
+Check both feature configurations.

@@ -40,8 +40,9 @@ use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 /// A CalDAV calendar-query with its XML vocabulary kept private.
 #[derive(Clone, Debug)]
 pub struct Query {
-    query: crate::internal::dav::CalendarQuery,
-    query_zone: Option<QueryZoneDefinition>,
+    request: crate::internal::dav::CalendarQuery,
+    filter_needs_zones: bool,
+    floating_zone: Option<QueryZoneDefinition>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,15 +72,13 @@ struct ResourceZones<'a> {
 
 impl<'a> ResourceZones<'a> {
     fn read(
-        calendar: &Calendar,
+        calendar: Option<&Calendar>,
         external: &'a dyn ZoneSource,
         meter: &mut Meter,
         notes: &mut Vec<Diagnostic>,
     ) -> Result<Self, LimitExceeded> {
         let stored = calendar
-            .document
-            .components()
-            .next()
+            .and_then(|resource| resource.document.components().next())
             .map_or_else(VtimezoneSet::new, |root| {
                 read_calendar_zones(root, meter, notes)
             });
@@ -139,19 +138,35 @@ impl Query {
         meter: &mut Meter,
     ) -> Result<Self, Error> {
         let query_zone = read_query_zone(&query, policy, meter)?;
-        Ok(Self { query, query_zone })
+        let filter_needs_zones = query
+            .filter
+            .as_ref()
+            .map(|filter| filter_uses_time_ranges(filter, meter))
+            .transpose()
+            .map_err(|_| Error::single("icalkit.caldav.query-invalid"))?
+            .unwrap_or(false);
+        Ok(Self {
+            request: query,
+            filter_needs_zones,
+            floating_zone: query_zone,
+        })
     }
 
     /// Evaluate this filter without collapsing an unknown answer to a non-match.
     pub fn matches(&self, session: &mut Session<'_>, calendar: &Calendar) -> Result<Match, Error> {
-        let Some(filter) = self.query.filter.as_ref() else {
+        let Some(filter) = self.request.filter.as_ref() else {
             return Ok(Match::Matched);
         };
         let limits = session.engine.policy.limits;
         session.with_zone_source(|source, meter, notes| {
-            let sources = ResourceZones::read(calendar, source, meter, notes)
-                .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))?;
-            let zones = sources.for_query(self.query_zone.as_ref());
+            let sources = ResourceZones::read(
+                self.filter_needs_zones.then_some(calendar),
+                source,
+                meter,
+                notes,
+            )
+            .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))?;
+            let zones = sources.for_query(self.floating_zone.as_ref());
             let mut budget = Budget::new(limits, meter);
             query::matches(filter, &calendar.document, zones, &mut budget)
                 .map(Match::from_kernel)
@@ -166,13 +181,35 @@ impl Query {
         calendar: &Calendar,
     ) -> Result<ProjectedCalendar, Error> {
         let request = self
-            .query
+            .request
             .props
             .calendar_data
             .as_ref()
             .ok_or_else(|| Error::single("icalkit.caldav.calendar-data-not-requested"))?;
-        project_calendar_data(request, session, calendar, self.query_zone.as_ref())
+        project_calendar_data(request, session, calendar, self.floating_zone.as_ref())
     }
+}
+
+fn filter_uses_time_ranges(
+    filter: &crate::internal::dav::CompFilter,
+    meter: &mut Meter,
+) -> Result<bool, LimitExceeded> {
+    meter.try_charge(1)?;
+    if filter.time_range.is_some() {
+        return Ok(true);
+    }
+    for prop in filter.props() {
+        meter.try_charge(1)?;
+        if prop.time_range.is_some() {
+            return Ok(true);
+        }
+    }
+    for child in filter.comps() {
+        if filter_uses_time_ranges(child, meter)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn project_calendar_data(
@@ -186,7 +223,7 @@ fn project_calendar_data(
         let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
         let mut budget = Budget::new(limits, meter);
         if let Some(window) = request.expand.or(request.limit_recurrence_set) {
-            let sources = ResourceZones::read(calendar, zone_source, budget.meter, notes)
+            let sources = ResourceZones::read(Some(calendar), zone_source, budget.meter, notes)
                 .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
             let zones = sources.for_query(query_zone);
             source = if request.expand.is_some() {
@@ -2159,7 +2196,7 @@ fn query_response(
             .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
         let mut response = DavResponse::with_propstats(href, policy.limits);
         let mut properties = PropStat::new(Status::OK, policy.limits);
-        for name in query.query.props.names() {
+        for name in query.request.props.names() {
             if matches!(name, PropName::Known(ElementName::Getetag))
                 && let Some(etag) = resource.etag.as_ref()
             {
@@ -2174,7 +2211,7 @@ fn query_response(
                     .map_err(|_| Error::single("icalkit.caldav.response-too-large"))?;
             }
         }
-        if query.query.props.calendar_data.is_some() {
+        if query.request.props.calendar_data.is_some() {
             let projected = query.project(&mut session, &resource.calendar)?;
             let payload =
                 CalendarPayload::from_octets(projected.as_bytes(), policy.limits, &mut meter)
@@ -3167,6 +3204,35 @@ mod tests {
     use crate::scheduling::Message;
     use crate::{Engine, Limits, ResourcePolicy};
     use core::fmt::Write as _;
+
+    #[test]
+    fn name_and_text_filters_need_no_stored_zone_slots() {
+        let resource = crate::Calendar::parse(concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n",
+            "BEGIN:VTIMEZONE\r\nTZID:Local\r\nBEGIN:STANDARD\r\nDTSTART:20200101T000000\r\n",
+            "TZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n",
+            "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART;TZID=Local:20240101T120000\r\n",
+            "SUMMARY:hello\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        ).as_bytes()).unwrap();
+        let engine = Engine::builder()
+            .resource_policy(ResourcePolicy {
+                limits: Limits::DEFAULT.with_max_vtimezone_components(0),
+            })
+            .build();
+        for filter in [
+            "",
+            "<c:prop-filter name=\"SUMMARY\"><c:text-match>hello</c:text-match></c:prop-filter>",
+        ] {
+            let xml = alloc::format!(
+                r#"<c:calendar-query xmlns:c="urn:ietf:params:xml:ns:caldav"><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">{filter}</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>"#
+            );
+            let query = super::Query::parse(xml.as_bytes()).unwrap();
+            assert_eq!(
+                query.matches(&mut engine.session(), &resource).unwrap(),
+                super::Match::Matched
+            );
+        }
+    }
 
     #[test]
     fn rejected_owned_requests_release_live_namespace_reservations() {
