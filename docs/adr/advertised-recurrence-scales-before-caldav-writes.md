@@ -9,11 +9,14 @@ status: proposed
 
 [RFC 7529 section 10](https://www.rfc-editor.org/rfc/rfc7529.html#section-10) forbids `RSCALE` writes without a server advertisement.
 A missing property and an advertised set without names have different meanings.
+A path-only probe carries no origin.
 
 ## Decision
 
 Probe the caller's calendar collection or home with PROPFIND before writing `RSCALE` rules.
-Require one [WebDAV href](https://www.rfc-editor.org/rfc/rfc4918.html#section-8.3) matching the probe's path, query, and any shared origin.
+Require one [WebDAV href](https://www.rfc-editor.org/rfc/rfc4918.html#section-8.3) matching the probe's path and query.
+An absolute-path href inherits the request origin.
+An absolute href requires a probe with the same [HTTP origin](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.3.1).
 Accept CalDAV property values with `200 OK` as policy.
 An empty advertised set permits an attempt with any calendar name.
 Preserve listed names and compare them without case sensitivity, including supported Gregorian aliases.

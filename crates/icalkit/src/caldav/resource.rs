@@ -83,23 +83,23 @@ impl<'a> ResourceReference<'a> {
 }
 
 pub(super) fn same_resource(target: &str, href: &str) -> bool {
-    let (Some(left), Some(right)) = (
+    let (Some(target), Some(href)) = (
         ResourceReference::parse(target),
         ResourceReference::parse(href),
     ) else {
         return false;
     };
-    let same_query = match (left.query, right.query) {
+    let same_origin = match (target.origin, href.origin) {
+        (_, None) => true,
+        (Some(request), Some(response)) => request.matches(&response),
+        (None, Some(_)) => false,
+    };
+    let same_query = match (target.query, href.query) {
         (Some(one), Some(other)) => normalized_octets(one).eq(normalized_octets(other)),
         (None, None) => true,
         _ => false,
     };
-    normalized_octets(left.path).eq(normalized_octets(right.path))
-        && same_query
-        && left
-            .origin
-            .zip(right.origin)
-            .is_none_or(|(one, other)| one.matches(&other))
+    same_origin && same_query && normalized_octets(target.path).eq(normalized_octets(href.path))
 }
 
 /// RFC 3986 section 2.3 permits escaped unreserved octets to match their literal forms.

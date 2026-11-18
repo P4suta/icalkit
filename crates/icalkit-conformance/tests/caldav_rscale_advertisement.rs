@@ -52,7 +52,9 @@ fn advertisement_requires_the_probed_resource() {
     for (probe, href, accepted) in [
         ("/cal/", "/elsewhere/", false),
         ("https://example.test/cal/", "/cal/", true),
-        ("/cal/", "https://example.test/cal/", true),
+        ("/cal/", "/cal/", true),
+        ("/cal/", "https://example.test/cal/", false),
+        ("/cal/work/", "https://other.test/cal/work/", false),
         (
             "https://example.test/cal/",
             "https://other.test/cal/",
