@@ -122,6 +122,18 @@ fn opaque_values_keep_ancestor_bindings_and_nested_rebindings() {
                 b"inner" | b"deep" => b"urn:inner",
                 _ => continue,
             };
+            if name.local_name != b"deep" {
+                let schema = icalkit_conformance::internal::dav::Namespace::from_uri(
+                    b"http://www.w3.org/2001/XMLSchema-instance",
+                );
+                let kind = icalkit_conformance::internal::dav::QName::new(schema, b"type");
+                let value = if name.local_name == b"after" {
+                    b"Label".as_slice()
+                } else {
+                    b"p:Label"
+                };
+                assert_eq!(reader.attribute(kind), Some(value));
+            }
             assert_eq!(reader.resolve_prefix(b"p").unwrap().uri(), expected);
             assert_eq!(
                 reader.resolve_prefix(b"").unwrap().uri(),
@@ -137,7 +149,7 @@ fn opaque_values_keep_ancestor_bindings_and_nested_rebindings() {
     assert_eq!(seen, [b"child".as_slice(), b"inner", b"deep", b"after"]);
     let xml = std::str::from_utf8(&encoded).unwrap();
     assert!(xml.contains("<v:child"));
-    assert!(xml.contains("xsi:type=\"p:Label\""));
+    assert!(xml.contains("xsi:type="));
     assert!(xml.contains("<p:deep"));
     assert_eq!(xml.matches("xmlns:p=").count(), 2);
     assert_eq!(read(&encoded), captured);
@@ -160,7 +172,8 @@ fn namespace_limits_cover_the_envelope_and_the_captured_fragment_together() {
 
     let limits = Limits::DEFAULT;
     let cap = limits.max_prefix_bindings();
-    for declarations in [cap.checked_sub(8).unwrap(), cap] {
+    let admitted = cap.checked_sub(8).unwrap();
+    for declarations in [admitted, cap.checked_sub(7).unwrap(), cap] {
         let mut body = String::from(r#"<d:multistatus xmlns:d="DAV:" xmlns:v="urn:values""#);
         for index in 2..declarations {
             write!(body, r#" xmlns:p{index}="urn:{index}""#).unwrap();
@@ -169,13 +182,13 @@ fn namespace_limits_cover_the_envelope_and_the_captured_fragment_together() {
         let captured = read(body.as_bytes());
         let mut encoded = Vec::new();
         let mut meter = Meter::new(limits);
-        match captured.write_xml(&mut encoded, limits, &mut meter) {
-            Ok(()) => assert_eq!(read(&encoded), captured),
-            Err(error) => {
-                assert_eq!(declarations, cap);
-                assert_eq!(error, DavError::Limit(LimitExceeded::PrefixBindings));
-                assert!(meter.is_exhausted());
-            },
+        let written = captured.write_xml(&mut encoded, limits, &mut meter);
+        if declarations == admitted {
+            written.unwrap();
+            assert_eq!(read(&encoded), captured);
+        } else {
+            assert_eq!(written, Err(DavError::Limit(LimitExceeded::PrefixBindings)));
+            assert!(meter.is_exhausted());
         }
     }
 }

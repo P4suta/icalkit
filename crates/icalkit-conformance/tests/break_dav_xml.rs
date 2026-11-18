@@ -207,6 +207,7 @@ fn escaped_text_does_not_become_markup_on_the_way_out() {
     let mut property_depth = None;
     let mut finished = false;
     let mut children = Vec::new();
+    let mut mark_closed = false;
     let mut text = Vec::new();
     while let Some(event) = reader.next_event(&mut context).unwrap() {
         match event {
@@ -225,7 +226,14 @@ fn escaped_text_does_not_become_markup_on_the_way_out() {
                     .unwrap(),
                 name.local_name.to_vec(),
             )),
+            XmlEvent::End { name, depth, .. }
+                if name.local_name == b"mark" && property_depth == depth.checked_sub(1) =>
+            {
+                mark_closed = true;
+            },
             XmlEvent::Text(decoded) if property_depth.is_some() => {
+                assert!(mark_closed);
+                assert_eq!(Some(reader.depth()), property_depth);
                 text.extend_from_slice(decoded.run.as_bytes());
             },
             XmlEvent::End { depth, .. } if property_depth == Some(depth) => {
