@@ -34,7 +34,7 @@ struct RecipeFixture(PathBuf);
 impl RecipeFixture {
     fn new() -> io::Result<Self> {
         static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-        let directory = env::temp_dir().join(format!(
+        let directory = std::path::absolute(env::temp_dir())?.join(format!(
             "icalkit nextest output {} {}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

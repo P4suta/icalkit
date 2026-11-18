@@ -8,6 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::PUBLIC_API_TOOLCHAIN;
 
@@ -21,6 +22,47 @@ pub(super) struct ApiGeneration {
     rustdoc: Command,
     formatter: Command,
     json: PathBuf,
+    _directory: ApiTargetDirectory,
+}
+
+struct ApiTargetDirectory(PathBuf);
+
+impl ApiTargetDirectory {
+    fn new(workspace: &Path, no_default_features: bool) -> io::Result<Self> {
+        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+        let parent = std::path::absolute(workspace)?
+            .join("target/public-api")
+            .join(if no_default_features {
+                "no-default"
+            } else {
+                "default"
+            });
+        fs::create_dir_all(&parent)?;
+        for _ in 0..8 {
+            let directory = parent.join(format!(
+                "run-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&directory) {
+                Ok(()) => return Ok(Self(directory)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::other("no unused API generation directory"))
+    }
+}
+
+impl Drop for ApiTargetDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.0) {
+            eprintln!(
+                "could not remove API generation directory {}: {error}",
+                self.0.display()
+            );
+        }
+    }
 }
 
 impl ApiGeneration {
@@ -84,20 +126,14 @@ impl PinnedCargo {
         inherited_path: Option<&OsStr>,
     ) -> io::Result<ApiGeneration> {
         let host = self.host()?;
-        let directory = std::path::absolute(workspace)?
-            .join("target/public-api")
-            .join(if no_default_features {
-                "no-default"
-            } else {
-                "default"
-            });
-        let json = directory.join(&host).join("doc/icalkit.json");
+        let directory = ApiTargetDirectory::new(workspace, no_default_features)?;
+        let json = directory.0.join(&host).join("doc/icalkit.json");
         let mut rustdoc = self.base_command(workspace, inherited_path)?;
         rustdoc
             .args(["rustdoc", "--locked", "--lib", "-p", "icalkit", "--target"])
             .arg(&host)
             .arg("--target-dir")
-            .arg(directory);
+            .arg(&directory.0);
         if no_default_features {
             rustdoc.arg("--no-default-features");
         }
@@ -118,6 +154,7 @@ impl PinnedCargo {
             rustdoc,
             formatter,
             json,
+            _directory: directory,
         })
     }
 
@@ -315,7 +352,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     impl ToolchainFixture {
         fn new() -> io::Result<Self> {
             static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-            let path = std::env::temp_dir().join(format!(
+            let path = std::path::absolute(std::env::temp_dir())?.join(format!(
                 "icalkit-api-toolchain-{}-{}",
                 std::process::id(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -531,6 +568,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[test]
     fn api_generation_enforces_the_inner_cargo_lockfile() -> io::Result<()> {
         check_generation_boundary("locked")
+    }
+
+    #[test]
+    fn a_failed_overlapping_generation_keeps_the_other_output() -> io::Result<()> {
+        let fixture = ToolchainFixture::new()?;
+        let compiler = PinnedCargo::from_output(fixture.which()?)?;
+        for no_default_features in [false, true] {
+            let mut first = compiler.command(&fixture.0, no_default_features, None)?;
+            let mut second = compiler.command(&fixture.0, no_default_features, None)?;
+            let generated = first.rustdoc.output()?;
+            assert!(generated.status.success(), "{generated:?}");
+            second.rustdoc.env("RUSTUP_AUTO_INSTALL", "1");
+            let refused = second.output()?;
+            assert_eq!(refused.status.code(), Some(44));
+            let formatted = first.formatter.output()?;
+            assert!(formatted.status.success(), "{formatted:?}");
+            assert!(
+                String::from_utf8_lossy(&formatted.stdout).contains(if no_default_features {
+                    "profile=no-default"
+                } else {
+                    "profile=default"
+                })
+            );
+        }
+        Ok(())
     }
 
     #[test]

@@ -117,6 +117,31 @@ fn disabled_hooks_do_not_hide_scope_probe_execution() -> io::Result<()> {
 }
 
 #[test]
+fn adapter_fixtures_accept_relative_temporary_directories() -> io::Result<()> {
+    let parent = StagingRepository::new()?;
+    fs::create_dir(parent.directory.join("relative-temp"))?;
+    let mut failures = Vec::new();
+    for test in [
+        "hook_scope::repository_hook_covers_development_configuration_and_rust_sources",
+        "nextest_output::maintained_recipes_keep_leak_status_visible_under_sparse_output",
+        "public_api::tests::child_tool_detection_uses_the_selected_compiler_with_a_foreign_environment",
+    ] {
+        let output = Command::new(std::env::current_exe()?)
+            .current_dir(&parent.directory)
+            .args(["--exact", test, "--nocapture"])
+            .env("TMPDIR", "relative-temp")
+            .env("TMP", "relative-temp")
+            .env("TEMP", "relative-temp")
+            .output()?;
+        if !output.status.success() {
+            failures.push(format!("{test}: {output:?}"));
+        }
+    }
+    assert_eq!(failures, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
 fn architecture_hook_covers_root_manifests_and_rust_sources() -> io::Result<()> {
     require_scope(
         "architecture",
@@ -178,7 +203,7 @@ impl StagingRepository {
         let mut directory = None;
         for _ in 0..8 {
             let id = CONFIGURATION_ID.fetch_add(1, Ordering::Relaxed);
-            let candidate = std::env::temp_dir()
+            let candidate = std::path::absolute(std::env::temp_dir())?
                 .join(format!("icalkit-hook-stage-{}-{id}", std::process::id()));
             match fs::create_dir(&candidate) {
                 Ok(()) => {
