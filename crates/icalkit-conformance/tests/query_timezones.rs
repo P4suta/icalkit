@@ -9,7 +9,12 @@
 use icalkit::caldav::{Match, Query};
 use icalkit::time::{DateTime, OffsetResolution, Timestamp, ZoneDatabase, ZoneResolution};
 use icalkit::{Calendar, Engine, ResourcePolicy};
-use icalkit_conformance::internal::core::{Component, Document, Limits, Meter};
+use icalkit_conformance::internal::core::{
+    Component, DecodeValue, Document, Duration, Limits, Meter,
+};
+use icalkit_conformance::internal::dav::{
+    DecodeContext, RequestBody, UnknownPolicy, XmlPull, XmlReader,
+};
 use icalkit_conformance::internal::tz::read_calendar_zones;
 
 fn zone(observance_properties: &str) -> String {
@@ -100,7 +105,11 @@ fn floating_values_use_the_inline_definition_without_an_external_database() {
         query.matches(&mut session, &calendar).unwrap(),
         Match::Matched
     );
-    assert!(query.project(&mut session, &calendar).is_ok());
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert_eq!(
+        projected_property(&projected, b"VEVENT", b"DTSTART"),
+        "20240102T070000Z"
+    );
 }
 
 #[test]
@@ -118,7 +127,11 @@ fn dates_use_the_inline_definition_without_an_external_database() {
         query.matches(&mut session, &calendar).unwrap(),
         Match::Matched
     );
-    assert!(query.project(&mut session, &calendar).is_ok());
+    let projected = query.project(&mut session, &calendar).unwrap();
+    assert_eq!(
+        projected_property(&projected, b"VJOURNAL", b"DTSTART"),
+        "20240102"
+    );
 }
 
 #[test]
@@ -319,13 +332,77 @@ fn opaque_metadata_does_not_prevent_use_of_a_readable_definition() {
 #[test]
 fn inline_query_parsing_uses_the_session_input_budget() {
     let body = request(&zone(""), "VEVENT", "20240101T000000Z", "20240103T000000Z");
+    let mut meter = Meter::new(Limits::DEFAULT);
+    let mut notes = Vec::new();
+    let mut xml = XmlReader::new(body.as_bytes());
+    let mut context = DecodeContext::new(Limits::DEFAULT, &mut meter, &mut notes)
+        .with_unknown(UnknownPolicy::Reject);
+    RequestBody::read(&mut xml, &mut context).unwrap();
+    assert!(xml.next_event(&mut context).unwrap().is_none());
     let engine = Engine::builder()
-        .resource_policy(ResourcePolicy::secure().with_max_input_bytes(10_000))
+        .resource_policy(ResourcePolicy::secure().with_max_input_bytes(meter.spent()))
         .build();
+    let error = engine.session().query(body.as_bytes()).unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "icalkit.caldav.query-timezone-invalid"
+    );
+    assert!(Engine::default().session().query(body.as_bytes()).is_ok());
+}
+
+fn projected_property(
+    projection: &icalkit::caldav::ProjectedCalendar,
+    kind: &[u8],
+    property: &[u8],
+) -> String {
+    let doc = Document::parse(projection.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let component = doc
+        .components()
+        .next()
+        .unwrap()
+        .components()
+        .find(|c| c.is_named(kind))
+        .unwrap();
+    text(component, property).unwrap().to_string()
+}
+
+#[test]
+fn explicit_zones_use_the_stored_definition_when_expanded() {
+    let event = "BEGIN:VEVENT\r\nUID:stored@example.test\r\nDTSTAMP:20240101T000000Z\r\nDTSTART;TZID=Test/Inline:20240102T090000\r\nDURATION:PT1H\r\nEND:VEVENT\r\n";
+    let stored = zone("").replace("END:VCALENDAR", &format!("{event}END:VCALENDAR"));
+    let resource = Calendar::parse(stored.as_bytes()).unwrap();
+    let inline = zone("").replace("+0200", "+0900");
+    let query = query(&inline, "VEVENT", "20240102T070000Z", "20240102T073000Z");
+    let engine = Engine::builder().zone_database(ConflictingZone).build();
     let mut session = engine.session();
-    assert!(session.query(body.as_bytes()).is_ok());
-    let exhausted = (0..64).any(|_| session.query(body.as_bytes()).is_err());
-    assert!(exhausted);
+    let projection = query.project(&mut session, &resource).unwrap();
+    assert_eq!(
+        projected_property(&projection, b"VEVENT", b"DTSTART"),
+        "20240102T070000Z"
+    );
+    assert_eq!(
+        query.matches(&mut session, &resource).unwrap(),
+        Match::Matched
+    );
+}
+
+#[test]
+fn standalone_floating_duration_spans_the_query_zone_transition() {
+    let timezone = zone("").replace("END:STANDARD\r\n", "END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:20240331T020000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0300\r\nEND:DAYLIGHT\r\n");
+    let query = query(&timezone, "VEVENT", "20240330T000000Z", "20240401T000000Z");
+    let resource = calendar("VEVENT", "DTSTART:20240330T090000\r\nDURATION:P1D\r\n");
+    let projection = query
+        .project(&mut Engine::default().session(), &resource)
+        .unwrap();
+    assert_eq!(
+        projected_property(&projection, b"VEVENT", b"DTSTART"),
+        "20240330T070000Z"
+    );
+    assert_eq!(
+        Duration::decode_value(projected_property(&projection, b"VEVENT", b"DURATION").as_bytes())
+            .unwrap(),
+        Duration::new(0, 23 * 3600)
+    );
 }
 
 #[test]

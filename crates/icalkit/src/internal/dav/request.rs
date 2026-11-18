@@ -103,10 +103,8 @@ pub struct CalendarQuery {
     /// Which resources match.
     /// Absent asks for all of them.
     pub filter: Option<CompFilter>,
-    /// The zone a floating `time-range` in the filter is resolved in, section 9.9.
-    ///
-    /// Carried because the alternative is not "ignored" but "answered differently": a server that resolves a floating window in a zone of its own choosing answers a question the client did not ask, and a proxy that re-encodes the query without the zone changes what the query means.
-    /// The value is an iCalendar object, so it travels as a payload with its line-ending witness beside it like every other one.
+    /// The zone for converting stored dates and floating date-times before comparison with the UTC range.
+    /// RFC 4791 section 7.3 uses the collection's `CALDAV:calendar-timezone` property when the request omits the zone and the property exists.
     pub timezone: Option<CalendarPayload>,
 }
 

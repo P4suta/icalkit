@@ -407,7 +407,7 @@ fn single_template(
     let requires_elapsed_duration = matches!(
         component.dtstart(),
         View::Valid {
-            value: DateTimeValue::Zoned { .. },
+            value: DateTimeValue::Zoned { .. } | DateTimeValue::Local(_),
             ..
         }
     );
@@ -441,9 +441,7 @@ fn normalize_expanded_property(
     if is_recurrence_property(&property) {
         return Ok(None);
     }
-    if property.parameters_named(b"TZID").next().is_none() {
-        return Ok(Some(property));
-    }
+    let explicit_zone = property.parameters_named(b"TZID").next().is_some();
     match property.declared_value_type() {
         Some(Ok(ValueType::DateTime)) => {},
         None if [
@@ -454,12 +452,16 @@ fn normalize_expanded_property(
         ]
         .iter()
         .any(|id| property.has_id(id)) => {},
+        Some(_) | None if !explicit_zone => return Ok(Some(property)),
         Some(_) | None => return Err(QueryError::Unrepresentable),
     }
     let value =
         DateTimeValue::decode_property(&property).map_err(|_| QueryError::Unrepresentable)?;
-    if !matches!(value, DateTimeValue::Zoned { .. }) {
-        return Err(QueryError::Unrepresentable);
+    match value {
+        DateTimeValue::Zoned { .. } => {},
+        DateTimeValue::Local(_) if zones.query_zone().is_some() => {},
+        _ if !explicit_zone => return Ok(Some(property)),
+        _ => return Err(QueryError::Unrepresentable),
     }
     let instant = placed_value(value, zones).map_err(|_| QueryError::Unrepresentable)?;
     let stamp =

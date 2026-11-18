@@ -63,6 +63,54 @@ impl ZoneSource for QueryZoneDefinition {
     }
 }
 
+struct ResourceZones<'a> {
+    stored: VtimezoneSet,
+    external: &'a dyn ZoneSource,
+}
+
+impl<'a> ResourceZones<'a> {
+    fn read(
+        calendar: &Calendar,
+        external: &'a dyn ZoneSource,
+        meter: &mut Meter,
+        notes: &mut Vec<Diagnostic>,
+    ) -> Result<Self, LimitExceeded> {
+        let stored = calendar
+            .document
+            .components()
+            .next()
+            .map_or_else(VtimezoneSet::new, |root| {
+                read_calendar_zones(root, meter, notes)
+            });
+        meter.admit(|| Ok(Self { stored, external }))
+    }
+
+    fn source(&self, tzid: &str) -> &dyn ZoneSource {
+        self.stored
+            .table(tzid)
+            .map_or(self.external, |table| table as &dyn ZoneSource)
+    }
+
+    fn for_query<'z>(&'z self, query: Option<&'z QueryZoneDefinition>) -> Zones<'z> {
+        let zones = Zones::new(self);
+        query.map_or(zones, |zone| zones.with_query_zone_source(&zone.tzid, zone))
+    }
+}
+
+impl ZoneSource for ResourceZones<'_> {
+    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+        self.source(tzid).resolve(tzid, local)
+    }
+
+    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+        self.source(tzid).offset_at(tzid, instant)
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.source(tzid).recognizes(tzid)
+    }
+}
+
 impl Query {
     /// Strictly read one RFC 4791 calendar-query body using secure defaults.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
@@ -99,11 +147,10 @@ impl Query {
             return Ok(Match::Matched);
         };
         let limits = session.engine.policy.limits;
-        session.with_zone_source(|source, meter, _| {
-            let mut zones = Zones::new(source);
-            if let Some(query_zone) = self.query_zone.as_ref() {
-                zones = zones.with_query_zone_source(&query_zone.tzid, query_zone);
-            }
+        session.with_zone_source(|source, meter, notes| {
+            let sources = ResourceZones::read(calendar, source, meter, notes)
+                .map_err(|_| Error::single("icalkit.caldav.query-evaluation"))?;
+            let zones = sources.for_query(self.query_zone.as_ref());
             let mut budget = Budget::new(limits, meter);
             query::matches(filter, &calendar.document, zones, &mut budget)
                 .map(Match::from_kernel)
@@ -134,14 +181,13 @@ fn project_calendar_data(
     query_zone: Option<&QueryZoneDefinition>,
 ) -> Result<ProjectedCalendar, Error> {
     let limits = session.engine.policy.limits;
-    session.with_zone_source(|zone_source, meter, _| {
+    session.with_zone_source(|zone_source, meter, notes| {
         let mut source = Selection::new(calendar.document.clone(), Reduction::FAITHFUL);
         let mut budget = Budget::new(limits, meter);
         if let Some(window) = request.expand.or(request.limit_recurrence_set) {
-            let mut zones = Zones::new(zone_source);
-            if let Some(zone) = query_zone {
-                zones = zones.with_query_zone_source(&zone.tzid, zone);
-            }
+            let sources = ResourceZones::read(calendar, zone_source, budget.meter, notes)
+                .map_err(|_| Error::single("icalkit.caldav.query-projection"))?;
+            let zones = sources.for_query(query_zone);
             source = if request.expand.is_some() {
                 query::expand_calendar(&source, window, zones, &mut budget)
             } else {

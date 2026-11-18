@@ -434,7 +434,7 @@ END:VCALENDAR\r\n";
 fn a_query_timezone_places_floating_values_from_the_supplied_definition() {
     let timezone = concat!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit query zone//EN\r\n",
-        "BEGIN:VTIMEZONE\r\nTZID:America/New_York\r\nBEGIN:STANDARD\r\n",
+        "BEGIN:VTIMEZONE\r\nTZID:Test/Supplied\r\nBEGIN:STANDARD\r\n",
         "DTSTART:20260814T000000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0400\r\n",
         "END:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n",
     );
