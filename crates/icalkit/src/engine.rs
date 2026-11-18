@@ -144,7 +144,9 @@ impl Session<'_> {
             source: ZoneAdapter::new(self.engine.zone_database()),
             unasserted: Cell::new(false),
         };
-        let result = run(&source, &mut self.meter, &mut self.recurrence_diagnostics);
+        let result = self
+            .meter
+            .with_live_scope(|meter| run(&source, meter, &mut self.recurrence_diagnostics));
         let code = DiagnosticCode::TimeZoneCoverageUnasserted;
         if source.unasserted.get()
             && !self

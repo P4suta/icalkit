@@ -53,6 +53,34 @@ fn a_query_is_read_and_evaluated_without_exposing_xml_vocabulary() {
 }
 
 #[test]
+fn failed_recurrence_queries_release_their_component_depth() {
+    let bad = Calendar::parse(concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit query tests//EN\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240101T090000Z\r\n",
+        "SUMMARY:Planning\r\nRDATE;VALUE=PERIOD:20240102T090000Z/PT1H,20240102T090000Z/PT2H\r\n",
+        "END:VEVENT\r\nEND:VCALENDAR\r\n",
+    ).as_bytes()).unwrap();
+    let source = String::from_utf8(summary_query("Planning"))
+        .unwrap()
+        .replace(
+            "<C:prop-filter",
+            "<C:time-range start=\"20240101T000000Z\" end=\"20240103T000000Z\"/><C:prop-filter",
+        );
+    let failing = Query::parse(source.as_bytes()).unwrap();
+    let valid = Query::parse(&summary_query("Planning")).unwrap();
+    let calendar = Calendar::parse(CALENDAR).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    for _ in 0..40 {
+        assert!(failing.matches(&mut session, &bad).is_err());
+    }
+    assert_eq!(
+        valid.matches(&mut session, &calendar).unwrap(),
+        Match::Matched
+    );
+}
+
+#[test]
 fn an_unplaced_floating_time_is_undecided_not_unmatched() {
     const TIME_RANGE: &[u8] =
         br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">

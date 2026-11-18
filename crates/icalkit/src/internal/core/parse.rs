@@ -75,9 +75,11 @@ impl Document {
         if meter.is_exhausted() {
             return Err(ParseError::Exhausted);
         }
-        TreeBuilder::read(tokens, meter, sink)
-            .map(Self::new)
-            .map_err(|error| meter.refuse_parse(error))
+        meter.with_live_scope(|meter| {
+            TreeBuilder::read(tokens, meter, sink)
+                .map(Self::new)
+                .map_err(|error| meter.refuse_parse(error))
+        })
     }
 }
 
@@ -1283,6 +1285,26 @@ mod tests {
             meter.spent() < 5,
             "the octets that crossed the bound were never charged, let alone stored"
         );
+    }
+
+    #[test]
+    fn a_failed_owned_parse_restores_the_entry_component_depth() {
+        let limits = Limits::DEFAULT.with_max_value_bytes(16);
+        let mut meter = Meter::new(limits);
+        meter.enter().unwrap();
+        let mut reading = source(vec![
+            name(b"BEGIN"),
+            value(b"VCALENDAR"),
+            crlf(),
+            name(b"DESCRIPTION"),
+            value(b"12345678901234567"),
+            crlf(),
+        ]);
+        let outcome = Document::from_tokens(&mut reading, &mut meter, &mut IgnoreDiagnostics);
+        assert_eq!(outcome, Err(ParseError::ValueTooLarge { limit: 16 }));
+        assert_eq!(meter.depth(), 1);
+        assert!(meter.spent() > 0);
+        assert!(meter.is_exhausted());
     }
 
     #[test]
