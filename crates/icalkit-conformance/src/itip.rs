@@ -69,13 +69,15 @@
 //!
 //! The `scheduling-*` diagnostics are exercised on their emitting paths across this chapter,
 //! the composition/attacker suites, and the facade workflow tests.
-//! The table below additionally freezes each spelling, severity, and channel; it is a registry assertion rather than a list of unfinished emitters.
+//! The registry table freezes spellings through constructed diagnostics.
+//! Its severity and channel columns describe expectations rather than checking every emitter.
+//! The unknown-method sample separately checks an emitted diagnostic and its severity.
 
 #[cfg(test)]
 mod tests {
     use icalkit_conformance::internal::core::{
         CivilDate, CivilDateTime, CivilTime, ComponentKind, Diagnostic, DiagnosticCode, Instant,
-        Limits, Location, Meter, PropertyId, ProposedChange, Severity, UtcOffset,
+        Limits, Location, Meter, PropertyId, ProposedChange, RawText, Severity, UtcOffset,
     };
     use icalkit_conformance::internal::itip::{
         ActorRole, ApplyReport, Attendee, AuthorizationDenied, Commitment, FoldSide, InstanceClock,
@@ -1092,6 +1094,54 @@ mod tests {
         ]);
     }
 
+    #[test]
+    fn sparse_cancellation_changes_status_and_revision_and_preserves_omitted_details() {
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::new(limits);
+        let held = subject(HELD_SERIES, None);
+        let calendar = subject(CANCEL_SERIES, None);
+        let message = ItipMessage::read(&calendar, limits, &mut meter, &mut Vec::new()).unwrap();
+        let authorized = evaluate_message(&message, held.component(), PartyId::new(CHAIR)).unwrap();
+        assert_eq!(authorized.reason(), TransitionReason::Cancelled);
+        let transition = authorized.transition();
+        assert_eq!(transition.len(), 3);
+        for (name, expected) in [
+            (
+                b"STATUS".as_slice(),
+                ProposedChange::Add(RawText::from_bytes(b"STATUS:CANCELLED")),
+            ),
+            (
+                b"SEQUENCE".as_slice(),
+                ProposedChange::Replace(RawText::from_bytes(b"SEQUENCE:3")),
+            ),
+            (
+                b"DTSTAMP".as_slice(),
+                ProposedChange::Replace(RawText::from_bytes(b"DTSTAMP:20260302T080000Z")),
+            ),
+        ] {
+            assert_eq!(
+                transition.change(&PropertyOccurrence::named(name, 0)),
+                Some(&expected)
+            );
+        }
+        for name in [
+            b"UID".as_slice(),
+            b"DTSTART",
+            b"SUMMARY",
+            b"ORGANIZER",
+            b"RRULE",
+        ] {
+            assert_eq!(
+                transition.change(&PropertyOccurrence::named(name, 0)),
+                None,
+                "{name:?}"
+            );
+        }
+        for index in 0..2 {
+            assert_eq!(transition.change(&attendee_at(index)), None);
+        }
+    }
+
     /// ADR-0005's two-turn exchange, in the shape that is right and the shape that is wrong.
     ///
     /// There is no session (ADR-0004), so a propose-then-confirm exchange crosses a request boundary.
@@ -1247,13 +1297,10 @@ mod tests {
         }
     }
 
-    /// A case per diagnostic code and per channel, as ADR-0009 requires.
-    ///
-    /// The spelling is the frozen part: a code's meaning may not be edited without a rename, so a case that asserts the string is the thing an assertion can outlive.
-    /// The channel column says where each one travels, and the note says which of them has an emitter today —
-    /// `evaluate_message` takes no sink, so the conditions it refuses on travel as errors until the surfaces that will report them exist.
+    /// Freeze diagnostic spellings and check the unknown-method emission.
+    /// The registry constructs each severity and uses channel labels in assertion messages.
     #[test]
-    fn every_scheduling_diagnostic_code_has_a_case_and_a_channel() {
+    fn registry_codes_and_unknown_method_emission_are_checked_separately() {
         for (code, spelling, severity, carried_by) in [
             (
                 DiagnosticCode::SchedulingMethodUnknown,
@@ -1327,7 +1374,7 @@ mod tests {
             assert_eq!(reported.severity(), severity, "{spelling}");
         }
 
-        // The one code with an emitter today, asserted on the channel it actually travels.
+        // Check the unknown-method sample on its emitted diagnostic channel.
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let mut sink: Vec<Diagnostic> = Vec::new();
