@@ -2,8 +2,11 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Integer syntax follows [RFC 5545 section 3.3.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.8).
-//! Bounds follow [sections 3.8.1.8 and 3.8.1.9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.8) and the revision counter in [section 3.8.7.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.7.4).
+//! [RFC 5545 §3.3.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.8) defines integer syntax.
+//!
+//! [Section 3.8.1.8](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.8) bounds the completion percentage.
+//! [Section 3.8.1.9](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.9) bounds priority.
+//! [Section 3.8.7.4](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.7.4) defines the revision counter.
 
 #![cfg(test)]
 
@@ -105,6 +108,7 @@ fn explicit_integer_types_and_property_name_casing_remain_supported() {
 
 #[test]
 fn known_alternative_value_types_are_rejected() {
+    rejected(&calendar("VEVENT", "pRiOrItY;VaLuE=TEXT:5"));
     for (kind, name) in [
         ("VEVENT", "PRIORITY"),
         ("VTODO", "PERCENT-COMPLETE"),
