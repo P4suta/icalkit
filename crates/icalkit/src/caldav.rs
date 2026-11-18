@@ -35,6 +35,7 @@ use crate::internal::tz::{
     OffsetAnswer, VtimezoneSet, ZoneAnswer, ZoneSource, read_calendar_zones,
 };
 use crate::scheduling::Message;
+use crate::time::ResourceZones;
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// A CalDAV calendar-query with its XML vocabulary kept private.
@@ -65,49 +66,10 @@ impl ZoneSource for QueryZoneDefinition {
     }
 }
 
-struct ResourceZones<'a> {
-    stored: VtimezoneSet,
-    external: &'a dyn ZoneSource,
-}
-
-impl<'a> ResourceZones<'a> {
-    fn read(
-        calendar: Option<&Calendar>,
-        external: &'a dyn ZoneSource,
-        meter: &mut Meter,
-        notes: &mut Vec<Diagnostic>,
-    ) -> Result<Self, LimitExceeded> {
-        let stored = calendar
-            .and_then(|resource| resource.document.components().next())
-            .map_or_else(VtimezoneSet::new, |root| {
-                read_calendar_zones(root, meter, notes)
-            });
-        meter.admit(|| Ok(Self { stored, external }))
-    }
-
-    fn source(&self, tzid: &str) -> &dyn ZoneSource {
-        self.stored
-            .table(tzid)
-            .map_or(self.external, |table| table as &dyn ZoneSource)
-    }
-
+impl ResourceZones<'_> {
     fn for_query<'z>(&'z self, query: Option<&'z QueryZoneDefinition>) -> Zones<'z> {
         let zones = Zones::new(self);
         query.map_or(zones, |zone| zones.with_query_zone_source(&zone.tzid, zone))
-    }
-}
-
-impl ZoneSource for ResourceZones<'_> {
-    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
-        self.source(tzid).resolve(tzid, local)
-    }
-
-    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
-        self.source(tzid).offset_at(tzid, instant)
-    }
-
-    fn recognizes(&self, tzid: &str) -> bool {
-        self.source(tzid).recognizes(tzid)
     }
 }
 

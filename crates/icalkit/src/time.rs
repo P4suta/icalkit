@@ -2,21 +2,67 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Jiff boundary types and the single application-implementable zone port.
+//! Jiff boundary types and the zone database port.
 
 #[cfg(feature = "system-tz")]
 use alloc::boxed::Box;
 use alloc::string::String;
 #[cfg(feature = "system-tz")]
 use alloc::string::ToString;
+use alloc::vec::Vec;
 
 pub use jiff::civil::{Date, DateTime, Time, Weekday};
 pub use jiff::{SignedDuration, Timestamp};
 
-use crate::internal::core::{CivilDateTime, DateTimeValue, Instant, UtcOffset};
-use crate::internal::tz::{
-    AnswerBasis, LocalResolution, OffsetAnswer, Reading, ZoneAnswer, ZoneProvenance, ZoneSource,
+use crate::Calendar;
+use crate::internal::core::{
+    CivilDateTime, DateTimeValue, Diagnostic, Instant, LimitExceeded, Meter, UtcOffset,
 };
+use crate::internal::tz::{
+    AnswerBasis, LocalResolution, OffsetAnswer, Reading, VtimezoneSet, ZoneAnswer, ZoneProvenance,
+    ZoneSource, read_calendar_zones,
+};
+
+pub(crate) struct ResourceZones<'a> {
+    stored: VtimezoneSet,
+    external: &'a dyn ZoneSource,
+}
+
+impl<'a> ResourceZones<'a> {
+    pub(crate) fn read(
+        calendar: Option<&Calendar>,
+        external: &'a dyn ZoneSource,
+        meter: &mut Meter,
+        notes: &mut Vec<Diagnostic>,
+    ) -> Result<Self, LimitExceeded> {
+        let stored = calendar
+            .and_then(|resource| resource.document.components().next())
+            .map_or_else(VtimezoneSet::new, |root| {
+                read_calendar_zones(root, meter, notes)
+            });
+        meter.admit(|| Ok(Self { stored, external }))
+    }
+
+    fn source(&self, tzid: &str) -> &dyn ZoneSource {
+        self.stored
+            .table(tzid)
+            .map_or(self.external, |table| table as &dyn ZoneSource)
+    }
+}
+
+impl ZoneSource for ResourceZones<'_> {
+    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+        self.source(tzid).resolve(tzid, local)
+    }
+
+    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+        self.source(tzid).offset_at(tzid, instant)
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.source(tzid).recognizes(tzid)
+    }
+}
 
 /// Whether a local wall clock is exact, in a gap, or in a fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +76,7 @@ pub enum LocalKind {
     Fold,
 }
 
-/// Resolution of one local wall clock, including its provenance and coverage.
+/// A local-time resolution with provenance and coverage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZoneResolution {
     kind: LocalKind,
@@ -65,7 +111,7 @@ impl ZoneResolution {
         }
     }
 
-    /// Construct a fold answer, or refuse instants that are not in chronological order.
+    /// Return a fold answer when `earlier < later`, or `None` otherwise.
     #[must_use]
     pub fn fold(
         earlier: Timestamp,
@@ -109,14 +155,14 @@ impl ZoneResolution {
         &self.provenance
     }
 
-    /// Whether the source claims complete coverage at this time.
+    /// Whether the source claims complete coverage for the resolution.
     #[must_use]
     pub const fn has_complete_coverage(&self) -> bool {
         self.complete
     }
 }
 
-/// Offset at one instant, together with provenance and coverage.
+/// An offset with provenance and coverage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OffsetResolution {
     seconds: i32,
@@ -157,7 +203,7 @@ impl OffsetResolution {
     }
 }
 
-/// The only application-implementable service in the public API.
+/// The public zone database port.
 pub trait ZoneDatabase: Send + Sync {
     /// Resolve a local wall clock in `tzid`.
     /// Calendar workflows fold leap seconds onto second 59 before lookup.
@@ -229,7 +275,7 @@ impl ZoneSource for ZoneAdapter<'_> {
                     earlier_complete && later_complete,
                 )
             },
-            // The public port deliberately does not invent transition bounds and before/after offsets that the internal representation requires for a gap.
+            // Gap answers lack the transition bounds and offsets needed by the internal representation.
             LocalKind::Gap => (LocalResolution::Undetermined, true),
         };
         Some(ZoneAnswer::new(
@@ -304,7 +350,7 @@ pub(crate) fn default_zone_database() -> Box<dyn ZoneDatabase> {
     Box::new(SystemZoneDatabase)
 }
 
-/// An iCalendar DATE or DATE-TIME, including floating/zoned form and leap-second witness.
+/// An iCalendar `DATE` or `DATE-TIME` with clock form and leap-second evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IcalDateTime {
     representation: Representation,
@@ -320,7 +366,7 @@ enum Representation {
 }
 
 impl IcalDateTime {
-    /// A DATE value.
+    /// A `DATE` value.
     #[must_use]
     pub const fn date(value: Date) -> Self {
         Self {
@@ -329,7 +375,7 @@ impl IcalDateTime {
         }
     }
 
-    /// A floating DATE-TIME value.
+    /// A floating `DATE-TIME` value.
     #[must_use]
     pub const fn floating(value: DateTime) -> Self {
         Self {
@@ -338,7 +384,7 @@ impl IcalDateTime {
         }
     }
 
-    /// A UTC DATE-TIME value.
+    /// A `DATE-TIME` value in UTC.
     #[must_use]
     pub const fn utc(value: Timestamp) -> Self {
         Self {
@@ -347,7 +393,7 @@ impl IcalDateTime {
         }
     }
 
-    /// A local DATE-TIME carrying an explicit `TZID`.
+    /// A local `DATE-TIME` with an explicit `TZID`.
     #[must_use]
     pub fn zoned(local: DateTime, tzid: impl Into<String>) -> Self {
         Self {
@@ -359,11 +405,12 @@ impl IcalDateTime {
         }
     }
 
-    /// Mark that this value was spelled with second `:60`.
+    /// Mark the original iCalendar spelling as second `:60`.
     ///
-    /// Jiff follows the Unix convention and cannot carry a leap second directly.
-    /// The stored value is therefore the preceding `:59` second and this witness preserves the iCalendar spelling.
-    /// DATE values and values not exactly on `:59` are refused.
+    /// Jiff uses Unix time and can't represent a leap second.
+    /// The stored time uses second `:59`.
+    /// The witness preserves the iCalendar spelling.
+    /// Reject `DATE` values and times whose second isn't `59` or whose subsecond part isn't zero.
     #[must_use]
     pub fn with_leap_second(mut self) -> Option<Self> {
         let represents_preceding_second = match self.representation {
@@ -391,7 +438,7 @@ impl IcalDateTime {
         self.leap_second
     }
 
-    /// The DATE value, when this is a DATE.
+    /// The `DATE` value, when present.
     #[must_use]
     pub const fn as_date(&self) -> Option<Date> {
         match self.representation {
@@ -418,7 +465,7 @@ impl IcalDateTime {
         }
     }
 
-    /// The local date-time and TZID, when this is zoned.
+    /// The local date-time and `TZID` of a zoned value.
     #[must_use]
     pub fn as_zoned(&self) -> Option<(DateTime, &str)> {
         match &self.representation {
