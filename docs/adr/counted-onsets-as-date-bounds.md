@@ -18,8 +18,8 @@ Find the final onset from complete yearly masks using bounded summaries of 400 a
 Gregorian dates repeat under the [400-year leap rule](https://aa.usno.navy.mil/faq/leap_years).
 Clip stored masks after the anchor through a representable endpoint.
 Keep source anchors and explicit dates independent.
-An endpoint beyond civil years 0000–9999 leaves patterns without a finite bound inside that range.
-A counted clock series with no remaining civil onsets retains its anchor and coverage through year 9999.
+An exhausted count ends coverage on its final onset, including an anchor with `COUNT=1`.
+Counts beyond the civil range keep coverage through year 9999.
 
 ## Alternatives
 
