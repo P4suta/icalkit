@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Owned iTIP messages and a borrowed read-review-authorize-apply workflow.
+//! Owned iTIP messages and single-use authorization for reviewed changes.
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -111,14 +111,14 @@ impl Message {
         })
     }
 
-    /// Strictly read a complete inbound iTIP message.
+    /// Read and validate a complete inbound iTIP message.
     pub fn read(bytes: &[u8]) -> Result<Self, Error> {
         let engine = Engine::default();
         let mut session = engine.session();
         Self::read_in(&mut session, bytes)
     }
 
-    /// Strictly read an iTIP message under an engine session's aggregate resource budget.
+    /// Read and validate an iTIP message using the session's shared budget.
     pub fn read_in(session: &mut Session<'_>, bytes: &[u8]) -> Result<Self, Error> {
         Self::read_with_policy(bytes, session.engine.policy, &mut session.meter)
     }
@@ -132,20 +132,18 @@ impl Message {
         Self::from_calendar_in(calendar, policy, meter)
     }
 
-    /// Read a decoded RFC 6047 section 2.4 `text/calendar` MIME part.
+    /// Read a decoded `text/calendar` body part under RFC 6047 section 2.4.
     ///
     /// `content_type` is the unfolded field value after `Content-Type:`.
-    /// `decoded_body` must already have had its Content-Transfer-Encoding removed by the mail implementation.
-    /// The email envelope's `From` identity is deliberately not accepted here: pass the separately authenticated envelope sender as [`Actor`] when reviewing the returned message.
+    /// Decode the `Content-Transfer-Encoding` before passing `decoded_body`.
+    /// Authenticate the envelope sender and pass its identity as [`Actor`] during review.
     pub fn read_imip(content_type: &[u8], decoded_body: &[u8]) -> Result<Self, Error> {
         let engine = Engine::default();
         let mut session = engine.session();
         Self::read_imip_in(&mut session, content_type, decoded_body)
     }
 
-    /// Read a decoded RFC 6047 MIME part under one aggregate session budget.
-    ///
-    /// The header and decoded calendar body both charge the supplied session.
+    /// Read an RFC 6047 body part and charge its header and decoded body to one session.
     pub fn read_imip_in(
         session: &mut Session<'_>,
         content_type: &[u8],
@@ -170,42 +168,42 @@ impl Message {
         Ok(message)
     }
 
-    /// Build a PUBLISH message, using the caller-supplied DTSTAMP.
+    /// Build a `PUBLISH` with the caller's `DTSTAMP`.
     pub fn publish(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Publish, dtstamp)
     }
 
-    /// Build a REQUEST message, using the caller-supplied DTSTAMP.
+    /// Build a `REQUEST` with the caller's `DTSTAMP`.
     pub fn request(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Request, dtstamp)
     }
 
-    /// Build a REPLY message, using the caller-supplied DTSTAMP.
+    /// Build a `REPLY` with the caller's `DTSTAMP`.
     pub fn reply(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Reply, dtstamp)
     }
 
-    /// Build an ADD message, using the caller-supplied DTSTAMP.
+    /// Build an `ADD` with the caller's `DTSTAMP`.
     pub fn add(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Add, dtstamp)
     }
 
-    /// Build a CANCEL message, using the caller-supplied DTSTAMP.
+    /// Build a `CANCEL` with the caller's `DTSTAMP`.
     pub fn cancel(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Cancel, dtstamp)
     }
 
-    /// Build a REFRESH message, using the caller-supplied DTSTAMP.
+    /// Build a `REFRESH` with the caller's `DTSTAMP`.
     pub fn refresh(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Refresh, dtstamp)
     }
 
-    /// Build a COUNTER message, using the caller-supplied DTSTAMP.
+    /// Build a `COUNTER` with the caller's `DTSTAMP`.
     pub fn counter(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Counter, dtstamp)
     }
 
-    /// Build a DECLINECOUNTER message, using the caller-supplied DTSTAMP.
+    /// Build a `DECLINECOUNTER` with the caller's `DTSTAMP`.
     pub fn decline_counter(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::DeclineCounter, dtstamp)
     }
@@ -218,7 +216,7 @@ impl Message {
 
     /// A canonical RFC 6047 `Content-Type` value for this message.
     ///
-    /// UTF-8 is stated even for an ASCII-only body, and `method` is derived from the validated iTIP object so the emitted envelope cannot disagree with it.
+    /// The header declares `UTF-8` for every body and takes `method` from the validated message.
     #[must_use]
     pub fn imip_content_type(&self) -> String {
         let mut value = String::from("text/calendar; charset=UTF-8; method=");
@@ -238,7 +236,7 @@ impl Message {
         self.calendar.to_bytes()
     }
 
-    /// Review this message against a held calendar on behalf of one actor.
+    /// Review the message for one actor using the stored calendar.
     pub fn review<'a>(
         &'a self,
         current: &'a Calendar,
@@ -251,7 +249,7 @@ impl Message {
         self.review_in(&mut session, current, actor)
     }
 
-    /// Review under an engine session, sharing its aggregate budget and zone database.
+    /// Review the message using the session's shared budget and zone database.
     pub fn review_in<'a>(
         &'a self,
         session: &mut Session<'_>,
@@ -271,7 +269,7 @@ impl Message {
         self.review_creation_in(&mut session, actor)
     }
 
-    /// Review creation with the session's aggregate budget and zone database.
+    /// Review creation using the session's shared budget and zone database.
     pub fn review_creation_in(
         &self,
         session: &mut Session<'_>,
@@ -515,7 +513,7 @@ impl Message {
     }
 }
 
-/// A scheduling identity supplied by the application.
+/// The scheduling identity the caller supplies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Actor {
     address: String,
@@ -531,7 +529,7 @@ impl Actor {
             .then_some(Self { address })
     }
 
-    /// The CAL-ADDRESS spelling.
+    /// The `CAL-ADDRESS` spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.address
@@ -573,7 +571,7 @@ impl<'a> Review<'a> {
     }
 }
 
-/// A single-use authorized transition borrowing the exact inputs that were reviewed.
+/// A single-use authorization that borrows the inputs from its review.
 #[derive(Debug)]
 pub struct AuthorizedChange<'a> {
     message: &'a Message,
@@ -685,9 +683,9 @@ enum ReviewTarget<'a> {
 /// Which component an authorized transition writes, including a not-yet-materialized range anchor.
 #[derive(Debug)]
 enum ChangeTarget {
-    /// Insert the authorized payload into a calendar that did not hold its identity.
+    /// Insert a payload whose identity is new to the calendar.
     Create { source: usize },
-    /// Mutate the component that was reviewed.
+    /// Update the component at its reviewed position.
     Existing {
         item: usize,
         inherited_attendees: Vec<Property>,

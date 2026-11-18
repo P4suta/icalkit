@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! iTIP read-review-authorize-apply and outbound builders through the facade.
+//! Inbound and outbound iTIP messages through the public scheduling API.
 
 use icalkit::caldav::{Match, Query};
 use icalkit::interop::{Import, RfcRepairV1};
