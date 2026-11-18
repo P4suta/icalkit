@@ -98,14 +98,13 @@ impl Pattern {
                     .iter()
                     .enumerate()
                     .filter(|(index, value)| {
-                        let last = all
-                            .iter()
-                            .rfind(|other| other.month() == value.month())
-                            .unwrap()
-                            .day();
-                        [60, 61, 62, 244, 245, 246].contains(&index.checked_add(1).unwrap())
+                        let ordinal = index.checked_add(1).unwrap();
+                        [60, 61, 62, 244, 245, 246].contains(&ordinal)
                             && [2, 3, 9].contains(&value.month())
-                            && ([1, 2, 3].contains(&value.day()) || value.day() == last)
+                            && ([1, 2, 3].contains(&value.day())
+                                || all
+                                    .get(ordinal)
+                                    .is_none_or(|next| next.month() != value.month()))
                             && [
                                 Weekday::Monday,
                                 Weekday::Tuesday,
