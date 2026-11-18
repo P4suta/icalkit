@@ -218,6 +218,18 @@ fn escaped_element_syntax_stays_character_data() {
 
 #[test]
 fn mixed_content_in_a_known_plain_property_stays_unmodeled() {
+    let limits = Limits::DEFAULT;
+    let (_, diagnostics) = read(
+        &body(b"d:displayname", b"before<v:child/>after"),
+        limits,
+        &mut Meter::new(limits),
+    )
+    .unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code() == DiagnosticCode::DavPropertyUnmodeled)
+    );
     assert_property_round_trip(
         b"d:displayname",
         b"displayname",
@@ -228,6 +240,55 @@ fn mixed_content_in_a_known_plain_property_stays_unmodeled() {
             end(b"child"),
             text(b"after"),
         ],
+    );
+}
+
+#[test]
+fn text_around_a_modeled_href_is_retained_in_document_order() {
+    for (value, before, after) in [
+        (
+            b"before<d:href>/principals/one</d:href>after".as_slice(),
+            b"before".as_slice(),
+            b"after".as_slice(),
+        ),
+        (
+            b"&#160;<d:href>/principals/one</d:href> ",
+            b"\xC2\xA0",
+            b" ",
+        ),
+    ] {
+        assert_property_round_trip(
+            b"d:owner",
+            b"owner",
+            value,
+            &[
+                text(before),
+                Observed::Start(b"DAV:".to_vec(), b"href".to_vec()),
+                text(b"/principals/one"),
+                Observed::End(b"DAV:".to_vec(), b"href".to_vec()),
+                text(after),
+            ],
+        );
+    }
+}
+
+#[test]
+fn xml_layout_around_one_href_remains_a_modeled_reference() {
+    let limits = Limits::DEFAULT;
+    let (value, diagnostics) = read(
+        &body(b"d:owner", b" \n<d:href>/principals/one</d:href>\t&#13; "),
+        limits,
+        &mut Meter::new(limits),
+    )
+    .unwrap();
+    let PropValue::Reference(href) = &value.responses()[0].propstats()[0].props()[0].value else {
+        panic!("XML whitespace does not change a reference value");
+    };
+    assert_eq!(href.as_bytes(), b"/principals/one");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code() == DiagnosticCode::DavPropertyUnmodeled)
     );
 }
 

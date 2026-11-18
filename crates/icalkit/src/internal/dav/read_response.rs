@@ -687,6 +687,7 @@ struct ValueParts<'body> {
     child_count: u32,
     /// `DAV:href` children seen.
     href_count: u32,
+    reference_layout_only: bool,
 }
 
 #[derive(Debug)]
@@ -767,6 +768,7 @@ impl<'body> ValueParts<'body> {
             },
             child_count: 0,
             href_count: 0,
+            reference_layout_only: true,
         }
     }
 
@@ -806,6 +808,7 @@ impl<'body> ValueParts<'body> {
         decoded: DecodedText<'body>,
         context: &mut DecodeContext<'_>,
     ) -> Result<(), DavError> {
+        self.reference_layout_only &= trim_xml(decoded.run.as_bytes()).is_empty();
         match &mut self.content {
             ValueContent::Resource(_) => Ok(()),
             ValueContent::Text(text) => text.absorb(decoded, context),
@@ -864,6 +867,7 @@ impl<'body> ValueParts<'body> {
     ) -> Result<PropValue, DavError> {
         if self.child_count == 1
             && self.href_count == 1
+            && self.reference_layout_only
             && let Some(target) = self.first_href.take()
         {
             return Ok(PropValue::Reference(target));
