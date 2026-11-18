@@ -35,10 +35,12 @@ Build, lint, test, and documentation recipes use [Cargo's `--locked` option](htt
 Review dependency updates and their lockfile diff together.
 `just repository` rejects moving or mismatched Rust versions, missing standalone test coverage, and unlocked dependency-resolving recipes.
 The pre-commit hook runs that gate when development configuration changes.
-Pre-commit checks leave source files and the selected Git index content unchanged.
+Pre-commit checks preserve staged content and restore unstaged hunks when Lefthook completes cleanup.
+After interrupting a check, inspect the Lefthook backup stash and Git diff before making further edits.
 Staged paths select which hooks run.
-Formatting checks inspect the full working tree.
+Formatting checks inspect the workspace after Lefthook hides unstaged hunks from files with staged changes.
 Run the formatters and repair spelling findings before staging the intended changes.
+Stage intended formatting fixes before retrying a commit.
 `just ci` also runs feature combinations, target builds, nightly API snapshots, and MSRV verification.
 The candidate qualification workflow runs those checks and the Windows and macOS tests on one complete commit ID.
 It also verifies the actual CI decision core with Kani 0.68.0 and the declared rejecting probe.

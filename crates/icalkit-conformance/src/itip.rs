@@ -1109,6 +1109,7 @@ mod tests {
         assert_cancellation_preserves_held_details(&calendar);
     }
 
+    /// Compatibility behavior: accept a whole-event cancellation without the attendees required by RFC 5546 section 3.2.5.
     #[test]
     fn sparse_cancellation_changes_status_and_revision_and_preserves_omitted_details() {
         let calendar = subject(CANCEL_WITHOUT_ATTENDEES, None);
