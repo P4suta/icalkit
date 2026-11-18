@@ -22,6 +22,18 @@ XML failure responses still charge output and require an available meter.
 Streaming writers can finish at the response ceiling before a refusal or accept an explicit independent output budget.
 The [shared exhaustion decision](adr/latched-admission-with-reserved-finalization.md) records admission and finalization boundaries.
 
+CalDAV field widths, local collection bounds, and fallible allocations also latch exhaustion.
+Syntax, unsupported-element, and value errors preserve their original categories.
+Owned response collection keeps its admitted prefix after a response count refusal.
+Partial sources withhold sync tokens and report a limit diagnostic.
+Owned request and response decoders restore the entry values of live nesting and namespace counts on return.
+Cumulative work, diagnostics, and exhaustion survive cleanup.
+The [owned decoding decision](adr/release-live-counters-after-owned-decoding.md) records the lifetime boundary.
+
+Empty XML elements contribute one nesting level under the project's depth policy.
+Both empty-element representations belong to the same `element` production in [XML 1.0 section 3.1](https://www.w3.org/TR/xml/#sec-starttags).
+Kept markup checks peak depth for both forms before emitting the fragment.
+
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.

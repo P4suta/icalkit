@@ -4,40 +4,25 @@
 
 //! The server direction: a request body read out of the octets some client sent.
 //!
-//! Nothing here has a type of its own beyond [`RequestBody`], which names which of the five
-//! bodies a document carried. Every value this module produces is the one a client builds in
-//! [`crate::internal::dav::request`], through the same constructors, so a server decoding an untrusted
-//! `REPORT` meets exactly the refusals a client building the same request meets: a `time-range`
-//! with neither bound is [`ValueError::TimeRangeUnbounded`] from [`TimeRange::new`], a filter
-//! tree past `Limits::max_xml_depth` is [`LimitExceeded::Depth`], and a property list past
-//! `Limits::max_props_per_response` is [`LimitExceeded::Properties`] from the charged push. That
-//! is DP-15's symmetry claim with the direction removed from the types and left in which trait
-//! is called.
+//! Nothing here has a type of its own beyond [`RequestBody`], which names which of the five bodies a document carried.
+//! Every value this module produces is the one a client builds in [`crate::internal::dav::request`], through the same constructors, so a server decoding an untrusted `REPORT` meets exactly the refusals a client building the same request meets: a `time-range` with neither bound is [`ValueError::TimeRangeUnbounded`] from [`TimeRange::new`], a filter tree past `Limits::max_xml_depth` is [`LimitExceeded::Depth`], and a property list past `Limits::max_props_per_response` is [`LimitExceeded::Properties`] from the charged push.
+//! That is DP-15's symmetry claim with the direction removed from the types and left in which trait is called.
 //!
 //! # What a hostile body costs before it costs a stack
 //!
-//! [`CompFilter::push_comp`] bounds the tree it is handed, and it is handed one only after the
-//! recursion that read it has already returned. A body nesting `comp-filter` a hundred thousand
-//! deep would therefore have spent the stack before any bound was consulted, which is the debt
-//! `docs/adr/0004` left open under this unit's name. So the recursion carries its own nesting
-//! count and refuses `LimitExceeded::Depth` on the way *down*, at the same number the push
-//! refuses on the way up: a tree this module reads is a tree that constructor would have
-//! accepted, and a tree it would not is refused before the frame is pushed rather than after.
+//! [`CompFilter::push_comp`] bounds the tree it is handed, and it is handed one only after the recursion that read it has already returned.
+//! A body nesting `comp-filter` a hundred thousand deep would therefore have spent the stack before any bound was consulted, which is the debt `docs/adr/0004` left open under this unit's name.
+//! So the recursion carries its own nesting count and refuses `LimitExceeded::Depth` on the way *down*, at the same number the push refuses on the way up: a tree this module reads is a tree that constructor would have accepted, and a tree it would not is refused before the frame is pushed rather than after.
 //!
 //! # Where an unknown element is a name and where it is a question
 //!
-//! Inside `DAV:prop` and `DAV:include` an element outside the closed vocabulary is a *property
-//! name*, which RFC 4918 section 14.18 admits without limit, so it is kept as
-//! [`PropName::Extension`] and never skipped: a server answers a name it does not know with a
-//! `404` in the multistatus, and dropping the name would answer a different request. Everywhere
-//! else — under `filter`, under `calendar-data`, at the root — a foreign element changes what
-//! the request means, so [`UnknownPolicy`] decides between skipping it with a diagnostic and
-//! refusing the body.
+//! Inside `DAV:prop` and `DAV:include` an element outside the closed vocabulary is a *property name*, which RFC 4918 section 14.18 admits without limit, so it is kept as [`PropName::Extension`] and never skipped: a server answers a name it does not know with a `404` in the multistatus, and dropping the name would answer a different request.
+//! Everywhere else — under `filter`, under `calendar-data`, at the root — a foreign element changes what the request means, so [`UnknownPolicy`] decides between skipping it with a diagnostic and refusing the body.
 
 use alloc::vec::Vec;
 
 use crate::internal::core::{
-    DateTimeValue, DecodeValue, DiagnosticCode, Instant, LimitExceeded, Severity, UtcOffset,
+    DateTimeValue, DecodeValue, DiagnosticCode, Instant, LimitExceeded, Meter, Severity, UtcOffset,
 };
 
 use crate::internal::dav::codec::{ReadXml, XmlEvent, XmlPull};
@@ -55,19 +40,13 @@ use crate::internal::dav::value::{ExtensionName, Href};
 
 /// The namespace an unprefixed attribute is in, which is none at all.
 ///
-/// XML Namespaces 1.0 section 6.2 is explicit that a default declaration does not apply to
-/// attributes, so `name`, `start`, `end`, `collation` and `negate-condition` are looked up in no
-/// namespace rather than in the one their element resolved into.
+/// XML Namespaces 1.0 section 6.2 is explicit that a default declaration does not apply to attributes, so `name`, `start`, `end`, `collation` and `negate-condition` are looked up in no namespace rather than in the one their element resolved into.
 const NO_NAMESPACE: Namespace<'static> = Namespace::Other(b"");
 
 /// Which request body a document carried, read from its root element.
 ///
-/// The door a server actually needs: an HTTP layer hands over octets and a method, and which of
-/// the five bodies arrived is a fact about the octets rather than about the method — `REPORT`
-/// carries three of them. Reading it here is also what makes
-/// [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) reachable for a whole body, so a
-/// build without `sync-collection` refuses an RFC 6578 `REPORT` instead of answering it with a
-/// full enumeration and letting the client believe it had synchronized.
+/// The door a server actually needs: an HTTP layer hands over octets and a method, and which of the five bodies arrived is a fact about the octets rather than about the method — `REPORT` carries three of them.
+/// Reading it here is also what makes [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) reachable for a whole body, so a build without `sync-collection` refuses an RFC 6578 `REPORT` instead of answering it with a full enumeration and letting the client believe it had synchronized.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum RequestBody {
@@ -87,8 +66,7 @@ impl RequestBody {
     /// Read whichever body a document carries, from before its root element.
     ///
     /// Unlike [`ReadXml::read_xml`], which starts at an element the caller has already opened,
-    /// this opens the root itself — because which body arrived is exactly what the root element
-    /// says, and a caller that had to know before reading could not have found out.
+    /// this opens the root itself — because which body arrived is exactly what the root element says, and a caller that had to know before reading could not have found out.
     pub fn read(
         events: &mut dyn XmlPull<'_>,
         context: &mut DecodeContext<'_>,
@@ -96,8 +74,7 @@ impl RequestBody {
         loop {
             match events.next_event(context)? {
                 None => return Err(SyntaxError::Truncated.into()),
-                // Character data before the root element is layout: an XML declaration, a
-                // comment and the line breaks between them are not events this reader sees.
+                // Character data before the root element is layout: an XML declaration, a comment and the line breaks between them are not events this reader sees.
                 Some(XmlEvent::Text(_)) => {},
                 Some(XmlEvent::End { .. }) => return Err(SyntaxError::Malformed.into()),
                 Some(XmlEvent::Start { known, .. }) => {
@@ -113,8 +90,7 @@ impl RequestBody {
         events: &mut dyn XmlPull<'_>,
         context: &mut DecodeContext<'_>,
     ) -> Result<Self, DavError> {
-        // A foreign root is refused whatever `UnknownPolicy` says, because skipping it would
-        // leave no body at all and a request nobody read is not a request anybody answered.
+        // A foreign root is refused whatever `UnknownPolicy` says, because skipping it would leave no body at all and a request nobody read is not a request anybody answered.
         let row = known.ok_or(DavError::Foreign)?;
         supported(row)?;
         match row {
@@ -146,9 +122,8 @@ impl ReadXml for PropFind {
         while let Some((_, known)) = next_child(events, context)? {
             read_propfind_child(events, context, &mut chosen, known)?;
         }
-        // RFC 4918 section 14.20 requires one of the three. An empty `<propfind/>` is not the
-        // absent body section 9.1 reads as `allprop`; guessing which of the two a peer meant is
-        // the kind of completion this crate refuses.
+        // RFC 4918 section 14.20 requires one of the three.
+        // An empty `<propfind/>` is not the absent body section 9.1 reads as `allprop`; guessing which of the two a peer meant is the kind of completion this crate refuses.
         chosen.ok_or(DavError::Unexpected(ElementName::Propfind))
     }
 }
@@ -175,9 +150,7 @@ fn read_propfind_child(
             let empty = PropFind::AllProp(PropRequest::new(context.limits));
             accept(chosen, empty, ElementName::Allprop)
         },
-        // RFC 4918 section 14.8 puts `include` beside `allprop` and nowhere else: it names the
-        // expensive properties `allprop` deliberately omits, so it has nothing to add to a
-        // request that already named what it wanted.
+        // RFC 4918 section 14.8 puts `include` beside `allprop` and nowhere else: it names the expensive properties `allprop` deliberately omits, so it has nothing to add to a request that already named what it wanted.
         Some(ElementName::Include) => {
             if let Some(PropFind::AllProp(wanted)) = chosen {
                 read_prop_request(events, context, wanted)
@@ -212,10 +185,8 @@ impl ReadXml for CalendarQuery {
         while let Some((_, known)) = next_child(events, context)? {
             match known {
                 Some(ElementName::Prop) => read_prop_request(events, context, &mut query.props)?,
-                // RFC 4791 section 9.5's own production is
-                // `((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)`. Two of the
-                // three used to be refused outright, which is a conformant request this crate
-                // answered `DavError::Unexpected` to.
+                // RFC 4791 section 9.5's own production is `((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)`.
+                // Two of the three used to be refused outright, which is a conformant request this crate answered `DavError::Unexpected` to.
                 Some(ElementName::Allprop) => {
                     events.skip_element(context)?;
                     query.shape = QueryShape::AllProp;
@@ -271,8 +242,7 @@ impl ReadXml for FreeBusyQuery {
                 None => skip_foreign(events, context)?,
             }
         }
-        // An absent `time-range` and one carrying neither bound state the same thing — no
-        // window — so they are refused by the same constructor rather than by two rules.
+        // An absent `time-range` and one carrying neither bound state the same thing — no window — so they are refused by the same constructor rather than by two rules.
         let range = match found {
             Some(window) => window,
             None => TimeRange::new(None, None)?,
@@ -375,8 +345,7 @@ fn read_prop_request(
 ) -> Result<(), DavError> {
     while let Some((name, known)) = next_child(events, context)? {
         match known {
-            // The payload request is a field rather than a name in the list, which is the shape
-            // a client builds: `props.calendar_data = Some(..)` beside `props.push(..)`.
+            // The payload request is a field rather than a name in the list, which is the shape a client builds: `props.calendar_data = Some(..)` beside `props.push(..)`.
             Some(ElementName::CalendarData) => {
                 wanted.calendar_data = Some(read_calendar_data(events, context)?);
             },
@@ -398,9 +367,8 @@ fn read_prop_request(
 
 /// Read a `CALDAV:calendar-data` request, RFC 4791 section 9.6.
 ///
-/// One row read two ways: inside a request this element carries elements, and inside a response
-/// it carries the payload whose line endings `docs/adr/0004` Amendment 1 is about. Character
-/// data here is layout, which is why nothing in this function looks at any.
+/// One row read two ways: inside a request this element carries elements, and inside a response it carries the payload whose line endings `docs/adr/0004` Amendment 1 is about.
+/// Character data here is layout, which is why nothing in this function looks at any.
 fn read_calendar_data(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
@@ -412,8 +380,7 @@ fn read_calendar_data(
                 wanted.comp = Some(read_comp_selection(events, context, 0)?);
             },
             // Section 9.6.5 requires both bounds of an `expand`; `TimeRange::new` requires one.
-            // The stricter cardinality is a server's to enforce against its own recurrence
-            // layer, which this crate does not depend on and cannot expand for.
+            // The stricter cardinality is a server's to enforce against its own recurrence layer, which this crate does not depend on and cannot expand for.
             Some(ElementName::Expand) => wanted.expand = Some(read_time_range(events, context)?),
             Some(ElementName::LimitRecurrenceSet) => {
                 wanted.limit_recurrence_set = Some(read_time_range(events, context)?);
@@ -430,17 +397,15 @@ fn read_calendar_data(
 
 /// Read a `CALDAV:comp` selection, RFC 4791 section 9.6.1.
 ///
-/// `depth` is this recursion's own nesting, refused at the same number `Limits::max_xml_depth`
-/// gives the filter tree and for the same reason: the stack this function spends is the request
-/// body's to choose otherwise.
+/// `depth` is this recursion's own nesting, refused at the same number `Limits::max_xml_depth` gives the filter tree and for the same reason: the stack this function spends is the request body's to choose otherwise.
 fn read_comp_selection(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
     depth: u16,
 ) -> Result<CompSelection, DavError> {
-    if depth >= context.limits.max_xml_depth() {
-        return Err(DavError::Limit(LimitExceeded::Depth));
-    }
+    context
+        .meter
+        .check_bound(depth < context.limits.max_xml_depth(), LimitExceeded::Depth)?;
     let named = required_name(events)?;
     let mut selection = CompSelection::new(named, context.limits, context.meter)?;
     while let Some((_, known)) = next_child(events, context)? {
@@ -492,17 +457,15 @@ fn read_filter(
 
 /// Read a `CALDAV:comp-filter`, RFC 4791 section 9.7.1.
 ///
-/// The nesting count is checked before the frame is pushed rather than after the subtree is
-/// built, which is the whole of this unit's answer to the recursion debt: `push_comp` refuses a
-/// tree it is handed, and a body that would overflow the stack is never handed to it.
+/// The nesting count is checked before the frame is pushed rather than after the subtree is built, which is the whole of this unit's answer to the recursion debt: `push_comp` refuses a tree it is handed, and a body that would overflow the stack is never handed to it.
 fn read_comp_filter(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
     depth: u16,
 ) -> Result<CompFilter, DavError> {
-    if depth >= context.limits.max_xml_depth() {
-        return Err(DavError::Limit(LimitExceeded::Depth));
-    }
+    context
+        .meter
+        .check_bound(depth < context.limits.max_xml_depth(), LimitExceeded::Depth)?;
     let named = required_name(events)?;
     let mut filter = CompFilter::new(named, context.limits, context.meter)?;
     while let Some((_, known)) = next_child(events, context)? {
@@ -613,8 +576,7 @@ fn read_text_match(
         None => Collation::AsciiCasemap,
     };
     let negate = read_negate(events)?;
-    // The one text this module keeps whole: a search string is somebody's data, and a trailing
-    // space in it is a character they typed rather than a line the exporter broke.
+    // The one text this module keeps whole: a search string is somebody's data, and a trailing space in it is a character they typed rather than a line the exporter broke.
     let value = read_text(events, context, Whitespace::Content)?;
     let mut matcher = TextMatch::new(&value, context.meter)?;
     matcher.collation = collation;
@@ -636,8 +598,7 @@ fn read_negate(events: &dyn XmlPull<'_>) -> Result<bool, DavError> {
 
 /// Read a `CALDAV:time-range`, RFC 4791 section 9.9.
 ///
-/// Both bounds are read independently and handed to [`TimeRange::new`], so an open start and an
-/// open end are the two shapes section 9.9 permits and neither is a special case here.
+/// Both bounds are read independently and handed to [`TimeRange::new`], so an open start and an open end are the two shapes section 9.9 permits and neither is a special case here.
 fn read_time_range(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
@@ -662,8 +623,7 @@ fn attribute_instant(
 
 /// Read the `YYYYMMDDTHHMMSSZ` a `time-range` attribute carries.
 ///
-/// The `Z` is required rather than assumed: RFC 4791 section 9.9 writes a UTC `DATE-TIME`, and a
-/// floating value read as though it were UTC would move the window by the reader's own zone.
+/// The `Z` is required rather than assumed: RFC 4791 section 9.9 writes a UTC `DATE-TIME`, and a floating value read as though it were UTC would move the window by the reader's own zone.
 fn parse_utc_date_time(written: &[u8]) -> Result<Instant, DavError> {
     let value =
         DateTimeValue::decode_value(written).map_err(|_| ValueError::TimeUnrepresentable)?;
@@ -677,8 +637,7 @@ fn parse_utc_date_time(written: &[u8]) -> Result<Instant, DavError> {
 
 /// The `name` attribute a filter or a selection element must carry.
 ///
-/// The borrow is the tokenizer's rather than the body's, because the value XML 1.0 section
-/// 3.3.3 defines is the one with its references resolved and its literal whitespace replaced —
+/// The borrow is the tokenizer's rather than the body's, because the value XML 1.0 section 3.3.3 defines is the one with its references resolved and its literal whitespace replaced —
 /// which is not a run of octets the body holds anywhere.
 fn required_name<'a>(events: &'a dyn XmlPull<'_>) -> Result<&'a [u8], DavError> {
     events
@@ -688,10 +647,8 @@ fn required_name<'a>(events: &'a dyn XmlPull<'_>) -> Result<&'a [u8], DavError> 
 
 /// Whether the whitespace around an element's character data is layout or content.
 ///
-/// An `href`, a sync token and a `sync-level` are grammars with no whitespace in them — RFC 3986
-/// section 4.1 admits none in a URI reference — so what surrounds one is the producer's
-/// indentation. A `text-match` value is not a grammar at all, and trimming it would silently
-/// change which events a query matches.
+/// An `href`, a sync token and a `sync-level` are grammars with no whitespace in them — RFC 3986 section 4.1 admits none in a URI reference — so what surrounds one is the producer's indentation.
+/// A `text-match` value is not a grammar at all, and trimming it would silently change which events a query matches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Whitespace {
     /// Drop what surrounds the value.
@@ -711,7 +668,9 @@ fn read_text(
         match events.next_event(context)? {
             None => return Err(SyntaxError::Truncated.into()),
             Some(XmlEvent::End { .. }) => break,
-            Some(XmlEvent::Text(decoded)) => append(&mut collected, decoded.run.as_bytes())?,
+            Some(XmlEvent::Text(decoded)) => {
+                append(&mut collected, decoded.run.as_bytes(), context.meter)?;
+            },
             // An element inside one whose content is text is not a shape these grammars have;
             // a foreign one is still the caller's policy to decide about.
             Some(XmlEvent::Start { known, .. }) => match known {
@@ -728,10 +687,8 @@ fn read_text(
 
 /// Collect an iCalendar object a request element carries, with its line-ending witness.
 ///
-/// The same shape a `calendar-data` payload arrives in on the response side, because it is the
-/// same kind of value: RFC 4791 section 9.5's `CALDAV:timezone` is "a valid iCalendar object
-/// containing exactly one VTIMEZONE component", and its `CRLF` terminators are RFC 5545 section
-/// 3.1 syntax rather than layout. No trimming, for the same reason.
+/// The same shape a `calendar-data` payload arrives in on the response side, because it is the same kind of value: RFC 4791 section 9.5's `CALDAV:timezone` is "a valid iCalendar object containing exactly one VTIMEZONE component", and its `CRLF` terminators are RFC 5545 section 3.1 syntax rather than layout.
+/// No trimming, for the same reason.
 fn read_payload(
     events: &mut dyn XmlPull<'_>,
     context: &mut DecodeContext<'_>,
@@ -743,12 +700,11 @@ fn read_payload(
             None => return Err(SyntaxError::Truncated.into()),
             Some(XmlEvent::End { .. }) => break,
             Some(XmlEvent::Text(decoded)) => {
-                // The witness of the first run is the read's own answer about folding, and a
-                // fold is a fact about the read rather than about one run of it.
+                // The witness of the first run is the read's own answer about folding, and a fold is a fact about the read rather than about one run of it.
                 if endings.is_none() || endings == Some(LineEndings::Absent) {
                     endings = Some(decoded.line_endings);
                 }
-                append(&mut collected, decoded.run.as_bytes())?;
+                append(&mut collected, decoded.run.as_bytes(), context.meter)?;
             },
             Some(XmlEvent::Start { known, .. }) => match known {
                 Some(row) => return Err(DavError::Unexpected(row)),
@@ -778,18 +734,18 @@ fn trim(value: &mut Vec<u8>) {
 }
 
 /// Append to a buffer that reports a refusing allocator rather than aborting on one.
-fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), DavError> {
-    out.try_reserve(bytes.len())
-        .map_err(|_| LimitExceeded::Budget)?;
+fn append(out: &mut Vec<u8>, bytes: &[u8], meter: &mut Meter) -> Result<(), DavError> {
+    meter.admit(|| {
+        out.try_reserve(bytes.len())
+            .map_err(|_| LimitExceeded::Budget)
+    })?;
     out.extend_from_slice(bytes);
     Ok(())
 }
 
 /// The next child element of the element being read, or `None` at its end.
 ///
-/// Every caller consumes each child whole — by recursing through its end tag or by
-/// [`XmlPull::skip_element`] — so the first `End` this sees is the reader's own, and there is no
-/// depth arithmetic in any of the bodies above.
+/// Every caller consumes each child whole — by recursing through its end tag or by [`XmlPull::skip_element`] — so the first `End` this sees is the reader's own, and there is no depth arithmetic in any of the bodies above.
 fn next_child<'a>(
     events: &mut dyn XmlPull<'a>,
     context: &mut DecodeContext<'_>,
@@ -798,8 +754,8 @@ fn next_child<'a>(
         match events.next_event(context)? {
             None => return Err(SyntaxError::Truncated.into()),
             Some(XmlEvent::End { .. }) => return Ok(None),
-            // Character data between child elements is the producer's indentation. None of
-            // these grammars is mixed content, so there is nothing here to lose.
+            // Character data between child elements is the producer's indentation.
+            // None of these grammars is mixed content, so there is nothing here to lose.
             Some(XmlEvent::Text(_)) => {},
             Some(XmlEvent::Start { name, known, .. }) => return Ok(Some((name, known))),
         }
@@ -832,17 +788,12 @@ const fn supported(name: ElementName) -> Result<(), DavError> {
     }
 }
 
-/// The refusal for a body that is well-formed XML and states something this reader will not
-/// guess at.
+/// The refusal for a body that is well-formed XML and states something this reader will not guess at.
 ///
-/// Two cases share it, both under the `sync-collection` feature: a `DAV:limit` carrying no
-/// `DAV:nresults` at all, and an `nresults` whose character data is not an unsigned decimal.
-/// Neither is a well-formedness error and neither has a variant of its own — [`DavError::Unexpected`]
-/// can only name an element that *is* there, and [`ValueError`] names values by the element that
-/// carries them, with no row for a count. `Malformed` is the closest the vocabulary comes: a body
-/// this reader will not read. The three cases that used to share it are now named — a foreign
-/// element is [`DavError::Foreign`], a missing attribute is [`ValueError::AttributeMissing`], and
-/// an attribute outside its enumeration is [`ValueError::AttributeValue`].
+/// Two cases share it, both under the `sync-collection` feature: a `DAV:limit` carrying no `DAV:nresults` at all, and an `nresults` whose character data is not an unsigned decimal.
+/// Neither is a well-formedness error and neither has a variant of its own — [`DavError::Unexpected`] can only name an element that *is* there, and [`ValueError`] names values by the element that carries them, with no row for a count.
+/// `Malformed` is the closest the vocabulary comes: a body this reader will not read.
+/// The three cases that used to share it are now named — a foreign element is [`DavError::Foreign`], a missing attribute is [`ValueError::AttributeMissing`], and an attribute outside its enumeration is [`ValueError::AttributeValue`].
 const fn refused() -> DavError {
     DavError::Syntax(SyntaxError::Malformed)
 }
@@ -898,10 +849,8 @@ mod tests {
 
     /// A pull tokenizer over one body.
     ///
-    /// Deliberately small, and deliberately not unit 1: it resolves prefixes and default
-    /// declarations and hands character data to this crate's own `decode_text`, because those
-    /// are the parts these tables depend on. It refuses almost nothing — the refusal list is
-    /// unit 1's, and asserting it here would be asserting a second reader.
+    /// Deliberately small, and deliberately not unit 1: it resolves prefixes and default declarations and hands character data to this crate's own `decode_text`, because those are the parts these tables depend on.
+    /// It refuses almost nothing — the refusal list is unit 1's, and asserting it here would be asserting a second reader.
     #[derive(Debug)]
     struct Tokenizer<'a> {
         /// The body.
@@ -1285,9 +1234,7 @@ mod tests {
 
     /// Four clients, four prefix habits, one value — and the value a client builds.
     ///
-    /// This is DP-15's symmetry from the server end: the query a client assembles through the
-    /// constructors and the query a server reads out of the octets are the same value, and none
-    /// of the four spellings of it is privileged by a literal string anywhere.
+    /// This is DP-15's symmetry from the server end: the query a client assembles through the constructors and the query a server reads out of the octets are the same value, and none of the four spellings of it is privileged by a literal string anywhere.
     #[test]
     fn four_prefix_habits_are_one_request() {
         let limits = Limits::DEFAULT;
@@ -1363,8 +1310,7 @@ mod tests {
         );
     }
 
-    /// The refusals a client building a request meets are the refusals a server reading one
-    /// meets, because both go through the same constructors.
+    /// The refusals a client building a request meets are the refusals a server reading one meets, because both go through the same constructors.
     #[test]
     fn a_server_meets_the_refusals_a_client_would_have() {
         let cases: [(&str, &[u8], DavError); 5] = [
@@ -1408,8 +1354,7 @@ mod tests {
 
     /// A filter tree deeper than the caller admits is refused on the way down.
     ///
-    /// `CompFilter::push_comp` refuses the same tree, and it refuses it after the recursion that
-    /// read the body has already returned — which on a hostile body is after the stack is gone.
+    /// `CompFilter::push_comp` refuses the same tree, and it refuses it after the recursion that read the body has already returned — which on a hostile body is after the stack is gone.
     /// The number is the caller's either way; what this asserts is where it binds.
     #[test]
     fn a_filter_tree_past_the_bound_is_refused_before_the_stack_is_spent() {
@@ -1511,8 +1456,7 @@ mod tests {
 
     /// A multiget names resources, and the answer a server builds reports them per property.
     ///
-    /// The second half is the same shared shape read from the other end: one `href` carrying
-    /// `calendar-data` at `200` beside a name at `404` is what RFC 4918 section 14.24 permits,
+    /// The second half is the same shared shape read from the other end: one `href` carrying `calendar-data` at `200` beside a name at `404` is what RFC 4918 section 14.24 permits,
     /// and `successful_value` is the only correct way to ask what actually arrived.
     #[test]
     fn a_multiget_names_resources_a_server_answers_per_property() {

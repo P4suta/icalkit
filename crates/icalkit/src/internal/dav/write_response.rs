@@ -55,7 +55,7 @@ use crate::internal::dav::response::{
     ResponseBody,
 };
 use crate::internal::dav::sink::ByteSink;
-use crate::internal::dav::value::{ETag, Href, ResourceType, Status, SyncToken, bounded_cap};
+use crate::internal::dav::value::{ETag, Href, ResourceType, Status, SyncToken};
 use crate::internal::dav::writer::XmlWriter;
 
 /// How deep the deepest element of a multistatus sits.
@@ -97,9 +97,10 @@ impl<'a> MultiStatusWriter<'a> {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<Self, DavError> {
-        if limits.max_xml_depth() < MULTISTATUS_DEPTH {
-            return Err(DavError::Limit(LimitExceeded::Depth));
-        }
+        meter.check_bound(
+            limits.max_xml_depth() >= MULTISTATUS_DEPTH,
+            LimitExceeded::Depth,
+        )?;
         let mut writer = XmlWriter::new(out);
         writer.open(ElementName::Multistatus, meter)?;
         writer.begin_content(meter)?;
@@ -311,6 +312,7 @@ fn write_response_body(
                 groups.len(),
                 limits.max_props_per_response(),
                 LimitExceeded::Properties,
+                meter,
             )?;
             for group in groups {
                 write_propstat(writer, limits, meter, group)?;
@@ -331,6 +333,7 @@ fn write_propstat(
         group.props().len(),
         limits.max_props_per_response(),
         LimitExceeded::Properties,
+        meter,
     )?;
     writer.open(ElementName::Propstat, meter)?;
     writer.open(ElementName::Prop, meter)?;
@@ -402,6 +405,7 @@ fn write_error_body(
         error.conditions().len(),
         limits.max_props_per_response(),
         LimitExceeded::Properties,
+        meter,
     )?;
     writer.open(ElementName::Error, meter)?;
     for condition in error.conditions() {
@@ -435,10 +439,7 @@ fn write_href(
     href: &Href,
 ) -> Result<(), DavError> {
     let octets = href.as_bytes();
-    let length = u32::try_from(octets.len()).map_err(|_| LimitExceeded::Href)?;
-    if length > limits.max_href_bytes() {
-        return Err(DavError::Limit(LimitExceeded::Href));
-    }
+    meter.check_width(octets.len(), limits.max_href_bytes(), LimitExceeded::Href)?;
     writer.element_text(ElementName::Href, octets, meter)
 }
 
@@ -531,31 +532,36 @@ fn write_kept(
     check_fragment(
         octets,
         limits.max_xml_depth().saturating_sub(PROPERTY_DEPTH),
-    )?;
+    )
+    .map_err(|error| error.record_resource_refusal(meter))?;
     writer.validated_markup(octets, meter)
 }
 
 /// Check one character run against the per-element ceiling.
 ///
 /// The shared writer separately charges every escaped output octet against the aggregate work budget, so this check must not charge the input a second time.
-fn check_text_bound(octets: &[u8], meter: &Meter) -> Result<(), DavError> {
+fn check_text_bound(octets: &[u8], meter: &mut Meter) -> Result<(), DavError> {
     check_text_width(octets.len(), meter)
 }
 
 /// Check a computed character-data width against the per-element ceiling.
-fn check_text_width(width: usize, meter: &Meter) -> Result<(), DavError> {
-    let length = u32::try_from(width).map_err(|_| LimitExceeded::Text)?;
-    if length > meter.limits().max_xml_text_bytes() {
-        return Err(DavError::Limit(LimitExceeded::Text));
-    }
+fn check_text_width(width: usize, meter: &mut Meter) -> Result<(), DavError> {
+    meter.check_width(
+        width,
+        meter.limits().max_xml_text_bytes(),
+        LimitExceeded::Text,
+    )?;
     Ok(())
 }
 
 /// Refuse a collection larger than the policy that will read it back admits.
-fn check_cardinality(count: usize, cap: u32, dimension: LimitExceeded) -> Result<(), DavError> {
-    if count > bounded_cap(cap) {
-        return Err(DavError::Limit(dimension));
-    }
+fn check_cardinality(
+    count: usize,
+    cap: u32,
+    dimension: LimitExceeded,
+    meter: &mut Meter,
+) -> Result<(), DavError> {
+    meter.check_width(count, cap, dimension)?;
     Ok(())
 }
 
@@ -644,19 +650,22 @@ fn shape_of(rest: &[u8], end: usize) -> Result<TagShape, DavError> {
 /// Apply one tag to the running nesting, refusing what would leave or exceed it.
 fn apply_shape(shape: TagShape, depth: u16, budget: u16) -> Result<u16, DavError> {
     match shape {
-        TagShape::Open => {
+        TagShape::Open | TagShape::Empty => {
             let grown = depth
                 .checked_add(1)
                 .ok_or(DavError::Limit(LimitExceeded::Depth))?;
             if grown > budget {
                 return Err(DavError::Limit(LimitExceeded::Depth));
             }
-            Ok(grown)
+            Ok(if matches!(shape, TagShape::Open) {
+                grown
+            } else {
+                depth
+            })
         },
         TagShape::Close => depth
             .checked_sub(1)
             .ok_or(DavError::Syntax(SyntaxError::Malformed)),
-        TagShape::Empty => Ok(depth),
     }
 }
 

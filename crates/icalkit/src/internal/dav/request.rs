@@ -4,16 +4,12 @@
 
 //! The request bodies, which a client writes and a server reads out of the same types.
 //!
-//! Nothing here has a field that is meaningful in only one direction. A `calendar-query` is
-//! the same value whether it was built by a client about to `REPORT` or read by a server about
-//! to answer one; the direction shows up in which of [`crate::internal::dav::WriteXml`] and
-//! [`crate::internal::dav::ReadXml`] is called and in the `Limits` the caller passes, never in which fields
-//! exist. That is DP-15's structural test and it is the reason this module and
-//! [`crate::internal::dav::response`] are the whole of the protocol's vocabulary.
+//! Nothing here has a field that is meaningful in only one direction.
+//! A `calendar-query` is the same value whether it was built by a client about to `REPORT` or read by a server about to answer one; the direction shows up in which of [`crate::internal::dav::WriteXml`] and [`crate::internal::dav::ReadXml`] is called and in the `Limits` the caller passes, never in which fields exist.
+//! That is DP-15's structural test and it is the reason this module and [`crate::internal::dav::response`] are the whole of the protocol's vocabulary.
 //!
-//! A `time-range` is carried here and evaluated nowhere. Deciding which instances of a
-//! recurring event fall inside one is `ical-recur`'s work and this crate does not depend on
-//! it; a server composes the two.
+//! A `time-range` is carried here and evaluated nowhere.
+//! Deciding which instances of a recurring event fall inside one is `ical-recur`'s work and this crate does not depend on it; a server composes the two.
 
 use alloc::boxed::Box;
 
@@ -37,7 +33,8 @@ pub enum PropName {
 /// What a request asks for, and what shape a `calendar-data` payload should come back in.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PropRequest {
-    /// The names. Private behind a charged push, like every other collection here.
+    /// The names.
+    /// Private behind a charged push, like every other collection here.
     names: Bounded<PropName>,
     /// The `CALDAV:calendar-data` request, when the payload itself is wanted.
     pub calendar_data: Option<CalendarDataRequest>,
@@ -73,8 +70,7 @@ impl PropRequest {
 pub enum PropFind {
     /// `DAV:allprop`, with the RFC 4918 section 14.8 `include` list beside it.
     ///
-    /// The list is not redundant: `allprop` deliberately omits the expensive properties, and
-    /// `include` is the only way to ask for one of those without naming every cheap one too.
+    /// The list is not redundant: `allprop` deliberately omits the expensive properties, and `include` is the only way to ask for one of those without naming every cheap one too.
     AllProp(PropRequest),
     /// `DAV:propname` — the names a resource carries, with no values.
     Names,
@@ -84,12 +80,8 @@ pub enum PropFind {
 
 /// Which of RFC 4791 section 9.5's three property shapes a `calendar-query` asks with.
 ///
-/// The production is
-/// `calendar-query ((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)`, so all three
-/// are bodies a conformant client sends and a server has to read. A field that was a property
-/// list and nothing else could express one of them: a client here could not send `allprop` and
-/// a server here refused the body outright with `DavError::Unexpected`, which is a conformant
-/// request rejected rather than a shape nobody uses.
+/// The production is `calendar-query ((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)`, so all three are bodies a conformant client sends and a server has to read.
+/// A field that was a property list and nothing else could express one of them: a client here could not send `allprop` and a server here refused the body outright with `DavError::Unexpected`, which is a conformant request rejected rather than a shape nobody uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QueryShape {
     /// `DAV:prop` — exactly the properties named beside it.
@@ -108,15 +100,13 @@ pub struct CalendarQuery {
     pub shape: QueryShape,
     /// What to return for each matching resource, when the shape names properties.
     pub props: PropRequest,
-    /// Which resources match. Absent asks for all of them.
+    /// Which resources match.
+    /// Absent asks for all of them.
     pub filter: Option<CompFilter>,
     /// The zone a floating `time-range` in the filter is resolved in, section 9.9.
     ///
-    /// Carried because the alternative is not "ignored" but "answered differently": a server
-    /// that resolves a floating window in a zone of its own choosing answers a question the
-    /// client did not ask, and a proxy that re-encodes the query without the zone changes what
-    /// the query means. The value is an iCalendar object, so it travels as a payload with its
-    /// line-ending witness beside it like every other one.
+    /// Carried because the alternative is not "ignored" but "answered differently": a server that resolves a floating window in a zone of its own choosing answers a question the client did not ask, and a proxy that re-encodes the query without the zone changes what the query means.
+    /// The value is an iCalendar object, so it travels as a payload with its line-ending witness beside it like every other one.
     pub timezone: Option<CalendarPayload>,
 }
 
@@ -138,7 +128,8 @@ impl CalendarQuery {
 pub struct CalendarMultiget {
     /// What to return for each named resource.
     pub props: PropRequest,
-    /// Which resources to return. Capped at the same number as the responses that answer them.
+    /// Which resources to return.
+    /// Capped at the same number as the responses that answer them.
     hrefs: Bounded<Href>,
 }
 
@@ -207,7 +198,8 @@ impl SyncLevel {
 /// A `DAV:sync-collection` body, RFC 6578 section 3.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SyncCollection {
-    /// The token the last synchronization ended at. Absent asks for an initial enumeration.
+    /// The token the last synchronization ended at.
+    /// Absent asks for an initial enumeration.
     pub token: Option<crate::internal::dav::value::SyncToken>,
     /// How far below the collection to reach.
     pub level: SyncLevel,
@@ -233,8 +225,7 @@ impl SyncCollection {
 /// A window, with two independently optional bounds.
 ///
 /// RFC 4791 section 9.9 permits an open start and an open end and requires at least one bound,
-/// which an `Option<(Instant, Instant)>` cannot express: it can say "no window" and "both
-/// ends" and neither of the two shapes a real query uses.
+/// which an `Option<(Instant, Instant)>` cannot express: it can say "no window" and "both ends" and neither of the two shapes a real query uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimeRange {
     /// The first instant inside the window, if it has one.
@@ -295,21 +286,18 @@ pub struct CalendarDataRequest {
     pub limit_recurrence_set: Option<TimeRange>,
     /// `CALDAV:limit-freebusy-set` — keep only the `VFREEBUSY` periods inside this window.
     pub limit_freebusy_set: Option<TimeRange>,
-    /// The component subtree to return. Absent asks for the whole object.
+    /// The component subtree to return.
+    /// Absent asks for the whole object.
     pub comp: Option<CompSelection>,
 }
 
 impl CalendarDataRequest {
     /// Whether honoring this request answers with less than the resource holds.
     ///
-    /// `CALDAV:expand`, `limit-recurrence-set`, `limit-freebusy-set` and `comp` each return a
-    /// calendar that is *not* what the server stored, and the octets that come back say nothing
-    /// about it — they are well-formed iCalendar, so a caller that writes them back deletes what
-    /// was left out. This is the one question a caller has to ask before doing that, and asking
-    /// it used to mean inspecting four fields and knowing which of them reduce.
+    /// `CALDAV:expand`, `limit-recurrence-set`, `limit-freebusy-set` and `comp` each return a calendar that is *not* what the server stored, and the octets that come back say nothing about it — they are well-formed iCalendar, so a caller that writes them back deletes what was left out.
+    /// This is the one question a caller has to ask before doing that, and asking it used to mean inspecting four fields and knowing which of them reduce.
     ///
-    /// `false` for a request that asks for the whole object, which is the only shape
-    /// `docs/adr/0001`'s round trip survives.
+    /// `false` for a request that asks for the whole object, which is the only shape `docs/adr/0001`'s round trip survives.
     #[must_use]
     pub const fn is_reducing(&self) -> bool {
         self.expand.is_some()
@@ -321,8 +309,7 @@ impl CalendarDataRequest {
 
 /// Which components and properties of a calendar object to return, RFC 4791 section 9.6.1.
 ///
-/// A tree, because the request is one: `VCALENDAR` containing `VEVENT` containing named
-/// properties is the shape every client that asks for less than everything sends.
+/// A tree, because the request is one: `VCALENDAR` containing `VEVENT` containing named properties is the shape every client that asks for less than everything sends.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CompSelection {
     /// The component name this selection is about, `VCALENDAR` at the root.
@@ -342,7 +329,7 @@ impl CompSelection {
     pub fn new(name: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
         meter.try_charge_bytes(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
         Ok(Self {
-            name: copy(name)?,
+            name: meter.admit(|| copy(name))?,
             all_comps: false,
             all_props: false,
             props: Bounded::with_cap(
@@ -365,7 +352,7 @@ impl CompSelection {
     /// Ask for one named property of this component.
     pub fn push_prop(&mut self, name: &[u8], meter: &mut Meter) -> Result<(), DavError> {
         meter.try_charge_bytes(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
-        self.props.push(copy(name)?, meter)
+        self.props.push(meter.admit(|| copy(name))?, meter)
     }
 
     /// Ask for one named subcomponent.
@@ -387,16 +374,11 @@ impl CompSelection {
 
     /// Whether the selection states "everything" and names things beside it.
     ///
-    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two
-    /// halves of each pair are alternatives: a value holding both is one no body can express,
+    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two halves of each pair are alternatives: a value holding both is one no body can express,
     /// and reducing it to one of them silently would answer a request nobody wrote.
-    /// [`ValueError::SelectionContradiction`] is the refusal, and this is the predicate that
-    /// finds it — the sibling [`CompFilter::is_contradictory`] and
-    /// [`PropFilter::is_contradictory`] have always had.
+    /// [`ValueError::SelectionContradiction`] is the refusal, and this is the predicate that finds it — the sibling [`CompFilter::is_contradictory`] and [`PropFilter::is_contradictory`] have always had.
     ///
-    /// It was missing until an evaluator outside this crate needed it, which is the evidence
-    /// `docs/adr/0012` predicted: a filter representation is complete exactly when the thing
-    /// that consumes it can be written without reaching past the accessors.
+    /// It was missing until an evaluator outside this crate needed it, which is the evidence `docs/adr/0012` predicted: a filter representation is complete exactly when the thing that consumes it can be written without reaching past the accessors.
     #[must_use]
     pub fn is_contradictory(&self) -> bool {
         (self.all_props && !self.props.is_empty()) || (self.all_comps && !self.comps.is_empty())
@@ -405,10 +387,7 @@ impl CompSelection {
 
 /// Which components a `calendar-query` matches, RFC 4791 section 9.7.1.
 ///
-/// The tree bounds its own nesting at construction: [`CompFilter::push_comp`] refuses a child
-/// that would put the subtree past `Limits::max_xml_depth`, so a tree that exists is a tree an
-/// encoder may recurse over without overflowing a stack — and a server decoding an untrusted
-/// `REPORT` gets the same bound from the same field, on the way in.
+/// The tree bounds its own nesting at construction: [`CompFilter::push_comp`] refuses a child that would put the subtree past `Limits::max_xml_depth`, so a tree that exists is a tree an encoder may recurse over without overflowing a stack — and a server decoding an untrusted `REPORT` gets the same bound from the same field, on the way in.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CompFilter {
     /// The component name, `VCALENDAR` at the root.
@@ -430,7 +409,7 @@ impl CompFilter {
     pub fn new(name: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
         meter.try_charge_bytes(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
         Ok(Self {
-            name: copy(name)?,
+            name: meter.admit(|| copy(name))?,
             is_not_defined: false,
             time_range: None,
             comps: Bounded::with_cap(
@@ -464,14 +443,10 @@ impl CompFilter {
         limits: Limits,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
-        let grown = child
-            .height
-            .checked_add(1)
-            .ok_or(DavError::Limit(LimitExceeded::Depth))?
+        let grown = meter
+            .admit(|| child.height.checked_add(1).ok_or(LimitExceeded::Depth))?
             .max(self.height);
-        if grown > limits.max_xml_depth() {
-            return Err(DavError::Limit(LimitExceeded::Depth));
-        }
+        meter.check_bound(grown <= limits.max_xml_depth(), LimitExceeded::Depth)?;
         self.comps.push(child, meter)?;
         self.height = grown;
         Ok(())
@@ -496,8 +471,7 @@ impl CompFilter {
 
     /// Whether the filter states a condition and its own negation.
     ///
-    /// RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test in the
-    /// same filter, because a component that is not there has no time range and no properties.
+    /// RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test in the same filter, because a component that is not there has no time range and no properties.
     #[must_use]
     pub fn is_contradictory(&self) -> bool {
         self.is_not_defined
@@ -525,7 +499,7 @@ impl PropFilter {
     pub fn new(name: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
         meter.try_charge_bytes(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
         Ok(Self {
-            name: copy(name)?,
+            name: meter.admit(|| copy(name))?,
             is_not_defined: false,
             time_range: None,
             text_match: None,
@@ -577,7 +551,7 @@ impl ParamFilter {
     pub fn new(name: &[u8], meter: &mut Meter) -> Result<Self, DavError> {
         meter.try_charge_bytes(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
         Ok(Self {
-            name: copy(name)?,
+            name: meter.admit(|| copy(name))?,
             is_not_defined: false,
             text_match: None,
         })
@@ -612,7 +586,7 @@ impl TextMatch {
     pub fn new(value: &[u8], meter: &mut Meter) -> Result<Self, DavError> {
         meter.try_charge_bytes(u64::try_from(value.len()).unwrap_or(u64::MAX))?;
         Ok(Self {
-            value: copy(value)?,
+            value: meter.admit(|| copy(value))?,
             collation: Collation::AsciiCasemap,
             negate: false,
         })

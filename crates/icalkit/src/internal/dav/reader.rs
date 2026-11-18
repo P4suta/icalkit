@@ -4,90 +4,60 @@
 
 //! The tokenizer: one contiguous body in, resolved events out, and a stated list of refusals.
 //!
-//! [`XmlReader`] is the only implementation of [`XmlPull`] this crate ships, and it is the
-//! attack surface `SECURITY.md` names. `xmlparser` is the private lexical authority; this
-//! wrapper supplies the guarantees that lexer deliberately does not: namespace scope,
-//! duplicate attributes after resolution, matching tags, depth and work budgets, explicit
-//! `DOCTYPE`/PI refusal, and the scoped octet-preserving `calendar-data` departure.
+//! [`XmlReader`] is the only implementation of [`XmlPull`] this crate ships, and it is the attack surface `SECURITY.md` names.
+//! `xmlparser` is the private lexical authority; this wrapper supplies the guarantees that lexer deliberately does not: namespace scope,
+//! duplicate attributes after resolution, matching tags, depth and work budgets, explicit `DOCTYPE`/PI refusal, and the scoped octet-preserving `calendar-data` departure.
 //!
 //! # It iterates, and the stack it uses is one it owns
 //!
-//! There is no recursion anywhere in this file. Open elements live in a `Vec` this type holds,
-//! so a body nested a million deep costs a million entries of a heap vector — each one charged
-//! through [`crate::internal::core::Meter::try_enter_element`] and refused at
-//! [`crate::internal::core::Limits::max_xml_depth`] — and never a frame of the caller's stack. That is the
-//! claim `docs/adr/0004` (DP-14) made in prose and nothing backed until this file existed.
+//! There is no recursion anywhere in this file.
+//! Open elements live in a `Vec` this type holds,
+//! so a body nested a million deep costs a million entries of a heap vector — each one charged through [`crate::internal::core::Meter::try_enter_element`] and refused at [`crate::internal::core::Limits::max_xml_depth`] — and never a frame of the caller's stack.
+//! That is the claim `docs/adr/0004` (DP-14) made in prose and nothing backed until this file existed.
 //!
 //! # What it refuses
 //!
-//! - Any `DOCTYPE`, in any casing, anywhere: [`SyntaxError::Doctype`]. Not a bounded expansion
-//!   budget. The billion laughs, an internal or external parameter entity, and a general entity
-//!   pointing at `/etc/passwd` all need a `DOCTYPE` to declare what they expand, so refusing the
-//!   declaration closes the class instead of racing it.
+//! - Any `DOCTYPE`, in any casing, anywhere: [`SyntaxError::Doctype`].
+//!   Not a bounded expansion budget.
+//!   The billion laughs, an internal or external parameter entity, and a general entity pointing at `/etc/passwd` all need a `DOCTYPE` to declare what they expand, so refusing the declaration closes the class instead of racing it.
 //! - Any processing instruction beyond the XML declaration: [`SyntaxError::ProcessingInstruction`].
 //! - An encoding declaration naming anything but UTF-8: [`SyntaxError::Encoding`].
 //! - A prefix with no declaration in scope: [`SyntaxError::UnboundPrefix`].
 //! - An end tag naming another element: [`SyntaxError::MismatchedTag`].
-//! - One attribute name twice on one element, *after* namespace resolution, so that two prefixes
-//!   bound to one URI are the collision XML Namespaces 1.0 section 6.3 says they are:
+//! - One attribute name twice on one element, *after* namespace resolution, so that two prefixes bound to one URI are the collision XML Namespaces 1.0 section 6.3 says they are:
 //!   [`SyntaxError::DuplicateAttribute`].
 //! - A tag, a comment, a `CDATA` section or an attribute value the body ends inside:
 //!   [`SyntaxError::Truncated`].
-//! - A character XML 1.0 section 2.2's `Char` production excludes, or octets that are not the
-//!   UTF-8 section 4.3.3 requires of the document entity: [`SyntaxError::ForbiddenCharacter`].
-//!   In an element name, in an attribute value, and in character data alike, and whether the
-//!   character is spelled `&#0;` or written as the octet — one spelling refused under its own
-//!   name while the other went by is how a caller ends up holding a run that is not text. The
-//!   two exceptions are stated rather than accidental: the elements
-//!   [`ElementName::preserves_line_endings`] names, where this reader is already not a
-//!   conformant processor, and `DAV:href`, whose value `value.rs` deliberately models as
-//!   octets because a store may hold a path that is not UTF-8.
-//! - Everything else that is not the XML this crate reads — a `<` inside an attribute value, a
-//!   second root element, a name carrying two colons, `xmlns:p=""`, which XML Namespaces 1.0
-//!   forbids while permitting `xmlns=""`: [`SyntaxError::Malformed`].
+//! - A character XML 1.0 section 2.2's `Char` production excludes, or octets that are not the UTF-8 section 4.3.3 requires of the document entity: [`SyntaxError::ForbiddenCharacter`].
+//!   In an element name, in an attribute value, and in character data alike, and whether the character is spelled `&#0;` or written as the octet — one spelling refused under its own name while the other went by is how a caller ends up holding a run that is not text.
+//!   The two exceptions are stated rather than accidental: the elements [`ElementName::preserves_line_endings`] names, where this reader is already not a conformant processor, and `DAV:href`, whose value `value.rs` deliberately models as octets because a store may hold a path that is not UTF-8.
+//! - Everything else that is not the XML this crate reads — a `<` inside an attribute value, a second root element, a name carrying two colons, `xmlns:p=""`, which XML Namespaces 1.0 forbids while permitting `xmlns=""`: [`SyntaxError::Malformed`].
 //!
-//! Entity references and numeric character references are [`decode_text`]'s to refuse, and it
-//! does: nothing outside the five XML 1.0 predefines resolves, because with no `DOCTYPE`
-//! accepted nothing can ever have been declared.
+//! Entity references and numeric character references are [`decode_text`]'s to refuse, and it does: nothing outside the five XML 1.0 predefines resolves, because with no `DOCTYPE` accepted nothing can ever have been declared.
 //!
 //! # Prefixes are the document's, namespaces are the vocabulary's
 //!
 //! `DAV:` may arrive as `D:`, `d:`, `ns0:` or as a default declaration with no prefix at all,
 //! and the three fixtures under `tests/fixtures/` are three real servers doing three of those.
-//! So a prefix is resolved through the scoped binding stack this reader maintains and is then
-//! thrown away: every event carries a [`QName`] of a *namespace* and a local name, and the row
-//! of the closed vocabulary comes from [`ElementName::resolve`]. `xml` is bound to its reserved
-//! URI without a declaration, as XML Namespaces 1.0 section 3 requires, because RFC 4918 bodies
-//! carry `xml:lang`.
+//! So a prefix is resolved through the scoped binding stack this reader maintains and is then thrown away: every event carries a [`QName`] of a *namespace* and a local name, and the row of the closed vocabulary comes from [`ElementName::resolve`].
+//! `xml` is bound to its reserved URI without a declaration, as XML Namespaces 1.0 section 3 requires, because RFC 4918 bodies carry `xml:lang`.
 //!
 //! # Two things this reader hands on rather than deciding
 //!
-//! **Character data is emitted as it lies, whitespace included.** Indentation between elements
-//! is character data, and a tokenizer that dropped it would be deciding significance on its
-//! caller's behalf; readers above it ignore a run they did not ask for. Every span goes to
-//! [`decode_text`] under the mode [`TextMode::of`] derives from the enclosing element and the
-//! caller's [`crate::internal::dav::TextPolicy`] — this file never chooses that mode, which is what keeps the
-//! `calendar-data` carve-out one element wide.
+//! **Character data is emitted as it lies, whitespace included.** Indentation between elements is character data, and a tokenizer that dropped it would be deciding significance on its caller's behalf; readers above it ignore a run they did not ask for.
+//! Every span goes to [`decode_text`] under the mode [`TextMode::of`] derives from the enclosing element and the caller's [`crate::internal::dav::TextPolicy`] — this file never chooses that mode, which is what keeps the `calendar-data` carve-out one element wide.
 //!
-//! **An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets between its
-//! quotes.** References are resolved and every literal tab, line feed and carriage return is
-//! replaced by one space, before [`XmlPull::attribute`] answers. This file used to hand back
-//! the raw span on the reasoning that the attributes this crate's vocabulary defines — a
-//! `time-range`'s `start` and `end`, a `comp-filter`'s `name`, a `text-match`'s `collation` —
-//! are `US-ASCII` values with nothing to escape. That is an assumption about a cooperative
-//! peer, and the peer is the attacker: a `comp-filter name="VE&#78;T"` selected `VE&#78;T` here
-//! and `VENT` in every conformant processor, so two implementations disagreed about which
-//! components a hostile `calendar-query` matches. The normalized value borrows the reader
-//! rather than the body, because it appears nowhere in the body contiguously.
+//! **An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets between its quotes.** References are resolved and every literal tab, line feed and carriage return is replaced by one space, before [`XmlPull::attribute`] answers.
+//! This file used to hand back the raw span on the reasoning that the attributes this crate's vocabulary defines — a `time-range`'s `start` and `end`, a `comp-filter`'s `name`, a `text-match`'s `collation` —
+//! are `US-ASCII` values with nothing to escape.
+//! That is an assumption about a cooperative peer, and the peer is the attacker: a `comp-filter name="VE&#78;T"` selected `VE&#78;T` here and `VENT` in every conformant processor, so two implementations disagreed about which components a hostile `calendar-query` matches.
+//! The normalized value borrows the reader rather than the body, because it appears nowhere in the body contiguously.
 //!
 //! # The refusal a rejecting policy owes a foreign element
 //!
-//! Under [`UnknownPolicy::Reject`], [`XmlPull::skip_element`] must refuse a foreign element, and
-//! neither [`DavError::Unsupported`] nor [`DavError::Unexpected`] can say so: both name an
-//! [`ElementName`], which a foreign element by definition does not have. [`DavError::Foreign`]
-//! is that refusal, and it carries nothing — the element's own spelling lives in the body, which
-//! the error outlives. A caller that wants the name has it on the [`XmlEvent::Start`] it was
-//! handed one call earlier.
+//! Under [`UnknownPolicy::Reject`], [`XmlPull::skip_element`] must refuse a foreign element, and neither [`DavError::Unsupported`] nor [`DavError::Unexpected`] can say so: both name an [`ElementName`], which a foreign element by definition does not have.
+//! [`DavError::Foreign`] is that refusal, and it carries nothing — the element's own spelling lives in the body, which the error outlives.
+//! A caller that wants the name has it on the [`XmlEvent::Start`] it was handed one call earlier.
 
 use alloc::vec::Vec;
 
@@ -99,10 +69,8 @@ use crate::internal::dav::element::{ElementName, Namespace, QName};
 use crate::internal::dav::failure::{DavError, SyntaxError};
 use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
 use crate::internal::dav::text::{TextMode, check_chars, decode_text, normalize_attribute};
-// The lexical layer and the namespace binding stack are XML's rather than CalDAV's, so they live
-// in the private module `gates/xml-layering` compiles alone (docs/adr/0012). What stays in this
-// file is the state machine, which is stated over `ElementName` and `Namespace` and is therefore
-// the half of the tokenizer that layer may not name.
+// The lexical layer and the namespace binding stack are XML's rather than CalDAV's, so they live in the private module `gates/xml-layering` compiles alone (docs/adr/0012).
+// What stays in this file is the state machine, which is stated over `ElementName` and `Namespace` and is therefore the half of the tokenizer that layer may not name.
 use crate::internal::dav::xml::bind::PrefixStack;
 use crate::internal::dav::xml::scan::{
     BYTE_ORDER_MARK, CDATA_CLOSE, CDATA_OPEN, COMMENT_CLOSE, COMMENT_OPEN, DECLARATION_OPEN,
@@ -112,9 +80,7 @@ use crate::internal::dav::xml::scan::{
 
 /// The URI XML Namespaces 1.0 section 3 binds the `xml` prefix to, declared or not.
 ///
-/// Re-exported from the private XML layer, which is where the constant now lives: RFC 4918
-/// section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, and reading
-/// that name back is this crate's business rather than the layer's.
+/// Re-exported from the private XML layer, which is where the constant now lives: RFC 4918 section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, and reading that name back is this crate's business rather than the layer's.
 pub(crate) use crate::internal::dav::xml::scan::XML_URI;
 
 /// Where in the document the reader sits, which decides what is legal next.
@@ -135,10 +101,8 @@ struct Open<'a> {
     name: QName<'a>,
     /// The name exactly as the start tag spelled it, prefix included.
     ///
-    /// Kept beside the resolved name because XML 1.0 section 3 matches an end tag against the
-    /// *spelling* of its start tag, not against what that spelling resolved to. Two prefixes
-    /// bound to one URI make `<d:x …></e:x>` a document whose tags resolve alike and that no
-    /// conformant processor accepts, and this reader does not accept it either.
+    /// Kept beside the resolved name because XML 1.0 section 3 matches an end tag against the *spelling* of its start tag, not against what that spelling resolved to.
+    /// Two prefixes bound to one URI make `<d:x …></e:x>` a document whose tags resolve alike and that no conformant processor accepts, and this reader does not accept it either.
     spelled: &'a [u8],
     /// The row of the closed vocabulary it landed on, if any.
     known: Option<ElementName>,
@@ -157,8 +121,7 @@ struct RawAttribute<'a> {
 
 /// One attribute of the element that has just started, resolved and normalized.
 ///
-/// The value is a range into [`XmlReader::values`] rather than a slice of the body, because
-/// XML 1.0 section 3.3.3's normalization resolves references and replaces literal whitespace —
+/// The value is a range into [`XmlReader::values`] rather than a slice of the body, because XML 1.0 section 3.3.3's normalization resolves references and replaces literal whitespace —
 /// so the value an attribute *has* appears nowhere contiguously in the octets it arrived in.
 #[derive(Clone, Copy, Debug)]
 struct Attribute<'a> {
@@ -182,13 +145,9 @@ enum Step<'a> {
 
 /// A pull tokenizer over one contiguous body.
 ///
-/// The lifetime is the body's, so a `calendar-data` payload reaches `ical-core` as
-/// [`crate::internal::dav::TextRun::Wire`] — a borrowed slice, no copy — which is the property
-/// `docs/adr/0001`'s round trip needs on the way through the XML envelope.
+/// The lifetime is the body's, so a `calendar-data` payload reaches `ical-core` as [`crate::internal::dav::TextRun::Wire`] — a borrowed slice, no copy — which is the property `docs/adr/0001`'s round trip needs on the way through the XML envelope.
 ///
-/// Every reading door takes the caller's [`DecodeContext`], and this type holds no policy and
-/// no ledger of its own: the bounds that apply to a body are the ones its reader passes, one
-/// call at a time, so many bodies under one [`Meter`] are bounded in aggregate.
+/// Every reading door takes the caller's [`DecodeContext`], and this type holds no policy and no ledger of its own: the bounds that apply to a body are the ones its reader passes, one call at a time, so many bodies under one [`Meter`] are bounded in aggregate.
 #[derive(Debug)]
 pub struct XmlReader<'a> {
     /// The whole body.
@@ -197,9 +156,11 @@ pub struct XmlReader<'a> {
     at: usize,
     /// Which part of the document is being read.
     stage: Stage,
-    /// The elements currently open, outermost first. The explicit stack DP-14 promised.
+    /// The elements currently open, outermost first.
+    /// The explicit stack DP-14 promised.
     open: Vec<Open<'a>>,
-    /// Every live binding. The layer holds the stack; this file only asks it questions.
+    /// Every live binding.
+    /// The layer holds the stack; this file only asks it questions.
     bindings: PrefixStack<'a>,
     /// The attributes of the element that has just started, as they lie in the body.
     raw: Vec<RawAttribute<'a>>,
@@ -214,13 +175,10 @@ pub struct XmlReader<'a> {
 impl<'a> XmlReader<'a> {
     /// A reader over one whole body.
     ///
-    /// Contiguous by construction: a chunked transport gives up the borrow that makes
-    /// [`crate::internal::dav::TextRun::Wire`] possible, and this type would rather say so in its signature
-    /// than copy on the caller's behalf.
+    /// Contiguous by construction: a chunked transport gives up the borrow that makes [`crate::internal::dav::TextRun::Wire`] possible, and this type would rather say so in its signature than copy on the caller's behalf.
     ///
-    /// Nothing is read here and nothing is charged here. The body's own length is checked
-    /// against [`crate::internal::core::Limits::max_response_bytes`] on the first call that carries a
-    /// policy, because a constructor with no [`DecodeContext`] has none to check against.
+    /// Nothing is read here and nothing is charged here.
+    /// The body's own length is checked against [`crate::internal::core::Limits::max_response_bytes`] on the first call that carries a policy, because a constructor with no [`DecodeContext`] has none to check against.
     #[must_use]
     pub const fn new(body: &'a [u8]) -> Self {
         Self {
@@ -253,9 +211,8 @@ impl<'a> XmlReader<'a> {
 
     /// Move the cursor past any whitespace, charging the octets it walked over.
     ///
-    /// Whitespace outside the root element is octets a peer chose and a reader scanned, which
-    /// is what `docs/adr/0010` means by work. Free scanning is free scanning whether the
-    /// octets are indentation or a comment.
+    /// Whitespace outside the root element is octets a peer chose and a reader scanned, which is what `docs/adr/0010` means by work.
+    /// Free scanning is free scanning whether the octets are indentation or a comment.
     fn eat_space_charged(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         let from = self.at;
         self.eat_space();
@@ -264,8 +221,7 @@ impl<'a> XmlReader<'a> {
 
     /// How deep the reader sits, with the root element at one.
     fn level(&self) -> u16 {
-        // The depth is bounded by `max_xml_depth`, which is itself a `u16`, so the
-        // saturation below is unreachable rather than lossy — and it is written anyway,
+        // The depth is bounded by `max_xml_depth`, which is itself a `u16`, so the saturation below is unreachable rather than lossy — and it is written anyway,
         // because a cast that cannot be wrong today is a cast nobody checks tomorrow.
         u16::try_from(self.open.len()).unwrap_or(u16::MAX)
     }
@@ -338,8 +294,8 @@ impl<'a> XmlReader<'a> {
                 self.skip_comment(meter)?;
                 continue;
             }
-            // A second root element, or text outside the one there was. Either way the octets
-            // are not one XML document, and guessing which one was meant is not this reader's.
+            // A second root element, or text outside the one there was.
+            // Either way the octets are not one XML document, and guessing which one was meant is not this reader's.
             return Err(if self.starts_with(b"<?") {
                 SyntaxError::ProcessingInstruction.into()
             } else {
@@ -351,9 +307,10 @@ impl<'a> XmlReader<'a> {
     /// Consume everything before the root element's `<`, refusing what this crate does not read.
     fn read_prolog(&mut self, context: &mut DecodeContext<'_>) -> Result<(), DavError> {
         let length = u64::try_from(self.body.len()).unwrap_or(u64::MAX);
-        if length > context.limits.max_response_bytes() {
-            return Err(DavError::Limit(LimitExceeded::Budget));
-        }
+        context.meter.check_bound(
+            length <= context.limits.max_response_bytes(),
+            LimitExceeded::Budget,
+        )?;
         self.validate_lexical_grammar()?;
         if self.starts_with(BYTE_ORDER_MARK) {
             self.at = BYTE_ORDER_MARK.len();
@@ -377,13 +334,10 @@ impl<'a> XmlReader<'a> {
         Ok(())
     }
 
-    /// Ask xmlparser to establish the XML 1.0 lexical grammar before this wrapper resolves
-    /// namespaces and validates structure.
+    /// Ask xmlparser to establish the XML 1.0 lexical grammar before this wrapper resolves namespaces and validates structure.
     ///
-    /// The compatibility carve-outs for `calendar-data` and `DAV:href` retain arbitrary
-    /// octets, so a document entity that is not UTF-8 stays on the byte-oriented wrapper path.
-    /// That path validates names, attributes, comments and ordinary text independently; only
-    /// the two enclosing elements may ultimately preserve non-text octets.
+    /// The compatibility carve-outs for `calendar-data` and `DAV:href` retain arbitrary octets, so a document entity that is not UTF-8 stays on the byte-oriented wrapper path.
+    /// That path validates names, attributes, comments and ordinary text independently; only the two enclosing elements may ultimately preserve non-text octets.
     fn validate_lexical_grammar(&self) -> Result<(), DavError> {
         let Ok(document) = core::str::from_utf8(self.body) else {
             return Ok(());
@@ -414,8 +368,7 @@ impl<'a> XmlReader<'a> {
 
     /// Whether an XML declaration begins at the cursor.
     ///
-    /// The whitespace after `<?xml` is load-bearing: `<?xml-stylesheet ... ?>` also starts with
-    /// those five octets and is a processing instruction, which this crate refuses.
+    /// The whitespace after `<?xml` is load-bearing: `<?xml-stylesheet ... ?>` also starts with those five octets and is a processing instruction, which this crate refuses.
     fn declaration_here(&self) -> bool {
         self.starts_with(DECLARATION_OPEN)
             && self
@@ -438,8 +391,7 @@ impl<'a> XmlReader<'a> {
 
     /// Refuse the `<!` construct at the cursor, naming a `DOCTYPE` as one wherever it can.
     ///
-    /// The casing is compared loosely only so that the refusal *names* what was attempted; a
-    /// lowercase `<!doctype` is refused either way, since every other `<!` here is malformed.
+    /// The casing is compared loosely only so that the refusal *names* what was attempted; a lowercase `<!doctype` is refused either way, since every other `<!` here is malformed.
     fn refuse_bang(&self) -> DavError {
         let head = self.rest().get(..b"<!DOCTYPE".len()).unwrap_or(&[]);
         if head.eq_ignore_ascii_case(b"<!DOCTYPE") {
@@ -462,13 +414,9 @@ impl<'a> XmlReader<'a> {
 
     /// Consume a comment, charging its octets, and carry no event.
     ///
-    /// The charge is the whole comment including its delimiters. A comment is markup this
-    /// reader scans octet by octet and hands nobody, and charging nothing for it made the
-    /// aggregate ledger this type documents — "many bodies under one `Meter` are bounded in
-    /// aggregate" — false for exactly the shape a peer would choose: eight mebibytes refused
-    /// as character data cost nothing at all as `<!-- ... -->`, so a peer bought unmetered
-    /// scanning at `max_response_bytes` a request, forever. The scan happens either way; what
-    /// changes is that the ledger now sees it.
+    /// The charge is the whole comment including its delimiters.
+    /// A comment is markup this reader scans octet by octet and hands nobody, and charging nothing for it made the aggregate ledger this type documents — "many bodies under one `Meter` are bounded in aggregate" — false for exactly the shape a peer would choose: eight mebibytes refused as character data cost nothing at all as `<!-- ... -->`, so a peer bought unmetered scanning at `max_response_bytes` a request, forever.
+    /// The scan happens either way; what changes is that the ledger now sees it.
     fn skip_comment(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         let opened = self.at;
         let from = self.at.saturating_add(COMMENT_OPEN.len());
@@ -487,8 +435,8 @@ impl<'a> XmlReader<'a> {
         let from = self.at;
         let end = self.scan_text()?;
         let span = self.body.get(from..end).ok_or(SyntaxError::Malformed)?;
-        // The mode is derived from the element the data sits in and the caller's policy. This
-        // file never picks one, which is what stops the `calendar-data` carve-out spreading.
+        // The mode is derived from the element the data sits in and the caller's policy.
+        // This file never picks one, which is what stops the `calendar-data` carve-out spreading.
         let known = self.open.last().and_then(|open| open.known);
         let mode = TextMode::of(known, context.text);
         let offset = u64::try_from(from).unwrap_or(u64::MAX);
@@ -499,9 +447,7 @@ impl<'a> XmlReader<'a> {
 
     /// Find where the character data at the cursor ends.
     ///
-    /// A `CDATA` section does not end it: `a<![CDATA[b]]>c` is one run of three octets, and
-    /// handing it over as one span is what lets [`decode_text`] answer with the octets rather
-    /// than with the markup around them.
+    /// A `CDATA` section does not end it: `a<![CDATA[b]]>c` is one run of three octets, and handing it over as one span is what lets [`decode_text`] answer with the octets rather than with the markup around them.
     fn scan_text(&self) -> Result<usize, DavError> {
         let mut at = self.at;
         loop {
@@ -538,18 +484,16 @@ impl<'a> XmlReader<'a> {
         let (spelled, after) = self.scan_name(from.saturating_add(1), is_name_end)?;
         let (end, empty) = self.scan_attributes(after, context.meter)?;
         charge_span(context.meter, from, end)?;
-        // The declarations on this element are in scope for this element, so they are bound
-        // before its own name is resolved: `<d:multistatus xmlns:d="DAV:">` binds `d` for the
-        // tag that carries it, which is how every server in `tests/fixtures/` writes its root.
+        // The declarations on this element are in scope for this element, so they are bound before its own name is resolved: `<d:multistatus xmlns:d="DAV:">` binds `d` for the tag that carries it, which is how every server in `tests/fixtures/` writes its root.
         let declared = self.bind_declarations(context.meter)?;
         self.resolve_attributes(context.meter)?;
         let name = self.resolve_name(spelled)?;
         let known = name.known();
         context.meter.try_charge_element()?;
         context.meter.try_enter_element()?;
-        self.open
-            .try_reserve(1)
-            .map_err(|_| LimitExceeded::Budget)?;
+        context
+            .meter
+            .admit(|| self.open.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
         self.open.push(Open {
             name,
             spelled,
@@ -575,9 +519,7 @@ impl<'a> XmlReader<'a> {
             Some(_) => return Err(SyntaxError::Malformed.into()),
             None => return Err(SyntaxError::Truncated.into()),
         };
-        // Compared as spelled, which is what XML 1.0 section 3 requires and is stricter than
-        // comparing what the two names resolve to; the resolution is then implied, because an
-        // end tag sits inside the scope its start tag opened.
+        // Compared as spelled, which is what XML 1.0 section 3 requires and is stricter than comparing what the two names resolve to; the resolution is then implied, because an end tag sits inside the scope its start tag opened.
         let open = self
             .open
             .last()
@@ -588,8 +530,7 @@ impl<'a> XmlReader<'a> {
         }
         charge_span(context.meter, from, end)?;
         self.at = end;
-        // The element the tag named is the one on top of the stack, which was just compared
-        // against it, so the event is the one closing that element produces.
+        // The element the tag named is the one on top of the stack, which was just compared against it, so the event is the one closing that element produces.
         self.end_event(context.meter)
             .ok_or_else(|| DavError::from(SyntaxError::MismatchedTag))
     }
@@ -630,8 +571,8 @@ impl<'a> XmlReader<'a> {
 
     /// Read every attribute of the tag whose name ended at `from`.
     ///
-    /// Answers where the tag ends and whether it closed itself. The attributes are kept as they
-    /// lie in the body; resolving them needs the declarations among them to be bound first.
+    /// Answers where the tag ends and whether it closed itself.
+    /// The attributes are kept as they lie in the body; resolving them needs the declarations among them to be bound first.
     fn scan_attributes(
         &mut self,
         from: usize,
@@ -675,8 +616,7 @@ impl<'a> XmlReader<'a> {
             .position(|byte| *byte == quote)
             .ok_or(SyntaxError::Truncated)?;
         let value = tail.get(..length).ok_or(SyntaxError::Malformed)?;
-        // XML 1.0 section 3.1 forbids a literal `<` in an attribute value, and a reader that
-        // took one would be reading a tag somebody hid inside a value.
+        // XML 1.0 section 3.1 forbids a literal `<` in an attribute value, and a reader that took one would be reading a tag somebody hid inside a value.
         if value.contains(&b'<') {
             return Err(SyntaxError::Malformed.into());
         }
@@ -686,13 +626,12 @@ impl<'a> XmlReader<'a> {
 
     /// Keep one attribute, charging what holding it costs.
     ///
-    /// The charge is the item's own footprint, which is what `Bounded::push` charges for the
-    /// same reason. The vector is reused across elements, so the memory is the widest tag's
-    /// rather than the sum of every tag's, and this charge is conservative by that much.
+    /// The charge is the item's own footprint, which is what `Bounded::push` charges for the same reason.
+    /// The vector is reused across elements, so the memory is the widest tag's rather than the sum of every tag's, and this charge is conservative by that much.
     fn push_raw(&mut self, attribute: RawAttribute<'a>, meter: &mut Meter) -> Result<(), DavError> {
         let footprint = u64::try_from(size_of::<RawAttribute<'a>>()).unwrap_or(u64::MAX);
         meter.try_charge_bytes(footprint)?;
-        self.raw.try_reserve(1).map_err(|_| LimitExceeded::Budget)?;
+        meter.admit(|| self.raw.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
         self.raw.push(attribute);
         Ok(())
     }
@@ -707,9 +646,8 @@ impl<'a> XmlReader<'a> {
             let Some(prefix) = declared_prefix(attribute.name) else {
                 continue;
             };
-            // XML Namespaces 1.0 section 6.2 permits `xmlns=""`, which returns unprefixed
-            // names to no namespace, and forbids `xmlns:p=""` outright. Binding a prefix to
-            // nothing is refused rather than treated as either.
+            // XML Namespaces 1.0 section 6.2 permits `xmlns=""`, which returns unprefixed names to no namespace, and forbids `xmlns:p=""` outright.
+            // Binding a prefix to nothing is refused rather than treated as either.
             if !prefix.is_empty() && attribute.value.is_empty() {
                 return Err(SyntaxError::Malformed.into());
             }
@@ -734,8 +672,7 @@ impl<'a> XmlReader<'a> {
                 continue;
             }
             let (prefix, local) = split_name(attribute.name)?;
-            // XML Namespaces 1.0 section 6.2: a default declaration never applies to an
-            // attribute, so an unprefixed one is in no namespace whatever `xmlns=` says.
+            // XML Namespaces 1.0 section 6.2: a default declaration never applies to an attribute, so an unprefixed one is in no namespace whatever `xmlns=` says.
             let namespace = if prefix.is_empty() {
                 Namespace::Other(NO_NAMESPACE)
             } else {
@@ -744,20 +681,22 @@ impl<'a> XmlReader<'a> {
             let footprint = u64::try_from(size_of::<Attribute<'a>>()).unwrap_or(u64::MAX);
             meter.try_charge_bytes(footprint)?;
             let from = self.values.len();
-            normalize_attribute(attribute.value, &mut self.values)?;
+            normalize_attribute(attribute.value, &mut self.values)
+                .map_err(|error| error.record_resource_refusal(meter))?;
             let to = self.values.len();
-            self.resolved
-                .try_reserve(1)
-                .map_err(|_| LimitExceeded::Budget)?;
+            meter.admit(|| {
+                self.resolved
+                    .try_reserve(1)
+                    .map_err(|_| LimitExceeded::Budget)
+            })?;
             self.resolved.push(Attribute {
                 name: QName::new(namespace, local),
                 from,
                 to,
             });
         }
-        // Sorted so the duplicate check is a walk rather than a comparison of every pair with
-        // every other, which is work an attacker would otherwise size. Attribute order is not
-        // significant in XML, so nothing above this can tell that it was reordered.
+        // Sorted so the duplicate check is a walk rather than a comparison of every pair with every other, which is work an attacker would otherwise size.
+        // Attribute order is not significant in XML, so nothing above this can tell that it was reordered.
         self.resolved
             .sort_unstable_by(|left, right| sort_key(left.name).cmp(&sort_key(right.name)));
         for pair in self.resolved.windows(2) {
@@ -778,8 +717,8 @@ impl<'a> XmlReader<'a> {
     fn resolve_name(&self, spelled: &'a [u8]) -> Result<QName<'a>, DavError> {
         let (prefix, local) = split_name(spelled)?;
         let namespace = if prefix.is_empty() {
-            // An unprefixed element takes the default declaration if there is one, and is in
-            // no namespace if there is not. Neither is an error.
+            // An unprefixed element takes the default declaration if there is one, and is in no namespace if there is not.
+            // Neither is an error.
             self.binding_for(b"")
                 .unwrap_or(Namespace::Other(NO_NAMESPACE))
         } else {
@@ -790,25 +729,21 @@ impl<'a> XmlReader<'a> {
 
     /// The namespace a prefix is bound to at the cursor, if any.
     ///
-    /// Named apart from the trait method it answers so that no call inside this file depends on
-    /// inherent methods winning over trait methods of the same name.
+    /// Named apart from the trait method it answers so that no call inside this file depends on inherent methods winning over trait methods of the same name.
     fn binding_for(&self, prefix: &[u8]) -> Option<Namespace<'a>> {
-        // The layer answers with the octets the document bound; classifying those into the
-        // closed vocabulary is this crate's and not the layer's, which is the seam in one line.
+        // The layer answers with the octets the document bound; classifying those into the closed vocabulary is this crate's and not the layer's, which is the seam in one line.
         self.bindings.uri_for(prefix).map(Namespace::from_uri)
     }
 
     /// Consume the element that has just started, and everything inside it.
     fn skip(&mut self, context: &mut DecodeContext<'_>) -> Result<(), DavError> {
         let Some(open) = self.open.last().copied() else {
-            // Nothing is open, so there is nothing to consume. A caller that reached here
-            // called this before any `Start`, and skipping the rest of the body would be a
-            // worse answer than doing nothing.
+            // Nothing is open, so there is nothing to consume.
+            // A caller that reached here called this before any `Start`, and skipping the rest of the body would be a worse answer than doing nothing.
             return Ok(());
         };
-        // The policy is asked about a foreign element and about nothing else. Skipping a
-        // modeled subtree is how a reader passes over what it has no use for, and a
-        // diagnostic about that would report something that did not happen.
+        // The policy is asked about a foreign element and about nothing else.
+        // Skipping a modeled subtree is how a reader passes over what it has no use for, and a diagnostic about that would report something that did not happen.
         if open.known.is_none() {
             if context.unknown == UnknownPolicy::Reject {
                 return Err(DavError::Foreign);
@@ -875,8 +810,7 @@ impl<'a> XmlPull<'a> for XmlReader<'a> {
 
 /// Charge the octets between two positions against the caller's ledger.
 ///
-/// Markup is charged here and character data is charged by [`decode_text`], so the body is
-/// charged once over rather than twice or not at all.
+/// Markup is charged here and character data is charged by [`decode_text`], so the body is charged once over rather than twice or not at all.
 fn charge_span(meter: &mut Meter, from: usize, to: usize) -> Result<(), DavError> {
     let octets = u64::try_from(to.saturating_sub(from)).unwrap_or(u64::MAX);
     meter.try_charge_bytes(octets)?;
@@ -924,8 +858,7 @@ fn classify_lexer_error(body: &[u8], error: LexerError) -> SyntaxError {
 
 /// Whether two resolved names are the same name.
 ///
-/// Compared over the namespace's URI rather than over the enum, so a name from the table and a
-/// name borrowed from a body agree without either lifetime having to become the other.
+/// Compared over the namespace's URI rather than over the enum, so a name from the table and a name borrowed from a body agree without either lifetime having to become the other.
 fn same_name(left: QName<'_>, right: QName<'_>) -> bool {
     left.namespace.is(right.namespace) && left.local_name == right.local_name
 }
@@ -975,8 +908,7 @@ mod tests {
 
     /// Read a whole body under `limits` and `policy`, keeping what a structural table asserts.
     ///
-    /// The whitespace between elements is character data and is emitted; a table about element
-    /// structure does not want it, so it is dropped here rather than in the reader.
+    /// The whitespace between elements is character data and is emitted; a table about element structure does not want it, so it is dropped here rather than in the reader.
     fn read(body: &[u8], limits: Limits, policy: TextPolicy) -> Result<Vec<Seen>, DavError> {
         let mut meter = Meter::new(limits);
         let mut sink = IgnoreDiagnostics;
@@ -1089,9 +1021,7 @@ mod tests {
 
     /// Three servers, three prefix habits, one document.
     ///
-    /// This is the claim the whole element table rests on: a reader keyed on the literal string
-    /// `D:href` reads one of these three and silently skips the other two, against the most
-    /// widely deployed CalDAV software there is.
+    /// This is the claim the whole element table rests on: a reader keyed on the literal string `D:href` reads one of these three and silently skips the other two, against the most widely deployed CalDAV software there is.
     #[test]
     fn a_prefix_is_the_document_s_choice_and_never_the_vocabulary_s() {
         let cases = [
@@ -1119,9 +1049,8 @@ mod tests {
 
     /// The payload arrives as the server wrote it, through the tokenizer rather than beside it.
     ///
-    /// `tests/calendar_data_collision.rs` proves this of the character-data rules with the span
-    /// cut out by hand. Here the span is the one this reader found, which is the half that was
-    /// prose until this file existed.
+    /// `tests/calendar_data_collision.rs` proves this of the character-data rules with the span cut out by hand.
+    /// Here the span is the one this reader found, which is the half that was prose until this file existed.
     #[test]
     fn the_calendar_data_payload_survives_the_envelope() {
         let cases = [
@@ -1243,8 +1172,7 @@ mod tests {
                 continue;
             }
             found = true;
-            // An unprefixed attribute is in no namespace at all, whatever the element's own
-            // default declaration says; XML Namespaces 1.0 section 6.2 is explicit about it.
+            // An unprefixed attribute is in no namespace at all, whatever the element's own default declaration says; XML Namespaces 1.0 section 6.2 is explicit about it.
             let start = QName::new(Namespace::Other(b""), b"start");
             let end = QName::new(Namespace::Other(b""), b"end");
             let caldav = QName::new(Namespace::CalDav, b"start");
@@ -1260,9 +1188,7 @@ mod tests {
 
     /// A body this crate's own writing helpers produced is a body this reader reads back.
     ///
-    /// The client direction and the server direction over one payload: the octets are escaped
-    /// the way `write_escaped_text` escapes them, with the fixed output prefixes
-    /// `Namespace::write_prefix` chose, and what comes back is the `.ics` that went in.
+    /// The client direction and the server direction over one payload: the octets are escaped the way `write_escaped_text` escapes them, with the fixed output prefixes `Namespace::write_prefix` chose, and what comes back is the `.ics` that went in.
     #[test]
     fn what_this_crate_writes_is_what_this_crate_reads() {
         let mut body: Vec<u8> = Vec::new();
@@ -1297,16 +1223,14 @@ mod tests {
         let (octets, endings, reassembled) = payload_of(&body, TextPolicy::Verbatim);
         assert_eq!(octets, PAYLOAD);
         assert_eq!(endings, LineEndings::Crlf);
-        // `CR` is written as `&#13;`, which is markup, so the read reassembles rather than
-        // borrows — and recovers every octet, which is the whole point of writing it that way.
+        // `CR` is written as `&#13;`, which is markup, so the read reassembles rather than borrows — and recovers every octet, which is the whole point of writing it that way.
         assert!(reassembled);
     }
 
     /// A prefix rebound mid-document means what the innermost declaration says, and only there.
     #[test]
     fn a_prefix_rebound_mid_document_shadows_and_then_stops_shadowing() {
-        // `a:response` is `DAV:response` outside and a CalDAV element with no row inside, and
-        // the sibling after it is `DAV:response` again because the inner scope ended.
+        // `a:response` is `DAV:response` outside and a CalDAV element with no row inside, and the sibling after it is `DAV:response` again because the inner scope ended.
         let body = br#"<a:multistatus xmlns:a="DAV:">
           <a:response xmlns:a="urn:ietf:params:xml:ns:caldav"/>
           <a:response/>
@@ -1324,8 +1248,7 @@ mod tests {
     /// A default declaration changes what an unprefixed name means, and the table says so.
     #[test]
     fn a_default_declaration_decides_what_an_unprefixed_element_is() {
-        // `DAV:prop` and `CALDAV:prop` are different rows on purpose, and this is the body that
-        // tells them apart with no prefix written anywhere.
+        // `DAV:prop` and `CALDAV:prop` are different rows on purpose, and this is the body that tells them apart with no prefix written anywhere.
         let body = br#"<multistatus xmlns="DAV:">
           <prop/>
           <prop xmlns="urn:ietf:params:xml:ns:caldav"/>
@@ -1383,9 +1306,8 @@ mod tests {
 
     /// Entity expansion is refused at the declaration, which closes the class.
     ///
-    /// This is `SECURITY.md`'s list. Every one of these attacks needs a `DOCTYPE` to declare
-    /// what it expands, so none of them is bounded here — they are all refused at the same
-    /// octet, before any expansion budget could be spent racing them.
+    /// This is `SECURITY.md`'s list.
+    /// Every one of these attacks needs a `DOCTYPE` to declare what it expands, so none of them is bounded here — they are all refused at the same octet, before any expansion budget could be spent racing them.
     #[test]
     fn entity_expansion_is_refused_where_it_would_be_declared() {
         let cases: [(&str, &[u8], SyntaxError); 6] = [
@@ -1701,9 +1623,7 @@ mod tests {
             let XmlEvent::Start { known, .. } = event else {
                 continue;
             };
-            // A known element is skipped in silence: this door is how a reader passes over a
-            // subtree it has no use for, and a diagnostic about a modeled element would be a
-            // report of something that did not happen.
+            // A known element is skipped in silence: this door is how a reader passes over a subtree it has no use for, and a diagnostic about a modeled element would be a report of something that did not happen.
             if known == Some(ElementName::Response) {
                 reader.skip_element(&mut context).unwrap();
                 continue;
@@ -1736,8 +1656,7 @@ mod tests {
                 XmlEvent::Text(_) => {},
             }
         }
-        // An empty-element tag is one start and one end at the same depth, which is what a
-        // caller counting `<D:href/>` against `<D:href></D:href>` needs it to be.
+        // An empty-element tag is one start and one end at the same depth, which is what a caller counting `<D:href/>` against `<D:href></D:href>` needs it to be.
         assert_eq!(depths, [1, 2, 2, 1]);
         assert_eq!(reader.depth(), 0);
         assert_eq!(reader.offset(), u64::try_from(body.len()).unwrap());
@@ -1746,9 +1665,7 @@ mod tests {
     /// A comment is octets a peer chose and a reader scanned, so it costs what it costs.
     ///
     /// The claim on this type — that many bodies under one `Meter` are bounded in aggregate —
-    /// was false while a comment charged nothing: eight mebibytes refused as character data
-    /// were free as `<!-- ... -->`, and `max_response_bytes` is per body rather than across
-    /// them, so a peer bought unmetered scanning at whatever rate it liked, forever.
+    /// was false while a comment charged nothing: eight mebibytes refused as character data were free as `<!-- ... -->`, and `max_response_bytes` is per body rather than across them, so a peer bought unmetered scanning at whatever rate it liked, forever.
     #[test]
     fn a_comment_costs_the_octets_it_is_made_of() {
         let mut body = Vec::from(&br#"<D:multistatus xmlns:D="DAV:"><!--"#[..]);
@@ -1771,11 +1688,8 @@ mod tests {
 
     /// An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets in it.
     ///
-    /// Section 3.3.3 resolves references and replaces every literal tab, line feed and
-    /// carriage return with a space before the value is delivered. Handing the raw octets back
-    /// made a `comp-filter name="VE&#78;T"` select `VE&#78;T` here and `VENT` in every
-    /// conformant processor, which is two implementations disagreeing about which components a
-    /// hostile `calendar-query` matches.
+    /// Section 3.3.3 resolves references and replaces every literal tab, line feed and carriage return with a space before the value is delivered.
+    /// Handing the raw octets back made a `comp-filter name="VE&#78;T"` select `VE&#78;T` here and `VENT` in every conformant processor, which is two implementations disagreeing about which components a hostile `calendar-query` matches.
     #[test]
     fn an_attribute_value_is_resolved_and_normalized_before_it_is_delivered() {
         let body = br#"<C:comp-filter xmlns:C="urn:ietf:params:xml:ns:caldav" name="VE&#78;T"
@@ -1791,16 +1705,14 @@ mod tests {
         assert_eq!(reader.attribute(named(b"name")), Some(b"VENT".as_slice()));
         assert_eq!(reader.attribute(named(b"x")), Some(b"a&b".as_slice()));
         assert_eq!(reader.attribute(named(b"y")), Some(b"p q".as_slice()));
-        // Every attribute is reachable without knowing its name, which is what a reader
-        // keeping a foreign subtree needs in order to keep what was written on it.
+        // Every attribute is reachable without knowing its name, which is what a reader keeping a foreign subtree needs in order to keep what was written on it.
         assert_eq!(reader.attribute_count(), 3);
     }
 
     /// A character the `Char` production excludes is refused however it is spelled.
     ///
-    /// `&#0;` was refused under its own name and the literal octet was not, so one spelling
-    /// was a violation and the other was invisible — and the run handed to the caller was not
-    /// text. The exception is the elements the line-ending carve-out names and `DAV:href`,
+    /// `&#0;` was refused under its own name and the literal octet was not, so one spelling was a violation and the other was invisible — and the run handed to the caller was not text.
+    /// The exception is the elements the line-ending carve-out names and `DAV:href`,
     /// which this crate delivers as octets on purpose and states that it does.
     #[test]
     fn a_character_xml_excludes_is_refused_as_an_octet_too() {
@@ -1816,8 +1728,7 @@ mod tests {
                 "{body:?}"
             );
         }
-        // A path a store holds that is not UTF-8 is the one value byte-shaped `Href` exists
-        // for, and refusing it would mean this crate could not model a response it can read.
+        // A path a store holds that is not UTF-8 is the one value byte-shaped `Href` exists for, and refusing it would mean this crate could not model a response it can read.
         let latin1 = b"<D:href xmlns:D=\"DAV:\">/calendars/ann/\xe9t\xe9.ics</D:href>";
         assert_eq!(read_default(latin1).map(|seen| seen.len()), Ok(3));
     }

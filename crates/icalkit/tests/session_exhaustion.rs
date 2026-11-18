@@ -110,3 +110,53 @@ fn a_calendar_violation_does_not_exhaust_the_session() {
     assert!(session.import(CALENDAR).is_ok());
     assert!(session.query(QUERY).is_ok());
 }
+
+#[test]
+fn a_query_property_count_refusal_stops_the_shared_session() {
+    let mut bytes =
+        br#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:"><D:prop>"#
+            .to_vec();
+    bytes.extend_from_slice(&b"<D:getetag/>".repeat(257));
+    bytes.extend_from_slice(
+        br#"</D:prop><C:filter><C:comp-filter name="VCALENDAR"/></C:filter></C:calendar-query>"#,
+    );
+    let engine = Engine::builder().build();
+    let mut session = engine.session();
+    assert_eq!(
+        session.query(&bytes).unwrap_err().code().as_str(),
+        "icalkit.caldav.query-invalid"
+    );
+    assert!(session.parse(CALENDAR).is_err());
+    assert!(session.import(CALENDAR).is_err());
+    assert!(session.validate(&Import::read(CALENDAR).unwrap()).is_err());
+    assert!(session.query(QUERY).is_err());
+    let mut fresh = engine.session();
+    assert!(fresh.parse(CALENDAR).is_ok());
+    assert!(fresh.import(CALENDAR).is_ok());
+    assert!(fresh.query(QUERY).is_ok());
+}
+
+#[test]
+fn malformed_query_syntax_does_not_exhaust_the_session() {
+    let engine = Engine::builder().build();
+    let mut session = engine.session();
+    assert!(session.query(b"<").is_err());
+    assert!(session.parse(CALENDAR).is_ok());
+    assert!(session.import(CALENDAR).is_ok());
+    assert!(session.query(QUERY).is_ok());
+}
+
+#[test]
+fn rejected_query_roots_release_their_live_scope() {
+    let engine = Engine::builder().build();
+    let mut session = engine.session();
+    for _ in 0..100 {
+        assert!(
+            session
+                .query(br#"<X:unknown xmlns:X="urn:example:foreign"/>"#)
+                .is_err()
+        );
+    }
+    assert!(session.parse(CALENDAR).is_ok());
+    assert!(session.query(QUERY).is_ok());
+}

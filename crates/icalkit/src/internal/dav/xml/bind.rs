@@ -4,25 +4,20 @@
 
 //! The namespace binding stack: which URI a prefix names, at this point in this document.
 //!
-//! A prefix is a per-document choice its author made and nothing else. `DAV:` may be bound to
-//! `D:`, to `d:`, to `ns0:`, to no prefix at all through a default declaration, or to a different
-//! prefix on every element of one body, and the servers people actually run disagree about
-//! which. Resolving that is this file's whole job, and it does it without knowing a single URI
-//! by name: what it answers with is the octets the document bound, and classifying those is the
-//! vocabulary's business one layer up.
+//! A prefix is a per-document choice its author made and nothing else.
+//! `DAV:` may be bound to `D:`, to `d:`, to `ns0:`, to no prefix at all through a default declaration, or to a different prefix on every element of one body, and the servers people actually run disagree about which.
+//! Resolving that is this file's whole job, and it does it without knowing a single URI by name: what it answers with is the octets the document bound, and classifying those is the vocabulary's business one layer up.
 //!
 //! # Scope is a suffix
 //!
-//! Bindings live in declaration order in one vector, and an element's scope ends by truncating
-//! the tail it declared. That is what makes shadowing free — an inner `xmlns:D=` simply sits
-//! later in the vector than the outer one, and [`PrefixStack::uri_for`] searches from the end —
+//! Bindings live in declaration order in one vector, and an element's scope ends by truncating the tail it declared.
+//! That is what makes shadowing free — an inner `xmlns:D=` simply sits later in the vector than the outer one, and [`PrefixStack::uri_for`] searches from the end —
 //! and it is why a binding count rather than a nested structure is what an open element carries.
 //!
 //! # It is a metered dimension of its own
 //!
-//! One element can carry a thousand declarations at depth one, so neither a depth bound nor an
-//! element count reaches them. `Limits::max_prefix_bindings` is the bound and `Meter` is where it
-//! is charged, which is `docs/adr/0010`'s dimension that was predicted to be missing and was.
+//! One element can carry a thousand declarations at depth one, so neither a depth bound nor an element count reaches them.
+//! `Limits::max_prefix_bindings` is the bound and `Meter` is where it is charged, which is `docs/adr/0010`'s dimension that was predicted to be missing and was.
 
 use alloc::vec::Vec;
 
@@ -58,8 +53,7 @@ impl<'a> PrefixStack<'a> {
 
     /// Bind `prefix` to `uri` for as long as the element declaring it stays open.
     ///
-    /// Charged before the vector grows, so a body that declares more bindings than the caller
-    /// admits is refused at the bound rather than after the memory is resident.
+    /// Charged before the vector grows, so a body that declares more bindings than the caller admits is refused at the bound rather than after the memory is resident.
     pub(crate) fn bind(
         &mut self,
         prefix: &'a [u8],
@@ -67,9 +61,14 @@ impl<'a> PrefixStack<'a> {
         meter: &mut Meter,
     ) -> Result<(), XmlFault> {
         meter.try_bind_prefix()?;
-        self.bindings
-            .try_reserve(1)
-            .map_err(|_| LimitExceeded::Budget)?;
+        if let Err(error) = meter.admit(|| {
+            self.bindings
+                .try_reserve(1)
+                .map_err(|_| LimitExceeded::Budget)
+        }) {
+            meter.unbind_prefix();
+            return Err(error.into());
+        }
         self.bindings.push(Binding { prefix, uri });
         Ok(())
     }
@@ -85,9 +84,8 @@ impl<'a> PrefixStack<'a> {
 
     /// Whether the element currently being read has already declared `prefix` itself.
     ///
-    /// Only its own declarations: shadowing an outer binding is what a prefix rebound
-    /// mid-document does, and it is ordinary rather than an error. XML Namespaces 1.0 section
-    /// 6.3 makes the *repeat on one element* the collision.
+    /// Only its own declarations: shadowing an outer binding is what a prefix rebound mid-document does, and it is ordinary rather than an error.
+    /// XML Namespaces 1.0 section 6.3 makes the *repeat on one element* the collision.
     #[must_use]
     pub(crate) fn declared_here(&self, declared: u16, prefix: &[u8]) -> bool {
         let held = usize::from(declared);
@@ -101,9 +99,7 @@ impl<'a> PrefixStack<'a> {
 
     /// The URI a prefix is bound to here, or `None` when nothing binds it.
     ///
-    /// `xml` is bound to its reserved URI without a declaration, as XML Namespaces 1.0 section 3
-    /// requires, because RFC 4918 bodies carry `xml:lang` and a reader that demanded a
-    /// declaration for it would refuse bodies the specification writes itself.
+    /// `xml` is bound to its reserved URI without a declaration, as XML Namespaces 1.0 section 3 requires, because RFC 4918 bodies carry `xml:lang` and a reader that demanded a declaration for it would refuse bodies the specification writes itself.
     #[must_use]
     pub(crate) fn uri_for(&self, prefix: &[u8]) -> Option<&'a [u8]> {
         if prefix == XML_PREFIX {

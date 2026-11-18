@@ -705,6 +705,21 @@ pub struct Meter {
     exhausted: bool,
 }
 
+struct LiveScope<'a> {
+    depth: u16,
+    element_depth: u16,
+    bindings: u16,
+    meter: &'a mut Meter,
+}
+
+impl Drop for LiveScope<'_> {
+    fn drop(&mut self) {
+        self.meter.depth = self.depth;
+        self.meter.element_depth = self.element_depth;
+        self.meter.bindings = self.bindings;
+    }
+}
+
 impl Meter {
     /// A ledger over `limits`, budgeted at that policy's input bound.
     #[must_use]
@@ -880,10 +895,7 @@ impl Meter {
     ///
     /// Two bounds cross here, for the reason [`Limits::max_xml_text_bytes`] gives: the per-element ceiling refuses one enormous `calendar-data`, and the shared octet budget below it refuses a body of ten thousand merely large ones.
     pub fn try_charge_text(&mut self, count: u32) -> Result<(), LimitExceeded> {
-        self.available()?;
-        if count > self.limits.max_xml_text_bytes {
-            return Err(self.refuse(LimitExceeded::Text));
-        }
+        let count = self.check_width(count, self.limits.max_xml_text_bytes, LimitExceeded::Text)?;
         self.try_charge(u64::from(count))
     }
 
@@ -1125,6 +1137,49 @@ impl Meter {
 
     pub(crate) fn refuse_parse(&mut self, error: ParseError) -> ParseError {
         self.refuse(error)
+    }
+
+    /// Run an owned operation and restore live counters on scope exit.
+    pub fn with_live_scope<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
+        let scope = LiveScope {
+            depth: self.depth,
+            element_depth: self.element_depth,
+            bindings: self.bindings,
+            meter: self,
+        };
+        operation(scope.meter)
+    }
+
+    pub(crate) fn refuse_limit(&mut self, error: LimitExceeded) -> LimitExceeded {
+        self.refuse(error)
+    }
+
+    pub(crate) fn admit<T>(
+        &mut self,
+        operation: impl FnOnce() -> Result<T, LimitExceeded>,
+    ) -> Result<T, LimitExceeded> {
+        self.available()?;
+        operation().map_err(|error| self.refuse_limit(error))
+    }
+
+    pub(crate) fn check_bound(
+        &mut self,
+        within: bool,
+        dimension: LimitExceeded,
+    ) -> Result<(), LimitExceeded> {
+        self.admit(|| if within { Ok(()) } else { Err(dimension) })
+    }
+
+    pub(crate) fn check_width(
+        &mut self,
+        width: impl TryInto<u32>,
+        cap: u32,
+        dimension: LimitExceeded,
+    ) -> Result<u32, LimitExceeded> {
+        self.available()?;
+        let width = width.try_into().map_err(|_| self.refuse_limit(dimension))?;
+        self.check_bound(width <= cap, dimension)?;
+        Ok(width)
     }
 
     fn available(&self) -> Result<(), LimitExceeded> {
@@ -1402,6 +1457,54 @@ mod tests {
             fresh.charge_bytes(8),
             Err(ParseError::InputTooLarge { limit: 4 })
         );
+    }
+
+    #[test]
+    fn owned_scopes_restore_only_live_counts_after_success_or_error() {
+        for rejected in [false, true] {
+            let mut meter = Meter::new(Limits::DEFAULT);
+            meter.enter().unwrap();
+            meter.try_enter_element().unwrap();
+            meter.try_bind_prefix().unwrap();
+            let result = meter.with_live_scope(|meter| {
+                meter.enter().unwrap();
+                meter.try_enter_element().unwrap();
+                meter.try_bind_prefix().unwrap();
+                meter.charge_item().unwrap();
+                meter.try_charge_response().unwrap();
+                meter.try_charge_bytes(3).unwrap();
+                meter.note_dropped_diagnostic();
+                if rejected { Err("invalid") } else { Ok(()) }
+            });
+            assert_eq!(result, if rejected { Err("invalid") } else { Ok(()) });
+            assert_eq!(meter.depth, 1);
+            assert_eq!(meter.element_depth, 1);
+            assert_eq!(meter.bindings, 1);
+            assert_eq!(meter.items(), 1);
+            assert_eq!(meter.responses(), 1);
+            assert_eq!(meter.spent(), 3);
+            assert_eq!(meter.diagnostics_dropped(), 1);
+            assert!(!meter.is_exhausted());
+        }
+    }
+
+    #[test]
+    fn owned_scope_cleanup_keeps_the_first_refusal_and_exhaustion() {
+        let mut meter = Meter::new(Limits::DEFAULT.with_occurrences_per_search(0));
+        let result = meter.with_live_scope(|meter| {
+            meter.enter().unwrap();
+            meter.try_enter_element().unwrap();
+            meter.try_bind_prefix().unwrap();
+            meter.try_charge_bytes(3).unwrap();
+            meter.try_charge_occurrence()
+        });
+        assert_eq!(result, Err(LimitExceeded::Occurrences));
+        assert_eq!(meter.depth, 0);
+        assert_eq!(meter.element_depth, 0);
+        assert_eq!(meter.bindings, 0);
+        assert_eq!(meter.spent(), 3);
+        assert!(meter.is_exhausted());
+        assert_eq!(meter.try_charge_bytes(0), Err(LimitExceeded::Exhausted));
     }
 
     #[test]

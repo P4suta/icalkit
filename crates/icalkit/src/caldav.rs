@@ -166,15 +166,17 @@ fn decode_dav_request(
     policy: ResourcePolicy,
     meter: &mut Meter,
 ) -> Result<RequestBody, crate::internal::dav::DavError> {
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics)
-        .with_unknown(UnknownPolicy::Reject);
-    let mut events = XmlReader::new(bytes);
-    let request = RequestBody::read(&mut events, &mut context)?;
-    if events.next_event(&mut context)?.is_some() {
-        return Err(crate::internal::dav::DavError::Foreign);
-    }
-    Ok(request)
+    meter.with_live_scope(|meter| {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics)
+            .with_unknown(UnknownPolicy::Reject);
+        let mut events = XmlReader::new(bytes);
+        let request = RequestBody::read(&mut events, &mut context)?;
+        if events.next_event(&mut context)?.is_some() {
+            return Err(crate::internal::dav::DavError::Foreign);
+        }
+        Ok(request)
+    })
 }
 
 fn read_query_zone(
@@ -852,19 +854,21 @@ fn read_multistatus_metered(
     if response.status != 207 {
         return Err(Error::single("icalkit.caldav.multistatus-expected"));
     }
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics);
-    let mut events = XmlReader::new(&response.body);
-    let mut source = MultiStatusReader::new(&mut events);
-    let body = MultiStatus::read(&mut source, &mut context)
-        .map_err(|_| Error::single("icalkit.caldav.response-invalid"))?;
-    if diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity() == Severity::LimitReached)
-    {
-        return Err(Error::single("icalkit.caldav.response-truncated"));
-    }
-    Ok(body)
+    meter.with_live_scope(|meter| {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut context = DecodeContext::new(policy.limits, meter, &mut diagnostics);
+        let mut events = XmlReader::new(&response.body);
+        let mut source = MultiStatusReader::new(&mut events);
+        let body = MultiStatus::read(&mut source, &mut context)
+            .map_err(|_| Error::single("icalkit.caldav.response-invalid"))?;
+        if diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity() == Severity::LimitReached)
+        {
+            return Err(Error::single("icalkit.caldav.response-truncated"));
+        }
+        Ok(body)
+    })
 }
 
 fn reference_property(
@@ -3074,6 +3078,21 @@ mod tests {
     use crate::scheduling::Message;
     use crate::{Engine, Limits, ResourcePolicy};
     use core::fmt::Write as _;
+
+    #[test]
+    fn rejected_owned_requests_release_live_namespace_reservations() {
+        let policy = ResourcePolicy::secure();
+        let mut meter = crate::internal::core::Meter::new(policy.limits);
+        let result = super::decode_dav_request(
+            br#"<X:unknown xmlns:X="urn:example:foreign"/>"#,
+            policy,
+            &mut meter,
+        );
+        assert_eq!(result.unwrap_err(), crate::internal::dav::DavError::Foreign);
+        assert_eq!(meter.live_prefix_bindings(), 0);
+        assert!(meter.spent() > 0);
+        assert!(!meter.is_exhausted());
+    }
 
     #[test]
     fn response_count_obeys_the_configured_ceiling() {

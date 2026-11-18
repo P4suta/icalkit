@@ -426,12 +426,13 @@ impl<'body, 'pull> MultiStatusReader<'body, 'pull> {
             return Ok(());
         };
         let trimmed = trim_xml(text.run.as_bytes());
-        let length = u32::try_from(trimmed.len()).map_err(|_| LimitExceeded::Href)?;
-        if length > context.limits.max_href_bytes() {
-            return Err(DavError::Limit(LimitExceeded::Href));
-        }
+        let length = context.meter.check_width(
+            trimmed.len(),
+            context.limits.max_href_bytes(),
+            LimitExceeded::Href,
+        )?;
         context.meter.try_charge_bytes(u64::from(length))?;
-        self.token = Some(copy(trimmed)?);
+        self.token = Some(context.meter.admit(|| copy(trimmed))?);
         Ok(())
     }
 
@@ -1116,17 +1117,25 @@ fn append(
     bytes: &[u8],
     context: &mut DecodeContext<'_>,
 ) -> Result<(), DavError> {
-    let grown = target.len().saturating_add(bytes.len());
-    let length = u32::try_from(grown).map_err(|_| LimitExceeded::Text)?;
-    if length > context.limits.max_xml_text_bytes() {
-        return Err(DavError::Limit(LimitExceeded::Text));
-    }
+    let grown = context.meter.admit(|| {
+        target
+            .len()
+            .checked_add(bytes.len())
+            .ok_or(LimitExceeded::Text)
+    })?;
+    context.meter.check_width(
+        grown,
+        context.limits.max_xml_text_bytes(),
+        LimitExceeded::Text,
+    )?;
     context
         .meter
         .try_charge_bytes(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
-    target
-        .try_reserve(bytes.len())
-        .map_err(|_| LimitExceeded::Text)?;
+    context.meter.admit(|| {
+        target
+            .try_reserve(bytes.len())
+            .map_err(|_| LimitExceeded::Text)
+    })?;
     target.extend_from_slice(bytes);
     Ok(())
 }
@@ -1135,12 +1144,13 @@ fn append(
 ///
 /// The same two bounds `CalendarPayload` crosses, for the same reason: what is copied out of the body is held a second time, and `Limits::max_response_bytes` bounds only the first.
 fn retain(bytes: &[u8], context: &mut DecodeContext<'_>) -> Result<Box<[u8]>, DavError> {
-    let length = u32::try_from(bytes.len()).map_err(|_| LimitExceeded::Text)?;
-    if length > context.limits.max_xml_text_bytes() {
-        return Err(DavError::Limit(LimitExceeded::Text));
-    }
+    let length = context.meter.check_width(
+        bytes.len(),
+        context.limits.max_xml_text_bytes(),
+        LimitExceeded::Text,
+    )?;
     context.meter.try_charge_bytes(u64::from(length))?;
-    copy(bytes)
+    context.meter.admit(|| copy(bytes)).map_err(DavError::from)
 }
 
 #[cfg(test)]
@@ -1151,7 +1161,7 @@ mod tests {
         Diagnostic, DiagnosticCode, Instant, LimitExceeded, Limits, Meter,
     };
 
-    use super::{MultiStatusReader, UNREADABLE_STATUS};
+    use super::{MultiStatusReader, UNREADABLE_STATUS, append, retain};
     use crate::internal::dav::codec::{ResponseSource, XmlEvent, XmlPull};
     use crate::internal::dav::element::{ElementName, Namespace, QName};
     use crate::internal::dav::failure::DavError;
@@ -1162,6 +1172,43 @@ mod tests {
     };
     use crate::internal::dav::text::{LineEndings, TextMode};
     use crate::internal::dav::value::{Href, Status};
+
+    #[test]
+    fn accumulated_text_refusal_latches_without_discarding_admitted_bytes() {
+        let limits = Limits::DEFAULT.with_max_xml_text_bytes(4);
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let mut diagnostics = Vec::new();
+        let mut kept = Vec::new();
+        {
+            let mut context = DecodeContext::new(limits, &mut meter, &mut diagnostics);
+            append(&mut kept, b"abcd", &mut context).unwrap();
+            assert_eq!(
+                append(&mut kept, b"x", &mut context),
+                Err(DavError::Limit(LimitExceeded::Text))
+            );
+            assert!(context.meter.is_exhausted());
+            assert_eq!(
+                append(&mut kept, b"", &mut context),
+                Err(DavError::Limit(LimitExceeded::Exhausted))
+            );
+        }
+        assert_eq!(kept, b"abcd");
+        assert_eq!(meter.spent(), 4);
+    }
+
+    #[test]
+    fn retained_text_refusal_latches_before_copying() {
+        let limits = Limits::DEFAULT.with_max_xml_text_bytes(4);
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let mut diagnostics = Vec::new();
+        let result = retain(
+            b"abcde",
+            &mut DecodeContext::new(limits, &mut meter, &mut diagnostics),
+        );
+        assert_eq!(result, Err(DavError::Limit(LimitExceeded::Text)));
+        assert!(meter.is_exhausted());
+        assert_eq!(meter.spent(), 0);
+    }
 
     /// The `.ics` the three recorded exchanges are carrying, byte for byte.
     const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");
@@ -1447,13 +1494,17 @@ mod tests {
             },
             &mut meter,
         );
+        assert!(meter.is_exhausted());
+        assert_eq!(meter.try_charge_bytes(0), Err(LimitExceeded::Exhausted));
 
+        let mut meter = Meter::new(limits);
         let reading = {
             let mut context = DecodeContext::new(limits, &mut meter, &mut reported);
             collect(PROPFIND, &mut context)
         };
         assert_eq!(building, Err(DavError::Limit(LimitExceeded::Properties)));
         assert_eq!(reading.map(|_| ()), building);
+        assert!(meter.is_exhausted());
     }
 
     /// The response cap ends the stream with what was read intact, for both consumers.

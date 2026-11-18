@@ -4,57 +4,38 @@
 
 //! Character data, and the one place where XML's rules and iCalendar's rules disagree.
 //!
-//! XML 1.0 section 2.11 requires a processor to "behave as if it normalized all line breaks
-//! in external parsed entities (including the document entity) on input, before parsing, by
-//! translating both the two-character sequence #xD #xA and any #xD that is not followed by
+//! XML 1.0 section 2.11 requires a processor to "behave as if it normalized all line breaks in external parsed entities (including the document entity) on input, before parsing, by translating both the two-character sequence #xD #xA and any #xD that is not followed by
 //! #xA to a single #xA character". RFC 5545 section 3.1 terminates every content line with
-//! `CRLF`. A CalDAV `<C:calendar-data>` element carries an iCalendar object verbatim inside
-//! an XML document, and Radicale and `SabreDAV` both write those `CRLF` octets literally. A
-//! conformant read of such a response therefore hands `ical-core` a calendar whose line
-//! endings are not the ones the server stored, and writing it back changes the resource.
+//! `CRLF`.
+//! A CalDAV `<C:calendar-data>` element carries an iCalendar object verbatim inside an XML document, and Radicale and `SabreDAV` both write those `CRLF` octets literally.
+//! A conformant read of such a response therefore hands `ical-core` a calendar whose line endings are not the ones the server stored, and writing it back changes the resource.
 //!
-//! RFC 4791 section 9.6 saw this coming and permits it: "Given that XML parsers normalize the
-//! two-character sequence CRLF ... to a single LF character ..., the CR character ... MAY be
-//! omitted in calendar object resources specified in the CALDAV:calendar-data XML element."
-//! So a server that never sends a `CR` is conformant, and no reader can recover what such a
-//! server never sent. What section 9.6 does *not* say is that a client may quietly rewrite
-//! the line endings of a resource it received intact — and that is what a normalizing read
-//! followed by a `PUT` does, to somebody else's data, with a changed `ETag` as the only trace.
+//! RFC 4791 section 9.6 saw this coming and permits it: "Given that XML parsers normalize the two-character sequence CRLF ...
+//! to a single LF character ..., the CR character ...
+//! MAY be omitted in calendar object resources specified in the CALDAV:calendar-data XML element."
+//! So a server that never sends a `CR` is conformant, and no reader can recover what such a server never sent.
+//! What section 9.6 does *not* say is that a client may quietly rewrite the line endings of a resource it received intact — and that is what a normalizing read followed by a `PUT` does, to somebody else's data, with a changed `ETag` as the only trace.
 //!
 //! ## What this crate does about it
 //!
-//! Reading is verbatim for the elements [`ElementName::preserves_line_endings`] names and
-//! section 2.11 normalization everywhere else. That set is three elements rather than one,
-//! because RFC 4791 defines three places an iCalendar object travels through this envelope and
-//! the argument does not weaken for the other two: `CALDAV:calendar-data` (section 9.6),
-//! `CALDAV:calendar-timezone` (section 5.2.2, "a valid iCalendar object containing exactly one
-//! VTIMEZONE component") and `CALDAV:timezone` (section 9.5). A client that reads a
-//! collection's timezone under a folding read and `PROPPATCH`es it back rewrites the stored
-//! object, which is the same harm one property over.
+//! Reading is verbatim for the elements [`ElementName::preserves_line_endings`] names and section 2.11 normalization everywhere else.
+//! That set is three elements rather than one,
+//! because RFC 4791 defines three places an iCalendar object travels through this envelope and the argument does not weaken for the other two: `CALDAV:calendar-data` (section 9.6),
+//! `CALDAV:calendar-timezone` (section 5.2.2, "a valid iCalendar object containing exactly one VTIMEZONE component") and `CALDAV:timezone` (section 9.5).
+//! A client that reads a collection's timezone under a folding read and `PROPPATCH`es it back rewrites the stored object, which is the same harm one property over.
 //!
-//! Inside a verbatim element, references are still resolved, because a reference is markup
-//! rather than a line break: `&#13;&#10;` from a conformant writer and a literal `CRLF` from
-//! Radicale arrive at `ical-core` as the same two octets, which is the property that makes
-//! this a scoped departure rather than a second dialect. Inside it, XML 1.0 section 2.2's
-//! `Char` production is not enforced either, and that is one departure rather than two: an
-//! element whose octets are handed back as they arrived is an element this reader has already
-//! stopped being a conformant processor inside, and an `.ics` whose fold splits a codepoint is
-//! a resource ADR 0001 guarantees this workspace round-trips.
+//! Inside a verbatim element, references are still resolved, because a reference is markup rather than a line break: `&#13;&#10;` from a conformant writer and a literal `CRLF` from Radicale arrive at `ical-core` as the same two octets, which is the property that makes this a scoped departure rather than a second dialect.
+//! Inside it, XML 1.0 section 2.2's `Char` production is not enforced either, and that is one departure rather than two: an element whose octets are handed back as they arrived is an element this reader has already stopped being a conformant processor inside, and an `.ics` whose fold splits a codepoint is a resource ADR 0001 guarantees this workspace round-trips.
 //!
-//! That departure is real, it is deliberate, and it is scoped: inside it this reader
-//! is **not** a conformant XML 1.0 processor. Two documents that are equal as XML infosets
-//! come out of it as different octets, so it must never be used to canonicalize or to verify
-//! signed XML. A caller that wants strict conformance sets [`TextPolicy::Normalized`], gets
-//! section 2.11 applied everywhere, and is told through
-//! `DiagnosticCode::DavCalendarDataLineEndingsFolded` on every payload that lost a `CR` —
+//! That departure is real, it is deliberate, and it is scoped: inside it this reader is **not** a conformant XML 1.0 processor.
+//! Two documents that are equal as XML infosets come out of it as different octets, so it must never be used to canonicalize or to verify signed XML.
+//! A caller that wants strict conformance sets [`TextPolicy::Normalized`], gets section 2.11 applied everywhere, and is told through `DiagnosticCode::DavCalendarDataLineEndingsFolded` on every payload that lost a `CR` —
 //! because the choice being available is worth nothing if taking it is silent.
 //!
-//! Writing is strictly conformant and needs no departure at all. A `CR` is written as the
-//! character reference `&#13;`, which section 2.11 does not reach because a reference is
-//! resolved after normalization, so any conformant processor — this one, `libxml2`, a peer's
-//! — recovers the `CR`. No `CDATA` section is ever emitted: it cannot carry a `CR` past a
-//! conformant reader, and it turns a literal `]]>` inside a `DESCRIPTION` into an escaping
-//! bug. `>` is escaped unconditionally, which makes that sequence unwritable by accident.
+//! Writing is strictly conformant and needs no departure at all.
+//! A `CR` is written as the character reference `&#13;`, which section 2.11 does not reach because a reference is resolved after normalization, so any conformant processor — this one, `libxml2`, a peer's — recovers the `CR`.
+//! No `CDATA` section is ever emitted: it cannot carry a `CR` past a conformant reader, and it turns a literal `]]>` inside a `DESCRIPTION` into an escaping bug.
+//! `>` is escaped unconditionally, which makes that sequence unwritable by accident.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -67,10 +48,8 @@ use crate::internal::core::{
 use crate::internal::dav::element::ElementName;
 use crate::internal::dav::failure::{DavError, SyntaxError};
 use crate::internal::dav::sink::ByteSink;
-// The character rules, the reference resolver and the escaping table are XML 1.0's rather than
-// CalDAV's, so they live in the private layer `gates/xml-layering` compiles alone. What stays
-// here is everything stated over an `ElementName` or a `ByteSink`, which is what that layer may
-// not name (docs/adr/0012).
+// The character rules, the reference resolver and the escaping table are XML 1.0's rather than CalDAV's, so they live in the private layer `gates/xml-layering` compiles alone.
+// What stays here is everything stated over an `ElementName` or a `ByteSink`, which is what that layer may not name (docs/adr/0012).
 use crate::internal::dav::xml::chars::{
     check_chars as check_layer_chars, escape_for, normalize_attribute as normalize_layer, push,
     push_reference,
@@ -79,9 +58,8 @@ use crate::internal::dav::xml::scan::find;
 
 /// The caller's policy for how character data is delivered.
 ///
-/// A runtime policy rather than a feature flag on purpose. A feature is unified across a
-/// dependency graph by the union rule, so one crate in a build could otherwise change how
-/// another crate's calendars parse.
+/// A runtime policy rather than a feature flag on purpose.
+/// A feature is unified across a dependency graph by the union rule, so one crate in a build could otherwise change how another crate's calendars parse.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TextPolicy {
     /// Preserve the octets of the elements whose line endings are their content.
@@ -91,8 +69,7 @@ pub enum TextPolicy {
     Verbatim,
     /// Apply XML 1.0 section 2.11 everywhere, as a conformant processor must.
     ///
-    /// Costs the `CR` of every `CRLF` inside `calendar-data`, and says so through a
-    /// diagnostic each time.
+    /// Costs the `CR` of every `CRLF` inside `calendar-data`, and says so through a diagnostic each time.
     Normalized,
 }
 
@@ -106,21 +83,16 @@ pub enum TextMode {
     Normalized,
     /// The same, for an element whose value this crate delivers as octets rather than as text.
     ///
-    /// One element: `DAV:href`. `value.rs` states the decision it follows from — "a server is
-    /// free to emit octets that are not UTF-8 in a path, and a type that cannot model a
-    /// response one can read is the failure this workspace exists to prevent" — and a reader
-    /// that held those octets to XML 1.0 section 2.2's `Char` production would refuse the
-    /// response `Href` is byte-shaped in order to model. RFC 3986 requires a URI reference to
-    /// be `US-ASCII` and stores emit paths that are not; both facts are true and this crate
-    /// carries what arrived.
+    /// One element: `DAV:href`.
+    /// `value.rs` states the decision it follows from — "a server is free to emit octets that are not UTF-8 in a path, and a type that cannot model a response one can read is the failure this workspace exists to prevent" — and a reader that held those octets to XML 1.0 section 2.2's `Char` production would refuse the response `Href` is byte-shaped in order to model.
+    /// RFC 3986 requires a URI reference to be `US-ASCII` and stores emit paths that are not; both facts are true and this crate carries what arrived.
     NormalizedOctets,
     /// The octets as they arrived, for an element whose line endings are its content.
     Verbatim,
     /// Section 2.11 normalization of an element that would otherwise have been verbatim.
     ///
-    /// Distinct from [`TextMode::Normalized`] because losing a `CR` from a `displayname` is
-    /// XML working as specified and losing one from a `calendar-data` is a resource this
-    /// caller can no longer write back unchanged. Only this mode reports it.
+    /// Distinct from [`TextMode::Normalized`] because losing a `CR` from a `displayname` is XML working as specified and losing one from a `calendar-data` is a resource this caller can no longer write back unchanged.
+    /// Only this mode reports it.
     NormalizedPayload,
 }
 
@@ -155,10 +127,8 @@ impl TextMode {
 
     /// Whether this mode holds its run to XML 1.0 section 2.2's `Char` production.
     ///
-    /// True everywhere the run is delivered as text, and false for the two places this crate
-    /// delivers octets on purpose: inside the elements the line-ending carve-out names, and
-    /// inside a `DAV:href`. Both departures are stated rather than discovered, and both are
-    /// about a value a peer holds that would otherwise become unreadable rather than safe.
+    /// True everywhere the run is delivered as text, and false for the two places this crate delivers octets on purpose: inside the elements the line-ending carve-out names, and inside a `DAV:href`.
+    /// Both departures are stated rather than discovered, and both are about a value a peer holds that would otherwise become unreadable rather than safe.
     #[must_use]
     pub const fn checks_characters(self) -> bool {
         matches!(self, Self::Normalized)
@@ -166,12 +136,8 @@ impl TextMode {
 
     /// Whether this mode is inside the elements the line-ending carve-out names.
     ///
-    /// The carve-out's boundary is also where XML 1.0 section 2.2's `Char` production stops
-    /// being enforced, and that is one departure rather than two: an element whose octets are
-    /// handed back as they arrived is an element this reader has already stopped being a
-    /// conformant processor inside. An `.ics` a server stores may hold a fold that splits a
-    /// codepoint — `docs/adr/0001` guarantees that file round-trips — and refusing to *read*
-    /// it here would lose a resource the peer is holding rather than protect anybody from it.
+    /// The carve-out's boundary is also where XML 1.0 section 2.2's `Char` production stops being enforced, and that is one departure rather than two: an element whose octets are handed back as they arrived is an element this reader has already stopped being a conformant processor inside.
+    /// An `.ics` a server stores may hold a fold that splits a codepoint — `docs/adr/0001` guarantees that file round-trips — and refusing to *read* it here would lose a resource the peer is holding rather than protect anybody from it.
     #[must_use]
     pub const fn preserves(self) -> bool {
         matches!(self, Self::Verbatim | Self::NormalizedPayload)
@@ -180,9 +146,9 @@ impl TextMode {
 
 /// What terminates the lines of a decoded run, as delivered.
 ///
-/// Carried beside the octets rather than left for the caller to work out, because the question
-/// it answers — "are these the octets the server stored?" — has no answer once the run is a
-/// bare slice. A caller that means to write the payload back reads this first.
+/// Carried beside the octets rather than left for the caller to work out, because the question it answers — "are these the octets the server stored?"
+/// — has no answer once the run is a bare slice.
+/// A caller that means to write the payload back reads this first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LineEndings {
     /// The run holds no line break at all.
@@ -191,8 +157,8 @@ pub enum LineEndings {
     Crlf,
     /// Every line break is a bare `LF`.
     ///
-    /// Either the server omitted the `CR` as RFC 4791 section 9.6 permits, or something
-    /// between it and here did. Nothing in the octets tells the two apart.
+    /// Either the server omitted the `CR` as RFC 4791 section 9.6 permits, or something between it and here did.
+    /// Nothing in the octets tells the two apart.
     Lf,
     /// Every line break is a bare `CR`.
     Cr,
@@ -200,8 +166,7 @@ pub enum LineEndings {
     Mixed,
     /// This reader folded the `CR`s away under [`TextPolicy::Normalized`].
     ///
-    /// The one value that is a fact about the read rather than about the octets: whatever the
-    /// server sent, what the caller holds cannot be written back as what it received.
+    /// The one value that is a fact about the read rather than about the octets: whatever the server sent, what the caller holds cannot be written back as what it received.
     Folded,
 }
 
@@ -239,8 +204,8 @@ impl LineEndings {
 /// A decoded run of character data.
 ///
 /// `Wire` is a slice of the caller's own body and exists only when nothing had to be changed;
-/// a reference, a `CDATA` boundary or a folded line break forces `Reassembled`. Which one a
-/// caller got is visible rather than hidden, because the difference is an allocation.
+/// a reference, a `CDATA` boundary or a folded line break forces `Reassembled`.
+/// Which one a caller got is visible rather than hidden, because the difference is an allocation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TextRun<'a> {
     /// Octets borrowed from the body exactly as they lie in it.
@@ -277,14 +242,10 @@ pub struct DecodedText<'a> {
 
 /// Decode one element's character data span.
 ///
-/// `raw` is the span between an element's start tag and its end tag, `CDATA` sections and
-/// references included; finding that span is the tokenizer's job and resolving what is inside
-/// it is this function's. `offset` is where the span begins in the body, so a diagnostic can
-/// point at it.
+/// `raw` is the span between an element's start tag and its end tag, `CDATA` sections and references included; finding that span is the tokenizer's job and resolving what is inside it is this function's.
+/// `offset` is where the span begins in the body, so a diagnostic can point at it.
 ///
-/// The span is charged against the caller's per-element ceiling and its octet budget before
-/// anything is copied, so an enormous `calendar-data` is refused at the bound rather than
-/// after it is resident.
+/// The span is charged against the caller's per-element ceiling and its octet budget before anything is copied, so an enormous `calendar-data` is refused at the bound rather than after it is resident.
 pub fn decode_text<'a>(
     raw: &'a [u8],
     mode: TextMode,
@@ -292,15 +253,15 @@ pub fn decode_text<'a>(
     meter: &mut Meter,
     sink: &mut dyn DiagnosticSink,
 ) -> Result<DecodedText<'a>, DavError> {
-    let length = u32::try_from(raw.len()).map_err(|_| LimitExceeded::Text)?;
+    let length = meter.check_width(
+        raw.len(),
+        meter.limits().max_xml_text_bytes(),
+        LimitExceeded::Text,
+    )?;
     meter.try_charge_text(length)?;
 
-    // The span is held to XML 1.0 section 2.2's `Char` production and to section 4.3.3's
-    // requirement that the document entity be well-formed UTF-8, before anything is decoded
-    // and before the borrowed fast path below. `&#0;` was already refused under its own name
-    // by `push_character_reference`; the literal octet is the same code point in the same
-    // position, and accepting one spelling while refusing the other handed a caller a run
-    // that is not text and re-emitted it into a document no peer can parse.
+    // The span is held to XML 1.0 section 2.2's `Char` production and to section 4.3.3's requirement that the document entity be well-formed UTF-8, before anything is decoded and before the borrowed fast path below.
+    // `&#0;` was already refused under its own name by `push_character_reference`; the literal octet is the same code point in the same position, and accepting one spelling while refusing the other handed a caller a run that is not text and re-emitted it into a document no peer can parse.
     if mode.checks_characters() {
         check_chars(raw)?;
     }
@@ -313,8 +274,7 @@ pub fn decode_text<'a>(
     }
 
     let mut out = Vec::new();
-    out.try_reserve(raw.len())
-        .map_err(|_| LimitExceeded::Text)?;
+    meter.admit(|| out.try_reserve(raw.len()).map_err(|_| LimitExceeded::Text))?;
     let folded = reassemble(raw, mode, &mut out)?;
     report_reassembly(mode, folded, offset, meter, sink);
 
@@ -354,7 +314,8 @@ fn report_reassembly(
     report_diagnostic(sink, meter, Diagnostic::new(code, Severity::Note, location));
 }
 
-/// Copy the span into `out`, resolving references and `CDATA`. `true` if a `CR` was folded.
+/// Copy the span into `out`, resolving references and `CDATA`.
+/// `true` if a `CR` was folded.
 fn reassemble(raw: &[u8], mode: TextMode, out: &mut Vec<u8>) -> Result<bool, DavError> {
     let mut folded = false;
     let mut at = 0;
@@ -399,25 +360,22 @@ fn push_literal(run: &[u8], mode: TextMode, out: &mut Vec<u8>) -> Result<bool, D
 
 /// Refuse octets no conformant XML processor would deliver as characters.
 ///
-/// The rule is XML 1.0 sections 2.2 and 4.3.3 and lives in the layer; this is the door the rest
-/// of the crate reaches it through, so that a refusal arrives as a [`DavError`] like every other
-/// one rather than as a second failure vocabulary spreading upward.
+/// The rule is XML 1.0 sections 2.2 and 4.3.3 and lives in the layer; this is the door the rest of the crate reaches it through, so that a refusal arrives as a [`DavError`] like every other one rather than as a second failure vocabulary spreading upward.
 pub(crate) fn check_chars(bytes: &[u8]) -> Result<(), DavError> {
     check_layer_chars(bytes).map_err(DavError::from)
 }
 
 /// Normalize an attribute value the way XML 1.0 section 3.3.3 requires, into `out`.
 ///
-/// The value between the quotes is not the value the attribute has; the layer states why and
-/// does the work. This is the door, for the reason [`check_chars`] above is one.
+/// The value between the quotes is not the value the attribute has; the layer states why and does the work.
+/// This is the door, for the reason [`check_chars`] above is one.
 pub(crate) fn normalize_attribute(raw: &[u8], out: &mut Vec<u8>) -> Result<(), DavError> {
     normalize_layer(raw, out).map_err(DavError::from)
 }
 
 /// Copy a `CDATA` section's content and answer where the octet after `]]>` is.
 ///
-/// A `<` in character data is a `CDATA` section or it is not well-formed XML; there is no
-/// third reading, and guessing at one is how a tokenizer becomes accidentally complete.
+/// A `<` in character data is a `CDATA` section or it is not well-formed XML; there is no third reading, and guessing at one is how a tokenizer becomes accidentally complete.
 fn push_cdata(
     raw: &[u8],
     start: usize,
@@ -442,17 +400,15 @@ fn push_cdata(
 
 /// Write character data, escaped so that a conformant reader recovers every octet.
 ///
-/// `CR` becomes `&#13;` because a literal one would be folded to `LF` by section 2.11 before
-/// any reader saw it. `>` is escaped although XML does not require it, so that a `]]>` in a
-/// `DESCRIPTION` cannot end a section this crate never opens.
+/// `CR` becomes `&#13;` because a literal one would be folded to `LF` by section 2.11 before any reader saw it.
+/// `>` is escaped although XML does not require it, so that a `]]>` in a `DESCRIPTION` cannot end a section this crate never opens.
 pub fn write_escaped_text(out: &mut dyn ByteSink, bytes: &[u8]) -> Result<(), DavError> {
     write_escaped(out, bytes, false)
 }
 
 /// Write an attribute value, escaped for the rules that apply inside quotes.
 ///
-/// Section 3.3.3 replaces a literal `TAB`, `LF` or `CR` in an attribute value with a space
-/// during attribute-value normalization, and a character reference to one survives instead —
+/// Section 3.3.3 replaces a literal `TAB`, `LF` or `CR` in an attribute value with a space during attribute-value normalization, and a character reference to one survives instead —
 /// so the three are written as references and the quote that would end the value is escaped.
 pub fn write_escaped_attribute(out: &mut dyn ByteSink, bytes: &[u8]) -> Result<(), DavError> {
     write_escaped(out, bytes, true)
@@ -488,8 +444,7 @@ mod tests {
     use crate::internal::dav::element::ElementName;
     use crate::internal::dav::failure::{DavError, SyntaxError};
 
-    /// The `calendar-data` payload of a `SabreDAV`-shaped multistatus, with the `CRLF`
-    /// terminators RFC 5545 section 3.1 requires and a content line folded at octet 75.
+    /// The `calendar-data` payload of a `SabreDAV`-shaped multistatus, with the `CRLF` terminators RFC 5545 section 3.1 requires and a content line folded at octet 75.
     const SABREDAV_PAYLOAD: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
 PRODID:-//Example Corp.//CalDAV Client//EN\r\nBEGIN:VEVENT\r\nUID:1@example.invalid\r\n\
 DTSTAMP:20260101T000000Z\r\nDTSTART:20260105T090000Z\r\n\
@@ -519,8 +474,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         let mut meter = Meter::new(Limits::DEFAULT);
         let escaped = b"BEGIN:VCALENDAR&#13;\nVERSION:2.0&#13;\nEND:VCALENDAR&#13;\n";
         let decoded = decode(escaped, TextMode::Verbatim, &mut meter);
-        // A reference is markup, not a line break, so it is resolved in either mode and the
-        // two server dialects converge on one answer.
+        // A reference is markup, not a line break, so it is resolved in either mode and the two server dialects converge on one answer.
         assert!(decoded.run.is_reassembled());
         assert_eq!(
             decoded.run.as_bytes(),
