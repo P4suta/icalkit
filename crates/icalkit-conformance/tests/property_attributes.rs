@@ -152,6 +152,35 @@ fn an_attribute_in_the_element_namespace_round_trips() {
 }
 
 #[test]
+fn namespace_limits_cover_the_envelope_and_the_captured_fragment_together() {
+    use std::fmt::Write;
+
+    use icalkit_conformance::internal::core::LimitExceeded;
+    use icalkit_conformance::internal::dav::DavError;
+
+    let limits = Limits::DEFAULT;
+    let cap = limits.max_prefix_bindings();
+    for declarations in [cap.checked_sub(8).unwrap(), cap] {
+        let mut body = String::from(r#"<d:multistatus xmlns:d="DAV:" xmlns:v="urn:values""#);
+        for index in 2..declarations {
+            write!(body, r#" xmlns:p{index}="urn:{index}""#).unwrap();
+        }
+        body.push_str("><d:response><d:href>/one</d:href><d:propstat><d:prop><v:custom><v:child/></v:custom></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>");
+        let captured = read(body.as_bytes());
+        let mut encoded = Vec::new();
+        let mut meter = Meter::new(limits);
+        match captured.write_xml(&mut encoded, limits, &mut meter) {
+            Ok(()) => assert_eq!(read(&encoded), captured),
+            Err(error) => {
+                assert_eq!(declarations, cap);
+                assert_eq!(error, DavError::Limit(LimitExceeded::PrefixBindings));
+                assert!(meter.is_exhausted());
+            },
+        }
+    }
+}
+
+#[test]
 fn plain_and_two_namespace_attributes_round_trip() {
     assert_round_trip(
         br#"<v:child plain="zero" m:flag="one" n:flag="two"/>"#,

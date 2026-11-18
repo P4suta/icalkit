@@ -36,12 +36,13 @@
 //! That is not tidiness.
 //! A peer writing `&lt;D:href&gt;/calendars/ann/private/secret.ics&lt;/D:href&gt;` inside its own extension property is writing a string, and a proxying server that copied the decoded octets out unescaped would put a `DAV:href` element into its own multistatus that the peer never sent — an element RFC 4918 gives meaning to, chosen by the peer.
 //!
-//! [`PropValue::Markup`] is the other shape: elements a peer really did send, re-serialized by the reader in this crate's own prefixes with every text run already escaped.
+//! [`PropValue::Markup`] carries elements with their original prefixes and escaped character data.
 //! Those octets go to the sink as they stand, which is what makes a proxy lossless over a peer's structure.
-//! A caller may also build one by hand, so they are screened first: the tags must balance, so a kept value cannot close an element this writer opened; there is no `DOCTYPE`, comment,
-//! `CDATA` section or processing instruction, because this crate's own reader refuses those and a body it cannot read back is a body it must not write; every `&` must begin a reference a reader would resolve, so the emitted document is XML; and the octets must be UTF-8, because the document declares that it is.
-//! That guard is a refusal filter and not a parser: what passes it is well-formed enough not to forge structure, which is the property that matters.
+//! Callers constructing markup must supply well-formed XML with matching element names.
+//! The writer checks UTF-8, text references, nesting, and namespace limits.
+//! It rejects declarations, comments, CDATA sections, and processing instructions.
 
+use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 
 use crate::internal::core::{LimitExceeded, Limits, Meter};
@@ -568,12 +569,8 @@ fn write_kept(
 ) -> Result<(), DavError> {
     check_text_bound(octets, meter)?;
     check_text_is_utf8(octets)?;
-    check_fragment(
-        octets,
-        limits.max_xml_depth().saturating_sub(PROPERTY_DEPTH),
-        meter,
-    )
-    .map_err(|error| error.record_resource_refusal(meter))?;
+    check_fragment(octets, limits, writer.enclosing_prefix_bindings(), meter)
+        .map_err(|error| error.record_resource_refusal(meter))?;
     writer.validated_markup(octets, meter)
 }
 
@@ -618,9 +615,16 @@ enum TagShape {
 
 /// Check fragment depth, element count, references, and tag boundaries.
 /// A successful check doesn't establish document well-formedness.
-fn check_fragment(octets: &[u8], depth_budget: u16, meter: &mut Meter) -> Result<(), DavError> {
+fn check_fragment(
+    octets: &[u8],
+    limits: Limits,
+    enclosing_bindings: usize,
+    meter: &mut Meter,
+) -> Result<(), DavError> {
     let mut at = 0;
     let mut depth: u16 = 0;
+    let depth_budget = limits.max_xml_depth().saturating_sub(PROPERTY_DEPTH);
+    let mut scopes: Vec<(u16, usize)> = Vec::new();
     while let Some(&byte) = octets.get(at) {
         if byte == b'&' {
             let (_, after) = read_reference(octets, at).map_err(SyntaxError::from)?;
@@ -637,8 +641,31 @@ fn check_fragment(octets: &[u8], depth_budget: u16, meter: &mut Meter) -> Result
         let (end, shape) = scan_tag(rest)?;
         depth = apply_shape(shape, depth, depth_budget)?;
         match shape {
-            TagShape::Open | TagShape::Empty => meter.try_charge_element()?,
-            TagShape::Close => {},
+            TagShape::Open | TagShape::Empty => {
+                meter.try_charge_element()?;
+                let tag = rest.get(..=end).ok_or(SyntaxError::Truncated)?;
+                let local = namespace_declarations(tag)?;
+                let inherited = scopes
+                    .last()
+                    .map_or(enclosing_bindings, |(_, count)| *count);
+                let live = inherited.saturating_add(local);
+                meter.check_width(
+                    live,
+                    u32::from(limits.max_prefix_bindings()),
+                    LimitExceeded::PrefixBindings,
+                )?;
+                if shape == TagShape::Open && local > 0 {
+                    meter
+                        .try_charge(u64::try_from(size_of::<(u16, usize)>()).unwrap_or(u64::MAX))?;
+                    meter.admit(|| scopes.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
+                    scopes.push((depth, live));
+                }
+            },
+            TagShape::Close => {
+                if scopes.last().is_some_and(|(level, _)| *level > depth) {
+                    scopes.pop();
+                }
+            },
         }
         at = at.saturating_add(end).saturating_add(1);
     }
@@ -647,6 +674,21 @@ fn check_fragment(octets: &[u8], depth_budget: u16, meter: &mut Meter) -> Result
     } else {
         Err(DavError::Syntax(SyntaxError::Truncated))
     }
+}
+
+fn namespace_declarations(tag: &[u8]) -> Result<usize, DavError> {
+    use xmlparser::{Token, Tokenizer};
+
+    let text = core::str::from_utf8(tag).map_err(|_| ValueError::NotUtf8)?;
+    let mut count = 0_usize;
+    for token in Tokenizer::from_fragment(text, 0..text.len()) {
+        if let Token::Attribute { prefix, local, .. } = token.map_err(|_| SyntaxError::Malformed)?
+            && (prefix.as_str() == "xmlns" || (prefix.is_empty() && local.as_str() == "xmlns"))
+        {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
 }
 
 /// Find where one tag ends and say what shape it is.

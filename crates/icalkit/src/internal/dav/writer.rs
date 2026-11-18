@@ -60,7 +60,7 @@ const DECLARATION: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 /// The namespaces every root element declares, in the order it declares them.
 ///
 /// All three unconditionally, so the root of a `PROPFIND` and the root of a multistatus carry the same preamble and no encoder has to work out which of them a body will end up needing.
-const DECLARED: [Namespace<'static>; 3] =
+pub(super) const DECLARED: [Namespace<'static>; 3] =
     [Namespace::Dav, Namespace::CalDav, Namespace::CalendarServer];
 
 /// The generated prefix for extension names that need a declaration.
@@ -184,6 +184,23 @@ impl<'a> XmlWriter<'a> {
     #[must_use]
     pub fn depth(&self) -> u16 {
         u16::try_from(self.open.len()).unwrap_or(u16::MAX)
+    }
+
+    pub(super) fn enclosing_prefix_bindings(&self) -> usize {
+        DECLARED.len().saturating_add(
+            self.open
+                .iter()
+                .filter(|tag| {
+                    matches!(
+                        tag,
+                        OpenTag::Foreign {
+                            prefix: ExtensionPrefix::Declared,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+        )
     }
 
     /// Open one element of the closed vocabulary.

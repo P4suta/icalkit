@@ -999,7 +999,7 @@ fn declare_fragment_root<'a>(
         bindings.push((prefix, order, namespace));
         Ok(())
     };
-    for namespace in [Namespace::Dav, Namespace::CalDav, Namespace::CalendarServer] {
+    for namespace in crate::internal::dav::writer::DECLARED {
         add(namespace.write_prefix(), namespace)?;
     }
     let property_ns = property.name.namespace;
