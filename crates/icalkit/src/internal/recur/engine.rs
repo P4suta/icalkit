@@ -343,14 +343,67 @@ struct StepEnv<'e, S: DiagnosticSink + ?Sized> {
     sink: &'e mut S,
 }
 
+#[cfg(not(test))]
+type OriginMap = alloc::collections::BTreeMap<Instant, u64>;
+#[cfg(test)]
+use tests::ObservedOriginMap as OriginMap;
+
+#[derive(Default)]
+struct PendingAdjustedKeys {
+    /// Removing a marked key advances the earliest pending period.
+    keys: OriginMap,
+    earliest_period: Option<u64>,
+}
+
+impl PendingAdjustedKeys {
+    fn extend_period(
+        &mut self,
+        selected: &SelectedCandidates,
+        origin: u64,
+        meter: &mut Meter,
+    ) -> Result<(), LimitExceeded> {
+        let mut keys = selected
+            .as_slice()
+            .iter()
+            .rev()
+            .filter_map(|at| at.at_offset(UtcOffset::UTC));
+        let Some(greatest) = keys.next() else {
+            return Ok(());
+        };
+        if let Some(depth) = self.keys.len().checked_ilog2() {
+            meter.try_charge(u64::from(depth) + 1)?;
+        }
+        match self.keys.last_entry() {
+            // A later period can outlive earlier periods only beyond their greatest key.
+            Some(mut last) if *last.key() < greatest => *last.get_mut() = origin,
+            None => self.earliest_period = Some(origin),
+            Some(_) => {},
+        }
+        for key in core::iter::once(greatest).chain(keys) {
+            self.keys.entry(key).or_default();
+        }
+        Ok(())
+    }
+
+    fn pop_before(&mut self, bound: Option<Instant>) -> Option<(Instant, u64)> {
+        let earliest = self.earliest_period?;
+        let first = self.keys.first_entry()?;
+        if bound.is_some_and(|limit| *first.key() >= limit) {
+            return None;
+        }
+        let (key, next_period) = first.remove_entry();
+        self.earliest_period = (!self.keys.is_empty()).then_some(earliest.max(next_period));
+        Some((key, earliest))
+    }
+}
+
 /// Corrected dates can cross period boundaries under RFC 7529 section 4.1.
 #[derive(Default)]
 struct AdjustedStream {
-    /// Each key keeps the earliest period that contributed it.
-    pending: alloc::collections::BTreeMap<Instant, u64>,
+    pending: PendingAdjustedKeys,
     peeked: Option<(Period, Instant, u64)>,
     stop: Option<RuleKey>,
-    /// A checkpoint needs the origin of an offer until the merge commits it.
+    /// A live offer keeps the earliest replay period until the merge commits it.
     offered_period: Option<u64>,
 }
 
@@ -425,17 +478,9 @@ impl<'a> RuleStream<'a> {
     ) -> Result<Instant, RuleKey> {
         loop {
             self.peek_adjusted_period();
-            let ready = self
-                .adjusted
-                .pending
-                .first_key_value()
-                .is_some_and(|(key, _)| {
-                    self.adjusted
-                        .peeked
-                        .is_none_or(|(_, bound, _)| *key < bound)
-                });
-            if ready && let Some((key, origin)) = self.adjusted.pending.pop_first() {
-                self.adjusted.offered_period = Some(origin);
+            let bound = self.adjusted.peeked.map(|(_, bound, _)| bound);
+            if let Some((key, earliest)) = self.adjusted.pending.pop_before(bound) {
+                self.adjusted.offered_period = Some(earliest);
                 return Ok(key);
             }
             let Some((period, bound, origin)) = self.adjusted.peeked.take() else {
@@ -449,15 +494,10 @@ impl<'a> RuleStream<'a> {
                 return Err(stop);
             }
             if let Some(selected) = self.selected.as_ref() {
-                for stamp in selected.as_slice() {
-                    if let Some(key) = stamp.at_offset(UtcOffset::UTC) {
-                        self.adjusted
-                            .pending
-                            .entry(key)
-                            .and_modify(|held| *held = (*held).min(origin))
-                            .or_insert(origin);
-                    }
-                }
+                self.adjusted
+                    .pending
+                    .extend_period(selected, origin, env.meter)
+                    .map_err(|_| RuleKey::Exhausted)?;
             }
         }
     }
@@ -593,8 +633,8 @@ impl<'a> RuleStream<'a> {
             .map_or(0, |cadence| cadence.period_index);
         self.adjusted
             .pending
-            .values()
-            .copied()
+            .earliest_period
+            .into_iter()
             .chain(self.adjusted.offered_period)
             .fold(visited, u64::min)
     }
@@ -1026,6 +1066,211 @@ mod tests {
     use crate::internal::recur::search::{
         BudgetExhausted, Occurrence, OverrideProvenance, SearchOutcome, SearchStep, Window,
     };
+
+    #[derive(Default)]
+    pub(super) struct ObservedOriginMap {
+        keys: alloc::collections::BTreeMap<Instant, u64>,
+        reads: core::sync::atomic::AtomicUsize,
+    }
+
+    impl ObservedOriginMap {
+        pub(super) fn values(&self) -> impl Iterator<Item = &u64> {
+            self.keys.values().inspect(|_| {
+                self.reads
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            })
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(core::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl core::ops::Deref for ObservedOriginMap {
+        type Target = alloc::collections::BTreeMap<Instant, u64>;
+
+        fn deref(&self) -> &Self::Target {
+            self.reads
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            &self.keys
+        }
+    }
+
+    impl core::ops::DerefMut for ObservedOriginMap {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.keys
+        }
+    }
+
+    #[test]
+    fn adjusted_checkpoints_read_no_buffered_origins() {
+        let start = at(2024, 4, 1, 0);
+        let rule = RecurrenceRuleBuilder::new(Freq::Monthly)
+            .rscale(crate::internal::core::CalendarScale::Gregorian)
+            .skip(crate::internal::recur::rule::Skip::Forward)
+            .by_month_day(ByList::from_slice(&(1..=30).collect::<Vec<_>>()))
+            .by_hour(ByList::from_slice(&(0..24).collect::<Vec<_>>()))
+            .by_minute(ByList::from_slice(&(0..60).collect::<Vec<_>>()))
+            .build()
+            .unwrap();
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let input = plain(start, &rule, &mut meter);
+        let window = Window::new(start, at(2024, 5, 1, 0)).unwrap();
+        let mut sink = Vec::new();
+        let mut search = input.search(window, &mut meter, &mut sink);
+        for minute in 0..43_200 {
+            let key = search.next().unwrap().occurrence().unwrap().key();
+            assert_eq!(key, start.checked_add_seconds(minute * 60).unwrap());
+            let buffered = &search.stream.adjusted.pending.keys;
+            if minute == 0 {
+                let before = buffered.reads();
+                assert_eq!(buffered.values().count(), 43_199);
+                assert_eq!(buffered.reads() - before, 43_199);
+            }
+            let before = buffered.reads();
+            let cursor = search.cursor();
+            assert_eq!(cursor.resume_after(), Some(key));
+            assert_eq!(buffered.reads() - before, 0, "minute {minute}");
+        }
+        assert!(search.next().is_none());
+    }
+
+    fn selected(stamps: &[CivilDateTime]) -> super::SelectedCandidates {
+        let candidates = crate::internal::recur::byparts::CandidateSet::from_ascending(stamps);
+        super::select(&candidates, &ByList::from_slice(&[]))
+    }
+
+    #[test]
+    fn adjusted_checkpoint_origins_match_remaining_keys_across_periods() {
+        use alloc::collections::BTreeMap;
+
+        fn pop(buffer: &mut super::PendingAdjustedKeys, origins: &mut BTreeMap<Instant, u64>) {
+            let earliest = origins.values().copied().min();
+            assert_eq!(buffer.earliest_period, earliest);
+            let head = origins.pop_first().map(|(key, _)| key);
+            if let Some(key) = head {
+                assert_eq!(buffer.pop_before(Some(key)), None);
+            }
+            assert_eq!(buffer.pop_before(None), head.zip(earliest));
+            assert_eq!(buffer.earliest_period, origins.values().copied().min());
+        }
+
+        fn check(masks: [u8; 3], early_pops: usize) {
+            let mut buffer = super::PendingAdjustedKeys::default();
+            let mut origins = BTreeMap::new();
+            let mut meter = Meter::new(Limits::DEFAULT);
+            for (origin, mask) in [3, 7, 9].into_iter().zip(masks) {
+                let mut stamps = Vec::new();
+                for bit in 0..3 {
+                    if mask & (1 << bit) != 0 {
+                        let key = at(2024, 1, bit + 1, 0);
+                        origins.entry(key).or_insert(origin);
+                        stamps.push(CivilDateTime::from_instant(key, UtcOffset::UTC).unwrap());
+                    }
+                }
+                buffer
+                    .extend_period(&selected(&stamps), origin, &mut meter)
+                    .unwrap();
+                assert_eq!(buffer.earliest_period, origins.values().copied().min());
+                if origin == 7 {
+                    for _ in 0..early_pops {
+                        pop(&mut buffer, &mut origins);
+                    }
+                }
+            }
+            while !origins.is_empty() {
+                pop(&mut buffer, &mut origins);
+            }
+            pop(&mut buffer, &mut origins);
+        }
+
+        for first in 0..8 {
+            for second in 0..8 {
+                for third in 0..8 {
+                    for early_pops in 0..=3 {
+                        check([first, second, third], early_pops);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_adjusted_period_charges_before_changing_its_checkpoint() {
+        let stamp = |day| CivilDateTime::from_instant(at(2024, 1, day, 0), UtcOffset::UTC).unwrap();
+        let mut pending = super::PendingAdjustedKeys::default();
+        let mut setup = Meter::new(Limits::DEFAULT);
+        pending
+            .extend_period(&selected(&[stamp(2), stamp(4)]), 3, &mut setup)
+            .unwrap();
+        let addition = selected(&[stamp(1), stamp(5)]);
+        let mut tight = Meter::with_budget(Limits::DEFAULT, 1);
+        assert_eq!(
+            pending.extend_period(&addition, 7, &mut tight),
+            Err(crate::internal::core::LimitExceeded::Budget)
+        );
+        assert_eq!(pending.keys.len(), 2);
+        assert_eq!(pending.earliest_period, Some(3));
+        let mut fresh = Meter::with_budget(Limits::DEFAULT, 2);
+        pending.extend_period(&addition, 7, &mut fresh).unwrap();
+        assert_eq!(fresh.spent(), 2);
+        for (day, earliest) in [(1, 3), (2, 3), (4, 3), (5, 7)] {
+            assert_eq!(
+                pending.pop_before(None),
+                Some((at(2024, 1, day, 0), earliest))
+            );
+        }
+        assert_eq!(pending.earliest_period, None);
+    }
+
+    #[test]
+    fn adjusted_checkpoints_resume_after_every_budget_refusal() {
+        let mut setup = Meter::new(Limits::DEFAULT);
+        let rule = crate::internal::recur::parse_recur(
+            b"FREQ=MONTHLY;RSCALE=GREGORIAN;SKIP=FORWARD;BYMONTHDAY=1,31;COUNT=8",
+            &mut setup,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let expected = [
+            (1, 1),
+            (1, 31),
+            (2, 1),
+            (3, 1),
+            (3, 31),
+            (4, 1),
+            (5, 1),
+            (5, 31),
+        ]
+        .map(|(month, day)| at(2024, month, day, 0));
+        let input = plain(expected[0], &rule, &mut setup);
+        let window = Window::new(expected[0], at(2024, 6, 1, 0)).unwrap();
+        let mut sink = Vec::new();
+        let mut full = Meter::new(Limits::DEFAULT);
+        assert_eq!(
+            drain(input.search(window, &mut full, &mut sink)).starts,
+            expected
+        );
+        for budget in 0..full.spent() {
+            let mut tight = Meter::with_budget(Limits::DEFAULT, budget);
+            let mut search = input.search(window, &mut tight, &mut sink);
+            let mut starts = Vec::new();
+            loop {
+                match search.next() {
+                    Some(SearchStep::Occurrence(occurrence)) => starts.push(occurrence.start()),
+                    Some(SearchStep::BudgetExhausted(_)) => break,
+                    step => panic!("expected budget refusal at {budget}, got {step:?}"),
+                }
+            }
+            let checkpoint = search.cursor();
+            assert_eq!(checkpoint, search.cursor());
+            let mut retry = Meter::new(Limits::DEFAULT);
+            let remaining = drain(input.resume(checkpoint, window, &mut retry, &mut sink));
+            assert_eq!(remaining.outcome, SearchOutcome::RuleEnded);
+            starts.extend(remaining.starts);
+            assert_eq!(starts, expected, "budget {budget}");
+        }
+    }
 
     /// Use UTC to compare the civil dates in the RFC examples.
     fn at(year: u16, month: u8, day: u8, hour: u8) -> Instant {
