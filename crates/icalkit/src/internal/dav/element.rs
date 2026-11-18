@@ -52,6 +52,10 @@ impl<'a> NamespaceUri<'a> {
         self.0.contiguous()
     }
 
+    pub(crate) const fn source_len(self) -> usize {
+        self.0.source_len()
+    }
+
     /// Read normalized octets without allocating a temporary namespace string.
     pub fn octets(self) -> impl Iterator<Item = Result<u8, DavError>> + 'a {
         self.0

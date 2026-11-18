@@ -60,12 +60,13 @@
 //! A caller that wants the name has it on the [`XmlEvent::Start`] it was handed one call earlier.
 
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 
 use crate::internal::core::{DiagnosticCode, LimitExceeded, Meter, Severity};
 use xmlparser::{Error as LexerError, StreamError, Token, Tokenizer};
 
 use crate::internal::dav::codec::{XmlEvent, XmlPull};
-use crate::internal::dav::element::{ElementName, Namespace, NamespaceUri, QName};
+use crate::internal::dav::element::{ElementName, Namespace, QName};
 use crate::internal::dav::failure::{DavError, SyntaxError};
 use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
 use crate::internal::dav::text::{AdmittedXmlBody, TextMode, check_chars, normalize_attribute};
@@ -687,11 +688,10 @@ impl<'a> XmlReader<'a> {
         }
         // Sorted so the duplicate check is a walk rather than a comparison of every pair with every other, which is work an attacker would otherwise size.
         // Attribute order is not significant in XML, so nothing above this can tell that it was reordered.
-        self.resolved
-            .sort_unstable_by(|left, right| sort_key(left.name).cmp(&sort_key(right.name)));
+        sort_attributes(&mut self.resolved, meter)?;
         for pair in self.resolved.windows(2) {
             let [left, right] = pair else { continue };
-            if same_name(left.name, right.name) {
+            if compare_attributes(*left, *right, meter)? == Ordering::Equal {
                 return Err(SyntaxError::DuplicateAttribute.into());
             }
         }
@@ -844,14 +844,73 @@ fn same_name(left: QName<'_>, right: QName<'_>) -> bool {
     left.namespace.is(right.namespace) && left.local_name == right.local_name
 }
 
-/// The key a name sorts under, which orders the namespace before the local name.
-fn sort_key(name: QName<'_>) -> (NamespaceUri<'_>, &[u8]) {
-    (name.namespace.uri(), name.local_name)
+fn compare_attributes(
+    left: Attribute<'_>,
+    right: Attribute<'_>,
+    meter: &mut Meter,
+) -> Result<Ordering, DavError> {
+    let width = [left.name, right.name]
+        .into_iter()
+        .fold(0_u64, |sum, name| {
+            sum.saturating_add(
+                u64::try_from(
+                    name.namespace
+                        .uri()
+                        .source_len()
+                        .saturating_add(name.local_name.len()),
+                )
+                .unwrap_or(u64::MAX),
+            )
+        });
+    meter.try_charge_bytes(width)?;
+    Ok(left.name.cmp(&right.name))
+}
+
+fn sort_attributes(attributes: &mut [Attribute<'_>], meter: &mut Meter) -> Result<(), DavError> {
+    for root in (0..attributes.len() / 2).rev() {
+        sift_attributes(attributes, root, meter)?;
+    }
+    for end in (1..attributes.len()).rev() {
+        attributes.swap(0, end);
+        sift_attributes(&mut attributes[..end], 0, meter)?;
+    }
+    Ok(())
+}
+
+fn sift_attributes(
+    attributes: &mut [Attribute<'_>],
+    mut root: usize,
+    meter: &mut Meter,
+) -> Result<(), DavError> {
+    while let Some(mut child) = root.checked_mul(2).and_then(|index| index.checked_add(1)) {
+        let Some(left) = attributes.get(child).copied() else {
+            break;
+        };
+        let right_index = child.saturating_add(1);
+        if let Some(right) = attributes.get(right_index).copied()
+            && compare_attributes(left, right, meter)? == Ordering::Less
+        {
+            child = right_index;
+        }
+        let Some(parent) = attributes.get(root).copied() else {
+            break;
+        };
+        let Some(selected) = attributes.get(child).copied() else {
+            break;
+        };
+        if compare_attributes(parent, selected, meter)? != Ordering::Less {
+            break;
+        }
+        attributes.swap(root, child);
+        root = child;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+    use core::fmt::Write;
 
     use crate::internal::core::{
         Diagnostic, DiagnosticCode, IgnoreDiagnostics, LimitExceeded, Limits, Meter, Severity,
@@ -1665,6 +1724,42 @@ mod tests {
             while reader.next_event(&mut context).unwrap().is_some() {}
         }
         assert!(meter.spent() >= 4096, "a comment cost {}", meter.spent());
+    }
+
+    #[test]
+    fn encoded_namespace_comparisons_spend_the_shared_budget() {
+        let uri = "&#97;".repeat(2048);
+        let mut body = alloc::format!("<x xmlns:p=\"{uri}\" xmlns:q=\"{uri}\"");
+        for index in 0..32 {
+            let prefix = if index % 2 == 0 { "p" } else { "q" };
+            write!(body, " {prefix}:a{index}=\"\"").unwrap();
+        }
+        body.push_str("/>");
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::with_budget(limits, 100_000);
+        let mut sink = IgnoreDiagnostics;
+        let mut context = DecodeContext::new(limits, &mut meter, &mut sink);
+        let mut reader = XmlReader::new(body.as_bytes());
+        assert_eq!(
+            reader.next_event(&mut context),
+            Err(DavError::Limit(LimitExceeded::Budget))
+        );
+        assert_eq!(
+            reader.next_event(&mut context),
+            Err(DavError::Limit(LimitExceeded::Exhausted))
+        );
+        assert!(read_default(body.as_bytes()).is_ok());
+        let literal = "a".repeat(2048);
+        let mut collision =
+            alloc::format!("<x xmlns:p=\"{uri}\" xmlns:q=\"{literal}\" p:collision=\"\"");
+        for index in 0..32 {
+            write!(collision, " p:a{index}=\"\"").unwrap();
+        }
+        collision.push_str(" q:collision=\"\"/>");
+        assert_eq!(
+            read_default(collision.as_bytes()).err(),
+            Some(DavError::Syntax(SyntaxError::DuplicateAttribute))
+        );
     }
 
     /// An attribute value is the value XML 1.0 section 3.3.3 defines, not the octets in it.

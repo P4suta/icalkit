@@ -188,6 +188,11 @@ fn bound() -> usize {
         return 0;
     }
     let held = usize::from(stack.uri_for(b"D").is_some())
+        .saturating_add(
+            stack
+                .uri_for(b"D")
+                .map_or(0, xml::chars::AttributeValue::source_len),
+        )
         .saturating_add(usize::from(stack.declared_here(1, b"D")))
         .saturating_add(usize::from(stack.uri_for(b"C").is_none()));
     stack.unbind(1, &mut meter);

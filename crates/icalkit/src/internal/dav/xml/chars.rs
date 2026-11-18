@@ -66,6 +66,12 @@ impl<'a> AttributeValue<'a> {
         self.length
     }
 
+    pub(crate) const fn source_len(self) -> usize {
+        match self.source {
+            AttributeSource::Literal(bytes) | AttributeSource::Encoded(bytes) => bytes.len(),
+        }
+    }
+
     pub(crate) const fn contiguous(self) -> Option<&'a [u8]> {
         match self.source {
             AttributeSource::Literal(bytes) => Some(bytes),
