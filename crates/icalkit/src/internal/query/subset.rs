@@ -25,8 +25,8 @@ use core::{mem, slice};
 
 use crate::internal::core::{
     CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration,
-    EncodeValue, Instant, Item, LimitExceeded, Limits, Meter, Parameter, Period, Property,
-    PropertyId, RawText, UtcOffset, ValueBuf, ValueType, View, Writer,
+    EncodeValue, Instant, Item, LimitExceeded, Limits, LineLayout, Meter, Parameter, Period,
+    Property, PropertyId, RawText, UtcOffset, ValueBuf, ValueType, View, Writer,
 };
 use crate::internal::dav::{CompSelection, TimeRange};
 
@@ -120,7 +120,7 @@ pub fn select(
 /// # Errors
 ///
 /// Returns [`QueryError::Unrepresentable`] for a property the writer can't express as one content line.
-/// Returns [`QueryError::Limit`] when the result exceeds the byte or nesting limits.
+/// Returns [`QueryError::Limit`] if projection exceeds the byte budget or component depth limit.
 pub fn without_values(
     source: &Selection,
     names: &[&[u8]],
@@ -132,17 +132,15 @@ pub fn without_values(
         return unchanged(source, meter);
     }
     let mut stripped = false;
-    let mut copy = source.calendar().clone();
     let built = map_properties(
-        mem::take(copy.items_mut()),
+        copy_items(source, meter)?,
         limits,
         meter,
         &mut |_holder, line, ledger| {
             if names.iter().any(|name| line.is_named(name)) {
                 stripped = true;
-                return without_value(&line, ledger).map(Some);
+                return with_value(line, b"", ledger).map(Some);
             }
-            charge_line(&line, ledger)?;
             Ok(Some(line))
         },
     )?;
@@ -292,6 +290,7 @@ fn expand_calendar_component(
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Component, QueryError> {
+    charge_boundaries(calendar, budget.meter)?;
     let siblings = calendar.items();
     let index = SeriesIndex::new(siblings, budget.meter)?;
     let mut items = Vec::new();
@@ -339,7 +338,10 @@ fn expand_calendar_component(
         for instance in expansion.instances() {
             let template = effective_template(master, related, *instance, zones, budget.meter)?;
             items.push(Item::Component(materialize_instance(
-                template, *instance, initial,
+                template,
+                *instance,
+                initial,
+                budget.meter,
             )?));
         }
     }
@@ -553,8 +555,9 @@ fn materialize_instance(
     mut template: Component,
     instance: crate::internal::query::Instance,
     initial: Instant,
+    meter: &mut Meter,
 ) -> Result<Component, QueryError> {
-    let controls = instance_controls(&template, instance, initial)?;
+    let controls = instance_controls(&mut template, instance, initial, meter)?;
     template.items_mut().retain(|entry| {
         entry
             .as_property()
@@ -567,26 +570,27 @@ fn materialize_instance(
 }
 
 fn instance_controls(
-    template: &Component,
+    template: &mut Component,
     instance: crate::internal::query::Instance,
     initial: Instant,
+    meter: &mut Meter,
 ) -> Result<Vec<Property>, QueryError> {
     let mut controls = Vec::new();
     if let InstanceShape::Journal {
         dates: Some((key, start)),
     } = instance.shape()
     {
-        controls.push(date_property(template, b"DTSTART", start)?);
+        controls.push(date_property(template, b"DTSTART", start, meter)?);
         if instance.recurrence_id() != initial {
-            controls.push(date_property(template, b"RECURRENCE-ID", key)?);
+            controls.push(date_property(template, b"RECURRENCE-ID", key, meter)?);
         }
         return Ok(controls);
     }
-    controls.push(utc_property(template, b"DTSTART", instance.start())?);
+    controls.push(utc_property(template, b"DTSTART", instance.start(), meter)?);
     match instance.shape() {
         InstanceShape::Event { end, .. } => {
             if instance.end() > instance.start() {
-                controls.push(utc_property(template, b"DTEND", instance.end())?);
+                controls.push(utc_property(template, b"DTEND", instance.end(), meter)?);
             } else if end != EndKind::Implied {
                 return Err(QueryError::Unrepresentable);
             }
@@ -603,7 +607,7 @@ fn instance_controls(
             Duration::new(0, seconds)
                 .encode_value(&mut value)
                 .map_err(|_| QueryError::Unrepresentable)?;
-            let property = replacement_property(template, b"DURATION", value.as_bytes())?;
+            let property = replacement_property(template, b"DURATION", value.as_bytes(), meter)?;
             controls.push(property);
         },
         InstanceShape::Todo {
@@ -612,7 +616,7 @@ fn instance_controls(
             if instance.end() <= instance.start() {
                 return Err(QueryError::Unrepresentable);
             }
-            controls.push(utc_property(template, b"DUE", instance.end())?);
+            controls.push(utc_property(template, b"DUE", instance.end(), meter)?);
         },
         InstanceShape::Todo {
             end: EndKind::Implied,
@@ -624,23 +628,26 @@ fn instance_controls(
             template,
             b"RECURRENCE-ID",
             instance.recurrence_id(),
+            meter,
         )?);
     }
     Ok(controls)
 }
 
 fn date_property(
-    template: &Component,
+    template: &mut Component,
     name: &[u8],
     date: CivilDate,
+    meter: &mut Meter,
 ) -> Result<Property, QueryError> {
     let mut value = ValueBuf::new();
     DateTimeValue::Date(date)
         .encode_value(&mut value)
         .map_err(|_| QueryError::Unrepresentable)?;
-    let mut property = replacement_property(template, name, value.as_bytes())?;
+    let mut property = replacement_property(template, name, value.as_bytes(), meter)?;
     keep_temporal_parameters(&mut property, name, b"DATE");
     if property.parameters_named(b"VALUE").next().is_none() {
+        meter.try_charge_bytes(octets(b"VALUE".len().saturating_add(b"DATE".len())))?;
         property.edit_parameters().push(Parameter::new(
             RawText::from_bytes(b"VALUE"),
             RawText::from_bytes(b"DATE"),
@@ -651,9 +658,10 @@ fn date_property(
 
 /// One canonical UTC date-time property.
 fn utc_property(
-    template: &Component,
+    template: &mut Component,
     name: &[u8],
     instant: Instant,
+    meter: &mut Meter,
 ) -> Result<Property, QueryError> {
     let stamp =
         CivilDateTime::from_instant(instant, UtcOffset::UTC).ok_or(QueryError::Unrepresentable)?;
@@ -661,7 +669,7 @@ fn utc_property(
     DateTimeValue::Utc(stamp)
         .encode_value(&mut value)
         .map_err(|_| QueryError::Unrepresentable)?;
-    let mut property = replacement_property(template, name, value.as_bytes())?;
+    let mut property = replacement_property(template, name, value.as_bytes(), meter)?;
     keep_temporal_parameters(&mut property, name, b"DATE-TIME");
     Ok(property)
 }
@@ -681,18 +689,23 @@ fn keep_temporal_parameters(property: &mut Property, name: &[u8], value_type: &[
 }
 
 fn replacement_property(
-    template: &Component,
+    template: &mut Component,
     name: &[u8],
     value: &[u8],
+    meter: &mut Meter,
 ) -> Result<Property, QueryError> {
-    if let Some(original) = template
-        .properties()
-        .find(|property| property.is_named(name))
+    meter.try_charge_bytes(octets(value.len()))?;
+    let position = template.items().iter().position(|item| {
+        item.as_property()
+            .is_some_and(|property| property.is_named(name))
+    });
+    if let Some(Item::Property(mut property)) =
+        position.map(|index| template.items_mut().remove(index))
     {
-        let mut property = original.clone();
         property.set_value_text(RawText::from_bytes(value));
         Ok(property)
     } else {
+        meter.try_charge_bytes(octets(name.len()))?;
         Property::create(name, Vec::new(), value).map_err(|_| QueryError::Unrepresentable)
     }
 }
@@ -719,7 +732,7 @@ fn insert_property(component: &mut Component, property: Property) {
 /// # Errors
 ///
 /// Returns [`QueryError::Unrepresentable`] if the writer can't express the remaining periods in one property.
-/// Returns [`QueryError::Limit`] when the result exceeds the byte or nesting limits.
+/// Returns [`QueryError::Limit`] if projection exceeds the byte budget or component depth limit.
 pub fn limit_freebusy_set(
     source: &Selection,
     window: TimeRange,
@@ -728,23 +741,20 @@ pub fn limit_freebusy_set(
     let limits = budget.limits;
     let meter = &mut *budget.meter;
     let mut trimmed = false;
-    let mut copy = source.calendar().clone();
     let built = map_properties(
-        mem::take(copy.items_mut()),
+        copy_items(source, meter)?,
         limits,
         meter,
         &mut |holder, line, ledger| {
             if !holder.eq_ignore_ascii_case(FREE_BUSY) || !line.has_id(&PropertyId::FREEBUSY) {
-                charge_line(&line, ledger)?;
                 return Ok(Some(line));
             }
-            let (kept, thinned) = kept_periods(&line, window);
+            let (kept, thinned) = kept_periods(&line, window, ledger)?;
             if !thinned {
-                charge_line(&line, ledger)?;
                 return Ok(Some(line));
             }
             trimmed = true;
-            kept.map(|value| with_value(&line, &value, ledger))
+            kept.map(|value| with_value(line, &value, ledger))
                 .transpose()
         },
     )?;
@@ -873,6 +883,7 @@ fn select_component<'a>(
     meter: &mut Meter,
     dropped: &mut usize,
 ) -> Result<Component, QueryError> {
+    charge_boundaries(holder, meter)?;
     let mut open: Vec<SelectFrame<'a>> = Vec::new();
     let mut current = SelectFrame::of(holder, wanted);
     loop {
@@ -896,6 +907,7 @@ fn select_component<'a>(
                 if open.len().saturating_add(2) > usize::from(limits.max_component_depth()) {
                     return Err(QueryError::Limit(LimitExceeded::Depth));
                 }
+                charge_boundaries(nested, meter)?;
                 open.push(current);
                 current = SelectFrame::of(nested, inner);
             },
@@ -1015,6 +1027,7 @@ fn limited_calendar<D>(
 where
     D: FnMut(&Component) -> Match,
 {
+    charge_boundaries(holder, meter)?;
     let mut items = Vec::new();
     for entry in holder.items() {
         match entry {
@@ -1037,6 +1050,11 @@ where
         items,
         holder.end().cloned(),
     ))
+}
+
+fn copy_items(source: &Selection, meter: &mut Meter) -> Result<Vec<Item>, QueryError> {
+    charge_document(source.calendar(), meter)?;
+    Ok(source.calendar().items().to_vec())
 }
 
 /// State for rebuilding one component's contents.
@@ -1072,11 +1090,8 @@ where
             let Some(frame) = open.pop() else {
                 return Ok(items);
             };
-            let finished = Component::new(
-                frame.shell.begin().clone(),
-                items,
-                frame.shell.end().cloned(),
-            );
+            let mut finished = frame.shell;
+            *finished.items_mut() = items;
             rest = frame.rest;
             items = frame.items;
             items.push(Item::Component(finished));
@@ -1109,42 +1124,59 @@ where
     }
 }
 
-/// Create a property with its original name and parameters and an empty value under RFC 4791 section 9.6.4.
-fn without_value(line: &Property, meter: &mut Meter) -> Result<Property, QueryError> {
-    charge_line(line, meter)?;
-    Property::create(line.name().as_bytes(), line.parameters().to_vec(), b"")
-        .map_err(|_| QueryError::Unrepresentable)
-}
-
-/// One property with its name and its parameters and `value` in place of what it held.
-fn with_value(line: &Property, value: &[u8], meter: &mut Meter) -> Result<Property, QueryError> {
-    charge_line(line, meter)?;
-    Property::create(line.name().as_bytes(), line.parameters().to_vec(), value)
+fn with_value(mut line: Property, value: &[u8], meter: &mut Meter) -> Result<Property, QueryError> {
+    meter.try_charge_bytes(octets(line.name().len()).saturating_add(octets(value.len())))?;
+    let parameters = mem::take(line.edit_parameters());
+    Property::create(line.name().as_bytes(), parameters, value)
         .map_err(|_| QueryError::Unrepresentable)
 }
 
 /// Return the surviving `FREEBUSY` fields and whether any field fell outside the window.
 /// Preserve the original octets even for empty or unreadable fields.
-fn kept_periods(property: &Property, window: TimeRange) -> (Option<Vec<u8>>, bool) {
-    let mut kept: Option<Vec<u8>> = None;
+fn kept_periods(
+    property: &Property,
+    window: TimeRange,
+    meter: &mut Meter,
+) -> Result<(Option<Vec<u8>>, bool), QueryError> {
+    meter.try_charge_bytes(line_octets(property))?;
+    let original = property.value_text().as_bytes();
+    let mut kept = None;
     let mut thinned = false;
-    for (written, period) in super::freebusy::freebusy_fields(
-        property.value_text().as_bytes(),
-        property.parameters().iter(),
-    ) {
+    let mut start = 0usize;
+    for (written, period) in
+        super::freebusy::freebusy_fields(original, property.parameters().iter())
+    {
         if period
             .and_then(period_bounds)
             .is_some_and(|(from, until)| !intersects(window, from, until))
         {
+            if !thinned && start != 0 {
+                append_field(&mut kept, &original[..start.saturating_sub(1)], meter)?;
+            }
             thinned = true;
-            continue;
+        } else if thinned {
+            append_field(&mut kept, written, meter)?;
         }
-        if let Some(value) = &mut kept {
-            value.push(b',');
-        }
-        kept.get_or_insert_with(Vec::new).extend_from_slice(written);
+        start = start.saturating_add(written.len()).saturating_add(1);
     }
-    (kept, thinned)
+    Ok((kept, thinned))
+}
+
+fn append_field(
+    kept: &mut Option<Vec<u8>>,
+    field: &[u8],
+    meter: &mut Meter,
+) -> Result<(), QueryError> {
+    let separator = kept.is_some();
+    let size = field.len().saturating_add(usize::from(separator));
+    meter.try_charge_bytes(octets(size))?;
+    let value = kept.get_or_insert_with(Vec::new);
+    meter.admit(|| value.try_reserve(size).map_err(|_| LimitExceeded::Budget))?;
+    if separator {
+        value.push(b',');
+    }
+    value.extend_from_slice(field);
+    Ok(())
 }
 
 /// Find the UTC bounds of a period, or return `None` for a bound outside UTC or an unrepresentable result.
@@ -1188,6 +1220,13 @@ fn intersects(window: TimeRange, from: Instant, until: Instant) -> bool {
 /// Charge the caller's ledger for the octets of one content line.
 fn charge_line(line: &Property, meter: &mut Meter) -> Result<(), QueryError> {
     meter.try_charge_bytes(line_octets(line))?;
+    charge_folds(line.layout(), meter)
+}
+
+fn charge_folds(layout: &LineLayout, meter: &mut Meter) -> Result<(), QueryError> {
+    for fold in layout.folds() {
+        meter.try_charge_bytes(octets(fold.newline.written_len()).saturating_add(1))?;
+    }
     Ok(())
 }
 
@@ -1197,7 +1236,7 @@ fn charge_line(line: &Property, meter: &mut Meter) -> Result<(), QueryError> {
 fn charge_subtree(holder: &Component, meter: &mut Meter) -> Result<(), QueryError> {
     let mut pending: Vec<&Component> = alloc::vec![holder];
     while let Some(current) = pending.pop() {
-        meter.try_charge_bytes(boundary_octets(current))?;
+        charge_boundaries(current, meter)?;
         for entry in current.items() {
             match entry {
                 Item::Property(line) => charge_line(line, meter)?,
@@ -1229,6 +1268,15 @@ fn line_octets(line: &Property) -> u64 {
             .saturating_add(octets(parameter.value().len()));
     }
     total
+}
+
+fn charge_boundaries(holder: &Component, meter: &mut Meter) -> Result<(), QueryError> {
+    meter.try_charge_bytes(boundary_octets(holder))?;
+    charge_folds(holder.begin().layout(), meter)?;
+    if let Some(end) = holder.end() {
+        charge_folds(end.layout(), meter)?;
+    }
+    Ok(())
 }
 
 /// Charge both copies of the component name and 14 octets for `BEGIN:`, `END:`, and the terminators.
@@ -1490,7 +1538,6 @@ END:VCALENDAR\r\n";
         );
     }
 
-    /// A selector for an absent component type keeps the calendar envelope.
     #[test]
     fn expansion_admits_instance_copies_before_normalizing_their_payload() {
         let payload = "x".repeat(1024);
@@ -1519,6 +1566,7 @@ END:VCALENDAR\r\n";
         }
     }
 
+    /// A selector for an absent component type keeps the calendar envelope.
     #[test]
     fn a_selection_naming_nothing_the_resource_carries_returns_an_empty_calendar() {
         let wanted = comp(

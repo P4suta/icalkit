@@ -23,6 +23,8 @@ use icalkit_conformance::internal::tz::{Observance, TransitionTable, read_calend
 
 #[path = "allocation_gate/arithmetic.rs"]
 mod arithmetic;
+#[path = "allocation_gate/projection.rs"]
+mod projection;
 
 const PROPERTIES: usize = 200_000;
 const RESPONSES: usize = 20_000;
@@ -623,6 +625,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(multistatus);
 
     check_instance_copy_refusal()?;
+    projection::check()?;
     let (comment_input_bytes, comment_allocation) = check_comments()?;
     check_property_content()?;
     check_namespace_allocations()?;
