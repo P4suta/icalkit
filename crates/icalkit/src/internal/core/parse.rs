@@ -19,9 +19,9 @@
 //! Octets are charged as they are appended rather than counted once at the end, so a value folded across five million continuation lines is refused at the octet that crosses the budget rather than after it is resident.
 //! A refusal is never a truncation: writing back fewer octets than were read is the one thing this crate may not do, which is why an oversized value is a [`ParseError`] and not a diagnostic (`docs/adr/0007`).
 //!
-//! Five of the codes reported here are about octets rather than about structure, and not one of them changes what is stored: a control character where RFC 5545 section 3.1 excludes one, a physical line past the seventy-five octets it allows, a parameter value whose `DQUOTE` was never closed, a parameter name that arrived without an `=`, and an RFC 6868 caret pair the specification gives no meaning.
-//! Each is offered once the line has ended,
-//! because a fold is what stands between an offset in the unfolded line and an offset in the octets the caller handed in, and the folds arrive with the line's last token.
+//! Five of the codes reported here concern octets and leave the stored input unchanged.
+//! They report a forbidden control character, a physical line exceeding the width RFC 5545 section 3.1 recommends, an unclosed parameter quote, a parameter without `=`, or an undefined RFC 6868 caret pair.
+//! Each diagnostic is offered once the line has ended, when its folds can map an unfolded offset back to the input octets.
 
 use alloc::vec::Vec;
 use core::mem;
@@ -83,7 +83,7 @@ impl Document {
     }
 }
 
-/// The most octets RFC 5545 section 3.1 allows one physical line, terminator excluded.
+/// The recommended physical line width from RFC 5545 section 3.1, terminator excluded.
 ///
 /// Counted over a physical line rather than over a content line, which is the distinction section 3.1 draws: a producer that folded a long value obeyed it, and the whitespace octet that introduced each continuation is one of the octets that continuation spent.
 const MAX_PHYSICAL_LINE_OCTETS: usize = 75;
@@ -1367,9 +1367,9 @@ mod tests {
         vec![b'a'; count]
     }
 
-    /// Section 3.1 bounds a physical line at seventy-five octets, terminator excluded, so the line of exactly that width is the one that must earn nothing.
+    /// The crate reports lines above the recommended width and preserves their bytes.
     #[test]
-    fn a_physical_line_is_measured_against_the_octets_section_3_1_allows() {
+    fn a_physical_line_is_measured_against_the_recommended_width() {
         // Fourteen octets of name and one `:` leave sixty for the value at the bound.
         let cases: Vec<(usize, Vec<DiagnosticCode>)> = vec![
             (59, Vec::new()),

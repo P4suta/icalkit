@@ -9,13 +9,13 @@
 //! # `purity`
 //!
 //! Purity here means the core runs where calendars are actually rendered: a browser, an embedded display, a server that already owns its HTTP client and its time zone database.
-//! Declarations carry that promise, and this task reads them for every core crate: the manifest links no package outside the core set and takes each one from inside this workspace, and `lib.rs` declares `#![no_std]` and `extern crate alloc;`.
-//! No clock and no network follow from having nothing to call.
+//! The manifest allows core dependencies and the external boundaries named in [`ALLOWED_EXTERNAL_DEPENDENCIES`].
+//! The task also checks `#![no_std]` and `extern crate alloc;` in `lib.rs`.
 //!
 //! A dependency's key is a nickname its author chose; the name Cargo links is the `package` field.
 //! `ical-dav = { package = "libm", version = "0.2" }` wrote a name from [`CORE_CRATES`] and linked a third-party crate, and passed every leg of the gate for the gate's entire life.
-//! Entries are therefore read for their linked name in both spellings,
-//! the rename is a violation on its own, and a dependency that resolves from a registry rather than from `workspace = true` or a path under `crates/` is one too.
+//! Entries are read for their linked package name, and renaming remains a violation.
+//! Registry dependencies require a named external boundary.
 //!
 //! The rule is also only as wide as the list it is applied to, so a crate under a member root that declares `#![no_std]` without appearing in [`CORE_CRATES`] fails: the exemption `icalkit-conformance` holds is "private tool", not "not listed".
 //! The membership walk covers every root the workspace declares members under, `gates/` included, while the purity partition stays over `crates/`: a directory that is not a crate must not be able to become one by being somewhere this task does not look.
@@ -31,8 +31,8 @@
 //!
 //! Four spellings were walked around before they were rules.
 //! Whitespace: `use crate ::Token;` is the same import and a substring match does not see it, so every line is read with its whitespace removed rather than being left to `cargo fmt`.
-//! The crate's own name: `extern crate self as icalkit;` gives the layer a name for the crate root that is neither `crate::` nor `super::`, so `icalkit::` is refused as a path and `extern crate` is refused outright —
-//! nothing in the layer needs one, since `alloc` is declared by each root that compiles it.
+//! The crate's own name: `extern crate self as icalkit;` gives the layer another name for the crate root, so `icalkit::` paths and `extern crate` declarations are refused.
+//! Each compilation root already declares `alloc`.
 //! `#[path]`: it maps a module of the layer onto a file this scan never opens, so the layer would hold code no rule here applies to.
 //! And the module tree: the rule reads a directory while the compiler reads `mod.rs`, so a `.rs` file the module root does not declare is invisible to `gates/grammar-layering`, and the two sets are held equal in both directions.
 //!
@@ -53,7 +53,8 @@
 //!
 //! # `purity`, fourth rule: a wildcard arm over `Token`
 //!
-//! `Token` is `#[non_exhaustive]`, which binds outside this workspace and means nothing inside it, so `unreachable_patterns = "deny"` was written down as what stops a wildcard arm from being added back.
+//! `Token` is `#[non_exhaustive]`, which affects consumers outside its defining crate, including other workspace members.
+//! Inside that crate, `unreachable_patterns = "deny"` was intended to stop a wildcard arm from being added back.
 //! It does not: that lint fires on a catch-all after every variant is already covered, and a match that omits one variant and adds `_` is a *reachable* wildcard the lint is silent about.
 //! It is also the only shape that loses data, and the only shape a hand remembering the old cross-crate rule would write.
 //! So the arms are read here: a `match` whose arm patterns name `Token::` may not also carry a `_` arm.
@@ -83,14 +84,12 @@
 //! # `codes`
 //!
 //! `DiagnosticCode` is one vocabulary for the whole workspace and its meanings are frozen as hard as its names (`docs/adr/0009`), because `docs/adr/0006`'s corpus asserts "this input produces this code, on this channel" across releases.
-//! A meaning that only a doc comment records is a meaning anybody can edit inside a diff nobody reads, so it is written twice —
-//! once as the variant's first doc paragraph, once as a row of `docs/diagnostic-codes.md` —
-//! and this task fails unless the two agree.
-//! Editing a meaning then means editing both files,
-//! which is the review a frozen meaning is owed; improving the prose below a variant's first paragraph stays free, because that prose is not the meaning.
+//! Each meaning appears in the variant's first documentation paragraph and in `docs/diagnostic-codes.md`.
+//! The task requires both copies to agree.
+//! Changing a meaning requires editing both copies.
+//! Later paragraphs remain editable without changing the meaning.
 //!
-//! Exactly two committed files are read,
-//! `crates/icalkit/src/internal/core/grammar/report.rs` and the golden list, by the same kind of hand-rolled scan and for the same reason: a gate about dependencies may not have any.
+//! The task reads `crates/icalkit/src/internal/core/grammar/report.rs` and the golden list without parser dependencies.
 //! The task fails on a code with no row, on a row no code declares, on rows out of declaration order, on a meaning that drifted from either side, on a channel that is not a `Severity` the source declares, and on a milestone `ROADMAP.md` does not name.
 //! An addition that carries a row passes trivially, which is the one edit `docs/adr/0009` allows without ceremony.
 //!
@@ -1384,7 +1383,7 @@ fn report(task: &str, outcome: io::Result<Vec<String>>) -> ExitCode {
     }
 }
 
-/// Check that every core crate declares no outside dependency and stays `no_std`, that the two copies of the core list agree, and that the grammar layer names nothing above itself.
+/// Check approved dependency boundaries, `no_std`, core inventories, and grammar isolation.
 fn collect_purity_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
     let root = workspace.join("crates");
@@ -2343,7 +2342,7 @@ impl Declared {
 /// Collect the dependencies a manifest declares.
 ///
 /// This is a deliberate hand-rolled scan rather than a TOML parser.
-/// The tool that enforces "the core has no outside dependencies" should not itself have any, and it only ever reads manifests this repository writes in one documented style.
+/// The verification tool declares no dependencies and reads manifests written in one maintained style.
 /// It understands both `[dependencies]` tables and `[dependencies.name]` sub-tables, and treats `dev-` and `build-` dependencies and `[target.'cfg(..)'.dependencies]` the same way, because a core crate should not acquire those either.
 ///
 /// A key is a nickname its author chose.

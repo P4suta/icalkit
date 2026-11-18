@@ -18,8 +18,10 @@ An empty input is a negative probe:
 
 The probe returns a `rejected` outcome with code `icalkit.validation.failed`.
 Supported operations are `strict-parse`, `normalize-rfc-repair-v1`, and `normalize-common-clients-v1`.
-Every response repeats the protocol and request `id`, reports an `outcome`, and uses stable string codes for errors, issues, and normalization changes.
-One bad line yields a `protocol-error` response, and the process continues.
+Every response repeats the protocol, reports an `outcome`, and uses stable string codes for errors, issues, and normalization changes.
+The response echoes `id` when the subject can read or recover it from the request.
+Malformed JSON in a valid UTF-8 line yields a `protocol-error` response, and the process continues.
+Invalid UTF-8 input ends the process unsuccessfully without a response for that line.
 
 The test client sends and flushes one request, then reads its response before sending another.
 Closing input after the last request signals completion, and the client waits for a successful subject exit.

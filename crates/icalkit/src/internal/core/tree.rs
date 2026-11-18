@@ -613,9 +613,8 @@ impl Ord for Component {
     /// Ordered by the first step the two walks disagree on, and by which walk ran out first.
     ///
     /// A total order consistent with equality, which is all `Ord` promises and all a `BTreeMap` key needs.
-    /// It is not the order the derive produced — that one compared the `BEGIN` line,
-    /// then the entries, then the `END` line, and a component's `END` therefore sorted before everything nested inside it.
-    /// Nothing observes either order but the comparison itself.
+    /// `Begin`, `Line`, and `End` compare in that variant order, followed by their contents.
+    /// An empty component therefore sorts after an otherwise identical component with a property.
     fn cmp(&self, other: &Self) -> Ordering {
         Walk::over(self).cmp(Walk::over(other))
     }

@@ -386,7 +386,8 @@ impl Limits {
     /// One bound for both because they are one cardinality read from two ends: a client that asks for `n` `href`s is asking for `n` responses, and a policy that admits the request and refuses its answer describes an exchange nobody can complete.
     ///
     /// No number here separates a truthful collection from a forged one, which is why the default is a phone's answer and [`Limits::GENEROUS`] is a server's.
-    /// A reader that cannot afford either drains the responses one at a time and never builds the collection, and then this bound binds nothing because nothing is retained.
+    /// Streaming reduces retained memory while ordinary responses still spend the shared response budget.
+    /// Reading the whole collection requires limits and an aggregate budget that admit its enumeration.
     #[must_use]
     pub const fn max_responses(self) -> u32 {
         self.max_responses

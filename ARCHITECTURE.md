@@ -103,7 +103,9 @@ Embedded `VTIMEZONE` interpretation stays private and reports disagreements betw
 The content-line parser and XML parser remain private.
 `xmlparser` supplies XML tokens.
 The wrapper validates namespaces, duplicate attributes, matching elements, depth, and shared resource budgets.
-It rejects document type declarations and processing instructions and retains `calendar-data` octets.
+It rejects document type declarations and processing instructions.
+The default `TextPolicy::Verbatim` preserves `calendar-data` line-ending octets.
+Selecting `TextPolicy::Normalized` applies XML line-ending normalization and reports payload changes.
 
 CalDAV exposes owned and borrowed `WireRequest`, `WireResponse`, and `Header` values containing methods, URIs, headers, and bodies.
 Client operations follow `next_request -> accept -> finish`.

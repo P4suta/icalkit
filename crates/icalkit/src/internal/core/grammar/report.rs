@@ -368,7 +368,8 @@ pub enum DiagnosticCode {
     /// A multistatus carried more responses than the caller's policy admits, and the ones past the bound were dropped.
     ///
     /// The bound is the caller's own `Limits::max_responses`, and no number distinguishes a forty-thousand-resource collection from a forged flood.
-    /// A caller that must read the whole collection drains it one response at a time instead of building it.
+    /// Streaming reduces retained memory and keeps the same response limit.
+    /// A complete enumeration needs a response limit and aggregate budget that admit it.
     DavResponsesTruncated,
     /// A property mixed character data with elements, and the elements were not kept.
     ///
