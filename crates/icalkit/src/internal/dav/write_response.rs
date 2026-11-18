@@ -532,6 +532,7 @@ fn write_kept(
     check_fragment(
         octets,
         limits.max_xml_depth().saturating_sub(PROPERTY_DEPTH),
+        meter,
     )
     .map_err(|error| error.record_resource_refusal(meter))?;
     writer.validated_markup(octets, meter)
@@ -576,11 +577,9 @@ enum TagShape {
     Empty,
 }
 
-/// Refuse kept octets that would forge structure this writer did not open.
-///
-/// A refusal filter rather than a parser: it establishes that the tags balance, that nothing closes an element it did not open, that no tag runs off the end, that the nesting stays inside the caller's depth bound, and that nothing declares, comments, or instructs.
-/// It does not establish that the fragment is a valid document, and it is not the place to try.
-fn check_fragment(octets: &[u8], depth_budget: u16) -> Result<(), DavError> {
+/// Check fragment depth, element count, references, and tag boundaries.
+/// A successful check doesn't establish document well-formedness.
+fn check_fragment(octets: &[u8], depth_budget: u16, meter: &mut Meter) -> Result<(), DavError> {
     let mut at = 0;
     let mut depth: u16 = 0;
     while let Some(&byte) = octets.get(at) {
@@ -598,6 +597,10 @@ fn check_fragment(octets: &[u8], depth_budget: u16) -> Result<(), DavError> {
             .ok_or(DavError::Syntax(SyntaxError::Malformed))?;
         let (end, shape) = scan_tag(rest)?;
         depth = apply_shape(shape, depth, depth_budget)?;
+        match shape {
+            TagShape::Open | TagShape::Empty => meter.try_charge_element()?,
+            TagShape::Close => {},
+        }
         at = at.saturating_add(end).saturating_add(1);
     }
     if depth == 0 {

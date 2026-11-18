@@ -40,7 +40,9 @@ The [wire admission decision](adr/charge-supplied-xml-before-lexical-validation.
 
 Empty XML elements contribute one nesting level under the project's depth policy.
 Both empty-element representations belong to the same `element` production in [XML 1.0 section 3.1](https://www.w3.org/TR/xml/#sec-starttags).
-Kept markup checks peak depth for both forms before emitting the fragment.
+Retained markup checks peak depth and charges each element before emitting the fragment.
+Generated and retained markup share the running element count.
+Closing tags and escaped text consume no element slots.
 
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
