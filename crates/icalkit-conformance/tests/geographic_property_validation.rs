@@ -108,7 +108,7 @@ fn geographic_boundaries_and_decimal_precision_keep_their_bytes() {
     }
     accepted(&calendar(
         "VEVENT",
-        "gEo;VaLuE=\"FLOAT\";X-SOURCE=example:37.386013;-122.082932",
+        "gEo;VaLuE=FLOAT;X-SOURCE=example:37.386013;-122.082932",
     ));
 }
 

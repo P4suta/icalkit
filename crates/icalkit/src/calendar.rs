@@ -1199,15 +1199,8 @@ fn period_field_is_valid(property: &Property, field: &[u8], utc_only: bool) -> b
     let Ok(period) = Period::decode_property_field(property, field) else {
         return false;
     };
-    if property
-        .parameters_named(b"TZID")
-        .next()
-        .is_some_and(|zone| zone.unquoted().is_empty())
-    {
-        return false;
-    }
     let valid_bound = |bound| {
-        crate::time::from_core_date_time(bound).is_some()
+        date_time_value_is_valid(property, bound, ValueType::DateTime)
             && (!utc_only || matches!(bound, DateTimeValue::Utc(_)))
     };
     if !valid_bound(period.start()) {
@@ -1216,6 +1209,7 @@ fn period_field_is_valid(property: &Property, field: &[u8], utc_only: bool) -> b
     match period {
         Period::Explicit { start, end } => {
             valid_bound(end)
+                && start != end
                 && match (start, end) {
                     (DateTimeValue::Local(start), DateTimeValue::Local(end))
                     | (DateTimeValue::Utc(start), DateTimeValue::Utc(end)) => end > start,
@@ -1411,7 +1405,7 @@ fn compatible_date_times(left: DateTimeValue<'_>, right: DateTimeValue<'_>) -> b
 }
 
 fn endpoint_follows(start: DateTimeValue<'_>, end: DateTimeValue<'_>) -> bool {
-    if !compatible_date_times(start, end) {
+    if start == end || !compatible_date_times(start, end) {
         return false;
     }
     match (start, end) {

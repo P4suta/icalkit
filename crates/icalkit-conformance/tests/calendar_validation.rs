@@ -12,10 +12,20 @@ use icalkit::Calendar;
 use icalkit::interop::Import;
 
 fn calendar(kind: &str, properties: &str, calendar_properties: &str) -> String {
+    let zone =
+        if properties.contains("Test/Zone") && !calendar_properties.contains("TZID:Test/Zone") {
+            concat!(
+                "BEGIN:VTIMEZONE\r\nTZID:Test/Zone\r\nBEGIN:STANDARD\r\n",
+                "DTSTART:20200101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\n",
+                "END:STANDARD\r\nEND:VTIMEZONE\r\n",
+            )
+        } else {
+            ""
+        };
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit validation//EN\r\n\
          BEGIN:{kind}\r\nUID:one@example.test\r\nDTSTAMP:20260813T120000Z\r\n\
-         {properties}END:{kind}\r\n{calendar_properties}END:VCALENDAR\r\n"
+         {properties}END:{kind}\r\n{zone}{calendar_properties}END:VCALENDAR\r\n"
     )
 }
 
@@ -331,6 +341,48 @@ fn comparable_endpoints_must_be_strictly_after_start() {
             "icalkit.validation.invalid-time-range",
         );
     }
+}
+
+#[test]
+fn identical_zoned_endpoints_cannot_form_event_or_todo_ranges() {
+    let zone = concat!(
+        "BEGIN:VTIMEZONE\r\nTZID:Test/Zone\r\nBEGIN:STANDARD\r\n",
+        "DTSTART:20200101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\n",
+        "END:STANDARD\r\nEND:VTIMEZONE\r\n",
+    );
+    for (kind, endpoint) in [("VEVENT", "DTEND"), ("VTODO", "DUE")] {
+        let source = calendar(
+            kind,
+            &format!(
+                "DTSTART;TZID=Test/Zone:20260814T090000\r\n{endpoint};TZID=Test/Zone:20260814T090000\r\n"
+            ),
+            zone,
+        );
+        assert_valid(&source.replace(
+            &format!("{endpoint};TZID=Test/Zone:20260814T090000"),
+            &format!("{endpoint};TZID=Test/Zone:20260814T100000"),
+        ));
+        assert_rejected(&source, "icalkit.validation.invalid-time-range");
+    }
+}
+
+#[test]
+fn alarm_identifiers_are_optional_singletons_and_relationships_repeat() {
+    let source = calendar(
+        "VEVENT",
+        concat!(
+            "DTSTART:20260814T090000Z\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\n",
+            "TRIGGER:-PT15M\r\nDESCRIPTION:Reminder\r\nRELATED-TO:parent-a\r\nRELATED-TO:parent-b\r\n",
+            "END:VALARM\r\n",
+        ),
+        "",
+    );
+    assert_valid(&source);
+    assert_valid(&source.replace("END:VALARM", "UID:alarm-a\r\nEND:VALARM"));
+    assert_rejected(
+        &source.replace("END:VALARM", "UID:alarm-a\r\nUID:alarm-b\r\nEND:VALARM"),
+        "duplicate-property",
+    );
 }
 
 #[test]

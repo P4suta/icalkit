@@ -98,7 +98,7 @@ fn numeric_boundaries_and_signed_forms_keep_their_bytes() {
 
 #[test]
 fn explicit_integer_types_and_property_name_casing_remain_supported() {
-    accepted(&calendar("VEVENT", "pRiOrItY;VaLuE=\"INTEGER\":+0005"));
+    accepted(&calendar("VEVENT", "pRiOrItY;VaLuE=INTEGER:+0005"));
     accepted(&calendar("VTODO", "PERCENT-COMPLETE;VALUE=INTEGER:100"));
     accepted(&calendar("VJOURNAL", "SEQUENCE;VALUE=INTEGER:2"));
 }

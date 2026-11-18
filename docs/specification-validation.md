@@ -92,6 +92,8 @@ Callers maintain reference targets and relationship effects.
 
 [Value type declarations](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.2.20) name one nonempty token formed from ASCII letters, digits, and hyphens.
 Repeated or malformed declarations produce a violation during strict promotion.
+Schema audits reject quoted tokens.
+Typed accessors can recognize quoted tokens without changing source bytes.
 Valid unknown tokens remain opaque and produce notes.
 Typed accessors refuse malformed declarations before decoding property data.
 

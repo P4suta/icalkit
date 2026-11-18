@@ -91,7 +91,7 @@ fn registered_statuses_and_case_variants_keep_their_bytes() {
             accepted(&calendar(
                 kind,
                 &format!(
-                    "sTaTuS;VaLuE=\"TEXT\";X-SOURCE=example:{}",
+                    "sTaTuS;VaLuE=TEXT;X-SOURCE=example:{}",
                     value.to_ascii_lowercase()
                 ),
             ));

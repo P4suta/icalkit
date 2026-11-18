@@ -104,7 +104,7 @@ fn supported_versions_and_ranges_preserve_spelling_and_folds() {
         "VERSION:2.0;2.0",
         "version;X-SOURCE=example:2.0",
         "VERSION;VALUE=TEXT:2.0",
-        "VERSION;VALUE=\"TEXT\":2.0;2.0",
+        "VERSION;VALUE=TEXT:2.0;2.0",
         "VeRsIoN;VaLuE=tExT;X-FUTURE=opaque:2.\r\n 0",
         "VERSION:2.0;\r\n 2.0",
         "VERS\r\n ION:2.0",

@@ -370,9 +370,9 @@ const OBSERVANCE_SCHEMA: ComponentSchema = ComponentSchema {
 const ALARM_SCHEMA: ComponentSchema = ComponentSchema {
     required_once: &[b"ACTION", b"TRIGGER"],
     // Section 3.6.6 requires `DURATION` and `REPEAT` to appear together or not at all, which is an entailment and not a count.
-    optional_once: &[b"DESCRIPTION", b"DURATION", b"REPEAT", b"SUMMARY"],
+    optional_once: &[b"DESCRIPTION", b"DURATION", b"REPEAT", b"SUMMARY", b"UID"],
     // `RELATED-TO` and `UID` are RFC 9074's addition to this component, carried for the reason the calendar table carries RFC 7986's: an alarm that has one is well formed, and neither is a name this crate did not already know.
-    repeatable: &[b"ATTACH", b"ATTENDEE", b"RELATED-TO", b"UID"],
+    repeatable: &[b"ATTACH", b"ATTENDEE", b"RELATED-TO"],
 };
 
 /// The property pairs section 3.6 admits either of and forbids the two of together.
@@ -486,7 +486,16 @@ impl Component {
                 // Nothing here can say anything true about either — including about a `VALUE` one of them carries, since a property this crate cannot name is a property whose value type is its producer's business.
                 continue;
             }
-            if let Some(Err(code)) = property.declared_value_type() {
+            let declared = if property
+                .parameters_named(b"VALUE")
+                .next()
+                .is_some_and(|parameter| !is_iana_token(parameter.value().as_bytes()))
+            {
+                Some(Err(DiagnosticCode::MalformedValueTypeParameter))
+            } else {
+                property.declared_value_type()
+            };
+            if let Some(Err(code)) = declared {
                 let severity = if code == DiagnosticCode::UnknownValueType {
                     Severity::Note
                 } else {
@@ -795,6 +804,16 @@ mod tests {
             pending.extend(nested);
         }
         reported
+    }
+
+    #[test]
+    fn alarm_schema_counts_uid_as_a_singleton() {
+        let source = b"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Reminder\r\nUID:alarm-a\r\nUID:alarm-b\r\nEND:VALARM\r\n";
+        let document = Document::parse(source, Limits::DEFAULT, &mut Vec::new()).unwrap();
+        assert_eq!(
+            audit_every_component(&document),
+            [DiagnosticCode::DuplicateProperty]
+        );
     }
 
     #[test]

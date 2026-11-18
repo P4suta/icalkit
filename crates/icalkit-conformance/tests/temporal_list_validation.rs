@@ -18,11 +18,20 @@ use icalkit_conformance::internal::dav::{FreeBusyQuery, TimeRange};
 use icalkit_conformance::internal::query::{Budget, Placement, Undecided, free_busy};
 
 fn calendar(kind: &str, property: &str) -> String {
+    let zone = if property.contains("Test/Zone") {
+        concat!(
+            "BEGIN:VTIMEZONE\r\nTZID:Test/Zone\r\nBEGIN:STANDARD\r\n",
+            "DTSTART:20200101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\n",
+            "END:STANDARD\r\nEND:VTIMEZONE\r\n",
+        )
+    } else {
+        ""
+    };
     let property = property.replace(',', ",\r\n ");
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit temporal lists//EN\r\n\
          BEGIN:{kind}\r\nUID:one@example.test\r\nDTSTAMP:20260813T120000Z\r\n\
-         DTSTART:20260814T090000Z\r\n{property}\r\nEND:{kind}\r\nEND:VCALENDAR\r\n"
+         DTSTART:20260814T090000Z\r\n{property}\r\nEND:{kind}\r\n{zone}END:VCALENDAR\r\n"
     )
 }
 
@@ -130,6 +139,29 @@ fn freebusy_periods_require_utc_bounds_and_positive_lengths() {
     ] {
         assert_rejected(&calendar("VFREEBUSY", &format!("FREEBUSY{value}")));
     }
+}
+
+#[test]
+fn period_utc_bounds_cannot_carry_time_zone_parameters() {
+    for (kind, property) in [("VEVENT", "RDATE;VALUE=PERIOD"), ("VFREEBUSY", "FREEBUSY")] {
+        for value in ["20260815T090000Z/PT1H", "20260815T090000Z/20260815T100000Z"] {
+            assert_valid(&calendar(kind, &format!("{property}:{value}")));
+            assert_rejected(&calendar(
+                kind,
+                &format!("{property};TZID=Europe/Paris:{value}"),
+            ));
+        }
+    }
+}
+
+#[test]
+fn identical_zoned_period_bounds_are_rejected() {
+    let source = calendar(
+        "VEVENT",
+        "RDATE;VALUE=PERIOD;TZID=Test/Zone:20260815T090000/20260815T090000",
+    );
+    assert_valid(&source.replace("/20260815T090000", "/20260815T100000"));
+    assert_rejected(&source);
 }
 
 #[test]

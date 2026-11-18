@@ -148,7 +148,7 @@ fn calendar_status_parameters_folds_and_multiple_properties_keep_their_bytes() {
     accepted(&calendar(
         "VEVENT",
         concat!(
-            "request-status;VaLuE=\"TEXT\";LANGUAGE=en;X-SOURCE=kept:2.0;Success\r\n",
+            "request-status;VaLuE=TEXT;LANGUAGE=en;X-SOURCE=kept:2.0;Success\r\n",
             "REQUEST-STATUS:3.1;Invalid\\, long\r\n er;RRULE:FREQ=bad\\;BYDAY=MO",
         ),
     ));

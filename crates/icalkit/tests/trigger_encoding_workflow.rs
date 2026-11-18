@@ -11,8 +11,8 @@ use icalkit::scheduling::Message;
 use icalkit::time::Timestamp;
 
 const CONTROLS: &str = concat!(
-    "ATTACH;VALUE=\"BINARY\";ENCODING=Base64:QQ==\r\n",
-    "ATTACH;VALUE=URI;ENCODING=8bIt:urn:attachment\r\n",
+    "ATTACH;VALUE=BINARY;ENCODING=Base64:QQ==\r\n",
+    "ATTACH;ENCODING=8BIT:urn:attachment\r\n",
     "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\n",
     "TRIGGER;RELATED\r\n =End:-PT15M\r\nEND:VALARM\r\n",
 );

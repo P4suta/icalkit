@@ -122,7 +122,7 @@ fn valid_offset_alternatives_keep_their_bytes() {
             }
             accepted(&calendar(
                 kind,
-                &format!("{name};VaLuE=\"UTC-OFFSET\";X-SOURCE=example:+013001"),
+                &format!("{name};VaLuE=UTC-OFFSET;X-SOURCE=example:+013001"),
             ));
         }
     }

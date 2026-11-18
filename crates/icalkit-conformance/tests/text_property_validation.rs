@@ -84,7 +84,7 @@ fn all_defined_escapes_and_plain_unicode_keep_their_bytes() {
         accepted(&calendar(&format!("SUMMARY:{value}")));
     }
     accepted(&calendar(
-        "sUmMaRy;VaLuE=\"TEXT\";X-SOURCE=example:kept\\, value",
+        "sUmMaRy;VaLuE=TEXT;X-SOURCE=example:kept\\, value",
     ));
 }
 

@@ -83,7 +83,7 @@ fn time_zone_links_use_the_same_uri_validation() {
         rejected(&timezone(&format!("TZURL:{value}")));
     }
     accepted(&timezone(
-        "tZuRl;VALUE=\"URI\";X-SOURCE=example:https://Example.Test/zones/a%20b.ics",
+        "tZuRl;VALUE=URI;X-SOURCE=example:https://Example.Test/zones/a%20b.ics",
     ));
 }
 
@@ -129,7 +129,7 @@ fn links_and_addresses_check_the_property_value_type() {
         }
         accepted(&calendar(
             "VEVENT",
-            &format!("{name};VaLuE=\"CAL-ADDRESS\";X-SOURCE=example:MailTo:Person@Example.Test"),
+            &format!("{name};VaLuE=CAL-ADDRESS;X-SOURCE=example:MailTo:Person@Example.Test"),
         ));
     }
     rejected(&timezone("TZURL;VALUE=TEXT:https://example.test/zone.ics"));
@@ -137,8 +137,20 @@ fn links_and_addresses_check_the_property_value_type() {
 
 #[test]
 fn known_linked_values_reject_repeated_value_parameters() {
-    for name in ["URL", "ATTACH", "ORGANIZER", "ATTENDEE"] {
-        for parameters in ["VALUE=URI;VALUE=URI", "VALUE=X-FUTURE;VALUE=URI"] {
+    for (name, value_type) in [
+        ("URL", "URI"),
+        ("ATTACH", "URI"),
+        ("ORGANIZER", "CAL-ADDRESS"),
+        ("ATTENDEE", "CAL-ADDRESS"),
+    ] {
+        accepted(&calendar(
+            "VEVENT",
+            &format!("{name};VALUE={value_type}:mailto:person@example.test"),
+        ));
+        for parameters in [
+            format!("VALUE={value_type};VALUE={value_type}"),
+            format!("VALUE=X-FUTURE;VALUE={value_type}"),
+        ] {
             rejected(&calendar(
                 "VEVENT",
                 &format!("{name};{parameters}:mailto:person@example.test"),
@@ -181,7 +193,7 @@ fn binary_attachments_require_one_base64_encoding_declaration() {
     }
     accepted(&calendar(
         "VEVENT",
-        "aTtAcH;VaLuE=\"BINARY\";EnCoDiNg=base64:QQ==",
+        "aTtAcH;VaLuE=BINARY;EnCoDiNg=base64:QQ==",
     ));
 }
 
@@ -258,10 +270,10 @@ fn attachment_encoding_controls_use_unquoted_tokens() {
 #[test]
 fn encoding_tokens_keep_case_folding_and_value_declaration_compatibility() {
     for property in [
-        "ATTACH;VALUE=\"BINARY\";ENCODING=Base64:QQ==",
+        "ATTACH;VALUE=BINARY;ENCODING=Base64:QQ==",
         "ATTACH;VALUE=BINARY;ENCODING\r\n =base64:QQ==",
         "attach;value=binary;encoding=BASE64;X-SOURCE=one;X-SOURCE=two:QQ==",
-        "ATTACH;VALUE=\"URI\";ENCODING=8bIt:urn:attachment",
+        "ATTACH;VALUE=URI;ENCODING=8bIt:urn:attachment",
         "ATTACH;ENCODING\r\n =8BIT:urn:attachment",
     ] {
         accepted(&calendar("VEVENT", property));

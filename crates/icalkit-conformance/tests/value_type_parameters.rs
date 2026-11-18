@@ -152,8 +152,28 @@ fn calendar_metadata_uses_the_same_declared_type_boundary() {
 }
 
 #[test]
+fn strict_promotion_refuses_quoted_value_type_tokens() {
+    for (quoted, valid) in [
+        ("SUMMARY;VALUE=\"TEXT\":Value", "SUMMARY;VALUE=TEXT:Value"),
+        (
+            "SUMMARY;VALUE=\"X-FUTURE\":opaque",
+            "SUMMARY;VALUE=X-FUTURE:opaque",
+        ),
+    ] {
+        assert!(Calendar::parse(calendar(valid).as_bytes()).is_ok());
+        rejected(&calendar(quoted));
+    }
+    let source = calendar("SUMMARY:Value").replace(
+        "DTSTART:20240101T090000Z",
+        "DTSTART;VALUE=\"DATE\":20240101",
+    );
+    assert!(Calendar::parse(source.replace("\"DATE\"", "DATE").as_bytes()).is_ok());
+    rejected(&source);
+}
+
+#[test]
 fn valid_unknown_tokens_remain_opaque_and_produce_notes() {
-    for value_type in ["X-FUTURE", "FUTURE-TYPE-42", "future-type", "\"X-FUTURE\""] {
+    for value_type in ["X-FUTURE", "FUTURE-TYPE-42", "future-type"] {
         let document = document(&format!("DTSTART;VALUE={value_type}:opaque"));
         let component = document.components().next().unwrap();
         let property = component.properties().next().unwrap();

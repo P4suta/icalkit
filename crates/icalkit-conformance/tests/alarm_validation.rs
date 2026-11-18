@@ -212,7 +212,7 @@ fn trigger_relationships_keep_case_folding_and_extension_parameters() {
             "TRIGGER:-PT15M",
             "TRIGGER;RELATED=Start:-PT15M",
             "TRIGGER;RELATED=End:-PT15M",
-            "trigger;value=\"DURATION\";related=START:-PT15M",
+            "trigger;value=DURATION;related=START:-PT15M",
             "TRIGGER;RELATED\r\n =END:-PT15M",
             "TRIGGER;X-SOURCE=one;RELATED=END;X-SOURCE=two:-PT15M",
         ] {
