@@ -66,7 +66,7 @@ use core::{mem, slice};
 use crate::internal::core::{
     CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue, Document, Duration,
     EncodeValue, Instant, Item, LimitExceeded, Limits, Meter, Parameter, Period, Property,
-    PropertyId, RawText, UtcOffset, ValueBuf, ValueType, View,
+    PropertyId, RawText, UtcOffset, ValueBuf, ValueType, View, Writer,
 };
 use crate::internal::dav::{CompSelection, TimeRange};
 
@@ -302,13 +302,19 @@ pub fn expand_calendar(
     let mut items = Vec::new();
     for entry in source.calendar().items() {
         match entry {
-            Item::Property(property) => items.push(Item::Property(property.clone())),
+            Item::Property(property) => {
+                charge_line(property, budget.meter)?;
+                items.push(Item::Property(property.clone()));
+            },
             Item::Component(component) if component.is_named(CALENDAR) => {
                 items.push(Item::Component(expand_calendar_component(
                     component, window, zones, budget,
                 )?));
             },
-            Item::Component(component) => items.push(Item::Component(component.clone())),
+            Item::Component(component) => {
+                charge_subtree(component, budget.meter)?;
+                items.push(Item::Component(component.clone()));
+            },
         }
     }
     let items = map_properties(
@@ -318,10 +324,7 @@ pub fn expand_calendar(
         &mut |_, property, meter| normalize_expanded_property(property, zones, meter),
     )?;
     let calendar = Document::new(items);
-    budget
-        .meter
-        .try_charge_bytes(u64::try_from(calendar.to_bytes().len()).unwrap_or(u64::MAX))
-        .map_err(QueryError::Limit)?;
+    calendar.serialize(&mut OutputBudget(budget.meter))?;
     Ok(Selection::new(
         calendar,
         Reduction {
@@ -329,6 +332,16 @@ pub fn expand_calendar(
             ..source.reduction()
         },
     ))
+}
+
+struct OutputBudget<'a>(&'a mut Meter);
+
+impl Writer for OutputBudget<'_> {
+    type Error = LimitExceeded;
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.0.try_charge_bytes(octets(bytes.len()))
+    }
 }
 
 /// Expand the recurrence sets directly inside one `VCALENDAR`.
@@ -342,9 +355,13 @@ fn expand_calendar_component(
     let index = SeriesIndex::new(siblings, budget.meter)?;
     let mut items = Vec::new();
     for entry in siblings {
-        let Item::Component(master) = entry else {
-            items.push(entry.clone());
-            continue;
+        let master = match entry {
+            Item::Component(component) => component,
+            Item::Property(property) => {
+                charge_line(property, budget.meter)?;
+                items.push(Item::Property(property.clone()));
+                continue;
+            },
         };
         if master.is_named(b"VTIMEZONE") {
             continue;
@@ -379,9 +396,9 @@ fn expand_calendar_component(
         }
         let initial = component_start(master, zones).map_err(|_| QueryError::Unrepresentable)?;
         for instance in expansion.instances() {
-            let template = effective_template(master, related, *instance, zones)?;
+            let template = effective_template(master, related, *instance, zones, budget.meter)?;
             items.push(Item::Component(materialize_instance(
-                &template, *instance, initial,
+                template, *instance, initial,
             )?));
         }
     }
@@ -411,6 +428,7 @@ fn single_template(
     zones: Zones<'_>,
     meter: &mut Meter,
 ) -> Result<Component, QueryError> {
+    charge_subtree(component, meter)?;
     let mut built = component.clone();
     let requires_elapsed_duration = matches!(
         component.dtstart(),
@@ -492,7 +510,9 @@ pub(super) fn effective_template(
     related: &[Member<'_>],
     instance: crate::internal::query::Instance,
     zones: Zones<'_>,
+    meter: &mut Meter,
 ) -> Result<Component, QueryError> {
+    charge_subtree(master, meter)?;
     let mut built = master.clone();
     if let Some(exact) = related
         .iter()
@@ -501,7 +521,7 @@ pub(super) fn effective_template(
             override_recurrence_id(master, candidate, zones).ok() == Some(instance.recurrence_id())
         })
     {
-        overlay_properties(&mut built, exact);
+        overlay_properties(&mut built, exact, meter)?;
         return Ok(built);
     }
     let mut anchors: Vec<(Instant, &Component)> = related
@@ -520,13 +540,17 @@ pub(super) fn effective_template(
         .into_iter()
         .filter(|(recurrence_id, _)| *recurrence_id <= instance.recurrence_id())
     {
-        overlay_properties(&mut built, anchor);
+        overlay_properties(&mut built, anchor, meter)?;
     }
     Ok(built)
 }
 
 /// Apply the properties one override states, leaving omitted base properties alone.
-fn overlay_properties(target: &mut Component, overlay: &Component) {
+fn overlay_properties(
+    target: &mut Component,
+    overlay: &Component,
+    meter: &mut Meter,
+) -> Result<(), QueryError> {
     let mut names: Vec<&[u8]> = Vec::new();
     for property in overlay.properties() {
         if is_recurrence_property(property) || names.iter().any(|name| property.is_named(name)) {
@@ -544,9 +568,11 @@ fn overlay_properties(target: &mut Component, overlay: &Component) {
             .properties()
             .filter(|property| property.is_named(name))
         {
+            charge_line(property, meter)?;
             insert_property(target, property.clone());
         }
     }
+    Ok(())
 }
 
 /// Properties rebuilt from an [`Instance`](crate::internal::query::Instance), never copied as an override diff.
@@ -583,37 +609,43 @@ fn is_range_anchor(component: &Component) -> bool {
 
 /// Build one UTC instance while retaining the selected template's non-recurrence properties.
 fn materialize_instance(
-    template: &Component,
+    mut template: Component,
     instance: crate::internal::query::Instance,
     initial: Instant,
 ) -> Result<Component, QueryError> {
-    let mut built = template.clone();
-    built.items_mut().retain(|entry| {
+    let controls = instance_controls(&template, instance, initial)?;
+    template.items_mut().retain(|entry| {
         entry
             .as_property()
             .is_none_or(|property| !is_expansion_control(property))
     });
+    for property in controls {
+        insert_property(&mut template, property);
+    }
+    Ok(template)
+}
+
+fn instance_controls(
+    template: &Component,
+    instance: crate::internal::query::Instance,
+    initial: Instant,
+) -> Result<Vec<Property>, QueryError> {
+    let mut controls = Vec::new();
     if let InstanceShape::Journal {
         dates: Some((key, start)),
     } = instance.shape()
     {
-        insert_property(&mut built, date_property(template, b"DTSTART", start)?);
+        controls.push(date_property(template, b"DTSTART", start)?);
         if instance.recurrence_id() != initial {
-            insert_property(&mut built, date_property(template, b"RECURRENCE-ID", key)?);
+            controls.push(date_property(template, b"RECURRENCE-ID", key)?);
         }
-        return Ok(built);
+        return Ok(controls);
     }
-    insert_property(
-        &mut built,
-        utc_property(template, b"DTSTART", instance.start())?,
-    );
+    controls.push(utc_property(template, b"DTSTART", instance.start())?);
     match instance.shape() {
         InstanceShape::Event { end, .. } => {
             if instance.end() > instance.start() {
-                insert_property(
-                    &mut built,
-                    utc_property(template, b"DTEND", instance.end())?,
-                );
+                controls.push(utc_property(template, b"DTEND", instance.end())?);
             } else if end != EndKind::Implied {
                 return Err(QueryError::Unrepresentable);
             }
@@ -631,7 +663,7 @@ fn materialize_instance(
                 .encode_value(&mut value)
                 .map_err(|_| QueryError::Unrepresentable)?;
             let property = replacement_property(template, b"DURATION", value.as_bytes())?;
-            insert_property(&mut built, property);
+            controls.push(property);
         },
         InstanceShape::Todo {
             end: EndKind::Explicit,
@@ -639,7 +671,7 @@ fn materialize_instance(
             if instance.end() <= instance.start() {
                 return Err(QueryError::Unrepresentable);
             }
-            insert_property(&mut built, utc_property(template, b"DUE", instance.end())?);
+            controls.push(utc_property(template, b"DUE", instance.end())?);
         },
         InstanceShape::Todo {
             end: EndKind::Implied,
@@ -647,12 +679,13 @@ fn materialize_instance(
         | InstanceShape::Journal { .. } => {},
     }
     if instance.recurrence_id() != initial {
-        insert_property(
-            &mut built,
-            utc_property(template, b"RECURRENCE-ID", instance.recurrence_id())?,
-        );
+        controls.push(utc_property(
+            template,
+            b"RECURRENCE-ID",
+            instance.recurrence_id(),
+        )?);
     }
-    Ok(built)
+    Ok(controls)
 }
 
 fn date_property(
@@ -1569,6 +1602,34 @@ END:VCALENDAR\r\n";
     }
 
     /// A selection naming a component type the resource does not carry returns none of that type: RFC 4791 section 9.6.1 defines which component types to return, and the calendar it is rooted at stays readable.
+    #[test]
+    fn expansion_admits_instance_copies_before_normalizing_their_payload() {
+        let payload = "x".repeat(1024);
+        let wire = alloc::format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:one\r\nDTSTART:20240101T090000Z\r\n\
+             RRULE:FREQ=DAILY;COUNT=3\r\nDESCRIPTION:{payload}\r\nX-CHECK;TZID=Unused:value\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let limits = Limits::DEFAULT;
+        let doc = Document::parse(wire.as_bytes(), limits, &mut IgnoreDiagnostics).unwrap();
+        let source = Selection::new(doc, Reduction::FAITHFUL);
+        let zone = crate::internal::tz::FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+        let range = window(b"20240101T000000Z", b"20240104T000000Z");
+        for (units, expected) in [
+            (2048, QueryError::Limit(LimitExceeded::Budget)),
+            (100_000, QueryError::Unrepresentable),
+        ] {
+            let mut meter = Meter::with_budget(limits, units);
+            let result = super::expand_calendar(
+                &source,
+                range,
+                crate::internal::query::Zones::new(&zone),
+                &mut Budget::new(limits, &mut meter),
+            );
+            assert_eq!(result.unwrap_err(), expected);
+        }
+    }
+
     #[test]
     fn a_selection_naming_nothing_the_resource_carries_returns_an_empty_calendar() {
         let wanted = comp(

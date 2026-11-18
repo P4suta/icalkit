@@ -281,6 +281,49 @@ fn check_rule_refusal() -> Result<(usize, Allocation), Box<dyn std::error::Error
     Ok((input.len(), allocation))
 }
 
+fn check_instance_copy_refusal() -> Result<(), Box<dyn std::error::Error>> {
+    use icalkit_conformance::internal::core::Instant;
+    use icalkit_conformance::internal::dav::TimeRange;
+    use icalkit_conformance::internal::query::{
+        Budget, QueryError, Reduction, Selection, Zones, expand_calendar,
+    };
+    use icalkit_conformance::internal::tz::FixedOffsetSource;
+
+    let limits = Limits::DEFAULT.with_max_component_depth(2);
+    let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+    let window = TimeRange::new(
+        Some(Instant::from_unix_seconds(1_704_067_200)),
+        Some(Instant::from_unix_seconds(1_704_326_400)),
+    )?;
+    let cost = |bytes| -> Result<Allocation, Box<dyn std::error::Error>> {
+        let description = "x".repeat(bytes);
+        let input = format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:one\r\nDTSTART:20240101T090000Z\r\n\
+             RRULE:FREQ=DAILY;COUNT=3\r\nDESCRIPTION:{description}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let document = Document::parse(input.as_bytes(), limits, &mut IgnoreDiagnostics)?;
+        let source = Selection::new(document, Reduction::FAITHFUL);
+        let mut meter = Meter::with_budget(limits, 1024);
+        let (result, allocation) = measure(|| {
+            expand_calendar(
+                &source,
+                window,
+                Zones::new(&utc),
+                &mut Budget::new(limits, &mut meter),
+            )
+        });
+        assert_eq!(result.err(), Some(QueryError::Limit(LimitExceeded::Budget)));
+        // Each daily period contributes a date, a time and their combination.
+        assert_eq!(meter.candidates_charged(), 9);
+        assert_eq!(meter.occurrences(), 3);
+        Ok(allocation)
+    };
+    let short = cost(2048)?;
+    let long = cost(4096)?;
+    assert_eq!(long.allocated, short.allocated, "{long:?} and {short:?}");
+    Ok(())
+}
+
 fn check_observance_staging() -> Result<(usize, Allocation), Box<dyn std::error::Error>> {
     let mut input = String::from(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit staging gate//EN\r\n\
@@ -579,6 +622,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     drop(multistatus);
 
+    check_instance_copy_refusal()?;
     let (comment_input_bytes, comment_allocation) = check_comments()?;
     check_property_content()?;
     check_namespace_allocations()?;

@@ -261,7 +261,8 @@ impl Leaves for Units {
         let expanded = expand::expand_related(component, related, range, zones, budget)?;
         let mut any = Match::Unmatched;
         for instance in expanded.instances() {
-            let effective = subset::effective_template(component, related, *instance, zones)?;
+            let effective =
+                subset::effective_template(component, related, *instance, zones, budget.meter)?;
             let mut all = Match::Matched;
             for filter in filters {
                 all = all.and(self.property(&effective, filter, zones, budget)?);
