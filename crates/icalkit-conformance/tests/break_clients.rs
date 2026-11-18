@@ -2,16 +2,12 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Four separable properties of the round trip over synthetic fixtures.
+//! The fixtures exercise the four preservation and mutation contracts in `ADR-0001`.
 //!
-//! The tests exercise the preservation and mutation contracts in `ADR-0001`.
-//!
-//! - **P1**, round trip: `serialize(parse(x))` is `x`, octet for octet.
-//! - **P2**, fixed point: parsing and serializing the output of a parse and a serialize changes nothing further.
-//!   This is what catches a parser that normalizes on the first pass and then disagrees with itself.
-//! - **P3**, mutation locality: writing one property's value changes that property's octets and no others.
-//!   The mutation tests exercise this contract from `ADR-0001`.
-//! - **P4**, diagnostics preserve: an input that earns a diagnostic still satisfies P1, so a violation is never "accepted" by quietly dropping the thing that violated.
+//! P1 compares the serialized document with every input octet.
+//! P2 checks that a second parse and serialization yield the same octets as the first.
+//! P3 checks that editing a property changes only its content line.
+//! P4 checks that the reader preserves the input octets even when it reports a diagnostic.
 //!
 //! The synthetic fixtures include folded `X-APPLE-STRUCTURED-LOCATION` parameters and Microsoft extension properties.
 //! They cover `/mozilla.org/` identifiers, bare line feeds, and quoted and unquoted Windows zone names.
@@ -28,14 +24,14 @@ use icalkit_conformance::internal::core::{
 /// One fixture: the octets on disk, and a name for the assertion message.
 #[derive(Clone, Copy, Debug)]
 struct Fixture {
-    /// The file name, relative to this file's fixture directory.
+    /// The filename relative to the fixture directory.
     name: &'static str,
     /// The octets exactly as committed.
     /// `.gitattributes` marks these `-text`, so the bytes here are the bytes a client would have written.
     octets: &'static [u8],
 }
 
-/// Every fixture, embedded rather than read, so a case cannot pass by not being found.
+/// Each fixture must exist at compile time.
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "apple_structured_location.ics",
@@ -87,12 +83,12 @@ const FIXTURES: &[Fixture] = &[
     },
 ];
 
-/// What one parse produced: the tree, and everything the sink was told.
+/// The parse result and the diagnostics from one run.
 #[derive(Debug)]
 struct Parsed {
-    /// The tree, when one could be built at all.
+    /// The document or its parse error.
     document: Result<Document, ParseError>,
-    /// The diagnostics, in the order they were reported.
+    /// Diagnostics in the order the reader reported them.
     reported: Vec<Diagnostic>,
     /// Diagnostics the sink refused.
     /// A `Vec` never refuses, so this must stay zero.
@@ -113,9 +109,8 @@ fn parse(octets: &[u8]) -> Parsed {
     }
 }
 
-/// The octets one property occupies on its own, folds and terminator included.
-///
-/// A line's serialization depends on nothing outside its own node — the writer's octet counter starts at the first octet of the name for every line — so writing one node alone yields exactly the octets that node contributes to the whole document.
+/// Serialize one property with its folds and terminator.
+/// The writer starts the octet count at the property name on each line.
 fn property_octets(property: &Property) -> Vec<u8> {
     Document::new(vec![Item::Property(property.clone())]).to_bytes()
 }
@@ -126,9 +121,8 @@ fn boundary_octets(boundary: &Boundary) -> Vec<u8> {
     Document::new(vec![Item::Component(alone)]).to_bytes()
 }
 
-/// Every line-bearing node of the tree, in document order, each as its own octets.
-///
-/// Concatenating these is the whole document, which the P3 case asserts before it compares anything — a decomposition that did not add back up would make the locality claim vacuous.
+/// Return the octets of each line in document order.
+/// P3 checks that the lines concatenate to the complete document before comparing edits.
 fn lines(document: &Document) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     collect_lines(document.items(), &mut out);
@@ -151,36 +145,49 @@ fn collect_lines(items: &[Item], out: &mut Vec<Vec<u8>>) {
     }
 }
 
-/// Write `text` over the first property named `id`, anywhere in the tree.
-///
-/// Search direct properties before visiting children depth first and left to right.
-fn write_first(component: &mut Component, id: &PropertyId, text: &[u8]) -> bool {
-    if component.properties_named(id).next().is_some()
-        && let Some(mut guard) = component.get_mut::<TextValue<'_>>(id)
-    {
-        return guard.set_raw(text).is_ok();
-    }
-    for nested in component.components_mut() {
-        if write_first(nested, id, text) {
+/// Write the first direct match before searching nested components.
+fn write_first(items: &mut [Item], id: &PropertyId, text: &[u8], path: &mut Vec<usize>) -> bool {
+    for (index, item) in items.iter_mut().enumerate() {
+        let Some(component) = item.as_component_mut() else {
+            continue;
+        };
+        path.push(index);
+        if let Some(position) = component.items().iter().position(|entry| {
+            entry
+                .as_property()
+                .is_some_and(|property| property.has_id(id))
+        }) {
+            if component
+                .get_mut::<TextValue<'_>>(id)
+                .is_some_and(|mut guard| guard.set_raw(text).is_ok())
+            {
+                path.push(position);
+                return true;
+            }
+        } else if write_first(component.items_mut(), id, text, path) {
             return true;
         }
+        path.pop();
     }
     false
 }
 
-/// Write `text` over the first property named `id` anywhere in `document`.
-fn write_somewhere(document: &mut Document, id: &PropertyId, text: &[u8]) -> bool {
-    for top in document.components_mut() {
-        if write_first(top, id, text) {
-            return true;
-        }
-    }
-    false
+/// Return the item path of the property that accepted the write.
+fn write_somewhere(document: &mut Document, id: &PropertyId, text: &[u8]) -> Option<Vec<usize>> {
+    let mut path = Vec::new();
+    write_first(document.items_mut(), id, text, &mut path).then_some(path)
 }
 
-/// The identities a fixture is edited through, tried in order.
-///
-/// Every fixture carries at least one of these, and each is a scalar text property a client would routinely rewrite.
+fn property_at<'a>(document: &'a Document, path: &[usize]) -> Option<&'a Property> {
+    let (position, parents) = path.split_last()?;
+    let mut items = document.items();
+    for &parent in parents {
+        items = items.get(parent)?.as_component()?.items();
+    }
+    items.get(*position)?.as_property()
+}
+
+/// Try the scalar text properties in order until a fixture accepts a write.
 const EDITED: &[PropertyId] = &[
     PropertyId::SUMMARY,
     PropertyId::DESCRIPTION,
@@ -253,7 +260,7 @@ fn p3_one_write_moves_one_lines_octets_and_no_others() {
 
         let Some(edited) = EDITED
             .iter()
-            .find(|id| write_somewhere(&mut document, id, b"Rewritten by the corpus"))
+            .find(|id| write_somewhere(&mut document, id, b"Rewritten by the corpus").is_some())
         else {
             panic!("{}: no scalar text property to write through", case.name);
         };
@@ -271,7 +278,7 @@ fn p3_one_write_moves_one_lines_octets_and_no_others() {
     }
 }
 
-/// P4: an input that earns a diagnostic still satisfies P1, and no diagnostic is lost.
+/// P4 checks that parsing preserves the bytes and reports every diagnostic.
 #[test]
 fn p4_a_diagnosed_input_still_round_trips() {
     for case in FIXTURES {
@@ -302,10 +309,7 @@ fn p4_a_diagnosed_input_still_round_trips() {
     }
 }
 
-/// P2 as two clients experience it: five rounds of open, edit, save, hand over.
-///
-/// Byte identity on one pass is the weakest form of the claim.
-/// What a corpus has to survive is the loop the format exists inside — one client saves, another opens the file it wrote, edits something else, and saves again — because that is where a normalization applied on the first pass would compound instead of cancelling.
+/// Each generation checks the saved value at the edited position and the bytes after reopening.
 #[test]
 fn p2_five_generations_of_open_edit_and_save() {
     for case in FIXTURES {
@@ -320,21 +324,17 @@ fn p2_five_generations_of_open_edit_and_save() {
                 "{}: generation {generation} is not a fixed point",
                 case.name
             );
-            // Alternating lengths, so that one generation is short enough to sit on one physical line and the next is long enough that the crate folds the line itself.
+            // Alternate between one physical line and a value that needs folding.
             let payload: &[u8] = if generation % 2 == 0 {
                 b"a value long enough that this crate has to fold the line itself rather than \
                   reuse any fold position the producer chose for the text it replaced"
             } else {
                 b"short"
             };
-            let edited = EDITED
+            let (id, path) = EDITED
                 .iter()
-                .any(|id| write_somewhere(&mut document, id, payload));
-            assert!(
-                edited,
-                "{}: generation {generation} made no edit",
-                case.name
-            );
+                .find_map(|id| write_somewhere(&mut document, id, payload).map(|path| (id, path)))
+                .unwrap_or_else(|| panic!("{}: generation {generation} made no edit", case.name));
             let saved = document.to_bytes();
             let Ok(reread) = parse(&saved).document else {
                 panic!(
@@ -342,6 +342,19 @@ fn p2_five_generations_of_open_edit_and_save() {
                     case.name
                 );
             };
+            let property = property_at(&reread, &path).unwrap_or_else(|| {
+                panic!(
+                    "{}: generation {generation} lost the property at {path:?}",
+                    case.name
+                )
+            });
+            assert!(property.has_id(id));
+            assert_eq!(
+                property.value_text().as_bytes(),
+                payload,
+                "{}: generation {generation}",
+                case.name
+            );
             assert_eq!(
                 reread.to_bytes(),
                 saved,
@@ -353,17 +366,12 @@ fn p2_five_generations_of_open_edit_and_save() {
     }
 }
 
-/// P3 across a save and a reload, which is the only way a second client sees an edit.
+/// P3 checks mutation locality after a save and reload.
 ///
-/// The refusal that makes a scoped write safe lives on [`icalkit_conformance::internal::core::PropertyMut::set_raw`], and the design calls it "the one place the crate rejects caller input outright".
-/// That sentence is a claim about the *only* door, and it was once false: `Property::set_value_text` was public,
-/// reachable through [`icalkit_conformance::internal::core::Component::items_mut`], and checked nothing, so a `SUMMARY` taken from a web form carried its own terminator into the file, serialization duly wrote it,
-/// and the second client read back a component with an `ATTENDEE` nobody added — one write moving six of twelve lines once the file was saved and reopened.
-///
-/// The unchecked setters are crate-private now, which is what makes the sentence true rather than customary: a check repeated on each of them would have closed `set_value_text` and `set_name` and left `edit_parameters` open, because a `&mut Vec` handed out is a door no check can stand in front of.
-/// So this case asserts the two halves of what is left.
-/// The injection is refused by the only door there is, and a refused write moves nothing at all;
-/// an ordinary value goes through the same door and moves exactly one line.
+/// Unchecked setters once let callers change a value through `Component::items_mut`.
+/// The setters now have crate visibility.
+/// The public `PropertyMut::set_raw` rejects line terminators and preserves every octet on refusal.
+/// An ordinary replacement changes one content line after reopening.
 #[test]
 fn p3_a_value_written_through_the_public_setter_stays_one_property() {
     let Some(case) = FIXTURES
@@ -414,9 +422,8 @@ fn p3_a_value_written_through_the_public_setter_stays_one_property() {
     );
 }
 
-/// Write `text` over every `SUMMARY` in `document`, through the one door there is.
-///
-/// `None` when the document carried no `SUMMARY` at all, so a fixture that quietly stopped having one fails the case rather than passing it vacuously.
+/// Write the first direct `SUMMARY` of each event and return the last result.
+/// Return `None` if no event supplied a summary.
 fn write_summary(document: &mut Document, text: &[u8]) -> Option<Result<(), MutationError>> {
     let mut outcome = None;
     for calendar in document.components_mut() {
@@ -430,7 +437,7 @@ fn write_summary(document: &mut Document, text: &[u8]) -> Option<Result<(), Muta
     outcome
 }
 
-/// The two fixtures that must earn a diagnostic do, so P4 is not passing vacuously.
+/// Both designated fixtures must produce a diagnostic for the P4 checks.
 #[test]
 fn p4_the_violating_fixtures_are_actually_diagnosed() {
     let expected: &[(&str, DiagnosticCode)] = &[
