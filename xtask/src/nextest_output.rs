@@ -100,9 +100,10 @@ fn shows_leak_status(arguments: &[String]) -> bool {
         .split(|argument| argument == "--")
         .next()
         .is_some_and(|options| {
-            options
-                .windows(2)
-                .any(|pair| pair == ["--status-level", "leak"])
+            !options.iter().any(|option| option == "--no-run")
+                && options
+                    .windows(2)
+                    .any(|pair| pair == ["--status-level", "leak"])
         })
 }
 
@@ -110,6 +111,18 @@ fn shows_leak_status(arguments: &[String]) -> bool {
 fn test_arguments_cannot_supply_nextest_status_options() {
     let arguments = ["nextest", "run", "--", "--status-level", "leak"].map(String::from);
     assert!(!shows_leak_status(&arguments));
+}
+
+#[test]
+fn compile_only_invocations_cannot_verify_executed_tests() {
+    let run = ["nextest", "run", "--status-level", "leak", "--workspace"].map(String::from);
+    assert!(shows_leak_status(&run));
+    let mut compile_only = run.to_vec();
+    compile_only.push("--no-run".to_owned());
+    assert!(!shows_leak_status(&compile_only));
+    let mut test_arguments = run.to_vec();
+    test_arguments.extend(["--", "--no-run"].map(String::from));
+    assert!(shows_leak_status(&test_arguments));
 }
 
 #[test]

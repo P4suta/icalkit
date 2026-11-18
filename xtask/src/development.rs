@@ -164,7 +164,7 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
         let resolves = matches!(
             operations,
             ["build" | "check" | "clippy" | "test" | "doc" | "run", ..]
-                | ["nextest", "run", ..]
+                | ["nextest", "run" | "r", ..]
                 | ["hack", "check", ..]
         );
         if resolves && !words.contains(&"--locked") {
@@ -430,6 +430,22 @@ test-core:
                 assert!(
                     !recipe_violations(&broken).is_empty(),
                     "a toolchain selector bypassed --locked: {command} {arguments}"
+                );
+            }
+            let valid = format!("{TEST_RECIPES}\nprobe:\n    {command} --locked --workspace\n");
+            assert_eq!(recipe_violations(&valid), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn nextest_alias_requires_the_committed_lockfile() {
+        for selector in ["", " +1.100.0"] {
+            let command = format!("cargo{selector} nextest r");
+            for arguments in ["--workspace", "--workspace -- --locked"] {
+                let broken = format!("{TEST_RECIPES}\nprobe:\n    {command} {arguments}\n");
+                assert!(
+                    !recipe_violations(&broken).is_empty(),
+                    "the Nextest alias bypassed --locked: {command} {arguments}"
                 );
             }
             let valid = format!("{TEST_RECIPES}\nprobe:\n    {command} --locked --workspace\n");
