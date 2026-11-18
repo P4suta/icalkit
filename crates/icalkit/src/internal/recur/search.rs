@@ -75,8 +75,8 @@ impl Window {
 
     /// The same window reaching `before` seconds earlier and `after` seconds later.
     ///
-    /// The remedy for the key-versus-start gap: a renderer that wants every occurrence whose *start* lands in a month searches a widened window and filters on [`Occurrence::starts_within`].
-    /// How far to widen is the largest absolute shift the override set implies, which is a number this crate does not compute for the caller.
+    /// Search the requested window and filter with [`Occurrence::starts_within`] on the same window to select by effective start.
+    /// The search widens its generation bounds internally to account for moved instances.
     ///
     /// `None` when either edge leaves the representable timeline, rather than a silently clamped window that would answer a question nobody asked.
     #[must_use]
