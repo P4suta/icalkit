@@ -11,10 +11,11 @@ use crate::internal::core::codec::{
 use crate::internal::core::language::is_language_tag;
 use crate::internal::core::mailto::is_mailto_uri;
 use crate::internal::core::{
-    BinaryValue, Component, ComponentKind, ContentLineReader, DateTimeValue, DecodeValue as _,
-    Diagnostic, DiagnosticCode, Document, Duration, Geo, Item, LimitExceeded, Meter, Parameter,
-    Period, Property, PropertyId, TextValue, UriValue, UtcOffset, ValueType, is_iana_token,
-    parameter_is_representable, parameter_needs_quoting,
+    BinaryValue, CivilDateTime, Component, ComponentKind, ContentLineReader, DateTimeValue,
+    DecodeValue as _, Diagnostic, DiagnosticCode, Document, Duration, Geo, IgnoreDiagnostics,
+    Instant, Item, LimitExceeded, Meter, Parameter, Period, Property, PropertyId, TextValue,
+    UriValue, UtcOffset, ValueType, is_iana_token, parameter_is_representable,
+    parameter_needs_quoting,
 };
 
 use crate::ResourcePolicy;
@@ -23,6 +24,7 @@ use crate::failure::{Error, Issue};
 use crate::internal::recur::{
     RecurrenceRule, RuleLimit, RulePart, UntilClock, ValueKind, parse_recur,
 };
+use crate::internal::tz::{FoldPolicy, GapPolicy, ZoneSource, read_calendar_zones};
 use crate::model::EventRef;
 use crate::recurrence::{Cursor, Occurrences, Window};
 
@@ -278,10 +280,28 @@ fn validate_document_shape(
     if first.is_some_and(|calendar| !known_recurrence_ranges_are_valid(calendar)) {
         issues.push(Issue::error("icalkit.validation.invalid-recurrence-range"));
     }
-    if first.is_some_and(|calendar| !known_temporal_lists_are_valid(calendar)) {
-        issues.push(Issue::error("icalkit.validation.invalid-date-time-list"));
-    }
     if let Some(calendar) = first {
+        let mut definitions = None;
+        let mut resolve = |zone: &[u8], stamp: CivilDateTime| {
+            let tzid = str::from_utf8(zone).ok()?;
+            let zones = definitions.get_or_insert_with(|| {
+                read_calendar_zones(calendar, meter, &mut IgnoreDiagnostics)
+            });
+            let [table] = zones.definitions(tzid) else {
+                return None;
+            };
+            if table.is_truncated() {
+                return None;
+            }
+            table
+                .resolve(tzid, stamp)?
+                .resolution
+                .pick(GapPolicy::ShiftForward, FoldPolicy::Earlier)
+        };
+        if !known_temporal_lists_are_valid(calendar, &mut resolve) {
+            issues.push(Issue::error("icalkit.validation.invalid-date-time-list"));
+        }
+        meter.admit(|| Ok(()))?;
         validate_descriptive_parameters(calendar, meter, issues)?;
         validate_component_structure(calendar, issues);
         validate_required_starts(calendar, issues);
@@ -1118,7 +1138,9 @@ enum TemporalListContext {
     FreeBusy,
 }
 
-fn known_temporal_lists_are_valid(component: &Component) -> bool {
+type ResolveLocal<'a> = dyn FnMut(&[u8], CivilDateTime) -> Option<Instant> + 'a;
+
+fn known_temporal_lists_are_valid(component: &Component, resolve: &mut ResolveLocal<'_>) -> bool {
     let Some(kind) = component.kind() else {
         return true;
     };
@@ -1129,16 +1151,22 @@ fn known_temporal_lists_are_valid(component: &Component) -> bool {
     };
     component.properties().all(|property| {
         if property.is_named(b"RDATE") || property.is_named(b"EXDATE") {
-            temporal_list_is_valid(property, context)
+            temporal_list_is_valid(property, context, resolve)
         } else if property.is_named(b"FREEBUSY") {
-            temporal_list_is_valid(property, TemporalListContext::FreeBusy)
+            temporal_list_is_valid(property, TemporalListContext::FreeBusy, resolve)
         } else {
             true
         }
-    }) && component.components().all(known_temporal_lists_are_valid)
+    }) && component
+        .components()
+        .all(|child| known_temporal_lists_are_valid(child, resolve))
 }
 
-fn temporal_list_is_valid(property: &Property, context: TemporalListContext) -> bool {
+fn temporal_list_is_valid(
+    property: &Property,
+    context: TemporalListContext,
+    resolve: &mut ResolveLocal<'_>,
+) -> bool {
     let freebusy = context == TemporalListContext::FreeBusy;
     if property.parameters_named(b"VALUE").nth(1).is_some()
         || property.parameters_named(b"TZID").nth(1).is_some()
@@ -1179,13 +1207,18 @@ fn temporal_list_is_valid(property: &Property, context: TemporalListContext) -> 
                 })
             },
             ValueType::Period if !property.is_named(b"EXDATE") => {
-                period_field_is_valid(property, field, freebusy)
+                period_field_is_valid(property, field, freebusy, resolve)
             },
             _ => false,
         })
 }
 
-fn period_field_is_valid(property: &Property, field: &[u8], utc_only: bool) -> bool {
+fn period_field_is_valid(
+    property: &Property,
+    field: &[u8],
+    utc_only: bool,
+    resolve: &mut ResolveLocal<'_>,
+) -> bool {
     let Ok(period) = Period::decode_property_field(property, field) else {
         return false;
     };
@@ -1203,6 +1236,12 @@ fn period_field_is_valid(property: &Property, field: &[u8], utc_only: bool) -> b
                 && match (start, end) {
                     (DateTimeValue::Local(start), DateTimeValue::Local(end))
                     | (DateTimeValue::Utc(start), DateTimeValue::Utc(end)) => end > start,
+                    (
+                        DateTimeValue::Zoned { tzid, stamp: start },
+                        DateTimeValue::Zoned { stamp: end, .. },
+                    ) => resolve(tzid, start)
+                        .zip(resolve(tzid, end))
+                        .is_none_or(|(from, to)| from < to),
                     _ => true,
                 }
         },

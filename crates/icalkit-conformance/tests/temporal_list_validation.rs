@@ -164,6 +164,23 @@ fn identical_zoned_period_bounds_are_rejected() {
     );
     assert_valid(&source.replace("/20260815T090000", "/20260815T100000"));
     assert_rejected(&source);
+    assert_rejected(&source.replace(":20260815T090000/", ":20260815T100000/"));
+    let unresolved = calendar(
+        "VEVENT",
+        "RDATE;VALUE=PERIOD;TZID=Unknown:20260815T100000/20260815T090000",
+    );
+    assert_valid(&unresolved);
+    let gap = source
+        .replace("20200101T000000", "20260815T090000")
+        .replace("TZOFFSETTO:+0100", "TZOFFSETTO:+0200");
+    assert_valid(&gap.replace(
+        "20260815T090000/20260815T090000",
+        "20260815T101000/20260815T092000",
+    ));
+    assert_rejected(&gap.replace(
+        "20260815T090000/20260815T090000",
+        "20260815T092000/20260815T101000",
+    ));
 }
 
 #[test]

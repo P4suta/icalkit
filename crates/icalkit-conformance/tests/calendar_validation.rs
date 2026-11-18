@@ -12,20 +12,10 @@ use icalkit::Calendar;
 use icalkit::interop::Import;
 
 fn calendar(kind: &str, properties: &str, calendar_properties: &str) -> String {
-    let zone =
-        if properties.contains("Test/Zone") && !calendar_properties.contains("TZID:Test/Zone") {
-            concat!(
-                "BEGIN:VTIMEZONE\r\nTZID:Test/Zone\r\nBEGIN:STANDARD\r\n",
-                "DTSTART:20200101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\n",
-                "END:STANDARD\r\nEND:VTIMEZONE\r\n",
-            )
-        } else {
-            ""
-        };
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit validation//EN\r\n\
          BEGIN:{kind}\r\nUID:one@example.test\r\nDTSTAMP:20260813T120000Z\r\n\
-         {properties}END:{kind}\r\n{zone}{calendar_properties}END:VCALENDAR\r\n"
+         {properties}END:{kind}\r\n{calendar_properties}END:VCALENDAR\r\n"
     )
 }
 
@@ -459,9 +449,22 @@ fn date_durations_use_day_or_week_syntax() {
 
 #[test]
 fn unresolved_zoned_endpoints_are_not_ordered_as_wall_clocks() {
-    assert_valid(&calendar(
+    let source = calendar(
         "VEVENT",
         "DTSTART;TZID=Test/Zone:20260814T031500\r\nDTEND;TZID=Test/Zone:20260814T024500\r\n",
         "",
+    );
+    assert!(!source.contains("BEGIN:VTIMEZONE"));
+    assert_valid(&source);
+}
+
+#[test]
+fn a_range_can_end_at_an_earlier_wall_clock_in_another_zone() {
+    let later_zone = "BEGIN:VTIMEZONE\r\nTZID:Test/West\r\nBEGIN:STANDARD\r\nDTSTART:20200101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n";
+    let earlier_zone = later_zone.replace("West", "East").replace("+0100", "+0200");
+    assert_valid(&calendar(
+        "VEVENT",
+        "DTSTART;TZID=Test/East:20260814T031500\r\nDTEND;TZID=Test/West:20260814T024500\r\n",
+        &format!("{earlier_zone}{later_zone}"),
     ));
 }
