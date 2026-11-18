@@ -26,7 +26,7 @@ Reject malformed or unsupported query definitions without an implicit fallback.
 ## Alternatives
 
 Identifier-only routing requires external data and can ignore the supplied rules.
-Using the inline definition for every matching identifier also changes values carrying an explicit zone.
+Routing explicit identifiers to the query definition would override matching resource definitions.
 
 ## Consequences
 

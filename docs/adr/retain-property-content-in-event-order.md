@@ -14,12 +14,13 @@ The [XML Information Set](https://www.w3.org/TR/xml-infoset/#infoitem.element) o
 ## Decision
 
 Represent captured content as resource claims, text runs, or a serialized fragment.
-Start the fragment at the first child and append events in order.
+Escape preceding text before appending child events in order.
 Meter shared escaping chunks before buffer growth.
-Preserve source prefixes and [namespace scope](https://www.w3.org/TR/xml-names/#scoping) for opaque values.
-Fragment roots combine inherited bindings with envelope bindings and give the source precedence.
+Preserve prefixes and [bindings](https://www.w3.org/TR/xml-names/#scoping) from the source, including those used only in opaque values.
+A stable envelope can bind prefixes the source leaves unbound.
+Source bindings take precedence.
 Emit nested declarations on their original elements.
-Keep existing modeled value interpretation.
+Defer fragment serialization while a single href can supply a reference.
 
 ## Alternatives
 
@@ -36,6 +37,5 @@ Reconsider when callers require incremental fragment delivery.
 
 ## Confirmation
 
-Test text positions, whitespace, references, comments, and escaped element syntax through complete responses.
-Check modeled values, text-only controls, refusal precedence, and peak allocations.
-Run maintained gates.
+Test text order, whitespace, references, comments, and escaped markup.
+Check modeled values, refusals, and peak allocations.
