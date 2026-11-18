@@ -7,15 +7,10 @@ use std::path::Path;
 use std::process::Command;
 
 pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
-    let mise = configured_value(workspace, "mise.toml", "tools.rust.version", "value")?;
-    let rustup = configured_value(
-        workspace,
-        "rust-toolchain.toml",
-        "toolchain.channel",
-        "value",
-    )?;
+    let mise = configured_string(workspace, "mise.toml", "tools.rust.version")?;
+    let rustup = configured_string(workspace, "rust-toolchain.toml", "toolchain.channel")?;
     let mut violations = toolchain_violations(&mise, &rustup);
-    let shellcheck = configured_value(workspace, "mise.toml", "tools.shellcheck", "value")?;
+    let shellcheck = configured_string(workspace, "mise.toml", "tools.shellcheck")?;
     if !exact_version(&shellcheck) {
         violations.push("mise.toml: actionlint requires an exact shellcheck version".to_owned());
     }
@@ -23,7 +18,7 @@ pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
         ("mise.toml", "tools.rust"),
         ("rust-toolchain.toml", "toolchain"),
     ] {
-        let profile = configured_value(workspace, file, &format!("{table}.profile"), "value")?;
+        let profile = configured_string(workspace, file, &format!("{table}.profile"))?;
         if profile != "minimal" {
             violations.push(format!(
                 "{file}: Rust must use the minimal installation profile"
@@ -45,6 +40,20 @@ pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
         workspace.join("Justfile"),
     )?));
     Ok(violations)
+}
+
+fn configured_string(workspace: &Path, file: &str, key: &str) -> io::Result<String> {
+    let json = configured_value(workspace, file, key, "json")?;
+    json.trim()
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{file}: {key} must be a TOML string"),
+            )
+        })
 }
 
 fn configured_value(workspace: &Path, file: &str, key: &str, format: &str) -> io::Result<String> {
@@ -237,6 +246,44 @@ test-core:
     #[test]
     fn explicit_matching_component_installations_are_admitted() -> io::Result<()> {
         let fixture = ConfigurationFixture::new(INSTALLATION, RUSTUP)?;
+        assert_eq!(collect(&fixture.0)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn rust_installation_fields_require_scalar_strings() -> io::Result<()> {
+        for (mise, rustup) in [
+            (
+                INSTALLATION.replace("version = \"1.99.0\"", "version = [\"1.99.0\"]"),
+                RUSTUP.to_owned(),
+            ),
+            (
+                INSTALLATION.replace("profile = \"minimal\"", "profile = [\"minimal\"]"),
+                RUSTUP.to_owned(),
+            ),
+            (
+                INSTALLATION.replace("shellcheck = \"0.11.0\"", "shellcheck = [\"0.11.0\"]"),
+                RUSTUP.to_owned(),
+            ),
+            (
+                INSTALLATION.to_owned(),
+                RUSTUP.replace("channel = \"1.99.0\"", "channel = [\"1.99.0\"]"),
+            ),
+            (
+                INSTALLATION.to_owned(),
+                RUSTUP.replace("profile = \"minimal\"", "profile = [\"minimal\"]"),
+            ),
+        ] {
+            let fixture = ConfigurationFixture::new(&mise, &rustup)?;
+            assert!(
+                !matches!(collect(&fixture.0), Ok(violations) if violations.is_empty()),
+                "an array replaced a scalar setting: {mise:?} {rustup:?}"
+            );
+        }
+        let fixture = ConfigurationFixture::new(
+            &INSTALLATION.replace("minimal", "mini\\u006dal"),
+            &RUSTUP.replace("minimal", "mini\\u006dal"),
+        )?;
         assert_eq!(collect(&fixture.0)?, Vec::<String>::new());
         Ok(())
     }
