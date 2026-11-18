@@ -136,6 +136,8 @@ mod tests {
         include_bytes!("../tests/fixtures/itip/request_without_sequence.ics");
     /// A `CANCEL` of the whole series, section 3.2.5.
     const CANCEL_SERIES: &[u8] = include_bytes!("../tests/fixtures/itip/cancel_series.ics");
+    const CANCEL_WITHOUT_ATTENDEES: &[u8] =
+        include_bytes!("../tests/fixtures/itip/cancel_series_without_attendees.ics");
     /// A `REFRESH` asking the organizer to resend, section 3.2.6.
     const REFRESH_SERIES: &[u8] = include_bytes!("../tests/fixtures/itip/refresh_series.ics");
     /// The same `REFRESH` carrying a `SEQUENCE`, which section 3.2.6's table gives `0`.
@@ -1095,12 +1097,30 @@ mod tests {
     }
 
     #[test]
+    fn whole_series_cancellation_names_the_affected_attendees() {
+        let calendar = subject(CANCEL_SERIES, None);
+        let mut recipients: Vec<_> = calendar
+            .component()
+            .attendee_lines()
+            .map(|line| line.value.as_slice())
+            .collect();
+        recipients.sort_unstable();
+        assert_eq!(recipients, [BO.as_bytes(), CY.as_bytes()]);
+        assert_cancellation_preserves_held_details(&calendar);
+    }
+
+    #[test]
     fn sparse_cancellation_changes_status_and_revision_and_preserves_omitted_details() {
+        let calendar = subject(CANCEL_WITHOUT_ATTENDEES, None);
+        assert_eq!(calendar.component().attendee_count(), 0);
+        assert_cancellation_preserves_held_details(&calendar);
+    }
+
+    fn assert_cancellation_preserves_held_details(calendar: &Subject) {
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let held = subject(HELD_SERIES, None);
-        let calendar = subject(CANCEL_SERIES, None);
-        let message = ItipMessage::read(&calendar, limits, &mut meter, &mut Vec::new()).unwrap();
+        let message = ItipMessage::read(calendar, limits, &mut meter, &mut Vec::new()).unwrap();
         let authorized = evaluate_message(&message, held.component(), PartyId::new(CHAIR)).unwrap();
         assert_eq!(authorized.reason(), TransitionReason::Cancelled);
         let transition = authorized.transition();
