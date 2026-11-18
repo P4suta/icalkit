@@ -703,6 +703,43 @@ fn a_reply_can_echo_or_omit_the_start_but_cannot_reschedule() {
 }
 
 #[test]
+fn a_reply_can_echo_a_property_name_in_another_case() {
+    let held = include_str!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
+    let reply = include_str!("../../icalkit-conformance/tests/fixtures/itip/reply_accepted.ics");
+    let actor = Actor::new("mailto:bo@example.com").unwrap();
+    for (original, restated, accepted) in [
+        ("SUMMARY:Planning", "summary:Planning", true),
+        (
+            "SUMMARY;LANGUAGE=en:Planning",
+            "SuMmArY;LANGUAGE=en:Planning",
+            true,
+        ),
+        ("SUMMARY:Planning", "summary:planning", false),
+        (
+            "SUMMARY;LANGUAGE=en:Planning",
+            "summary;LANGUAGE=de:Planning",
+            false,
+        ),
+    ] {
+        let state = held.replace("SUMMARY:Weekly sync", original);
+        let current = Calendar::parse(state.as_bytes()).unwrap();
+        let input = reply.replace("SEQUENCE:", &format!("{restated}\r\nSEQUENCE:"));
+        let message = Message::read(input.as_bytes()).unwrap();
+        let review = message.review(&current, &actor);
+        assert_eq!(review.is_ok(), accepted, "{restated}");
+        if let Ok(review) = review {
+            let bytes = review.authorize().apply().unwrap().to_bytes();
+            assert!(
+                str::from_utf8(&bytes)
+                    .unwrap()
+                    .lines()
+                    .any(|line| line == original)
+            );
+        }
+    }
+}
+
+#[test]
 fn a_reply_may_omit_the_organizers_agent_but_cannot_nominate_one() {
     const HELD: &[u8] =
         include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");

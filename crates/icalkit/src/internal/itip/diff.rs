@@ -182,10 +182,25 @@ pub(super) fn changed_reply_field(
                     .organizer()
                     .and_then(Party::address)
                     .is_some_and(|who| current.organizer().is_some_and(|party| party.is(who))),
-                _ => held.get(&at) == Some(&line),
+                _ => held
+                    .get(&at)
+                    .is_some_and(|original| unchanged_echo(at.name(), original, line)),
             };
             (!matches).then_some(at)
         })
+}
+
+fn unchanged_echo(name: &[u8], original: &[u8], offered: &[u8]) -> bool {
+    let Some((left, before)) = original.split_at_checked(name.len()) else {
+        return false;
+    };
+    let Some((right, after)) = offered.split_at_checked(name.len()) else {
+        return false;
+    };
+    left.eq_ignore_ascii_case(name)
+        && right.eq_ignore_ascii_case(name)
+        && matches!(before.first(), Some(b':' | b';'))
+        && before == after
 }
 
 /// The selected properties of `component`, keyed by occurrence.
