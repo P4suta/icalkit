@@ -564,69 +564,41 @@ mod tests {
         assert_eq!(authorized.reason(), TransitionReason::Updated);
     }
 
-    /// `SECURITY.md`'s first named attack, in both of the shapes it has.
-    ///
-    /// Through a `REPLY` the meeting does not move, and it does not move because nothing in a reply but the sender's own answer is ever described — RFC 5546 section 3.2.3 says an attendee's other properties MUST NOT differ, and this crate's answer to one that does is to ignore it rather than to refuse the message.
-    /// That divergence is worth stating:
-    /// the security property holds, the strict-conformance one does not.
-    ///
-    /// Through a `COUNTER`, where the diff does describe the whole component, the same overreach is refused whole and names the occurrence it was refused for.
     #[test]
-    fn an_attendee_cannot_move_a_meeting_by_replying_to_it() {
+    fn an_attendee_proposes_a_new_start_with_a_counter() {
         let current = held_at(2);
         let mut meter = Meter::new(Limits::DEFAULT);
-
-        let calendar = Node::calendar(
+        let start = PropertyOccurrence::named(b"DTSTART", 0);
+        let reply = Node::calendar(
             "REPLY",
             reply_from(ANN).property("DTSTART", "20260902T150000Z"),
         );
-        let message = message_of(&calendar, &mut meter);
-        let authorized = evaluate_message(&message, &current, party(ANN))
-            .expect("an attendee may answer an invitation");
-        assert_eq!(authorized.reason(), TransitionReason::ParticipationChanged);
+        let message = message_of(&reply, &mut meter);
         assert_eq!(
-            authorized.transition().len(),
-            1,
-            "a reply describes one answer and nothing else"
+            evaluate_message(&message, &current, party(ANN)).err(),
+            Some(AuthorizationDenied::MethodForbidsField(start.clone()))
         );
+        let described = describe_message(&message, &current);
+        assert_eq!(described.reason(), TransitionReason::ParticipationChanged);
+        assert_eq!(described.len(), 1);
         assert!(matches!(
-            authorized
-                .transition()
-                .change(&PropertyOccurrence::named(b"ATTENDEE", 0)),
+            described.change(&PropertyOccurrence::named(b"ATTENDEE", 0)),
             Some(ProposedChange::SetParameters(_))
         ));
-        assert!(
-            authorized
-                .transition()
-                .change(&PropertyOccurrence::named(b"DTSTART", 0))
-                .is_none(),
-            "the meeting moves only if something describes it moving"
-        );
 
-        let countered = Node::calendar(
+        let counter = Node::calendar(
             "COUNTER",
             held_at(2)
                 .stamped(LATE)
                 .property("DTSTART", "20260902T150000Z"),
         );
-        let message = message_of(&countered, &mut meter);
-        let verdict = evaluate_message(&message, &current, party(ANN));
-        assert_eq!(
-            verdict.err(),
-            Some(AuthorizationDenied::MethodForbidsField(
-                PropertyOccurrence::named(b"DTSTART", 0)
-            )),
-            "section 3.2.2's restriction table: the start time is the organizer's"
-        );
-
-        // ADR-0005: a refused message stays inspectable, so a user can be shown what it tried.
-        let attempted = describe_message(&message, &current);
-        match attempted.change(&PropertyOccurrence::named(b"DTSTART", 0)) {
-            Some(ProposedChange::Replace(text)) => {
-                assert_eq!(text.as_bytes(), b"DTSTART:20260902T150000Z");
-            },
-            other => panic!("the refused counter must stay describable, and was {other:?}"),
-        }
+        let message = message_of(&counter, &mut meter);
+        let authorized = evaluate_message(&message, &current, party(ANN)).unwrap();
+        assert_eq!(authorized.reason(), TransitionReason::CounterProposed);
+        assert!(matches!(
+            authorized.transition().change(&start),
+            Some(ProposedChange::Replace(text)) if text.as_bytes() == b"DTSTART:20260902T150000Z"
+        ));
     }
 
     /// `SECURITY.md`'s second named attack.

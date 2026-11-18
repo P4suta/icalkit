@@ -608,6 +608,99 @@ fn one_review_applies_every_matching_component_in_a_scheduling_object() {
 }
 
 #[test]
+fn a_counter_proposes_a_new_time_until_the_organizer_accepts_it() {
+    const HELD: &[u8] =
+        include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
+    const COUNTER: &[u8] = include_bytes!(
+        "../../icalkit-conformance/tests/fixtures/itip/counter_proposes_a_new_time.ics"
+    );
+    let current = Calendar::parse(HELD).unwrap();
+    let message = Message::read(COUNTER).unwrap();
+    let attendee = Actor::new("mailto:bo@example.com").unwrap();
+    let review = message.review(&current, &attendee).unwrap();
+    assert_eq!(review.change_count(), 2);
+    assert_eq!(review.message().method(), "COUNTER");
+    assert_eq!(current.to_bytes(), HELD);
+
+    let accepted = review.authorize();
+    assert_eq!(current.to_bytes(), HELD);
+    let updated = String::from_utf8(accepted.apply().unwrap().to_bytes()).unwrap();
+    let expected = std::str::from_utf8(HELD)
+        .unwrap()
+        .replace(
+            "DTSTART:20260310T140000Z\r\n",
+            "DTSTART:20260310T160000Z\r\n",
+        )
+        .replace(
+            "DTSTAMP:20260301T120000Z\r\n",
+            "DTSTAMP:20260302T080000Z\r\n",
+        );
+    assert_eq!(updated, expected);
+}
+
+#[test]
+fn a_reply_can_echo_or_omit_the_start_but_cannot_reschedule() {
+    const HELD: &[u8] =
+        include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
+    const REPLY: &str = include_str!(
+        "../../icalkit-conformance/tests/fixtures/itip/reply_restates_a_new_dtstart.ics"
+    );
+    let current = Calendar::parse(HELD).unwrap();
+    let attendee = Actor::new("mailto:bo@example.com").unwrap();
+    let moved = "DTSTART:20260315T220000Z\r\n";
+    let held_start = "DTSTART:20260310T140000Z\r\n";
+    let message = Message::read(REPLY.as_bytes()).unwrap();
+    let denial = message.review(&current, &attendee).unwrap_err();
+    assert_eq!(
+        denial.code().as_str(),
+        "icalkit.scheduling.authorization-denied"
+    );
+
+    for echo in ["", held_start] {
+        let message = Message::read(REPLY.replace(moved, echo).as_bytes()).unwrap();
+        let review = message.review(&current, &attendee).unwrap();
+        assert_eq!(review.change_count(), 1);
+        let updated = String::from_utf8(review.authorize().apply().unwrap().to_bytes()).unwrap();
+        assert!(updated.contains(held_start));
+        assert!(updated.contains("SUMMARY:Weekly sync\r\n"));
+    }
+}
+
+#[test]
+fn a_reply_may_omit_the_organizers_agent_but_cannot_nominate_one() {
+    const HELD: &[u8] =
+        include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
+    const REPLY: &str =
+        include_str!("../../icalkit-conformance/tests/fixtures/itip/reply_accepted.ics");
+    let current = Calendar::parse(HELD).unwrap();
+    let attendee = Actor::new("mailto:bo@example.com").unwrap();
+    let agent = ";SENT-BY=\"mailto:pa@example.com\"";
+    let bare = Message::read(REPLY.replace(agent, "").as_bytes()).unwrap();
+    let updated = bare
+        .review(&current, &attendee)
+        .unwrap()
+        .authorize()
+        .apply()
+        .unwrap();
+    let written = String::from_utf8(updated.to_bytes()).unwrap();
+    assert!(
+        written
+            .contains("ORGANIZER;SENT-BY=\"mailto:pa@example.com\":mailto:chair@example.com\r\n")
+    );
+
+    let other = REPLY.replace(agent, ";SENT-BY=\"mailto:bo@example.com\"");
+    let proposed = Message::read(other.as_bytes()).unwrap();
+    assert_eq!(
+        proposed
+            .review(&current, &attendee)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "icalkit.scheduling.authorization-denied"
+    );
+}
+
+#[test]
 fn review_authorization_borrows_inputs_and_apply_consumes_it() {
     const HELD: &[u8] = include_bytes!(
         "../../icalkit-conformance/tests/fixtures/break_itip_methods/held_series.ics"

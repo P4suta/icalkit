@@ -621,26 +621,25 @@ mod attacker {
         );
     }
 
-    /// The first attack `SECURITY.md` names, from both methods an attendee may send.
-    ///
-    /// A `REPLY` restating `DTSTART`, `LOCATION` and `RRULE` must describe none of them, and a `COUNTER` moving `DTSTART` must be refused outright.
     #[test]
-    fn an_attendee_cannot_move_a_meeting() {
+    fn an_attendee_proposes_a_time_change_only_in_a_counter() {
         let reply = judge(HELD, REPLY_MOVES_THE_MEETING, BO);
-        assert!(reply.allowed(), "a plain acceptance is a normal reply");
-        assert_eq!(reply.reason, Some(TransitionReason::ParticipationChanged));
-        assert!(
-            !reply.touches("DTSTART") && !reply.touches("RRULE") && !reply.touches("LOCATION"),
-            "a REPLY described a change to a property that says when the meeting is: {reply:?}"
+        assert_eq!(
+            reply.denied,
+            Some(AuthorizationDenied::MethodForbidsField(
+                PropertyOccurrence::named(b"DTSTART", 0)
+            ))
         );
 
         let counter = judge(HELD, COUNTER_MOVES_THE_MEETING, BO);
+        assert_eq!(counter.reason, Some(TransitionReason::CounterProposed));
         assert_eq!(
-            counter.denied,
-            Some(AuthorizationDenied::MethodForbidsField(
-                PropertyOccurrence::named(b"DTSTART", 0)
-            )),
-            "a COUNTER that moves the meeting must be refused on the field rule"
+            counter.changes,
+            [(
+                "DTSTART".to_owned(),
+                0,
+                "DTSTART:20260310T230000Z".to_owned()
+            )]
         );
     }
 
@@ -735,18 +734,15 @@ mod attacker {
         assert_eq!(folded.role, Some(ActorRole::Attendee));
     }
 
-    /// A `REPLY` that also rewrites `ORGANIZER` is the same attack through the other method.
-    ///
-    /// It survives, and for a reason unrelated to the field rule: `describe_reply` looks at the answering `ATTENDEE` line and nothing else, so the reply's `ORGANIZER` is never diffed.
-    /// The case is here so that a later change to the reply diff cannot open the hole the `COUNTER` case above already shows.
     #[test]
-    fn a_reply_never_describes_the_organizer_line() {
+    fn a_reply_must_echo_the_organizer() {
         let answer = judge(HELD, REPLY_REWRITES_ORGANIZER, BO);
-        assert!(
-            !answer.touches("ORGANIZER"),
-            "a REPLY described a change to the ORGANIZER line: {answer:?}"
+        assert_eq!(
+            answer.denied,
+            Some(AuthorizationDenied::MethodForbidsField(
+                PropertyOccurrence::named(b"ORGANIZER", 0)
+            ))
         );
-        assert_eq!(answer.reason, Some(TransitionReason::ParticipationChanged));
     }
 
     /// The same takeover, reached by a party who is not on the attendee list at all.
@@ -780,16 +776,15 @@ mod attacker {
 
         let held = subject(HELD);
         let moved = subject(HELD_AFTER_SEQUENCE_RAISED);
-        // An attendee's answer rather than an attendee's counter: every `COUNTER` in this chapter is one the field rule now refuses, and a commitment is only made about a decision the gate reached.
-        let calendar = subject(REPLY_MOVES_THE_MEETING);
+        let calendar = subject(COUNTER_MOVES_THE_MEETING);
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let mut sink: Vec<Diagnostic> = Vec::new();
         let message = ItipMessage::read(&calendar, limits, &mut meter, &mut sink)
-            .expect("the reply reads as a message");
+            .expect("the counter reads as a message");
 
         let first = evaluate_message(&message, held.component(), PartyId::new(BO))
-            .expect("the gate authorized this reply when it was first described");
+            .expect("the attendee can propose a new start at the original revision");
         let commitment = Commitment::of(&first);
         assert!(
             first.honors(&commitment),

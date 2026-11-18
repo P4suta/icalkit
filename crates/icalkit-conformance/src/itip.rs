@@ -611,7 +611,15 @@ mod tests {
                 actor: BO,
                 zoned: false,
                 // RFC 5546 section 3.2.7 permits a counterproposal with a different start time.
-                // The icalkit authorization policy reserves `DTSTART` changes for the organizer.
+                outcome: Outcome::Allowed(TransitionReason::CounterProposed, Some(2)),
+            },
+            Case {
+                id: "reply-proposing-a-new-time",
+                section: "3.2.3",
+                held: HELD_SERIES,
+                message: REPLY_WITH_A_NEW_DTSTART,
+                actor: BO,
+                zoned: false,
                 outcome: Outcome::Refused(AuthorizationDenied::MethodForbidsField(
                     PropertyOccurrence::named(b"DTSTART", 0),
                 )),
@@ -691,7 +699,6 @@ mod tests {
         for (fixture, actor, index, status) in [
             (REPLY_ACCEPTED, BO, 1, &b"ACCEPTED"[..]),
             (REPLY_DECLINED, CY, 0, b"DECLINED"),
-            (REPLY_WITH_A_NEW_DTSTART, BO, 1, b"ACCEPTED"),
         ] {
             let mut meter = Meter::new(limits);
             let mut sink: Vec<Diagnostic> = Vec::new();

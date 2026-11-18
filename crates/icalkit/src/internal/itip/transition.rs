@@ -25,6 +25,7 @@ use core::fmt::Debug;
 use crate::internal::core::ProposedChange;
 
 use crate::internal::itip::state::PropertyOccurrence;
+use crate::internal::itip::{Method, MethodRule};
 
 /// What kind of change a message describes, in RFC 5546's own terms.
 ///
@@ -171,19 +172,11 @@ pub enum FieldRule {
     EitherParty,
 }
 
-/// Which party may change the property `name`.
-///
-/// The default is [`FieldRule::OrganizerOnly`], `X-` names included.
-/// An unrecognized property arriving in a `REPLY` is exactly the shape of an attendee smuggling state into an organizer's copy, and a permissive default there is a hole no test written against the properties we know will ever find.
-/// The price is the failure mode we prefer: the first real interoperability report is "this legitimate `COUNTER` was refused", not a silent write.
-///
-/// # `ORGANIZER` and `SEQUENCE` are the organizer's, and echoing one is not changing it
-///
-/// Both were [`FieldRule::EitherParty`] on the reading that an attendee's `COUNTER` legally *restates* them.
-/// That is true and is not what the rule decides: a transition holds only occurrences whose octets differ from the ones held, so a restatement produces no entry and is never asked about.
-/// What the permission actually bought was the other case — an attendee-authored message whose `ORGANIZER` line names somebody else, which RFC 5546 section 3.2.7 gives an attendee no authority over and which hands the meeting away, and one whose `SEQUENCE` is a number section 2.1.4 makes the *organizer's* to increment and which the revision gate then reads back as the version to refuse everything older than.
+/// The fields an actor may change or propose under a method's component constraints.
+/// RFC 5546 sections 3.2.7 and 3.4.7 permit alternate event and task schedules.
+/// The organizer controls the revision and the organizer identity under every method.
 #[must_use]
-pub fn field_rule(name: &[u8]) -> FieldRule {
+pub fn field_rule(constraints: MethodRule, name: &[u8]) -> FieldRule {
     for (spelling, rule) in [
         (&b"ATTENDEE"[..], FieldRule::AttendeeOwn),
         (b"REQUEST-STATUS", FieldRule::EitherParty),
@@ -196,12 +189,34 @@ pub fn field_rule(name: &[u8]) -> FieldRule {
             return rule;
         }
     }
+    if constraints.method() == Method::Counter
+        && constraints.properties().iter().any(|row| {
+            row.is_named(name)
+                && !row.presence().is_forbidden()
+                && matches!(
+                    row.name(),
+                    b"DTSTART"
+                        | b"DTEND"
+                        | b"DUE"
+                        | b"DURATION"
+                        | b"RRULE"
+                        | b"RDATE"
+                        | b"EXDATE"
+                        | b"LOCATION"
+                        | b"SUMMARY"
+                        | b"DESCRIPTION"
+                        | b"PRIORITY"
+                )
+        })
+    {
+        return FieldRule::EitherParty;
+    }
     FieldRule::OrganizerOnly
 }
 
 /// Whether `name` is a property that says when something happens.
 ///
-/// What separates [`TransitionReason::Rescheduled`] from [`TransitionReason::Updated`], and the list an attendee may never write: moving a meeting by replying to it is the first attack `SECURITY.md` names.
+/// A change to a time property distinguishes a reschedule from an ordinary update.
 #[must_use]
 pub fn is_time_property(name: &[u8]) -> bool {
     [
@@ -329,13 +344,14 @@ impl ApplyReport {
 
 #[cfg(test)]
 mod tests {
-    use crate::internal::core::{ProposedChange, RawText};
+    use crate::internal::core::{ComponentKind, ProposedChange, RawText};
 
     use super::{
         ApplyReport, FieldRule, Transition, TransitionReason, WriteRejected, field_rule,
         is_time_property,
     };
     use crate::internal::itip::state::PropertyOccurrence;
+    use crate::internal::itip::{Method, MethodRule};
 
     fn line(text: &[u8]) -> ProposedChange {
         ProposedChange::Replace(RawText::from_bytes(text))
@@ -396,27 +412,58 @@ mod tests {
     /// The default is the closed one, and the exceptions are named rather than inferred.
     #[test]
     fn an_unknown_property_belongs_to_the_organizer() {
-        assert_eq!(field_rule(b"X-VENDOR-THING"), FieldRule::OrganizerOnly);
-        assert_eq!(field_rule(b"SUMMARY"), FieldRule::OrganizerOnly);
-        assert_eq!(field_rule(b"DTSTART"), FieldRule::OrganizerOnly);
-        assert_eq!(field_rule(b"attendee"), FieldRule::AttendeeOwn);
-        assert_eq!(field_rule(b"REQUEST-STATUS"), FieldRule::EitherParty);
+        let reply = MethodRule::lookup(Method::Reply, ComponentKind::Event).unwrap();
+        assert_eq!(
+            field_rule(reply, b"X-VENDOR-THING"),
+            FieldRule::OrganizerOnly
+        );
+        assert_eq!(field_rule(reply, b"SUMMARY"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(reply, b"DTSTART"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(reply, b"attendee"), FieldRule::AttendeeOwn);
+        assert_eq!(field_rule(reply, b"REQUEST-STATUS"), FieldRule::EitherParty);
     }
 
     /// The two properties an attendee may echo and may not write: who runs the meeting, and which revision of it this is.
     #[test]
     fn the_organizer_line_and_the_revision_are_not_an_attendees_to_change() {
-        assert_eq!(field_rule(b"ORGANIZER"), FieldRule::OrganizerOnly);
-        assert_eq!(field_rule(b"organizer"), FieldRule::OrganizerOnly);
-        assert_eq!(field_rule(b"SEQUENCE"), FieldRule::OrganizerOnly);
+        let counter = MethodRule::lookup(Method::Counter, ComponentKind::Event).unwrap();
+        assert_eq!(field_rule(counter, b"ORGANIZER"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(counter, b"organizer"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(counter, b"SEQUENCE"), FieldRule::OrganizerOnly);
         assert_eq!(
-            field_rule(b"DTSTAMP"),
+            field_rule(counter, b"DTSTAMP"),
             FieldRule::EitherParty,
             "a reply states when it was written, and section 2.1.5 orders replies by it"
         );
     }
 
-    /// The list an attendee may never write, which is the first attack `SECURITY.md` names.
+    #[test]
+    fn each_counter_uses_the_scheduling_fields_for_its_component() {
+        let event = MethodRule::lookup(Method::Counter, ComponentKind::Event).unwrap();
+        let todo = MethodRule::lookup(Method::Counter, ComponentKind::Todo).unwrap();
+        for counter in [event, todo] {
+            for name in [
+                &b"dtstart"[..],
+                b"DURATION",
+                b"RRULE",
+                b"RDATE",
+                b"EXDATE",
+                b"LOCATION",
+                b"SUMMARY",
+                b"DESCRIPTION",
+                b"PRIORITY",
+            ] {
+                assert_eq!(field_rule(counter, name), FieldRule::EitherParty);
+            }
+            assert_eq!(field_rule(counter, b"ATTENDEE"), FieldRule::AttendeeOwn);
+            assert_eq!(field_rule(counter, b"X-LOCAL"), FieldRule::OrganizerOnly);
+        }
+        assert_eq!(field_rule(event, b"DTEND"), FieldRule::EitherParty);
+        assert_eq!(field_rule(todo, b"DUE"), FieldRule::EitherParty);
+        assert_eq!(field_rule(event, b"DUE"), FieldRule::OrganizerOnly);
+        assert_eq!(field_rule(todo, b"DTEND"), FieldRule::OrganizerOnly);
+    }
+
     #[test]
     fn the_properties_that_move_a_meeting_are_named() {
         assert!(is_time_property(b"DTSTART"));

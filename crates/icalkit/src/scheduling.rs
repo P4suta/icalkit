@@ -552,6 +552,7 @@ impl<'a> Review<'a> {
     }
 
     /// Turn this review into a single-use authorization capability.
+    /// For a `COUNTER`, the organizer chooses whether to accept the proposed changes.
     #[must_use]
     pub fn authorize(self) -> AuthorizedChange<'a> {
         AuthorizedChange {
@@ -578,6 +579,7 @@ impl AuthorizedChange<'_> {
     }
 
     /// Apply to a private clone of the reviewed state, consuming this authorization.
+    /// After accepting a `COUNTER`, the organizer reschedules by sending a `REQUEST`.
     pub fn apply(mut self) -> Result<Calendar, Error> {
         let (mut document, policy) = match self.target {
             ReviewTarget::Held(current) => (current.document.clone(), current.policy),

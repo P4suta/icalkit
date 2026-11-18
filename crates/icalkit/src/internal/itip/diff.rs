@@ -23,9 +23,12 @@ use crate::internal::tz::wall_clock;
 
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::Method;
-use crate::internal::itip::party::{ANSWERED_AT, PartyId};
+use crate::internal::itip::party::{ANSWERED_AT, Party, PartyId};
 use crate::internal::itip::state::{PropertyOccurrence, ScheduledComponent};
-use crate::internal::itip::transition::{Transition, TransitionReason, is_time_property};
+use crate::internal::itip::table::MethodRule;
+use crate::internal::itip::transition::{
+    FieldRule, Transition, TransitionReason, field_rule, is_time_property,
+};
 
 /// What `message` would change about `current`, described and not made.
 ///
@@ -56,8 +59,8 @@ pub fn describe_payload(
     if method == Method::Refresh {
         return Transition::new(TransitionReason::RefreshRequested);
     }
-    let offered = lines(payload);
-    let held = lines(current);
+    let offered = lines(payload, |_| true);
+    let held = lines(current, |_| true);
     let moved = offered.iter().any(|(at, line)| {
         is_time_property(at.name()) && held.get(at).is_none_or(|kept| kept != line)
     });
@@ -162,10 +165,36 @@ pub fn attendee_occurrence_of(
     })
 }
 
-/// Every property of `component`, keyed by the occurrence it is.
+/// Find a supplied organizer field that differs from the original event request.
+pub(super) fn changed_reply_field(
+    constraints: MethodRule,
+    payload: &dyn ScheduledComponent,
+    current: &dyn ScheduledComponent,
+) -> Option<PropertyOccurrence> {
+    let organizer_field = |name: &[u8]| field_rule(constraints, name) == FieldRule::OrganizerOnly;
+    let held = lines(current, organizer_field);
+    lines(payload, organizer_field)
+        .into_iter()
+        .find_map(|(at, line)| {
+            let matches = match at.name() {
+                b"SEQUENCE" => payload.sequence().value() == current.sequence().value(),
+                b"ORGANIZER" if line.get(at.name().len()) == Some(&b':') => payload
+                    .organizer()
+                    .and_then(Party::address)
+                    .is_some_and(|who| current.organizer().is_some_and(|party| party.is(who))),
+                _ => held.get(&at) == Some(&line),
+            };
+            (!matches).then_some(at)
+        })
+}
+
+/// The selected properties of `component`, keyed by occurrence.
 ///
 /// Counted per normalized identity rather than per name as written, because that is the key the answer is filed under: an implementation reporting `DTSTART` on one line and `dtstart` on another would otherwise count two first occurrences and file both under one key, and the second would silently replace the first.
-fn lines(component: &dyn ScheduledComponent) -> BTreeMap<PropertyOccurrence, &[u8]> {
+fn lines(
+    component: &dyn ScheduledComponent,
+    include: impl Fn(&[u8]) -> bool,
+) -> BTreeMap<PropertyOccurrence, &[u8]> {
     let mut seen: BTreeMap<PropertyId, usize> = BTreeMap::new();
     let mut found = BTreeMap::new();
     for index in 0..component.property_count() {
@@ -175,6 +204,9 @@ fn lines(component: &dyn ScheduledComponent) -> BTreeMap<PropertyOccurrence, &[u
         ) else {
             continue;
         };
+        if !include(name) {
+            continue;
+        }
         let id = PropertyId::from_name(name);
         let at = seen.entry(id.clone()).or_insert(0);
         found.insert(PropertyOccurrence::new(id, *at), line);

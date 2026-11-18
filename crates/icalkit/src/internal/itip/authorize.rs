@@ -36,7 +36,9 @@
 
 use crate::internal::core::{ComponentKind, Instant, PropertyId, ProposedChange};
 
-use crate::internal::itip::diff::{attendee_occurrence_of, describe_payload, reason_for};
+use crate::internal::itip::diff::{
+    attendee_occurrence_of, changed_reply_field, describe_payload, reason_for,
+};
 use crate::internal::itip::identity::{MessageIdentity, Revision, Uid};
 use crate::internal::itip::message::ItipMessage;
 use crate::internal::itip::method::{ActorRole, Method};
@@ -440,10 +442,15 @@ fn evaluate_selected<'a>(
     }
     if message.method() == Method::Reply {
         check_answer(payload, current)?;
+        if constraints.kind() == ComponentKind::Event
+            && let Some(at) = changed_reply_field(constraints, payload, current)
+        {
+            return Err(AuthorizationDenied::MethodForbidsField(at));
+        }
     }
 
     let described = describe_payload(message.method(), payload, current);
-    check_fields(&described, current, role, actor)?;
+    check_fields(constraints, &described, current, role, actor)?;
     let transition = settle(message.method(), prior, (payload, current), described);
     Ok(Authorization {
         message,
@@ -771,6 +778,7 @@ fn check_nesting(
 /// "Its own" is two questions and not one.
 /// The occurrence has to be the line this actor sits at, **and** the line the change would leave behind has to still name this actor: a `COUNTER` replacing the sender's own `ATTENDEE` line with a party the meeting never invited passes the first question and is the substitution of a stranger for the sender, which takes the sender off the list and puts somebody nobody asked for on it, on one authorized change.
 fn check_fields(
+    constraints: MethodRule,
     transition: &Transition,
     current: &dyn ScheduledComponent,
     role: ActorRole,
@@ -781,7 +789,7 @@ fn check_fields(
     }
     let own = attendee_occurrence_of(current, actor);
     for (at, change) in transition.changes() {
-        let permitted = match field_rule(at.name()) {
+        let permitted = match field_rule(constraints, at.name()) {
             FieldRule::EitherParty => true,
             FieldRule::AttendeeOwn => own.as_ref() == Some(at) && keeps_the_actor(change, actor),
             FieldRule::OrganizerOnly => false,

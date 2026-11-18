@@ -18,30 +18,14 @@ use icalkit_conformance::internal::core::{
     ComponentKind, Diagnostic, Instant, Limits, Meter, ProposedChange,
 };
 use icalkit_conformance::internal::itip::{
-    Attendee, AuthorizationDenied, InstanceRef, ItipMessage, MessageError, Party, PartyId,
-    PropertyOccurrence, ScheduledComponent, SequenceRead, TransitionReason, evaluate_message,
+    Attendee, InstanceRef, ItipMessage, MessageError, Party, PartyId, PropertyOccurrence,
+    ScheduledComponent, SequenceRead, TransitionReason, evaluate_message,
 };
 
 /// The organizer every generated message names.
 const CHAIR: &str = "mailto:chair@example.com";
 /// The one attendee every generated message names.
 const BO: &str = "mailto:bo@example.test";
-
-/// What the gate answered, as a label a table can compare.
-fn label(
-    answer: Result<icalkit_conformance::internal::itip::Authorization<'_>, AuthorizationDenied>,
-) -> &'static str {
-    match answer {
-        Ok(authorized) if authorized.reason() == TransitionReason::CounterProposed => {
-            "counter-proposed"
-        },
-        Ok(_) => "allowed: something else",
-        Err(AuthorizationDenied::MethodForbidsField(at)) if at.name() == b"DTSTART" => {
-            "refused: DTSTART is the organizer's"
-        },
-        Err(_) => "refused: something else",
-    }
-}
 
 // -------------------------------------------------------------------------------------------
 // A generated component.
@@ -294,16 +278,14 @@ fn nesting_past_the_depth_ceiling_is_refused() {
 #[test]
 fn a_counter_chain_a_thousand_deep_terminates_with_a_reported_outcome() {
     let held = invitation(b"chain@example.test");
-    let mut answers: Vec<&'static str> = Vec::new();
+    let start = PropertyOccurrence::named(b"DTSTART", 0);
     let started = WallClock::now();
     for round in 0..1_000_u32 {
+        let proposed_start = format!("2026041{}T140000Z", round % 10);
         let proposal = Made::of(ComponentKind::Event)
             .with(b"UID", b"chain@example.test")
             .with(b"DTSTAMP", b"20260302T080000Z")
-            .with(
-                b"DTSTART",
-                format!("2026041{}T140000Z", round % 10).as_bytes(),
-            )
+            .with(b"DTSTART", proposed_start.as_bytes())
             .with(b"SUMMARY", b"Budget review")
             .with(b"SEQUENCE", b"0")
             .with(b"ORGANIZER", CHAIR.as_bytes())
@@ -311,20 +293,21 @@ fn a_counter_chain_a_thousand_deep_terminates_with_a_reported_outcome() {
         let calendar = message(b"COUNTER", proposal);
         let mut meter = Meter::new(Limits::DEFAULT);
         let mut sink: Vec<Diagnostic> = Vec::new();
-        let answer = match ItipMessage::read(&calendar, Limits::DEFAULT, &mut meter, &mut sink) {
-            Err(_) => "unread",
-            Ok(read) => label(evaluate_message(&read, &held, PartyId::new(BO))),
-        };
-        if !answers.contains(&answer) {
-            answers.push(answer);
+        let read = ItipMessage::read(&calendar, Limits::DEFAULT, &mut meter, &mut sink).unwrap();
+        let authorized = evaluate_message(&read, &held, PartyId::new(BO)).unwrap();
+        assert_eq!(authorized.reason(), TransitionReason::CounterProposed);
+        let transition = authorized.transition();
+        if proposed_start == "20260410T140000Z" {
+            assert!(transition.is_empty());
+        } else {
+            assert_eq!(transition.len(), 1);
+            assert!(matches!(
+                transition.change(&start),
+                Some(ProposedChange::Replace(line))
+                    if line.as_bytes() == format!("DTSTART:{proposed_start}").as_bytes()
+            ));
         }
     }
-    answers.sort_unstable();
-    assert_eq!(
-        answers,
-        vec!["counter-proposed", "refused: DTSTART is the organizer's"],
-        "every round of the chain answered: the round that proposes the time already held          changes nothing, and every round that moves it is refused"
-    );
     assert!(started.elapsed().as_secs() < 60);
 }
 
