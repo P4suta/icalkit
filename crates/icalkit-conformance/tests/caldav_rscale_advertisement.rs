@@ -59,6 +59,10 @@ fn advertisement_requires_the_probed_resource() {
             false,
         ),
         ("/cal/?view=1", "/cal/?view=2", false),
+        ("/users/~alice/c/", "/users/%7ealice/%63/", true),
+        ("/a%2fb/", "/a%2Fb/", true),
+        ("/a/b/", "/a%2Fb/", false),
+        ("/Cal/", "/%63al/", false),
     ] {
         let body = response("<supported-rscale-set xmlns=\"urn:ietf:params:xml:ns:caldav\"/>");
         let xml = std::str::from_utf8(body.body())

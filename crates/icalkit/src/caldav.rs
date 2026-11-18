@@ -4,6 +4,7 @@
 
 //! Sans-I/O CalDAV client and server workflow vocabulary.
 
+mod resource;
 mod rscale;
 
 use alloc::borrow::Cow;
@@ -986,7 +987,11 @@ fn calendar_data(response: &crate::internal::dav::DavResponse) -> Result<Option<
     Calendar::parse(payload.as_bytes()).map(Some)
 }
 
-fn decode_sync(response: &WireResponse, policy: ResourcePolicy) -> Result<SyncResult, Error> {
+fn decode_sync(
+    response: &WireResponse,
+    policy: ResourcePolicy,
+    collection: &str,
+) -> Result<SyncResult, Error> {
     let body = read_multistatus(response, policy)?;
     let token = body
         .sync_token
@@ -1000,6 +1005,16 @@ fn decode_sync(response: &WireResponse, policy: ResourcePolicy) -> Result<SyncRe
             .as_str()
             .map(str::to_string)
             .map_err(|_| Error::single("icalkit.caldav.href-invalid"))?;
+        if matches!(
+            response.body,
+            ResponseBody::Status(Status::INSUFFICIENT_STORAGE)
+        ) && resource::same_resource(collection, &href)
+        {
+            if token.is_none() {
+                return Err(Error::single("icalkit.caldav.response-truncated"));
+            }
+            continue;
+        }
         let removed = matches!(
             response.body,
             ResponseBody::Status(status) if matches!(status.code(), 404 | 410)
@@ -1856,8 +1871,9 @@ impl Client {
             ],
             body,
         );
+        let collection = uri.to_string();
         Ok(Operation::new(request, move |response| {
-            decode_sync(&response, policy)
+            decode_sync(&response, policy, &collection)
         }))
     }
 

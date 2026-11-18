@@ -29,6 +29,40 @@ fn header<'a>(headers: &'a [Header], name: &str) -> Option<&'a [u8]> {
 }
 
 #[test]
+fn a_collection_storage_status_requires_a_resume_token_and_is_not_a_member() {
+    for (href, token, expected_changes) in [
+        ("/%63al/", "", None),
+        (
+            "/%63al/",
+            "<d:sync-token>data:,next</d:sync-token>",
+            Some(1),
+        ),
+        ("/cal/b.ics", "", Some(2)),
+    ] {
+        let body = format!(
+            r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/a.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response><d:response><d:href>{href}</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status></d:response>{token}</d:multistatus>"#
+        );
+        let mut sync = Client::new().sync("/cal/", None).unwrap();
+        sync.accept(WireResponse::new(207, Vec::new(), body.into_bytes()))
+            .unwrap();
+        if let Some(count) = expected_changes {
+            let page = sync.finish().unwrap();
+            assert_eq!(page.changes().len(), count);
+            assert_eq!(page.changes()[0].href(), "/cal/a.ics");
+            assert_eq!(
+                page.token().map(SyncToken::as_bytes),
+                (!token.is_empty()).then_some(b"data:,next".as_slice())
+            );
+        } else {
+            assert_eq!(
+                sync.finish().unwrap_err().code().as_str(),
+                "icalkit.caldav.response-truncated"
+            );
+        }
+    }
+}
+
+#[test]
 fn discovery_walks_from_principal_to_calendar_home_and_outbox() {
     let client = Client::new();
     let mut operation = client.discover("/").unwrap();
