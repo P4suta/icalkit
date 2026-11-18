@@ -364,6 +364,8 @@ const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     ".github/workflows/ci.yml",
     ".github/workflows/candidate.yml",
     ".github/workflows/codeql.yml",
+    "Justfile",
+    "lefthook.yml",
 ];
 
 /// The documents whose cross-file promises are held by [`repository_documentation_violations`].
@@ -384,6 +386,10 @@ struct RepositoryDocuments<'a> {
 /// Check the repository-owned half of the public hosting policy without requiring a network.
 fn collect_repository_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
+    Ok(collect_repository_violations_at(&workspace))
+}
+
+fn collect_repository_violations_at(workspace: &Path) -> Vec<String> {
     let mut violations = Vec::new();
     let mut sources = Vec::new();
 
@@ -399,7 +405,12 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
                 violations.push(format!("{path}: required repository file is missing"));
                 sources.push((*path, String::new()));
             },
-            Err(error) => return Err(error),
+            Err(error) => {
+                violations.push(format!(
+                    "{path}: required repository file could not be read: {error}"
+                ));
+                sources.push((*path, String::new()));
+            },
         }
     }
 
@@ -425,11 +436,16 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
     violations.extend(ci_source_violations(
         source(".github/workflows/ci.yml"),
         source(".github/workflows/candidate.yml"),
-        &fs::read_to_string(workspace.join(JUSTFILE))?,
-        &fs::read_to_string(workspace.join("lefthook.yml"))?,
+        source(JUSTFILE),
+        source("lefthook.yml"),
     ));
-    violations.extend(development::collect(&workspace)?);
-    Ok(violations)
+    match development::collect(workspace) {
+        Ok(findings) => violations.extend(findings),
+        Err(error) => violations.push(format!(
+            "development configuration could not be checked: {error}"
+        )),
+    }
+    violations
 }
 
 /// Hold the public entry points, release posture, automation, and ownership policy together.
@@ -739,13 +755,36 @@ fn public_api_workflow_violations(workflow: &str) -> Vec<String> {
 
 fn mise_installation_violations(workflow: &str) -> Vec<String> {
     let mut violations = Vec::new();
-    for (index, line) in workflow.lines().enumerate() {
+    let mut lines = workflow.lines().enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
         let Some(arguments) = line.trim().strip_prefix("install_args:") else {
             continue;
         };
         let arguments = arguments
             .split_once('#')
-            .map_or(arguments, |(value, _)| value);
+            .map_or(arguments, |(value, _)| value)
+            .trim();
+        let indentation = line.len().saturating_sub(line.trim_start().len());
+        while lines
+            .peek()
+            .is_some_and(|(_, next)| next.trim().is_empty() || next.trim_start().starts_with('#'))
+        {
+            let _ = lines.next();
+        }
+        let continued = lines.peek().is_some_and(|(_, next)| {
+            next.len().saturating_sub(next.trim_start().len()) > indentation
+        });
+        if arguments.is_empty()
+            || continued
+            || arguments.contains(['\'', '"', '|', '>'])
+            || arguments.starts_with(['[', '{', '&', '*', '!'])
+        {
+            violations.push(format!(
+                "mise install_args requires an unquoted, single-line tool list at line {}",
+                index.saturating_add(1)
+            ));
+            continue;
+        }
         let tools: Vec<_> = arguments.split_whitespace().collect();
         if tools.contains(&"actionlint") && !tools.contains(&"shellcheck") {
             violations.push(format!(
@@ -2662,22 +2701,11 @@ impl Row {
 
 /// Read the diagnostic registry's table from its fenced text block.
 fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
-    let mut lines = document.lines();
-    if !lines.by_ref().any(|line| line == "```text") {
-        return Err(format!(
-            "{GOLDEN_LIST}: no fenced text block contains the registry"
-        ));
-    }
+    let lines = registry_lines(document)?;
     let mut rows = Vec::new();
     let mut header: Option<Vec<String>> = None;
     let mut in_table = false;
-    let mut closed = false;
-
-    for line in lines.by_ref() {
-        if line == "```" {
-            closed = true;
-            break;
-        }
+    for line in lines {
         match table_cells(line) {
             None if in_table && !line.trim().is_empty() => {
                 return Err(format!(
@@ -2695,16 +2723,6 @@ fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
         }
     }
 
-    if !closed {
-        return Err(format!(
-            "{GOLDEN_LIST}: the registry text block has no closing fence"
-        ));
-    }
-    if lines.any(|line| line == "```text") {
-        return Err(format!(
-            "{GOLDEN_LIST}: multiple text blocks compete for the registry"
-        ));
-    }
     if !in_table {
         return Err(format!(
             "{GOLDEN_LIST}: no `{columns}` table was found, so the declarations would have been \
@@ -2716,6 +2734,80 @@ fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
         return Err(format!("{GOLDEN_LIST}: the table has a header and no rows"));
     }
     Ok(rows)
+}
+
+#[derive(Clone, Copy)]
+struct CodeFence {
+    marker: u8,
+    width: usize,
+}
+
+impl CodeFence {
+    fn parse(line: &str) -> Option<(Self, &str)> {
+        let trimmed = line.trim_start_matches(' ');
+        if line.len().saturating_sub(trimmed.len()) > 3 {
+            return None;
+        }
+        let marker = *trimmed.as_bytes().first()?;
+        if !matches!(marker, b'`' | b'~') {
+            return None;
+        }
+        let width = trimmed.bytes().take_while(|byte| *byte == marker).count();
+        let info = trimmed.get(width..)?.trim_matches([' ', '\t']);
+        if width < 3 || (marker == b'`' && info.contains('`')) {
+            return None;
+        }
+        Some((Self { marker, width }, info))
+    }
+
+    fn closes(self, line: &str) -> bool {
+        Self::parse(line).is_some_and(|(closing, info)| {
+            closing.marker == self.marker && closing.width >= self.width && info.is_empty()
+        })
+    }
+}
+
+enum RegistryFence<'a> {
+    Example(CodeFence),
+    Registry(CodeFence, Vec<&'a str>),
+}
+
+fn registry_lines(document: &str) -> Result<Vec<&str>, String> {
+    let mut open: Option<RegistryFence<'_>> = None;
+    let mut registry = None;
+    for line in document.lines() {
+        if let Some(active) = open.as_mut() {
+            let marker = match active {
+                RegistryFence::Example(marker) | RegistryFence::Registry(marker, _) => *marker,
+            };
+            if marker.closes(line) {
+                if let Some(RegistryFence::Registry(_, lines)) = open.take() {
+                    registry = Some(lines);
+                }
+            } else if let RegistryFence::Registry(_, lines) = active {
+                lines.push(line);
+            }
+            continue;
+        }
+        if let Some((marker, info)) = CodeFence::parse(line) {
+            open = Some(if info == "text" {
+                if registry.is_some() {
+                    return Err(format!(
+                        "{GOLDEN_LIST}: multiple text blocks compete for the registry"
+                    ));
+                }
+                RegistryFence::Registry(marker, Vec::new())
+            } else {
+                RegistryFence::Example(marker)
+            });
+        }
+    }
+    if matches!(open, Some(RegistryFence::Registry(..))) {
+        return Err(format!(
+            "{GOLDEN_LIST}: the registry text block has no closing fence"
+        ));
+    }
+    registry.ok_or_else(|| format!("{GOLDEN_LIST}: no fenced text block contains the registry"))
 }
 
 /// Check that the header names the columns this scan reads by position.
@@ -3868,6 +3960,85 @@ name = \"icalkit\"
     }
 
     #[test]
+    fn mise_installation_guards_refuse_unsupported_yaml_scalars() {
+        for arguments in [
+            "'cargo:cargo-deny'",
+            "\"cargo:cargo-deny\"",
+            "|-\n  cargo:cargo-deny",
+            ">-\n  cargo:cargo-deny",
+            "'actionlint'",
+            "\"actionlint\"",
+            ">\n  actionlint",
+            "rust\n  actionlint",
+            "just\n\n  cargo:cargo-deny",
+        ] {
+            assert!(
+                !super::mise_installation_violations(&format!("install_args: {arguments}\n"))
+                    .is_empty(),
+                "unsupported scalar hid an installation dependency: {arguments}"
+            );
+        }
+        assert_eq!(
+            super::mise_installation_violations(
+                "install_args: rust cargo:cargo-deny actionlint shellcheck\n"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn repository_findings_survive_development_configuration_failures() {
+        let fixture = CandidateFixture::init("");
+        let root = super::workspace_root().unwrap();
+        for path in super::REQUIRED_REPOSITORY_FILES.iter().copied().chain([
+            "Justfile",
+            "lefthook.yml",
+            "mise.toml",
+            "rust-toolchain.toml",
+        ]) {
+            let destination = fixture.0.join(path);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(root.join(path), destination).unwrap();
+        }
+        assert_eq!(
+            super::collect_repository_violations_at(&fixture.0),
+            Vec::<String>::new()
+        );
+        std::fs::remove_file(fixture.0.join("SECURITY.md")).unwrap();
+        let path = fixture.0.join("mise.toml");
+        let mise = std::fs::read_to_string(&path).unwrap();
+        assert!(mise.lines().any(|line| line.starts_with("shellcheck =")));
+        std::fs::write(
+            path,
+            mise.lines()
+                .filter(|line| !line.starts_with("shellcheck ="))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let findings = super::collect_repository_violations_at(&fixture.0);
+        assert!(findings.iter().any(|finding| finding.contains("SECURITY.md: required repository file is missing")));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("shellcheck"))
+        );
+        std::fs::remove_file(fixture.0.join("Justfile")).unwrap();
+        let findings = super::collect_repository_violations_at(&fixture.0);
+        assert!(findings.iter().any(|finding| finding.contains("SECURITY.md: required repository file is missing")));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("Justfile: required repository file is missing"))
+        );
+        std::fs::create_dir(fixture.0.join("SECURITY.md")).unwrap();
+        let findings = super::collect_repository_violations_at(&fixture.0);
+        assert!(findings.iter().any(|finding| {
+            finding.contains("SECURITY.md: required repository file could not be read")
+        }));
+    }
+
+    #[test]
     fn candidate_platform_tests_install_native_hook_helpers() {
         let root = super::workspace_root().unwrap();
         let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
@@ -4877,6 +5048,48 @@ Prose, and a `|` in it, above the table.
     fn registry_tables_reject_multiple_authoritative_blocks() {
         let source = format!("{SAMPLE_GOLDEN}\n{SAMPLE_GOLDEN}");
         assert!(golden_rows(&source).is_err());
+    }
+
+    #[test]
+    fn registry_tables_ignore_nested_and_quoted_fence_examples() {
+        for (opening, closing) in [
+            ("````markdown", "````"),
+            ("~~~markdown", "~~~"),
+            ("`````rust", "`````"),
+        ] {
+            let example = format!("{opening}\n{SAMPLE_GOLDEN}{closing}\n");
+            assert!(
+                golden_rows(&example).is_err(),
+                "an example became the registry"
+            );
+            assert_eq!(
+                codes_violations(SAMPLE_DECLARATIONS, &format!("{example}\n{SAMPLE_GOLDEN}")),
+                Vec::<String>::new()
+            );
+        }
+        let mut quoted = String::new();
+        for line in SAMPLE_GOLDEN.lines() {
+            quoted.push_str("> ");
+            quoted.push_str(line);
+            quoted.push('\n');
+        }
+        assert!(golden_rows(&quoted).is_err());
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &format!("{quoted}\n{SAMPLE_GOLDEN}")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn registry_tables_follow_fence_markers_and_minimum_closing_lengths() {
+        for (opening, closing) in [("````text", "`````"), ("~~~text", "~~~~")] {
+            let source = SAMPLE_GOLDEN.replace("```text", opening);
+            let source = format!("{}{closing}\n", source.strip_suffix("```\n").unwrap());
+            assert_eq!(
+                codes_violations(SAMPLE_DECLARATIONS, &source),
+                Vec::<String>::new()
+            );
+        }
     }
 
     #[test]

@@ -41,7 +41,7 @@ test-core:
     cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features
     cargo test --locked -p icalkit --doc --no-default-features
 
-# Run the complete test suite with the non-fail-fast CI profile.
+# Run CI-profile suites after the standalone prerequisites pass.
 test-ci: test-core
     cargo nextest run --locked --status-level leak --profile ci --workspace --all-features
     cargo test --locked --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering

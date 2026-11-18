@@ -25,6 +25,7 @@ Review generated files, public API snapshots, and conformance evidence with the 
 The development Rust version is an exact pin shared by `mise.toml` and `rust-toolchain.toml`.
 Both installation declarations select the minimal profile with `rustfmt` and `clippy`.
 CI installs the configured compiler before installing Cargo tools, including the API generator that also uses a dated nightly.
+Workflow `install_args` values use unquoted, single-line tool lists so the repository gate can check installation dependencies.
 The declared MSRV remains a separate compatibility promise.
 Dependency-resolving verification recipes use `--locked` and reject changes to the committed dependency resolution.
 The ordinary test commands run the standalone core without default features before testing the workspace.
@@ -36,8 +37,11 @@ It uses that toolchain's Cargo, rustc, and rustdoc for the command and child pro
 The [cargo-public-api detector](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/toolchain.rs) reads Cargo through PATH, so the selected toolchain's binary directory precedes inherited entries.
 An unavailable selected toolchain fails without selecting or installing a replacement.
 The command disables automatic installation with `RUSTUP_AUTO_INSTALL=0`, following the [Rustup environment contract](https://rust-lang.github.io/rustup/environment-variables.html).
+API generation runs [`cargo rustdoc --locked`](https://doc.rust-lang.org/cargo/commands/cargo-rustdoc.html#manifest-options) with the pinned native target and a fixed output directory.
+[`cargo-public-api --rustdoc-json`](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/main.rs) formats the generated file without resolving dependencies.
+The command removes inherited `CARGO_BUILD_TARGET` and overrides Cargo's configured target with an explicit `--target`.
 API generation rejects Rustdoc warnings in both feature profiles.
-The [lint cap override](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/api_source.rs) is `deny`, preserving `-D warnings`.
+The Rustdoc lint cap is `deny`, preserving `-D warnings`.
 The command removes inherited `CARGO_ENCODED_RUSTDOCFLAGS` values because [Cargo gives them priority](https://doc.rust-lang.org/cargo/reference/config.html#buildrustdocflags) over `RUSTDOCFLAGS`.
 
 The repository uses squash merging so one reviewed pull request becomes one linear commit.

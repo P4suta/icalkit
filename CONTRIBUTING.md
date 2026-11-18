@@ -35,7 +35,9 @@ Build, lint, test, and documentation recipes use [Cargo's `--locked` option](htt
 Review dependency updates and their lockfile diff together.
 `just repository` rejects moving or mismatched Rust versions, missing standalone test coverage, and unlocked dependency-resolving recipes.
 The pre-commit hook runs that gate when development configuration changes.
-Commit format and spelling checks leave source files and the selected Git index content unchanged.
+Pre-commit checks leave source files and the selected Git index content unchanged.
+Staged paths select which hooks run.
+Formatting checks inspect the full working tree.
 Run the formatters and repair spelling findings before staging the intended changes.
 `just ci` also runs feature combinations, target builds, nightly API snapshots, and MSRV verification.
 The candidate qualification workflow runs those checks and the Windows and macOS tests on one complete commit ID.

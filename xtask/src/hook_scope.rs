@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write as _};
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static CONFIGURATION_ID: AtomicUsize = AtomicUsize::new(0);
 const SPELLING_FAULT: &str = "t\u{65}h";
 
-struct HookConfiguration(PathBuf);
+struct HookConfiguration {
+    repository: StagingRepository,
+    path: PathBuf,
+}
 
 impl HookConfiguration {
     fn new(job: &str) -> io::Result<Self> {
@@ -24,34 +27,17 @@ impl HookConfiguration {
         }
         // Check selection without staging files or recursively building xtask.
         let source = source.replacen(&command, "run: rustc --version", 1);
-        for _ in 0..8 {
-            let id = CONFIGURATION_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "icalkit-hook-scope-{}-{id}.yml",
-                std::process::id()
-            ));
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
-                Ok(mut file) => {
-                    let configuration = Self(path);
-                    let written = file.write_all(source.as_bytes());
-                    drop(file);
-                    written?;
-                    return Ok(configuration);
-                },
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not create a temporary hook configuration",
-        ))
+        let repository = StagingRepository::new()?;
+        let path = repository.directory.join("scope.yml");
+        fs::write(&path, source)?;
+        Ok(Self { repository, path })
     }
 
     fn matches(&self, job: &str, path: &str) -> io::Result<()> {
-        let output = Command::new("lefthook")
-            .current_dir(super::workspace_root()?)
-            .env("LEFTHOOK_CONFIG", &self.0)
+        let output = self
+            .repository
+            .command("lefthook")
+            .env("LEFTHOOK_CONFIG", &self.path)
             .args([
                 "run",
                 "pre-commit",
@@ -81,14 +67,6 @@ impl HookConfiguration {
     }
 }
 
-impl Drop for HookConfiguration {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_file(&self.0) {
-            eprintln!("could not remove temporary hook configuration: {error}");
-        }
-    }
-}
-
 fn require_scope(job: &str, paths: &[&str]) -> io::Result<()> {
     let configuration = HookConfiguration::new(job)?;
     for path in paths {
@@ -115,6 +93,27 @@ fn repository_hook_covers_development_configuration_and_rust_sources() -> io::Re
             "xtask/src/checks/development.rs",
         ],
     )
+}
+
+#[test]
+fn disabled_hooks_do_not_hide_scope_probe_execution() -> io::Result<()> {
+    let output = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "hook_scope::repository_hook_covers_development_configuration_and_rust_sources",
+            "--nocapture",
+        ])
+        .env("LEFTHOOK", "0")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "scope probe inherited hook disabling: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "the child scope test did not run: {output:?}"
+    );
+    Ok(())
 }
 
 #[test]
