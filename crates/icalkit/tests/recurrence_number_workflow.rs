@@ -34,15 +34,27 @@ fn expand(text: &str, start: &str, end: &str) -> Vec<Timestamp> {
 
 #[test]
 fn padded_clock_selectors_and_scalars_keep_the_same_occurrences() {
-    let padded = "FREQ=DAILY;BYHOUR=09;BYMINUTE=00;BYSECOND=00;COUNT=000000002;INTERVAL=000000001";
-    let canonical = "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0;COUNT=2;INTERVAL=1";
+    let padded =
+        "FREQ=DAILY;BYHOUR=09,10;BYMINUTE=00,05;BYSECOND=00,03;COUNT=000000009;INTERVAL=000000002";
+    let canonical = "FREQ=DAILY;BYHOUR=9,10;BYMINUTE=0,5;BYSECOND=0,3;COUNT=9;INTERVAL=2";
     assert_eq!(
         Rule::parse(padded).unwrap(),
         Rule::parse(canonical).unwrap()
     );
     assert_eq!(
         expand(padded, "2024-01-01T09:00:00Z", "2024-01-04T00:00:00Z"),
-        [at("2024-01-01T09:00:00Z"), at("2024-01-02T09:00:00Z")]
+        [
+            "2024-01-01T09:00:00Z",
+            "2024-01-01T09:00:03Z",
+            "2024-01-01T09:05:00Z",
+            "2024-01-01T09:05:03Z",
+            "2024-01-01T10:00:00Z",
+            "2024-01-01T10:00:03Z",
+            "2024-01-01T10:05:00Z",
+            "2024-01-01T10:05:03Z",
+            "2024-01-03T09:00:00Z",
+        ]
+        .map(at)
     );
 }
 

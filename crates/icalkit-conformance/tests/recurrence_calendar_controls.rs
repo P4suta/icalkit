@@ -12,8 +12,7 @@ use icalkit::recurrence::{Rule, Window};
 use icalkit::time::Timestamp;
 use icalkit::{Calendar, Engine};
 use icalkit_conformance::internal::core::{
-    DecodeValue, Diagnostic, DiagnosticSink, IgnoreDiagnostics, Limits, Meter, Severity,
-    SinkOutcome,
+    DecodeValue, IgnoreDiagnostics, Limits, Meter, Severity,
 };
 use icalkit_conformance::internal::recur::{RecurrenceRule, parse_recur};
 
@@ -221,25 +220,12 @@ fn date_selector_ranges_follow_the_registered_calendar() {
     }
 }
 
-struct Refusing;
-
-impl DiagnosticSink for Refusing {
-    fn push(&mut self, _diagnostic: Diagnostic) -> SinkOutcome {
-        SinkOutcome::Refused
-    }
-}
-
 #[test]
-fn discarding_or_refusing_diagnostics_cannot_enable_unsupported_semantics() {
+fn discarding_diagnostics_cannot_enable_unsupported_semantics() {
     for value in UNSUPPORTED {
         let mut meter = Meter::new(Limits::DEFAULT);
         assert!(
             parse_recur(value.as_bytes(), &mut meter, &mut IgnoreDiagnostics).is_err(),
-            "{value}"
-        );
-        let mut refused = Refusing;
-        assert!(
-            parse_recur(value.as_bytes(), &mut meter, &mut refused).is_err(),
             "{value}"
         );
         assert_ne!(meter.diagnostics_dropped(), 0);

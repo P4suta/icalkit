@@ -22,23 +22,31 @@ fn calendar(range: &str) -> String {
     )
 }
 
+fn assert_invalid_scope(error: &icalkit::Error) {
+    assert!(
+        error.issues().iter().any(|issue| {
+            issue.code().as_str() == "icalkit.validation.invalid-recurrence-range"
+        })
+    );
+}
+
 #[test]
 fn inbound_scheduling_refuses_invalid_recurrence_scope() {
+    let request =
+        |range| calendar(range).replace("VERSION:2.0\r\n", "VERSION:2.0\r\nMETHOD:REQUEST\r\n");
     for range in ["THISANDPRIOR", "UNKNOWN", "\"THISANDFUTURE\""] {
-        let request =
-            calendar(range).replace("VERSION:2.0\r\n", "VERSION:2.0\r\nMETHOD:REQUEST\r\n");
-        assert!(Message::read(request.as_bytes()).is_err());
+        assert_invalid_scope(&Message::read(request(range).as_bytes()).unwrap_err());
     }
+    Message::read(request("THISANDFUTURE").as_bytes()).unwrap();
 }
 
 #[test]
 fn outbound_scheduling_refuses_invalid_recurrence_scope() {
+    let sent = Timestamp::constant(1_704_067_200, 0);
     for range in ["THISANDPRIOR", "UNKNOWN", "\"THISANDFUTURE\""] {
-        let source = calendar(range);
-        assert!(
-            Message::request(source.as_bytes(), Timestamp::constant(1_704_067_200, 0)).is_err()
-        );
+        assert_invalid_scope(&Message::request(calendar(range).as_bytes(), sent).unwrap_err());
     }
+    Message::request(calendar("THISANDFUTURE").as_bytes(), sent).unwrap();
 }
 
 #[test]

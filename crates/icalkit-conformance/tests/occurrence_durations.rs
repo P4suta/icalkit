@@ -702,7 +702,13 @@ fn journal_periods_still_use_the_journal_point_overlap_rule() {
         filter.matches(&mut session, &original).unwrap(),
         Match::Unmatched
     );
-    assert_times(&source, "20240102T100000Z", "20240102T110000Z", &[]);
+    let document = projected_document(&source, "20240102T100000Z", "20240102T110000Z");
+    let root = document.components().next().unwrap();
+    assert!(
+        !root
+            .components()
+            .any(|component| component.is_named(b"VJOURNAL"))
+    );
 }
 
 #[test]
@@ -814,20 +820,25 @@ fn original_zoned_periods_keep_their_own_nominal_day_length() {
         "{}{components}END:VCALENDAR\r\n",
         DAYLIGHT_TIMEZONE.strip_suffix("END:VCALENDAR\r\n").unwrap()
     );
-    let document = limited_document(&source, "20240310T150000Z", "20240310T153000Z").unwrap();
-    let events = document
-        .components()
-        .next()
-        .unwrap()
-        .components()
-        .filter(|component| component.is_named(b"VEVENT"))
-        .count();
-    assert_eq!(events, 2);
+    for (start, end, expected) in [
+        ("20240310T150000Z", "20240310T153000Z", 2),
+        ("20240310T160000Z", "20240310T163000Z", 1),
+    ] {
+        let document = limited_document(&source, start, end).unwrap();
+        let events = document
+            .components()
+            .next()
+            .unwrap()
+            .components()
+            .filter(|component| component.is_named(b"VEVENT"))
+            .count();
+        assert_eq!(events, expected);
+    }
 }
 
 #[test]
 fn opaque_original_period_data_does_not_produce_a_negative_decision() {
-    let source = limited_period_source("PT1H", "RDATE;VALUE=X-FUTURE:20240103T090000Z/PT10H", 3);
+    let source = limited_period_source("PT1H", "RDATE;VALUE=X-FUTURE:20240103T090000Z/PT1H", 3);
     let document = limited_document(&source, "20240103T150000Z", "20240103T160000Z").unwrap();
     assert_eq!(
         document.components().next().unwrap().components().count(),

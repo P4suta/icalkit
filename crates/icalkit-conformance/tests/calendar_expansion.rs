@@ -246,13 +246,15 @@ fn zoned_extension_values_in_nested_components_use_utc() {
     ));
     let bytes = project(&source, "20240101T000000Z", "20240103T000000Z").unwrap();
     let document = document(&bytes);
-    for event in document
+    let events: Vec<_> = document
         .components()
         .next()
         .unwrap()
         .components()
         .filter(|c| c.is_named(b"VEVENT"))
-    {
+        .collect();
+    assert_eq!(events.len(), 2);
+    for event in events {
         let alarm = event.components().next().unwrap();
         assert_eq!(text(alarm, b"X-AT"), Some("20240102T070000Z"));
         let property = alarm.properties().find(|p| p.is_named(b"X-AT")).unwrap();
@@ -271,7 +273,7 @@ fn zoned_extension_values_in_nested_components_use_utc() {
 
 #[test]
 fn expansion_removes_obsolete_exception_rules() {
-    for recurrence in ["", "RRULE:FREQ=DAILY;COUNT=2\r\n"] {
+    for (recurrence, expected) in [("", 1), ("RRULE:FREQ=DAILY;COUNT=2\r\n", 2)] {
         let source = calendar(&component(
             "VEVENT",
             &format!("DTSTART:20240101T090000Z\r\n{recurrence}EXRULE:FREQ=WEEKLY\r\n"),
@@ -279,10 +281,12 @@ fn expansion_removes_obsolete_exception_rules() {
         let bytes = project(&source, "20240101T000000Z", "20240103T000000Z").unwrap();
         let document = document(&bytes);
         let root = document.components().next().unwrap();
-        assert!(
-            root.components()
-                .all(|event| text(event, b"EXRULE").is_none())
-        );
+        let events: Vec<_> = root
+            .components()
+            .filter(|component| component.is_named(b"VEVENT"))
+            .collect();
+        assert_eq!(events.len(), expected);
+        assert!(events.iter().all(|event| text(event, b"EXRULE").is_none()));
     }
 }
 
@@ -373,26 +377,25 @@ fn single_zoned_durations_keep_their_placed_end_across_a_clock_change() {
         let original = Calendar::parse(source.as_bytes()).unwrap();
         let bytes = project(&source, "20240309T000000Z", "20240311T000000Z").unwrap();
         let projected = Calendar::parse(&bytes).unwrap();
-        let query = Query::parse(
-            format!(
-                r#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">
+        for (start, end, expected) in [
+            ("20240310T153000Z", "20240310T160000Z", Match::Matched),
+            ("20240310T163000Z", "20240310T170000Z", Match::Unmatched),
+        ] {
+            let query = Query::parse(
+                format!(
+                    r#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">
 <C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="{kind}">
-<C:time-range start="20240310T163000Z" end="20240310T170000Z"/>
+<C:time-range start="{start}" end="{end}"/>
 </C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"#
+                )
+                .as_bytes(),
             )
-            .as_bytes(),
-        )
-        .unwrap();
-        let engine = Engine::builder().zone_database(QueryZones).build();
-        let mut session = engine.session();
-        assert_eq!(
-            query.matches(&mut session, &original).unwrap(),
-            Match::Unmatched
-        );
-        assert_eq!(
-            query.matches(&mut session, &projected).unwrap(),
-            Match::Unmatched
-        );
+            .unwrap();
+            let engine = Engine::builder().zone_database(QueryZones).build();
+            let mut session = engine.session();
+            assert_eq!(query.matches(&mut session, &original).unwrap(), expected);
+            assert_eq!(query.matches(&mut session, &projected).unwrap(), expected);
+        }
     }
 }
 
@@ -452,12 +455,18 @@ fn range_and_exact_templates_keep_their_own_temporal_parameters() {
     let bytes = project(&source, "20240101T000000Z", "20240105T000000Z").unwrap();
     let document = document(&bytes);
     let root = document.components().next().unwrap();
-    let expected = ["base", "range", "exact", "range"];
+    let expected = [
+        ("base", None),
+        ("range", Some("20240102T090000Z")),
+        ("exact", Some("20240103T090000Z")),
+        ("range", Some("20240104T090000Z")),
+    ];
     assert_eq!(root.components().count(), expected.len());
-    for (event, expected) in root.components().zip(expected) {
+    for (event, (expected, key)) in root.components().zip(expected) {
         assert_eq!(parameter_text(event, b"DTSTART", b"X-META"), Some(expected));
         assert_eq!(parameter_text(event, b"DTEND", b"X-META"), Some(expected));
-        if text(event, b"RECURRENCE-ID").is_some() {
+        if let Some(key) = key {
+            assert_eq!(text(event, b"RECURRENCE-ID"), Some(key));
             assert_eq!(
                 parameter_text(event, b"RECURRENCE-ID", b"X-META"),
                 Some(expected)

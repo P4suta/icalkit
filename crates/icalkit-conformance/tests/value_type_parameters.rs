@@ -195,17 +195,18 @@ fn valid_unknown_tokens_remain_opaque_and_produce_notes() {
 
 #[test]
 fn recognized_and_default_types_keep_their_views_and_bytes() {
-    for property in [
-        "DTSTART:20240101T090000Z",
-        "dTsTaRt;VaLuE=\"date-time\":20240101T090000Z",
+    for (property, expected) in [
+        ("DTSTART:20240101T090000Z", None),
+        (
+            "dTsTaRt;VaLuE=\"date-time\":20240101T090000Z",
+            Some(Ok(ValueType::DateTime)),
+        ),
     ] {
         let document = document(property);
         let component = document.components().next().unwrap();
         let property = component.properties().next().unwrap();
         assert!(property.value::<DateTimeValue<'_>>().is_valid());
-        if let Some(declared) = property.declared_value_type() {
-            assert_eq!(declared, Ok(ValueType::DateTime));
-        }
+        assert_eq!(property.declared_value_type(), expected);
     }
 }
 

@@ -132,8 +132,8 @@ fn every_calendar_monthly_walk_has_adjacent_normalized_months() {
         let mut previous = converted(scale, first.date());
         assert_eq!(previous.day(), 1, "{scale:?}");
         assert_eq!(first.time(), CivilTime::MIDNIGHT);
-        for period in walk.take(300) {
-            let anchor = period.anchor();
+        for _ in 0..300 {
+            let anchor = walk.next().unwrap().anchor();
             let current = converted(scale, anchor.date());
             let before = converted(scale, anchor.date().checked_add_days(-1).unwrap());
             assert_eq!(current.day(), 1, "{scale:?} {current:?}");
@@ -157,9 +157,10 @@ fn every_calendar_monthly_walk_has_adjacent_normalized_months() {
 fn every_calendar_yearly_walk_begins_at_the_first_regular_month() {
     let rule = RecurrenceRuleBuilder::new(Freq::Yearly).build().unwrap();
     for scale in SCALES {
-        let walk = PeriodWalk::in_calendar(stamp(2013, 2, 10), &rule, scale);
+        let mut walk = PeriodWalk::in_calendar(stamp(2013, 2, 10), &rule, scale);
         let first_year = converted(scale, stamp(2013, 2, 10).date()).year();
-        for (expected_year, period) in (first_year..).zip(walk.take(100)) {
+        for expected_year in (first_year..).take(100) {
+            let period = walk.next().unwrap();
             let current = converted(scale, period.anchor().date());
             assert_eq!(current.year(), expected_year, "{scale:?}");
             assert_eq!(
