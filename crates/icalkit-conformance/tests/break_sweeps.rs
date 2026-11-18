@@ -21,8 +21,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use icalkit_conformance::internal::core::{
-    Component, Diagnostic, Document, GrammarLimits, Item, Limits, ParameterEdit, ParseError,
-    Property, PropertyId, ProposedChange, TextValue,
+    Component, Diagnostic, Document, GrammarLimits, Item, Limits, MutationError, ParameterEdit,
+    ParseError, Property, PropertyId, ProposedChange, TextValue,
 };
 
 /// A calendar whose one property arrived below a fold at octet zero of its content line.
@@ -741,64 +741,194 @@ fn p1_and_p2_survive_a_sweep_several_times_the_committed_one() {
     assert!(examined > 200_000, "only {examined} inputs were examined");
 }
 
+struct ParameterTarget<'a> {
+    before: &'a Document,
+    component: usize,
+    properties: Vec<(usize, &'a Property)>,
+    identity: PropertyId,
+}
+
+impl<'a> ParameterTarget<'a> {
+    fn first(document: &'a Document) -> Option<Self> {
+        let (index, component) = document
+            .items()
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| Some((index, item.as_component()?)))?;
+        let identity = first_identity(component)?;
+        let properties = component
+            .items()
+            .iter()
+            .enumerate()
+            .filter_map(|(position, item)| {
+                let property = item.as_property()?;
+                property.has_id(&identity).then_some((position, property))
+            })
+            .collect();
+        Some(Self {
+            before: document,
+            component: index,
+            properties,
+            identity,
+        })
+    }
+
+    fn check(&self, source: &[u8], written: &[u8], limits: Limits) -> Result<(), String> {
+        let describe = |reason: &str| {
+            format!(
+                "{reason}: input {} output {}",
+                source.escape_ascii(),
+                written.escape_ascii()
+            )
+        };
+        let after = Document::parse(written, limits, &mut Vec::new())
+            .map_err(|error| describe(&format!("reopen failed with {error:?}")))?;
+        if self.keeps_other_rows(after) {
+            Ok(())
+        } else {
+            Err(describe(
+                "the edit changed a property name, value, or unrelated row",
+            ))
+        }
+    }
+
+    fn keeps_other_rows(&self, mut after: Document) -> bool {
+        let Some(edited) = after
+            .items_mut()
+            .get_mut(self.component)
+            .and_then(Item::as_component_mut)
+        else {
+            return false;
+        };
+        for &(index, old) in &self.properties {
+            let Some(new) = edited
+                .items_mut()
+                .get_mut(index)
+                .and_then(Item::as_property_mut)
+            else {
+                return false;
+            };
+            if new.name() != old.name() || new.value_text() != old.value_text() {
+                return false;
+            }
+            // Restore each permitted row before comparing the complete trees and their layouts.
+            new.clone_from(old);
+        }
+        *self.before == after
+    }
+}
+
+#[test]
+fn parameter_edit_checks_accept_duplicate_targets_and_reject_other_rows() {
+    let source = concat!(
+        "X-BEFORE:top\r\nBEGIN:VEVENT\r\nX-STATE:first\r\n",
+        "BEGIN:VALARM\r\nX-STATE:nested\r\nEND:VALARM\r\n",
+        "x-state:second\r\nSUMMARY:other\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nX-STATE:sibling\r\nEND:VEVENT\r\n",
+    );
+    let before = Document::parse(source.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let target = ParameterTarget::first(&before).unwrap();
+    let both = source
+        .replace("X-STATE:first", "X-STATE;LANGUAGE=en:first")
+        .replace("x-state:second", "x-state;LANGUAGE=en:second");
+    target
+        .check(source.as_bytes(), both.as_bytes(), Limits::DEFAULT)
+        .unwrap();
+    for outside in [
+        "X-STATE:nested",
+        "X-STATE:sibling",
+        "SUMMARY:other",
+        "X-BEFORE:top",
+    ] {
+        let changed = source.replace(outside, &outside.replace(':', ";LANGUAGE=en:"));
+        assert!(
+            target
+                .check(source.as_bytes(), changed.as_bytes(), Limits::DEFAULT)
+                .is_err(),
+            "{outside}"
+        );
+    }
+    let changed_value = both.replace("LANGUAGE=en:first", "LANGUAGE=en:other");
+    assert!(
+        target
+            .check(source.as_bytes(), changed_value.as_bytes(), Limits::DEFAULT)
+            .is_err()
+    );
+    let refolded = source.replace("X-STATE:nested", "X-STATE:nes\r\n ted");
+    assert!(
+        target
+            .check(source.as_bytes(), refolded.as_bytes(), Limits::DEFAULT)
+            .is_err()
+    );
+}
+
+#[test]
+fn parameter_edit_checks_report_a_refused_reread() {
+    let source = b"BEGIN:VEVENT\r\nSUMMARY:v\r\nEND:VEVENT\r\n";
+    let before = Document::parse(source, Limits::DEFAULT, &mut Vec::new()).unwrap();
+    let target = ParameterTarget::first(&before).unwrap();
+    let written = b"BEGIN:VEVENT\r\nSUMMARY;LANGUAGE=en:v\r\nEND:VEVENT\r\n";
+    let error = target
+        .check(source, written, Limits::DEFAULT.with_max_input_bytes(1))
+        .unwrap_err();
+    assert!(error.contains("InputTooLarge"), "{error}");
+    assert!(
+        error.contains(&source.escape_ascii().to_string()),
+        "{error}"
+    );
+    assert!(
+        error.contains(&written.escape_ascii().to_string()),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_parameter_edit_reaches_one_property_across_a_generated_corpus() {
     let mut stream = Stream::new(SEED);
     let mut checked = 0_u64;
-    let mut first = String::new();
-    for _ in 0..8_000 {
+    for index in 0..8_000 {
         let octets = calendar(&mut stream);
-        let Ok(mut document) = Document::parse(&octets, Limits::DEFAULT, &mut Vec::new()) else {
+        let Ok(before) = Document::parse(&octets, Limits::DEFAULT, &mut Vec::new()) else {
             continue;
         };
-        let before = outline(&document);
-        let Some(component) = document.components_mut().next() else {
+        let Some(target) = ParameterTarget::first(&before) else {
             continue;
         };
-        let Some(target) = component
-            .items()
-            .iter()
-            .filter_map(Item::as_property)
-            .map(|property| PropertyId::from_name(property.name().as_bytes()))
-            .next()
-        else {
-            continue;
-        };
-        // A change is addressed to an identity rather than to an occurrence, so a component carrying that identity twice has two nodes a parameter edit may reach — and both, or the caller is left with the property it addressed carrying two different parameter sets.
-        // What P3 forbids is a node outside that set moving, which is what a count against the occurrences measures and a count against one does not.
-        let occurrences = component
-            .items()
-            .iter()
-            .filter_map(Item::as_property)
-            .filter(|property| PropertyId::from_name(property.name().as_bytes()) == target)
-            .count();
+        let mut document = before.clone();
+        let component = document.items_mut()[target.component]
+            .as_component_mut()
+            .unwrap();
         let value = stream.pick(&[b"a:b".as_slice(), b"plain", b""]).copied();
         let edit = ParameterEdit::set(b"X-STATE", value.unwrap_or(b"plain"));
-        if component
-            .apply(
-                &target,
-                &ProposedChange::SetParameters(vec![edit]),
-                Limits::DEFAULT,
-            )
-            .is_err()
-        {
-            continue;
-        }
-        checked = checked.saturating_add(1);
-        let written = document.to_bytes();
-        let Ok(reread) = Document::parse(&written, Limits::DEFAULT, &mut Vec::new()) else {
-            continue;
-        };
-        let after = outline(&reread);
-        if (before.len() != after.len() || moved(&before, &after) > occurrences) && first.is_empty()
-        {
-            first = format!(
-                "{} wrote {}: {before:?} became {after:?}",
-                render(&octets),
-                render(&written)
+        if let Err(error) = component.apply(
+            &target.identity,
+            &ProposedChange::SetParameters(vec![edit]),
+            Limits::DEFAULT,
+        ) {
+            assert!(
+                matches!(
+                    error,
+                    MutationError::ComponentBoundary | MutationError::NotRepresentable
+                ),
+                "seed {SEED:#x}, calendar {index}: {error:?} for {}",
+                octets.escape_ascii()
             );
+            assert_eq!(
+                document.to_bytes(),
+                octets,
+                "refused edit at calendar {index}"
+            );
+            continue;
         }
+        let written = document.to_bytes();
+        target
+            .check(&octets, &written, Limits::DEFAULT)
+            .unwrap_or_else(|report| panic!("seed {SEED:#x}, calendar {index}: {report}"));
+        checked = checked.saturating_add(1);
     }
+    assert!(
+        checked > 0,
+        "no parameter edits were checked for seed {SEED:#x}"
+    );
     println!("parameter edits checked: {checked}");
-    assert!(first.is_empty(), "seed {SEED:#x}: {first}");
 }
