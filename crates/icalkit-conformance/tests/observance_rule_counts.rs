@@ -133,8 +133,7 @@ fn counted_patterns_match_independent_forward_enumeration() {
                     .collect();
                 for year in probes {
                     let selected: BTreeSet<_> = expected
-                        .iter()
-                        .filter(|value| value.year() == year)
+                        .range(date(year, 1, 1)..=date(year, 12, 31))
                         .copied()
                         .collect();
                     assert_eq!(
