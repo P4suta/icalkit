@@ -86,11 +86,26 @@ impl HeaderState {
 /// Whether the next delimiter ends a parameter after its raw value octets.
 #[must_use]
 pub fn parameter_value_accepts_delimiter(value: &[u8]) -> bool {
-    value
-        .iter()
-        .copied()
-        .fold(HeaderState::ValueStart, HeaderState::after_octet)
-        != HeaderState::Quoted
+    parameter_value_open_quote(value).is_none()
+}
+
+/// The unmatched opening quote's offset under the header lexer's transitions.
+#[must_use]
+pub fn parameter_value_open_quote(value: &[u8]) -> Option<usize> {
+    let mut state = HeaderState::ValueStart;
+    let mut opening = None;
+    for (offset, &octet) in value.iter().enumerate() {
+        let next = state.after_octet(octet);
+        if next == HeaderState::Quoted && state != HeaderState::Quoted {
+            opening = Some(offset);
+        }
+        state = next;
+    }
+    if state == HeaderState::Quoted {
+        opening
+    } else {
+        None
+    }
 }
 
 /// One parameter's position inside the reassembled header.

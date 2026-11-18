@@ -234,19 +234,15 @@ fn assign_parameter(parameters: &mut Vec<Parameter>, name: &[u8], value: &[u8]) 
     }
 }
 
-/// A colonless line can end inside its last parameter's quoted value.
-/// Keeping that parameter would make the emitted value separator part of the header.
+/// Refuse retained parameter quotes that would consume the emitted value separator.
 fn refuse_unclosed_parameter(
     property: &Property,
     edits: &[ParameterEdit],
 ) -> Result<(), MutationError> {
-    if property.layout().has_separator() {
-        return Ok(());
-    }
-    if let Some(last) = property.parameters().last()
-        && !parameter_value_accepts_delimiter(last.value().as_bytes())
-        && !edits.iter().any(|edit| last.is_named(edit.name()))
-    {
+    if property.parameters().iter().any(|parameter| {
+        !parameter_value_accepts_delimiter(parameter.value().as_bytes())
+            && !edits.iter().any(|edit| parameter.is_named(edit.name()))
+    }) {
         return Err(MutationError::NotRepresentable);
     }
     Ok(())
@@ -1102,6 +1098,68 @@ mod tests {
                 );
                 assert_eq!(result, Err(MutationError::NotRepresentable));
                 assert_eq!(written, source.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_layout_does_not_make_unclosed_parameters_writable() {
+        use crate::internal::core::Document;
+
+        for source in [b"P;Q=\"\r\n".as_slice(), b"P;Q=ok,\"\r\n"] {
+            let document = Document::parse(source, Limits::DEFAULT, &mut vec![]).unwrap();
+            let bad = document.items()[0].as_property().unwrap().parameters()[0].clone();
+            for position in 0..=2 {
+                let mut parameters = vec![
+                    Parameter::create(b"A", b"first").unwrap(),
+                    Parameter::create(b"B", b"last").unwrap(),
+                ];
+                parameters.insert(position, bad.clone());
+                let original = Property::create(b"P", parameters, b"before").unwrap();
+                assert!(original.layout().has_separator());
+                for raw in [false, true] {
+                    let mut property = original.clone();
+                    let mut guard = PropertyMut::new(&mut property);
+                    let result = if raw {
+                        guard.set_raw(b"after")
+                    } else {
+                        guard.set(&TextValue::from_bytes(b"after"))
+                    };
+                    assert_eq!(result, Err(MutationError::NotRepresentable));
+                    assert_eq!(property, original);
+                }
+                let mut component = event(vec![Item::Property(original.clone())]);
+                let change =
+                    ProposedChange::SetParameters(vec![ParameterEdit::set(b"X", b"added")]);
+                assert_eq!(
+                    component.apply(&PropertyId::from_name(b"P"), &change, Limits::DEFAULT),
+                    Err(MutationError::NotRepresentable)
+                );
+                assert_eq!(component.items()[0].as_property(), Some(&original));
+                for edit in [
+                    ParameterEdit::remove(b"q"),
+                    ParameterEdit::set(b"q", b"closed"),
+                ] {
+                    let mut repaired = component.clone();
+                    repaired
+                        .apply(
+                            &PropertyId::from_name(b"P"),
+                            &ProposedChange::SetParameters(vec![edit]),
+                            Limits::DEFAULT,
+                        )
+                        .unwrap();
+                    repaired
+                        .get_mut::<TextValue<'_>>(&PropertyId::from_name(b"P"))
+                        .unwrap()
+                        .set_raw(b"after")
+                        .unwrap();
+                    let written = Document::new(vec![Item::Component(repaired)]).to_bytes();
+                    let reopened = Document::parse(&written, Limits::DEFAULT, &mut vec![]).unwrap();
+                    let property = reopened.items()[0].as_component().unwrap().items()[0]
+                        .as_property()
+                        .unwrap();
+                    assert_eq!(property.value_text().as_bytes(), b"after");
+                }
             }
         }
     }

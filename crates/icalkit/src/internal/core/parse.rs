@@ -29,7 +29,8 @@ use core::mem;
 use crate::internal::core::{
     ContentLineReader, ContentLineSource, Diagnostic, DiagnosticCode, DiagnosticSink, FoldPoint,
     Limits, LineEnding, LineLayout, Location, Meter, ParseError, Severity, Span, Token,
-    is_control_octet, report_diagnostic, undefined_caret_escapes, unquote_parameter,
+    is_control_octet, parameter_value_open_quote, report_diagnostic, undefined_caret_escapes,
+    unquote_parameter,
 };
 
 use crate::internal::core::octets::RawText;
@@ -177,7 +178,7 @@ impl Extent {
 ///
 /// Forward-only because the line is taken apart from left to right, and because the honest alternative is a sum over every fold at every lookup.
 /// `max_folds_per_line` admits a million of them and `max_parameters` a thousand parameters on the same line, so the quadratic form is a denial of service wearing a location's clothes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct FoldWalk<'a> {
     /// The folds recorded for this line, in the order the producer wrote them.
     folds: &'a [FoldPoint],
@@ -320,15 +321,18 @@ fn report_parameter_value<S>(
 ) where
     S: DiagnosticSink + ?Sized,
 {
+    let mut quote_walk = walk.clone();
     let extent = report_piece(walk, from, bytes, meter, sink);
     let unquoted = unquote_parameter(bytes);
-    if let Some(code) = unquoted.diagnostic_code() {
-        // The octet that was never closed is the `DQUOTE` that opened, and it is that one octet: everything after it is what the producer meant to send, and it is all here.
-        let quote = Extent {
-            start: extent.start,
-            end: extent.start.saturating_add(1),
-        };
-        report_extent(quote, code, Severity::Violation, meter, sink);
+    if let Some(offset) = parameter_value_open_quote(bytes) {
+        let quote = quote_walk.extent(from.saturating_add(offset), 1);
+        report_extent(
+            quote,
+            DiagnosticCode::UnterminatedQuotedParameter,
+            Severity::Violation,
+            meter,
+            sink,
+        );
     }
     // Asked of the value between the quotes, because that is the scope RFC 6868 defines the encoding over: a `DQUOTE` is a delimiter, and a caret standing against one is not a pair.
     // The answer is about the value and not about one octet of it, so the whole value is what it points at — the grammar crate walks the pairs left to right and reports whether any was undefined, which is the reading that keeps `^^x` from looking like `^x`.
@@ -1539,6 +1543,39 @@ mod tests {
             (18, 19),
             "the octet that was never closed is the quote that opened"
         );
+    }
+
+    #[test]
+    fn unterminated_parameter_list_quotes_keep_their_physical_offsets() {
+        for source in [
+            "SUMMARY;CN=ok,\"\r\n",
+            "SUMMARY;CN=\"ok\",bare,\"tail\r\n",
+            "SUMMARY;CN=ok,\r\n \"tail\r\n continued\r\n",
+            "SUMMARY;CN=ok,\"ta\r\n il\r\n",
+        ] {
+            let mut kept = Vec::new();
+            let document = Document::parse(source.as_bytes(), Limits::DEFAULT, &mut kept).unwrap();
+            assert_eq!(rewrite(&document), source.as_bytes());
+            assert_eq!(
+                codes(&kept),
+                vec![
+                    DiagnosticCode::UnterminatedQuotedParameter,
+                    DiagnosticCode::MissingValueSeparator,
+                ],
+                "{source:?}"
+            );
+            let quote = source.rfind('"').unwrap() as u64;
+            assert_eq!(extent_of(&kept, 0), (quote, quote + 1), "{source:?}");
+        }
+        for source in [
+            "SUMMARY;CN=ok,\"closed\",bare:text\r\n",
+            "SUMMARY;CN=ok,bare\"quote:text\r\n",
+        ] {
+            let mut kept = Vec::new();
+            let document = Document::parse(source.as_bytes(), Limits::DEFAULT, &mut kept).unwrap();
+            assert_eq!(rewrite(&document), source.as_bytes());
+            assert!(kept.is_empty(), "{source:?}: {kept:?}");
+        }
     }
 
     #[test]
