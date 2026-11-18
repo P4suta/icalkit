@@ -1030,6 +1030,10 @@ fn decode_sync(
     collection: &str,
 ) -> Result<SyncResult, Error> {
     let body = read_multistatus(response, policy)?;
+    if body.responses().len() > usize::try_from(policy.limits.max_responses()).unwrap_or(usize::MAX)
+    {
+        return Err(Error::single("icalkit.caldav.response-truncated"));
+    }
     let token = body
         .sync_token
         .as_ref()
@@ -3204,6 +3208,26 @@ mod tests {
     use crate::scheduling::Message;
     use crate::{Engine, Limits, ResourcePolicy};
     use core::fmt::Write as _;
+
+    #[test]
+    fn a_reserved_storage_status_cannot_add_a_member_over_the_sync_limit() {
+        let policy = ResourcePolicy {
+            limits: Limits::DEFAULT.with_max_responses(1),
+        };
+        for href in ["/cal/", "/cal/b.ics"] {
+            let body = alloc::format!(
+                r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/a.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response><d:response><d:href>{href}</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status></d:response></d:multistatus>"#
+            );
+            let response = WireResponse::new(207, alloc::vec::Vec::new(), body.into_bytes());
+            assert_eq!(
+                super::decode_sync(&response, policy, "/cal/")
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "icalkit.caldav.response-truncated"
+            );
+        }
+    }
 
     #[test]
     fn name_and_text_filters_need_no_stored_zone_slots() {
