@@ -375,17 +375,21 @@ fn read_calendar_data(
     let mut wanted = CalendarDataRequest::default();
     while let Some((_, known)) = next_child(events, context)? {
         match known {
-            Some(ElementName::CalendarDataComp) => {
+            Some(ElementName::CalendarDataComp) if wanted.comp.is_none() => {
                 wanted.comp = Some(read_comp_selection(events, context, 0)?);
             },
-            Some(ElementName::Expand) => {
+            Some(ElementName::Expand)
+                if wanted.expand.is_none() && wanted.limit_recurrence_set.is_none() =>
+            {
                 wanted.expand = Some(read_time_range(events, context)?.require_bounded()?);
             },
-            Some(ElementName::LimitRecurrenceSet) => {
+            Some(ElementName::LimitRecurrenceSet)
+                if wanted.expand.is_none() && wanted.limit_recurrence_set.is_none() =>
+            {
                 wanted.limit_recurrence_set =
                     Some(read_time_range(events, context)?.require_bounded()?);
             },
-            Some(ElementName::LimitFreebusySet) => {
+            Some(ElementName::LimitFreebusySet) if wanted.limit_freebusy_set.is_none() => {
                 wanted.limit_freebusy_set =
                     Some(read_time_range(events, context)?.require_bounded()?);
             },

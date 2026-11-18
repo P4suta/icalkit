@@ -4,17 +4,12 @@
 
 //! One shape, both directions: `ical-dav`'s DP-15 claim, driven from each end in turn.
 //!
-//! The claim under attack is that no type in this crate has a field that is meaningful in only
-//! one direction — that a `calendar-query` a client builds is the value a server reads out of
-//! the octets, and that a multistatus a server builds is the value a client reads back. Every
-//! case below therefore uses one shared type from *both* ends and compares the values, never
-//! the octets: three servers spell one body three ways, so byte equality is not the claim.
+//! The claim under attack is that no type in this crate has a field that is meaningful in only one direction — that a `calendar-query` a client builds is the value a server reads out of the octets, and that a multistatus a server builds is the value a client reads back.
+//! Every case below therefore uses one shared type from *both* ends and compares the values, never the octets: three servers spell one body three ways, so byte equality is not the claim.
 //!
-//! The expected shapes are taken from RFC 4791's own sections 7 and 9 and from RFC 4918's
-//! section 9, not from this implementation. The request fixtures are the RFC's own example
-//! bodies; the response fixtures are the RFC's own example bodies with a CalDAV payload put
-//! where RFC 4791 section 7.8.1 puts one. `.gitattributes` marks fixtures `-text`, so the
-//! `CRLF` inside `CALDAV:calendar-data` is the octets a server actually sent.
+//! The expected shapes are taken from RFC 4791's own sections 7 and 9 and from RFC 4918's section 9, not from this implementation.
+//! The request fixtures are the RFC's own example bodies; the response fixtures are the RFC's own example bodies with a CalDAV payload put where RFC 4791 section 7.8.1 puts one.
+//! `.gitattributes` marks fixtures `-text`, so the `CRLF` inside `CALDAV:calendar-data` is the octets a server actually sent.
 
 use icalkit_conformance::internal::core::{Diagnostic, IgnoreDiagnostics, Instant, Limits, Meter};
 use icalkit_conformance::internal::dav::{
@@ -133,8 +128,7 @@ fn multistatus_round_trip_reporting(
 
 /// A window with both bounds.
 ///
-/// `assert!` rather than an unwrap, because a helper outside a test function is production code
-/// as far as the workspace lint profile is concerned.
+/// `assert!` rather than an unwrap, because a helper outside a test function is production code as far as the workspace lint profile is concerned.
 fn window(from: i64, until: i64) -> TimeRange {
     let start = Instant::from_unix_seconds(from);
     let made = TimeRange::new(Some(start), Some(Instant::from_unix_seconds(until)));
@@ -237,9 +231,8 @@ fn a_calendar_data_request_with_a_shape_and_two_windows_reads_back_as_itself() {
     );
 }
 
-/// Section 9.9 makes both bounds independently optional, in every element that carries a window.
 #[test]
-fn a_window_with_one_open_bound_stays_open_in_every_element_that_carries_one() {
+fn component_filter_ranges_preserve_a_single_bound() {
     let limits = Limits::DEFAULT;
     let open_start = TimeRange::ending_before(Instant::from_unix_seconds(JANUARY_5));
     let open_end = TimeRange::starting_at(Instant::from_unix_seconds(JANUARY_4));
@@ -254,12 +247,6 @@ fn a_window_with_one_open_bound_stays_open_in_every_element_that_carries_one() {
             .expect("a nested comp filter");
         let mut query = CalendarQuery::new(limits);
         query.filter = Some(calendar);
-        query.props.calendar_data = Some(CalendarDataRequest {
-            expand: Some(range),
-            limit_recurrence_set: None,
-            limit_freebusy_set: Some(range),
-            comp: None,
-        });
         assert_eq!(
             query_round_trip(&query),
             Ok(RequestBody::CalendarQuery(query.clone()))
@@ -267,10 +254,42 @@ fn a_window_with_one_open_bound_stays_open_in_every_element_that_carries_one() {
     }
 }
 
+#[test]
+fn calendar_data_refuses_repeated_or_conflicting_selection_elements() {
+    let comp = r#"<C:comp name="VCALENDAR"/>"#;
+    let expand = r#"<C:expand start="20260101T000000Z" end="20260102T000000Z"/>"#;
+    let limit = r#"<C:limit-recurrence-set start="20260101T000000Z" end="20260102T000000Z"/>"#;
+    let busy = r#"<C:limit-freebusy-set start="20260101T000000Z" end="20260102T000000Z"/>"#;
+    for (first, second) in [
+        (expand, limit),
+        (limit, expand),
+        (expand, expand),
+        (limit, limit),
+        (comp, comp),
+        (busy, busy),
+    ] {
+        let xml = format!(
+            r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><C:calendar-data>{first}{second}</C:calendar-data></D:prop><C:filter><C:comp-filter name="VCALENDAR"/></C:filter></C:calendar-query>"#
+        );
+        assert!(read_request(xml.as_bytes()).is_err(), "{first} {second}");
+    }
+}
+
+#[test]
+fn encoding_refuses_conflicting_recurrence_selections() {
+    let mut query = CalendarQuery::new(Limits::DEFAULT);
+    query.props.calendar_data = Some(CalendarDataRequest {
+        expand: Some(window(JANUARY_3, JANUARY_5)),
+        limit_recurrence_set: Some(window(JANUARY_4, JANUARY_5)),
+        ..CalendarDataRequest::default()
+    });
+    assert!(encode(&query).is_err());
+}
+
 /// The RFC's own request bodies, read as a server and written back as a client.
 ///
-/// Value equality across the re-encode, not byte equality: the RFC's indentation and this
-/// crate's compact output are two spellings of one body. What must not change is the value.
+/// Value equality across the re-encode, not byte equality: the RFC's indentation and this crate's compact output are two spellings of one body.
+/// What must not change is the value.
 #[test]
 fn every_rfc_4791_request_example_survives_being_read_and_written_back() {
     let cases = [
@@ -355,9 +374,8 @@ fn a_selection_naming_properties_beside_allprop_is_not_silently_reduced() {
         limit_freebusy_set: None,
         comp: Some(calendar),
     });
-    // Either the encoder refuses the value it cannot express — as it refuses a filter that
-    // states a condition and its own negation — or the value survives. Dropping the named
-    // property and reporting nothing is the third answer, and it is the one that loses.
+    // Either the encoder refuses the value it cannot express — as it refuses a filter that states a condition and its own negation — or the value survives.
+    // Dropping the named property and reporting nothing is the third answer, and it is the one that loses.
     let Ok(wire) = encode(&query) else {
         return;
     };
@@ -447,8 +465,7 @@ fn the_multistatus_of_section_7_8_1_survives_a_read_and_a_write() {
     );
     assert!(payload.as_bytes().ends_with(b"END:VCALENDAR\r\n"));
 
-    // The second response reports one property at 200 and another at 403, and the two must
-    // not collapse: `calendar-data` was refused there and must not read as returned.
+    // The second response reports one property at 200 and another at 403, and the two must not collapse: `calendar-data` was refused there and must not read as returned.
     let second = read.responses().get(1).expect("a response");
     assert_eq!(second.propstats().len(), 2);
     assert!(
@@ -476,8 +493,7 @@ fn a_structured_extension_property_is_not_flattened_by_the_trip() {
     };
     assert_eq!(named.local_name(), b"bigbox");
 
-    // Written back by a server proxying another server's properties, the structure the peer
-    // sent has to survive: `R:BoxType` is the property's value, not decoration around it.
+    // Written back by a server proxying another server's properties, the structure the peer sent has to survive: `R:BoxType` is the property's value, not decoration around it.
     let written = encode(&read).expect("the multistatus encodes");
     assert!(
         String::from_utf8_lossy(&written).contains("BoxType"),
@@ -494,8 +510,8 @@ fn a_precondition_named_inside_one_propstat_is_not_moved_to_another() {
     let response = read.responses().first().expect("a response");
     assert_eq!(response.propstats().len(), 3);
 
-    // The body named one condition under the 403 and a different one under the 404. A client
-    // that has to tell a user why `calendar-data` was refused cannot read both off one bag.
+    // The body named one condition under the 403 and a different one under the 404.
+    // A client that has to tell a user why `calendar-data` was refused cannot read both off one bag.
     let conditions = response
         .error
         .as_ref()
@@ -654,14 +670,13 @@ fn one_property(property: DavProperty) -> MultiStatus {
 /// An `href` is byte-shaped so that a response one can read is a response one can model.
 ///
 /// `value.rs` states the reason: "a server is free to emit octets that are not UTF-8 in a path,
-/// and a type that cannot model a response one can read is the failure this workspace exists to
-/// prevent". A path a server can hold has to be one this crate writes and reads back.
+/// and a type that cannot model a response one can read is the failure this workspace exists to prevent".
+/// A path a server can hold has to be one this crate writes and reads back.
 #[test]
 fn an_href_whose_octets_are_not_utf_8_survives_both_directions() {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
-    // `ete.ics` with two Latin-1 accented octets, which is what a path out of an old store
-    // looks like on the wire.
+    // `ete.ics` with two Latin-1 accented octets, which is what a path out of an old store looks like on the wire.
     let latin1 = b"/calendars/ann/\xe9t\xe9.ics".as_slice();
     let href = Href::new(latin1, limits, &mut meter).expect("an href");
     let mut built = MultiStatus::new(limits);
@@ -676,9 +691,7 @@ fn an_href_whose_octets_are_not_utf_8_survives_both_directions() {
 fn a_payload_carrying_markup_and_line_endings_survives_both_directions() {
     let limits = Limits::DEFAULT;
     let mut meter = Meter::new(limits);
-    // Every octet an escaper has to think about: an ampersand, a `<`, the `]]>` that would
-    // close a section this crate never opens, and a fold whose continuation begins with a
-    // space.
+    // Every octet an escaper has to think about: an ampersand, a `<`, the `]]>` that would close a section this crate never opens, and a fold whose continuation begins with a space.
     let awkward = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:1@x\r\nDESCRIPTION:a<b & c ]]> d\r\n e\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n".as_slice();
     let payload = CalendarPayload::from_octets(awkward, limits, &mut meter).expect("a payload");
     let built = one_property(DavProperty {
@@ -843,13 +856,10 @@ fn a_windowed_property_filter_and_an_absent_component_survive_both_directions() 
     );
 }
 
-/// RFC 4791 section 9.5's grammar puts `DAV:allprop` and `DAV:propname` inside a
-/// `calendar-query`.
+/// RFC 4791 section 9.5's grammar puts `DAV:allprop` and `DAV:propname` inside a `calendar-query`.
 ///
-/// `<!ELEMENT calendar-query ((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)>` is
-/// the RFC's own production, and `CalendarQuery::props` is a property list and nothing else, so
-/// a client here cannot build two of the three shapes. What a server does with the body some
-/// other client sends is the half that can still be observed.
+/// `<!ELEMENT calendar-query ((DAV:allprop | DAV:propname | DAV:prop)?, filter, timezone?)>` is the RFC's own production, and `CalendarQuery::props` is a property list and nothing else, so a client here cannot build two of the three shapes.
+/// What a server does with the body some other client sends is the half that can still be observed.
 #[test]
 fn a_calendar_query_asking_for_every_property_is_a_body_rfc_4791_defines() {
     let wire = br#"<?xml version="1.0" encoding="utf-8" ?>

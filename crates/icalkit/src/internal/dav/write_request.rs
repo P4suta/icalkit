@@ -381,6 +381,9 @@ impl Encoder<'_, '_> {
 
     /// What shape a `calendar-data` payload should come back in, RFC 4791 section 9.6.
     fn calendar_data(&mut self, request: &CalendarDataRequest) -> Result<(), DavError> {
+        if request.expand.is_some() && request.limit_recurrence_set.is_some() {
+            return Err(DavError::Unexpected(ElementName::LimitRecurrenceSet));
+        }
         self.open(ElementName::CalendarData)?;
         if !asks_for_a_shape(request) {
             return self.close_empty();
@@ -389,8 +392,6 @@ impl Encoder<'_, '_> {
         if let Some(selection) = request.comp.as_ref() {
             self.comp_selection(selection)?;
         }
-        // Section 9.6's grammar reads `(comp?, (expand | limit-recurrence-set)?,
-        // limit-freebusy-set?)`, so the middle two are alternatives there and independent fields here. A value carrying both is written as it stands rather than quietly reduced to one: a caller that set two windows asked two questions, and choosing one on their behalf would send a query nobody wrote.
         if let Some(window) = request.expand {
             self.range(ElementName::Expand, window)?;
         }
