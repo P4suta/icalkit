@@ -4360,6 +4360,45 @@ name = \"icalkit\"
     }
 
     #[test]
+    fn candidate_checkout_resolves_relative_scratch_paths_before_changing_repository() {
+        let fixture = CandidateFixture::new();
+        assert_eq!(
+            super::candidate::inspect(&fixture.0, fixture.revision(), std::path::Path::new("."))
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn candidate_checkout_does_not_run_index_hooks_for_its_scratch_index() {
+        let fixture = CandidateFixture::new();
+        let hooks = fixture.0.join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("post-index-change");
+        std::fs::write(&hook, "#!/bin/sh\nprintf 'called\\n' > hook-called\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fixture.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        fixture.git(&["read-tree", "HEAD"]);
+        let marker = fixture.0.join("hook-called");
+        assert!(marker.exists(), "the hook control did not execute");
+        std::fs::remove_file(&marker).unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        assert_eq!(
+            super::candidate::inspect(&fixture.0, fixture.revision(), &fixture.0).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(
+            !marker.exists(),
+            "scratch index creation ran a repository hook"
+        );
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
     fn candidate_checkout_refuses_unavailable_scratch_storage() {
         let fixture = CandidateFixture::new();
         let revision = fixture.revision();

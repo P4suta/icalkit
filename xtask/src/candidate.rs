@@ -84,6 +84,8 @@ impl<'a> Repository<'a> {
             "core.ignorestat=false",
             "-c",
             "core.sparseCheckout=false",
+            "-c",
+            "core.hooksPath=/dev/null",
         ]);
         command
     }
@@ -149,6 +151,7 @@ impl ScratchIndex {
 
     fn create(parent: &Path) -> io::Result<Self> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let parent = std::path::absolute(parent)?;
         for _ in 0..8 {
             let serial = NEXT.fetch_add(1, Ordering::Relaxed);
             let directory = parent.join(format!(
