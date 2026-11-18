@@ -1029,17 +1029,22 @@ fn decode_sync(
     policy: ResourcePolicy,
     collection: &str,
 ) -> Result<SyncResult, Error> {
-    let body = read_multistatus(response, policy)?;
-    if body.responses().len() > usize::try_from(policy.limits.max_responses()).unwrap_or(usize::MAX)
-    {
-        return Err(Error::single("icalkit.caldav.response-truncated"));
-    }
+    let member_limit = policy.limits.max_responses();
+    // RFC 6578 section 3.6 counts member URLs and requires a collection status on partial pages.
+    let page_policy = ResourcePolicy {
+        limits: policy
+            .limits
+            .with_max_responses(member_limit.saturating_add(1)),
+    };
+    let mut meter = Meter::new(page_policy.limits);
+    let body = read_multistatus_metered(response, page_policy, &mut meter)?;
     let token = body
         .sync_token
         .as_ref()
         .map(|token| SyncToken::new(token.as_bytes()))
         .transpose()?;
     let mut changes = Vec::new();
+    let mut collection_limit_reported = false;
     for response in body.responses() {
         let href = response
             .href
@@ -1051,10 +1056,14 @@ fn decode_sync(
             ResponseBody::Status(Status::INSUFFICIENT_STORAGE)
         ) && resource::same_resource(collection, &href)
         {
-            if token.is_none() {
+            if collection_limit_reported || token.is_none() {
                 return Err(Error::single("icalkit.caldav.response-truncated"));
             }
+            collection_limit_reported = true;
             continue;
+        }
+        if changes.len() >= usize::try_from(member_limit).unwrap_or(usize::MAX) {
+            return Err(Error::single("icalkit.caldav.response-truncated"));
         }
         let removed = matches!(
             response.body,
@@ -1070,6 +1079,9 @@ fn decode_sync(
                 calendar_data(response)?
             },
         });
+    }
+    if !collection_limit_reported && meter.responses() > member_limit {
+        return Err(Error::single("icalkit.caldav.response-truncated"));
     }
     Ok(SyncResult { token, changes })
 }
@@ -3226,6 +3238,41 @@ mod tests {
                     .as_str(),
                 "icalkit.caldav.response-truncated"
             );
+        }
+    }
+
+    #[test]
+    fn a_sync_page_at_the_member_limit_reserves_one_collection_status() {
+        let policy = ResourcePolicy {
+            limits: Limits::DEFAULT.with_max_responses(1),
+        };
+        let change = "<d:response><d:href>/cal/a.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>";
+        let marker = "<d:response><d:href>/%63al/</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status><d:error><d:number-of-matches-within-limits/></d:error></d:response>";
+        let token = "<d:sync-token>data:,next</d:sync-token>";
+        for (children, complete) in [
+            (alloc::format!("{change}{marker}{token}"), true),
+            (alloc::format!("{token}{marker}{change}"), true),
+            (alloc::format!("{change}{marker}"), false),
+            (alloc::format!("{change}{marker}{change}{token}"), false),
+            (alloc::format!("{change}{marker}{marker}{token}"), false),
+            (
+                alloc::format!("{change}{}{token}", marker.replace("/%63al/", "/cal/b.ics")),
+                false,
+            ),
+            (alloc::format!("{change}{marker}{token}<d:response>"), false),
+        ] {
+            let body =
+                alloc::format!(r#"<d:multistatus xmlns:d="DAV:">{children}</d:multistatus>"#);
+            let response = WireResponse::new(207, alloc::vec::Vec::new(), body.into_bytes());
+            let decoded = super::decode_sync(&response, policy, "/cal/");
+            if complete {
+                let page = decoded.unwrap();
+                assert_eq!(page.changes.len(), 1);
+                assert_eq!(page.changes[0].href(), "/cal/a.ics");
+                assert_eq!(page.token.unwrap().as_bytes(), b"data:,next");
+            } else {
+                assert!(decoded.is_err(), "{children}");
+            }
         }
     }
 
