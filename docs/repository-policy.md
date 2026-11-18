@@ -23,6 +23,8 @@ Conventional Commits describe the final change.
 Review generated files, public API snapshots, and conformance evidence with the source that changes them.
 
 The development Rust version is an exact pin shared by `mise.toml` and `rust-toolchain.toml`.
+Both installation declarations select the minimal profile with `rustfmt` and `clippy`.
+CI installs the configured compiler before installing Cargo tools, including the API generator that also uses a dated nightly.
 The declared MSRV remains a separate compatibility promise.
 Dependency-resolving verification recipes use `--locked` and reject changes to the committed dependency resolution.
 The ordinary test commands run the standalone core without default features before testing the workspace.

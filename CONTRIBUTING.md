@@ -10,9 +10,11 @@ mise x -- just
 ```
 
 `mise.toml` and `rust-toolchain.toml` select the same exact development toolchain.
+Both declare the minimal profile with `rustfmt` and `clippy` so a fresh installation can run the maintained checks.
 `mise trust` approves the project configuration before installing tools or running tasks.
 Inspect configuration changes before trusting them.
 The [mise Rust documentation](https://mise.jdx.dev/lang/rust.html) explains how mise selects the toolchain through `RUSTUP_TOOLCHAIN`.
+An explicit mise Rust entry declares its own installation options instead of inheriting components from `rust-toolchain.toml`.
 The declared MSRV remains separate from the development toolchain.
 
 ## The loop

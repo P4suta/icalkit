@@ -6,7 +6,10 @@
 # Rust configuration is in rust-toolchain.toml.
 
 [tools]
-rust = "1.100.0"
+rust = { version = "1.100.0", profile = "minimal", components = [
+  "rustfmt",
+  "clippy",
+] }
 
 lefthook = "2.2.2"
 committed = "1.1.12"

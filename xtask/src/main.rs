@@ -730,11 +730,31 @@ fn public_api_workflow_violations(workflow: &str) -> Vec<String> {
     let Some(job) = workflow_job(workflow, "public-api") else {
         return vec![".github/workflows/candidate.yml: missing public-api job".to_owned()];
     };
-    if job.contains(PINNED_NIGHTLY) && job.contains("RUSTUP_TOOLCHAIN: nightly-2026-07-02") {
-        Vec::new()
-    } else {
-        vec![".github/workflows/candidate.yml: public-api job does not install and use nightly-2026-07-02".to_owned()]
+    let mut violations = mise_installation_violations(job);
+    if !job.contains(PINNED_NIGHTLY) || !job.contains("RUSTUP_TOOLCHAIN: nightly-2026-07-02") {
+        violations.push(".github/workflows/candidate.yml: public-api job does not install and use nightly-2026-07-02".to_owned());
     }
+    violations
+}
+
+fn mise_installation_violations(workflow: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (index, line) in workflow.lines().enumerate() {
+        let Some(arguments) = line.trim().strip_prefix("install_args:") else {
+            continue;
+        };
+        let arguments = arguments
+            .split_once('#')
+            .map_or(arguments, |(value, _)| value);
+        let tools: Vec<_> = arguments.split_whitespace().collect();
+        if tools.iter().any(|tool| tool.starts_with("cargo:")) && !tools.contains(&"rust") {
+            violations.push(format!(
+                "Cargo tools require configured Rust in mise install_args at line {}",
+                index.saturating_add(1)
+            ));
+        }
+    }
+    violations
 }
 
 fn workflow_job_names(source: &str) -> Vec<&str> {
@@ -768,6 +788,8 @@ fn ci_source_violations(ci: &str, candidate: &str, justfile: &str, hooks: &str) 
     violations.extend(summary_source_violations(ci, candidate, justfile));
     violations.extend(recipe_phase_violations(justfile, hooks));
     violations.extend(public_api_workflow_violations(candidate));
+    violations.extend(mise_installation_violations(ci));
+    violations.extend(mise_installation_violations(candidate));
     violations
 }
 
@@ -3758,6 +3780,38 @@ name = \"icalkit\"
             public_api_workflow_violations(stable_only)
                 .iter()
                 .any(|violation| violation.contains("nightly-2026-07-02"))
+        );
+    }
+
+    #[test]
+    fn public_api_cargo_tools_require_the_configured_rust_installation() {
+        for tools in [
+            "just cargo-binstall cargo:cargo-public-api",
+            "just cargo-binstall cargo:cargo-public-api # rust",
+        ] {
+            let workflow = format!(
+                "\njobs:\n  public-api:\n    env:\n      RUSTUP_TOOLCHAIN: nightly-2026-07-02\n    steps:\n      - run: rustup toolchain install nightly-2026-07-02 --profile minimal\n      - uses: jdx/mise-action\n        with:\n          install_args: {tools}\n\n  msrv:\n"
+            );
+            assert!(
+                !public_api_workflow_violations(&workflow).is_empty(),
+                "the dated nightly does not install the configured Rust dependency: {tools}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_cargo_tool_installation_requires_its_compiler() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let broken = ci.replace("install_args: rust just", "install_args: just");
+        assert!(
+            super::ci_source_violations(&broken, &candidate, &justfile, &hooks)
+                .iter()
+                .any(|violation| violation.contains("Cargo tools require configured Rust"))
         );
     }
 

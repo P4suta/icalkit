@@ -7,9 +7,26 @@ use std::path::Path;
 use std::process::Command;
 
 pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
-    let mise = configured_toolchain(workspace, "mise.toml", "tools.rust")?;
+    let mise = configured_toolchain(workspace, "mise.toml", "tools.rust.version")?;
     let rustup = configured_toolchain(workspace, "rust-toolchain.toml", "toolchain.channel")?;
     let mut violations = toolchain_violations(&mise, &rustup);
+    for (file, table) in [
+        ("mise.toml", "tools.rust"),
+        ("rust-toolchain.toml", "toolchain"),
+    ] {
+        let profile = configured_toolchain(workspace, file, &format!("{table}.profile"))?;
+        if profile != "minimal" {
+            violations.push(format!(
+                "{file}: Rust must use the minimal installation profile"
+            ));
+        }
+        let components = configured_toolchain(workspace, file, &format!("{table}.components"))?;
+        for required in ["rustfmt", "clippy"] {
+            if !components.lines().any(|component| component == required) {
+                violations.push(format!("{file}: Rust installation requires {required}"));
+            }
+        }
+    }
     violations.extend(recipe_violations(&std::fs::read_to_string(
         workspace.join("Justfile"),
     )?));
@@ -118,7 +135,12 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{recipe_violations, toolchain_violations};
+    use std::fs;
+    use std::io;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{collect, recipe_violations, toolchain_violations};
 
     const TEST_RECIPES: &str = "
 test: test-core
@@ -129,6 +151,87 @@ test-core:
     cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features
     cargo test --locked -p icalkit --doc --no-default-features
 ";
+
+    const INSTALLATION: &str = "[tools]\nrust = { version = \"1.99.0\", profile = \"minimal\", components = [\"rustfmt\", \"clippy\"] }\n";
+    const RUSTUP: &str = "[toolchain]\nchannel = \"1.99.0\"\nprofile = \"minimal\"\ncomponents = [\"rustfmt\", \"clippy\"]\n";
+
+    struct ConfigurationFixture(PathBuf);
+
+    impl ConfigurationFixture {
+        fn new(mise: &str, rustup: &str) -> io::Result<Self> {
+            static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "icalkit-development-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path)?;
+            let fixture = Self(path);
+            fs::write(fixture.0.join("mise.toml"), mise)?;
+            fs::write(fixture.0.join("rust-toolchain.toml"), rustup)?;
+            fs::write(fixture.0.join("Justfile"), TEST_RECIPES)?;
+            Ok(fixture)
+        }
+    }
+
+    impl Drop for ConfigurationFixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("remove owned configuration fixture");
+        }
+    }
+
+    #[test]
+    fn a_version_without_component_installation_is_refused() -> io::Result<()> {
+        let fixture = ConfigurationFixture::new("[tools]\nrust = \"1.99.0\"\n", RUSTUP)?;
+        assert!(
+            !matches!(collect(&fixture.0), Ok(violations) if violations.is_empty()),
+            "the version alone does not install rustfmt and clippy"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_matching_component_installations_are_admitted() -> io::Result<()> {
+        let fixture = ConfigurationFixture::new(INSTALLATION, RUSTUP)?;
+        assert_eq!(collect(&fixture.0)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn either_missing_component_is_refused_in_both_configurations() -> io::Result<()> {
+        for removed in ["\"rustfmt\", ", ", \"clippy\""] {
+            for (mise, rustup) in [
+                (INSTALLATION.replace(removed, ""), RUSTUP.to_owned()),
+                (INSTALLATION.to_owned(), RUSTUP.replace(removed, "")),
+            ] {
+                let fixture = ConfigurationFixture::new(&mise, &rustup)?;
+                assert!(
+                    !matches!(collect(&fixture.0), Ok(violations) if violations.is_empty()),
+                    "missing component admitted: {mise:?} {rustup:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn component_order_and_toml_escapes_preserve_installation_identity() -> io::Result<()> {
+        let mise = INSTALLATION.replace("\"rustfmt\", \"clippy\"", "\"clipp\\u0079\", \"rustfmt\"");
+        let fixture = ConfigurationFixture::new(&mise, RUSTUP)?;
+        assert_eq!(collect(&fixture.0)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn mismatched_installation_profiles_are_refused() -> io::Result<()> {
+        let mise = INSTALLATION.replace("minimal", "default");
+        let fixture = ConfigurationFixture::new(&mise, RUSTUP)?;
+        assert!(
+            !matches!(collect(&fixture.0), Ok(violations) if violations.is_empty()),
+            "different installation profiles were admitted"
+        );
+        Ok(())
+    }
 
     #[test]
     fn exact_matching_toolchains_are_admitted() {
