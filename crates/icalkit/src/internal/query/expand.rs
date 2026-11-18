@@ -628,7 +628,7 @@ where
         return Ok(Match::Undecided(Undecided::OverlapUndefined));
     }
 
-    recurring_component_overlaps(component, related, kind, range, zones, budget, sink)
+    recurring_component_overlaps(component, related, range, zones, budget, sink)
 }
 
 /// RFC 4791 section 9.6.6 checks the current and original times of an override.
@@ -1121,111 +1121,19 @@ pub(crate) fn component_start(
     placed_value(opening, zones)
 }
 
-fn recurring_component_overlaps<S>(
+fn recurring_component_overlaps<S: DiagnosticSink + ?Sized>(
     component: &Component,
     related: &[Member<'_>],
-    kind: ComponentKind,
     range: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
     sink: &mut S,
-) -> Result<Match, QueryError>
-where
-    S: DiagnosticSink + ?Sized,
-{
-    macro_rules! decided {
-        ($answer:expr) => {
-            match $answer {
-                Ok(value) => value,
-                Err(reason) => return Ok(Match::Undecided(reason)),
-            }
-        };
-    }
-
-    let opening = decided!(required(component.dtstart()));
-    let clock = decided!(clock_of(opening));
-    let dtstart = decided!(nominal_value(opening, clock, zones));
-    let dtstart_kind = if matches!(opening, DateTimeValue::Date(_)) {
-        ValueKind::Date
-    } else {
-        ValueKind::DateTime
-    };
-    let occupies = decided!(instance_span(component, kind, opening, clock, zones));
-    let mut rule = decided!(recurrence_rule(component));
-    if let Some(parsed) = rule.as_mut() {
-        decided!(project_rule_limit(parsed, clock, zones));
-    }
-    let periods = period_spans(component, clock, zones, budget.meter)?;
-    let mut rdates = instant_list(component, &ids::RDATE, clock, zones)?;
-    let mut exdates = instant_list(component, &ids::EXDATE, clock, zones)?;
-    rdates.sort_unstable();
-    rdates.dedup();
-    exdates.sort_unstable();
-    exdates.dedup();
-
-    let mut entries = Vec::new();
-    let mut durations = Vec::new();
-    entries
-        .try_reserve(related.len())
-        .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
-    for member in related {
-        let candidate = member.component;
-        let addressed = decided!(required(
-            candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
-        ));
-        let recurrence_id = decided!(nominal_value(addressed, clock, zones));
-        retain(
-            &mut durations,
-            component_span(candidate, addressed, recurrence_id, member.position, zones)?,
-            budget.meter,
-        )?;
-        let moved_to = match decided!(optional(candidate.dtstart())) {
-            Some(value) => Some(decided!(nominal_value(value, clock, zones))),
-            None => None,
-        };
-        let range = candidate
-            .properties_named(&ids::RECURRENCE_ID)
-            .next()
-            .is_some_and(|property| {
-                property
-                    .parameters_named(b"RANGE")
-                    .any(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"THISANDFUTURE"))
-            });
-        entries.push(Override::new(
-            recurrence_id,
-            if range {
-                OverrideRange::ThisAndFuture
-            } else {
-                OverrideRange::ThisOnly
-            },
-            moved_to,
-            PropertyDiff::empty(),
-        ));
-    }
-    ComponentSpan::index(&mut durations, budget.meter)?;
-    entries.sort_by_key(|entry| entry.recurrence_id());
-    let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    overlaps(
-        Series {
-            dtstart,
-            dtstart_kind,
-            clock,
-            occupies,
-            kind,
-            end_kind: end_kind_of(component),
-            durations: InstanceDurations {
-                periods: &periods,
-                components: &durations,
-            },
-            rule: rule.as_ref(),
-            rdates: &rdates,
-            exdates: &exdates,
-            overrides,
-        },
-        range,
-        zones,
-        budget,
-        sink,
+) -> Result<Match, QueryError> {
+    Ok(
+        with_related_series(component, related, None, zones, budget, |series, budget| {
+            overlaps(series, range, zones, budget, sink)
+        })?
+        .unwrap_or_else(Match::Undecided),
     )
 }
 
