@@ -608,6 +608,9 @@ fn write_instance_time(
         DateTimeValue::Utc(_) => DateTimeValue::Utc(local),
         DateTimeValue::Zoned { tzid, .. } => DateTimeValue::Zoned { stamp: local, tzid },
     };
+    if placed_value(projected, zones).map_err(|_| QueryError::Unrepresentable)? != instant {
+        return Err(QueryError::Unrepresentable);
+    }
     let mut value = ValueBuf::new();
     projected
         .encode_value(&mut value)

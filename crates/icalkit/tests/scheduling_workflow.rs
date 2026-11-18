@@ -1247,6 +1247,55 @@ fn an_instance_reply_uses_the_duration_of_an_included_period() {
 }
 
 #[test]
+fn a_generated_reply_preserves_the_instant_of_a_repeated_local_end() {
+    let zone = "BEGIN:VTIMEZONE\r\nTZID:Private/Fold\r\nBEGIN:STANDARD\r\n\
+                DTSTART:20260317T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n\
+                END:STANDARD\r\nEND:VTIMEZONE\r\n";
+    let base = str::from_utf8(range_series::HELD)
+        .unwrap()
+        .replace("BEGIN:VEVENT\r\n", &format!("{zone}BEGIN:VEVENT\r\n"));
+    let actor = Actor::new("mailto:alice@example.test").unwrap();
+    let reply = instance_reply(
+        "RECURRENCE-ID;TZID=Private/Fold:20260317T003000",
+        "SUMMARY:Original sync",
+    )
+    .unwrap();
+    for (end, representable) in [("013000", true), ("023000", false)] {
+        let held = base.replace("DTSTART:20260310T140000Z",
+            &format!("DTSTART;TZID=Private/Fold:20260310T003000\r\nDTEND;TZID=Private/Fold:20260310T{end}"));
+        let current = Calendar::parse(held.as_bytes()).unwrap();
+        let review = reply.review(&current, &actor);
+        assert_eq!(review.is_ok(), representable, "{end}");
+        let result = if let Ok(review) = review {
+            let updated = review.authorize().apply().unwrap();
+            let bytes = updated.to_bytes();
+            let detached = str::from_utf8(&bytes)
+                .unwrap()
+                .rsplit_once("BEGIN:VEVENT\r\n")
+                .unwrap()
+                .1;
+            assert!(detached.contains("DTEND;TZID=Private/Fold:20260317T013000\r\n"));
+            updated
+        } else {
+            current.clone()
+        };
+        let window = time_range_query("20260317T062959Z", "20260317T063000Z");
+        let query = Query::parse(&window).unwrap();
+        let expected = if representable {
+            Match::Unmatched
+        } else {
+            Match::Matched
+        };
+        let engine = Engine::builder().build();
+        assert_eq!(
+            query.matches(&mut engine.session(), &result).unwrap(),
+            expected
+        );
+        assert_eq!(current.to_bytes(), held.as_bytes());
+    }
+}
+
+#[test]
 fn a_generated_instance_reply_cannot_choose_a_side_of_a_repeated_hour() {
     let zone = "BEGIN:VTIMEZONE\r\nTZID:Private/Fold\r\nBEGIN:STANDARD\r\n\
                 DTSTART:20260317T150000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n\
