@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 
 use crate::internal::core::{LimitExceeded, Limits, Meter};
 
+use crate::internal::dav::element::{Namespace, QName};
 use crate::internal::dav::failure::{DavError, ValueError};
 use crate::internal::dav::sink::ByteSink;
 
@@ -503,11 +504,37 @@ pub struct ExtensionName {
 impl ExtensionName {
     /// A name outside the vocabulary, charged against the caller's ledger.
     pub fn new(namespace: &[u8], local_name: &[u8], meter: &mut Meter) -> Result<Self, DavError> {
-        let length = namespace.len().saturating_add(local_name.len());
+        Self::from_qname(
+            QName::new(Namespace::from_uri(namespace), local_name),
+            meter,
+        )
+    }
+
+    pub(crate) fn from_qname(name: QName<'_>, meter: &mut Meter) -> Result<Self, DavError> {
+        let uri = name.namespace.uri();
+        let length = meter.admit(|| {
+            uri.len()
+                .checked_add(name.local_name.len())
+                .ok_or(LimitExceeded::Budget)
+        })?;
         meter.try_charge_bytes(u64::try_from(length).unwrap_or(u64::MAX))?;
+        let namespace = if let Some(bytes) = uri.contiguous() {
+            meter.admit(|| copy(bytes))?
+        } else {
+            let mut decoded = Vec::new();
+            meter.admit(|| {
+                decoded
+                    .try_reserve_exact(uri.len())
+                    .map_err(|_| LimitExceeded::Budget)
+            })?;
+            for byte in uri.octets() {
+                decoded.push(byte?);
+            }
+            decoded.into_boxed_slice()
+        };
         Ok(Self {
-            namespace: meter.admit(|| copy(namespace))?,
-            local_name: meter.admit(|| copy(local_name))?,
+            namespace,
+            local_name: meter.admit(|| copy(name.local_name))?,
         })
     }
 

@@ -1472,7 +1472,7 @@ impl ScheduleParser {
     ) -> Result<(), Error> {
         let attribute = |name| {
             events.attribute(crate::internal::dav::QName::new(
-                Namespace::Other(b""),
+                Namespace::from_uri(b""),
                 name,
             ))
         };

@@ -65,13 +65,14 @@ use crate::internal::core::{DiagnosticCode, LimitExceeded, Meter, Severity};
 use xmlparser::{Error as LexerError, StreamError, Token, Tokenizer};
 
 use crate::internal::dav::codec::{XmlEvent, XmlPull};
-use crate::internal::dav::element::{ElementName, Namespace, QName};
+use crate::internal::dav::element::{ElementName, Namespace, NamespaceUri, QName};
 use crate::internal::dav::failure::{DavError, SyntaxError};
 use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
 use crate::internal::dav::text::{AdmittedXmlBody, TextMode, check_chars, normalize_attribute};
 // The lexical layer and the namespace binding stack are XML's rather than CalDAV's, so they live in the private module `gates/xml-layering` compiles alone (docs/adr/0012).
 // What stays in this file is the state machine, which is stated over `ElementName` and `Namespace` and is therefore the half of the tokenizer that layer may not name.
 use crate::internal::dav::xml::bind::PrefixStack;
+use crate::internal::dav::xml::chars::AttributeValue;
 use crate::internal::dav::xml::scan::{
     BYTE_ORDER_MARK, CDATA_CLOSE, CDATA_OPEN, COMMENT_CLOSE, COMMENT_OPEN, DECLARATION_OPEN,
     NO_NAMESPACE, check_encoding, check_name, declared_prefix, find, is_attribute_name_end,
@@ -636,13 +637,14 @@ impl<'a> XmlReader<'a> {
             };
             // XML Namespaces 1.0 section 6.2 permits `xmlns=""`, which returns unprefixed names to no namespace, and forbids `xmlns:p=""` outright.
             // Binding a prefix to nothing is refused rather than treated as either.
-            if !prefix.is_empty() && attribute.value.is_empty() {
+            let uri = AttributeValue::parse(attribute.value)?;
+            if !prefix.is_empty() && uri.len() == 0 {
                 return Err(SyntaxError::Malformed.into());
             }
             if self.bindings.declared_here(declared, prefix) {
                 return Err(SyntaxError::DuplicateAttribute.into());
             }
-            self.bindings.bind(prefix, attribute.value, meter)?;
+            self.bindings.bind(prefix, uri, meter)?;
             declared = declared.saturating_add(1);
         }
         Ok(declared)
@@ -662,7 +664,7 @@ impl<'a> XmlReader<'a> {
             let (prefix, local) = split_name(attribute.name)?;
             // XML Namespaces 1.0 section 6.2: a default declaration never applies to an attribute, so an unprefixed one is in no namespace whatever `xmlns=` says.
             let namespace = if prefix.is_empty() {
-                Namespace::Other(NO_NAMESPACE)
+                Namespace::from_uri(NO_NAMESPACE)
             } else {
                 self.binding_for(prefix).ok_or(SyntaxError::UnboundPrefix)?
             };
@@ -708,7 +710,7 @@ impl<'a> XmlReader<'a> {
             // An unprefixed element takes the default declaration if there is one, and is in no namespace if there is not.
             // Neither is an error.
             self.binding_for(b"")
-                .unwrap_or(Namespace::Other(NO_NAMESPACE))
+                .unwrap_or(Namespace::from_uri(NO_NAMESPACE))
         } else {
             self.binding_for(prefix).ok_or(SyntaxError::UnboundPrefix)?
         };
@@ -720,7 +722,7 @@ impl<'a> XmlReader<'a> {
     /// Named apart from the trait method it answers so that no call inside this file depends on inherent methods winning over trait methods of the same name.
     fn binding_for(&self, prefix: &[u8]) -> Option<Namespace<'a>> {
         // The layer answers with the octets the document bound; classifying those into the closed vocabulary is this crate's and not the layer's, which is the seam in one line.
-        self.bindings.uri_for(prefix).map(Namespace::from_uri)
+        self.bindings.uri_for(prefix).map(Namespace::from_attribute)
     }
 
     /// Consume the element that has just started, and everything inside it.
@@ -843,7 +845,7 @@ fn same_name(left: QName<'_>, right: QName<'_>) -> bool {
 }
 
 /// The key a name sorts under, which orders the namespace before the local name.
-fn sort_key(name: QName<'_>) -> (&[u8], &[u8]) {
+fn sort_key(name: QName<'_>) -> (NamespaceUri<'_>, &[u8]) {
     (name.namespace.uri(), name.local_name)
 }
 
@@ -1152,8 +1154,8 @@ mod tests {
             }
             found = true;
             // An unprefixed attribute is in no namespace at all, whatever the element's own default declaration says; XML Namespaces 1.0 section 6.2 is explicit about it.
-            let start = QName::new(Namespace::Other(b""), b"start");
-            let end = QName::new(Namespace::Other(b""), b"end");
+            let start = QName::new(Namespace::from_uri(b""), b"start");
+            let end = QName::new(Namespace::from_uri(b""), b"end");
             let caldav = QName::new(Namespace::CalDav, b"start");
             assert_eq!(
                 reader.attribute(start),
@@ -1680,7 +1682,7 @@ mod tests {
         let mut reader = XmlReader::new(body);
         let first = reader.next_event(&mut context).unwrap();
         assert!(matches!(first, Some(XmlEvent::Start { .. })));
-        let named = |local: &'static [u8]| QName::new(Namespace::Other(b""), local);
+        let named = |local: &'static [u8]| QName::new(Namespace::from_uri(b""), local);
         assert_eq!(reader.attribute(named(b"name")), Some(b"VENT".as_slice()));
         assert_eq!(reader.attribute(named(b"x")), Some(b"a&b".as_slice()));
         assert_eq!(reader.attribute(named(b"y")), Some(b"p q".as_slice()));

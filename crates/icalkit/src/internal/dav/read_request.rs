@@ -41,7 +41,7 @@ use crate::internal::dav::value::{ExtensionName, Href};
 /// The namespace an unprefixed attribute is in, which is none at all.
 ///
 /// XML Namespaces 1.0 section 6.2 is explicit that a default declaration does not apply to attributes, so `name`, `start`, `end`, `collation` and `negate-condition` are looked up in no namespace rather than in the one their element resolved into.
-const NO_NAMESPACE: Namespace<'static> = Namespace::Other(b"");
+const NO_NAMESPACE: Namespace<'static> = Namespace::from_uri(b"");
 
 /// Which request body a document carried, read from its root element.
 ///
@@ -355,8 +355,7 @@ fn read_prop_request(
                 events.skip_element(context)?;
             },
             None => {
-                let extension =
-                    ExtensionName::new(name.namespace.uri(), name.local_name, context.meter)?;
+                let extension = ExtensionName::from_qname(name, context.meter)?;
                 wanted.push(PropName::Extension(extension), context.meter)?;
                 events.skip_element(context)?;
             },

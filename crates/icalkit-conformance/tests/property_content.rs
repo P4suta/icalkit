@@ -79,12 +79,20 @@ fn observed_content(body: &[u8], property: &[u8]) -> Vec<Observed> {
                 }
             },
             XmlEvent::Start { name, .. } => observed.push(Observed::Start(
-                name.namespace.uri().to_vec(),
+                name.namespace
+                    .uri()
+                    .octets()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
                 name.local_name.to_vec(),
             )),
             XmlEvent::End { depth, .. } if inside == Some(depth) => return observed,
             XmlEvent::End { name, .. } if inside.is_some() => observed.push(Observed::End(
-                name.namespace.uri().to_vec(),
+                name.namespace
+                    .uri()
+                    .octets()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
                 name.local_name.to_vec(),
             )),
             XmlEvent::Text(decoded) if inside.is_some() => {

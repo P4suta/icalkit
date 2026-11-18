@@ -4,11 +4,8 @@
 
 //! The lexical layer: what the octets of an XML document mean before any vocabulary does.
 //!
-//! Every function here answers a question XML 1.0 and XML Namespaces 1.0 answer, and none of
-//! them knows what the document is about. Where an element name ends, whether an attribute name
-//! declares a prefix, how a qualified name splits, which encodings a declaration may name — a
-//! `DAV:` body, a CardDAV body and a body of a vocabulary nobody has written yet all answer
-//! these identically, which is what makes this a layer rather than a helper module.
+//! Every function here answers a question XML 1.0 and XML Namespaces 1.0 answer, and none of them knows what the document is about.
+//! Where an element name ends, whether an attribute name declares a prefix, how a qualified name splits, which encodings a declaration may name — a `DAV:` body, a CardDAV body and a body of a vocabulary nobody has written yet all answer these identically, which is what makes this a layer rather than a helper module.
 
 use xmlparser::Stream;
 
@@ -16,9 +13,11 @@ use super::fault::{XmlFault, XmlSyntax};
 
 /// The URI XML Namespaces 1.0 section 3 binds the `xml` prefix to, declared or not.
 ///
-/// RFC 4918 section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, so a
-/// reader that demanded a declaration for it would refuse bodies the specification writes itself.
+/// RFC 4918 section 14 writes `xml:lang` on `DAV:displayname` and on `responsedescription`, so a reader that demanded a declaration for it would refuse bodies the specification writes itself.
 pub(crate) const XML_URI: &[u8] = b"http://www.w3.org/XML/1998/namespace";
+
+/// The reserved namespace for namespace declaration attributes.
+pub(crate) const XMLNS_URI: &[u8] = b"http://www.w3.org/2000/xmlns/";
 
 /// The prefix bound to [`XML_URI`] without a declaration.
 pub(crate) const XML_PREFIX: &[u8] = b"xml";
@@ -76,9 +75,8 @@ pub(crate) fn is_attribute_name_end(byte: u8) -> bool {
 
 /// Validate one already-delimited XML 1.0 `Name`.
 ///
-/// The whole-document lexer cannot run when a `calendar-data` payload carries arbitrary
-/// octets. Its public stream primitive keeps the same NameStartChar/NameChar authority on that
-/// fallback path without copying or teaching this wrapper a second spelling of the production.
+/// The whole-document lexer cannot run when a `calendar-data` payload carries arbitrary octets.
+/// Its public stream primitive keeps the same NameStartChar/NameChar authority on that fallback path without copying or teaching this wrapper a second spelling of the production.
 pub(crate) fn check_name(name: &[u8]) -> Result<(), XmlFault> {
     let text = core::str::from_utf8(name).map_err(|_| XmlSyntax::ForbiddenCharacter)?;
     let mut stream = Stream::from(text);
@@ -101,8 +99,8 @@ pub(crate) fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// The prefix an attribute name declares, if it is a namespace declaration at all.
 ///
-/// `xmlns` declares the default namespace, whose prefix is the empty one; `xmlns:p` declares
-/// `p`. Everything else is an ordinary attribute.
+/// `xmlns` declares the default namespace, whose prefix is the empty one; `xmlns:p` declares `p`.
+/// Everything else is an ordinary attribute.
 pub(crate) fn declared_prefix(name: &[u8]) -> Option<&[u8]> {
     if name == XMLNS {
         return Some(NO_NAMESPACE);
@@ -120,9 +118,8 @@ pub(crate) fn split_name(name: &[u8]) -> Result<(&[u8], &[u8]), XmlFault> {
     let local = name
         .get(colon.saturating_add(1)..)
         .ok_or(XmlSyntax::Malformed)?;
-    // XML Namespaces 1.0 section 4 gives a qualified name exactly one colon. Two is a name no
-    // vocabulary defines, and reading it as a prefix and a local name with a colon in it is the
-    // kind of guess this layer does not make.
+    // XML Namespaces 1.0 section 4 gives a qualified name exactly one colon.
+    // Two is a name no vocabulary defines, and reading it as a prefix and a local name with a colon in it is the kind of guess this layer does not make.
     if prefix.is_empty() || local.is_empty() || local.contains(&b':') {
         return Err(XmlSyntax::Malformed.into());
     }
@@ -131,8 +128,7 @@ pub(crate) fn split_name(name: &[u8]) -> Result<(&[u8], &[u8]), XmlFault> {
 
 /// Refuse a declaration naming an encoding this layer does not read.
 ///
-/// An absent encoding declaration is UTF-8, which XML 1.0 section 4.3.3 makes the default for an
-/// entity that carries none, and which RFC 4918 section 20 requires of a `DAV:` body anyway.
+/// An absent encoding declaration is UTF-8, which XML 1.0 section 4.3.3 makes the default for an entity that carries none, and which RFC 4918 section 20 requires of a `DAV:` body anyway.
 pub(crate) fn check_encoding(declaration: &[u8]) -> Result<(), XmlFault> {
     let Some(at) = find(declaration, b"encoding") else {
         return Ok(());
@@ -150,8 +146,7 @@ pub(crate) fn check_encoding(declaration: &[u8]) -> Result<(), XmlFault> {
 
 /// The value of an `= "..."` at the head of `rest`, quotes excluded.
 ///
-/// Both quote characters, because Radicale writes its declaration with apostrophes and a reader
-/// that took only `"` would refuse the body of a server people run.
+/// Both quote characters, because Radicale writes its declaration with apostrophes and a reader that took only `"` would refuse the body of a server people run.
 fn quoted_value(rest: &[u8]) -> Option<&[u8]> {
     let at = space_end(rest, 0);
     if rest.get(at) != Some(&b'=') {

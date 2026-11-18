@@ -61,7 +61,16 @@ fn child_attributes(body: &[u8]) -> Vec<ObservedAttribute> {
             let mut found = Vec::new();
             for index in 0..reader.attribute_count() {
                 let (name, value) = reader.attribute_at(index).unwrap();
-                found.push(attribute(name.namespace.uri(), name.local_name, value));
+                found.push(ObservedAttribute {
+                    namespace: name
+                        .namespace
+                        .uri()
+                        .octets()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap(),
+                    local_name: name.local_name.to_vec(),
+                    value: value.to_vec(),
+                });
             }
             found.sort();
             return found;

@@ -906,7 +906,7 @@ fn fragment_prefix(namespace: Namespace<'_>) -> &'static [u8] {
         Namespace::CalendarServer => b"CS",
         // XML Namespaces 1.0 section 3 binds this URI to `xml` and to nothing else, so a generated prefix for it would be a declaration the specification forbids.
         Namespace::Other(uri) if uri == XML_URI => b"xml",
-        Namespace::Other([]) => b"",
+        Namespace::Other(uri) if uri.is_empty() => b"",
         Namespace::Other(_) => b"X",
     }
 }
@@ -978,7 +978,14 @@ fn push_declaration(
         parts.push_fragment(prefix, context)?;
     }
     parts.push_fragment(b"=\"", context)?;
-    parts.push_escaped(namespace.uri(), true, context)?;
+    let uri = namespace.uri();
+    if let Some(bytes) = uri.contiguous() {
+        parts.push_escaped(bytes, true, context)?;
+    } else {
+        for byte in uri.octets() {
+            parts.push_escaped(&[byte?], true, context)?;
+        }
+    }
     parts.push_fragment(b"\"", context)
 }
 
@@ -1057,7 +1064,7 @@ fn name_of(child: Opened<'_>, meter: &mut Meter) -> Result<PropName, DavError> {
 
 /// The name of an element outside the vocabulary, kept as a namespace and a local name.
 fn extension_of(child: Opened<'_>, meter: &mut Meter) -> Result<ExtensionName, DavError> {
-    ExtensionName::new(child.name.namespace.uri(), child.name.local_name, meter)
+    ExtensionName::from_qname(child.name, meter)
 }
 
 /// Merge the conditions one `DAV:error` named into whatever is already held at that position.
@@ -1939,7 +1946,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
                 .iter()
                 .rev()
                 .find(|held| held.prefix == prefix)
-                .map_or(Namespace::Other(&[]), |held| {
+                .map_or(Namespace::from_uri(&[]), |held| {
                     Namespace::from_uri(held.value)
                 })
         }
@@ -2125,7 +2132,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\n\
             let (prefix, local) = Self::split_name(held.prefix);
             // XML Namespaces 1.0 section 6.2: a default declaration never reaches an attribute, so an unprefixed one is in no namespace at all.
             let space = if prefix.is_empty() {
-                Namespace::Other(&[])
+                Namespace::from_uri(&[])
             } else {
                 self.lookup(prefix)
             };

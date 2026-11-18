@@ -20,10 +20,56 @@
 //! The table is unconditional.
 //! A row exists for every element of RFC 4918, RFC 4791, RFC 6578 and RFC 6638 this crate names, whatever features are compiled, so a build that cannot honor a `REPORT` answers [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) instead of skipping the request as though the server had made it up.
 
+use core::cmp::Ordering;
+use core::hash::{Hash, Hasher};
+
+use crate::internal::dav::failure::DavError;
+use crate::internal::dav::xml::chars::AttributeValue;
+use crate::internal::dav::xml::fault::XmlFault;
+
+/// A borrowed namespace name with normalized octet identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NamespaceUri<'a>(AttributeValue<'a>);
+
+impl<'a> NamespaceUri<'a> {
+    pub(crate) const fn literal(bytes: &'a [u8]) -> Self {
+        Self(AttributeValue::literal(bytes))
+    }
+
+    /// The normalized width in octets.
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the normalized name is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) const fn contiguous(self) -> Option<&'a [u8]> {
+        self.0.contiguous()
+    }
+
+    /// Read normalized octets without allocating a temporary namespace string.
+    pub fn octets(self) -> impl Iterator<Item = Result<u8, DavError>> + 'a {
+        self.0
+            .bytes()
+            .map(|byte| byte.map_err(|error| DavError::from(XmlFault::from(error))))
+    }
+}
+
+impl PartialEq<&[u8]> for NamespaceUri<'_> {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.0.is(other)
+    }
+}
+
 /// A resolved namespace URI, classified.
 ///
 /// `Other` keeps the URI's octets rather than discarding them, because a foreign element is reported to the caller's sink and "some namespace" is not something a caller can act on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug)]
 pub enum Namespace<'a> {
     /// `DAV:`, RFC 4918.
     /// Not a URL; the trailing colon is part of it.
@@ -36,7 +82,7 @@ pub enum Namespace<'a> {
     /// Recognizing it is what keeps a real server's `PROPFIND` response readable rather than two thirds skipped.
     CalendarServer,
     /// Anything else, with the URI kept.
-    Other(&'a [u8]),
+    Other(NamespaceUri<'a>),
 }
 
 impl<'a> Namespace<'a> {
@@ -60,17 +106,29 @@ impl<'a> Namespace<'a> {
         } else if equal(uri, Self::CALENDARSERVER_URI) {
             Self::CalendarServer
         } else {
-            Self::Other(uri)
+            Self::Other(NamespaceUri::literal(uri))
+        }
+    }
+
+    pub(crate) fn from_attribute(uri: AttributeValue<'a>) -> Self {
+        if uri.is(Self::DAV_URI) {
+            Self::Dav
+        } else if uri.is(Self::CALDAV_URI) {
+            Self::CalDav
+        } else if uri.is(Self::CALENDARSERVER_URI) {
+            Self::CalendarServer
+        } else {
+            Self::Other(NamespaceUri(uri))
         }
     }
 
     /// The URI this namespace resolves to.
     #[must_use]
-    pub const fn uri(self) -> &'a [u8] {
+    pub const fn uri(self) -> NamespaceUri<'a> {
         match self {
-            Self::Dav => Self::DAV_URI,
-            Self::CalDav => Self::CALDAV_URI,
-            Self::CalendarServer => Self::CALENDARSERVER_URI,
+            Self::Dav => NamespaceUri::literal(Self::DAV_URI),
+            Self::CalDav => NamespaceUri::literal(Self::CALDAV_URI),
+            Self::CalendarServer => NamespaceUri::literal(Self::CALENDARSERVER_URI),
             Self::Other(uri) => uri,
         }
     }
@@ -79,14 +137,14 @@ impl<'a> Namespace<'a> {
     ///
     /// Written over the URIs rather than derived, so that a `Namespace<'static>` from the table and a `Namespace<'_>` borrowed from a body compare without either lifetime having to become the other.
     #[must_use]
-    pub const fn is(self, other: Namespace<'_>) -> bool {
-        equal(self.uri(), other.uri())
+    pub fn is(self, other: Namespace<'_>) -> bool {
+        self.uri() == other.uri()
     }
 
     /// The prefix this crate writes for the namespace.
     ///
     /// An output choice and never an input assumption; see this module's own documentation.
-    /// A foreign namespace has none, because this crate writes no element it has no row for.
+    /// Foreign names use the extension writer's prefix selection.
     #[must_use]
     pub const fn write_prefix(self) -> &'static [u8] {
         match self {
@@ -95,6 +153,32 @@ impl<'a> Namespace<'a> {
             Self::CalendarServer => b"CS",
             Self::Other(_) => b"",
         }
+    }
+}
+
+impl PartialEq for Namespace<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.uri() == other.uri()
+    }
+}
+
+impl Eq for Namespace<'_> {}
+
+impl PartialOrd for Namespace<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Namespace<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.uri().cmp(&other.uri())
+    }
+}
+
+impl Hash for Namespace<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uri().hash(state);
     }
 }
 
@@ -727,6 +811,6 @@ mod tests {
     #[test]
     fn a_namespace_uri_is_compared_octet_for_octet() {
         assert_eq!(Namespace::from_uri(b"DAV:"), Namespace::Dav);
-        assert_eq!(Namespace::from_uri(b"dav:"), Namespace::Other(b"dav:"));
+        assert_eq!(Namespace::from_uri(b"dav:").uri(), b"dav:".as_slice());
     }
 }

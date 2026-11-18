@@ -23,16 +23,16 @@ use alloc::vec::Vec;
 
 use ical_core::{LimitExceeded, Meter};
 
-use super::fault::XmlFault;
-use super::scan::{XML_PREFIX, XML_URI};
+use super::chars::AttributeValue;
+use super::fault::{XmlFault, XmlSyntax};
+use super::scan::{XML_PREFIX, XML_URI, XMLNS_URI};
 
 /// A prefix bound to a URI for as long as the element that declared it is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Binding<'a> {
     /// The prefix, empty for a default declaration.
     prefix: &'a [u8],
-    /// The URI it is bound to, exactly as the document spelled it.
-    uri: &'a [u8],
+    uri: AttributeValue<'a>,
 }
 
 /// Every namespace binding live at one point in one document, innermost last.
@@ -57,9 +57,18 @@ impl<'a> PrefixStack<'a> {
     pub(crate) fn bind(
         &mut self,
         prefix: &'a [u8],
-        uri: &'a [u8],
+        uri: AttributeValue<'a>,
         meter: &mut Meter,
     ) -> Result<(), XmlFault> {
+        meter.admit(|| Ok(()))?;
+        let xml_namespace = uri.is(XML_URI);
+        if prefix == b"xmlns"
+            || uri.is(XMLNS_URI)
+            || (prefix == XML_PREFIX) != xml_namespace
+            || (!prefix.is_empty() && uri.len() == 0)
+        {
+            return Err(XmlSyntax::Malformed.into());
+        }
         meter.try_bind_prefix()?;
         if let Err(error) = meter.admit(|| {
             self.bindings
@@ -101,9 +110,9 @@ impl<'a> PrefixStack<'a> {
     ///
     /// `xml` is bound to its reserved URI without a declaration, as XML Namespaces 1.0 section 3 requires, because RFC 4918 bodies carry `xml:lang` and a reader that demanded a declaration for it would refuse bodies the specification writes itself.
     #[must_use]
-    pub(crate) fn uri_for(&self, prefix: &[u8]) -> Option<&'a [u8]> {
+    pub(crate) fn uri_for(&self, prefix: &[u8]) -> Option<AttributeValue<'a>> {
         if prefix == XML_PREFIX {
-            return Some(XML_URI);
+            return Some(AttributeValue::literal(XML_URI));
         }
         self.bindings
             .iter()
@@ -115,28 +124,49 @@ impl<'a> PrefixStack<'a> {
 
 #[cfg(test)]
 mod tests {
-    use ical_core::{Limits, Meter};
+    use ical_core::{LimitExceeded, Limits, Meter};
 
-    use super::PrefixStack;
+    use super::{AttributeValue, PrefixStack, XmlFault};
+
+    #[test]
+    fn exhaustion_precedes_binding_validation() {
+        let limits = Limits::DEFAULT.with_max_prefix_bindings(0);
+        let mut meter = Meter::new(limits);
+        let mut stack = PrefixStack::new();
+        assert_eq!(
+            stack.bind(b"d", AttributeValue::literal(b"DAV:"), &mut meter),
+            Err(XmlFault::Limit(LimitExceeded::PrefixBindings))
+        );
+        assert_eq!(
+            stack.bind(b"xml", AttributeValue::literal(b"urn:wrong"), &mut meter),
+            Err(XmlFault::Limit(LimitExceeded::Exhausted))
+        );
+    }
 
     #[test]
     fn an_inner_declaration_shadows_an_outer_one_and_the_outer_one_comes_back() {
         let mut meter = Meter::new(Limits::DEFAULT);
         let mut stack = PrefixStack::new();
-        stack.bind(b"D", b"DAV:", &mut meter).unwrap();
-        assert_eq!(stack.uri_for(b"D"), Some(b"DAV:".as_slice()));
+        stack
+            .bind(b"D", AttributeValue::literal(b"DAV:"), &mut meter)
+            .unwrap();
+        assert_eq!(stack.uri_for(b"D"), Some(AttributeValue::literal(b"DAV:")));
 
         stack
-            .bind(b"D", b"http://evil.example/not-dav", &mut meter)
+            .bind(
+                b"D",
+                AttributeValue::literal(b"http://evil.example/not-dav"),
+                &mut meter,
+            )
             .unwrap();
         assert_eq!(
             stack.uri_for(b"D"),
-            Some(b"http://evil.example/not-dav".as_slice()),
+            Some(AttributeValue::literal(b"http://evil.example/not-dav")),
             "the innermost binding is the one in force"
         );
 
         stack.unbind(1, &mut meter);
-        assert_eq!(stack.uri_for(b"D"), Some(b"DAV:".as_slice()));
+        assert_eq!(stack.uri_for(b"D"), Some(AttributeValue::literal(b"DAV:")));
     }
 
     #[test]
@@ -144,7 +174,9 @@ mod tests {
         let stack = PrefixStack::new();
         assert_eq!(
             stack.uri_for(b"xml"),
-            Some(b"http://www.w3.org/XML/1998/namespace".as_slice())
+            Some(AttributeValue::literal(
+                b"http://www.w3.org/XML/1998/namespace"
+            ))
         );
         assert_eq!(stack.uri_for(b"D"), None);
     }
@@ -153,13 +185,17 @@ mod tests {
     fn one_elements_own_repeat_is_seen_and_an_outer_shadow_is_not() {
         let mut meter = Meter::new(Limits::DEFAULT);
         let mut stack = PrefixStack::new();
-        stack.bind(b"D", b"DAV:", &mut meter).unwrap();
+        stack
+            .bind(b"D", AttributeValue::literal(b"DAV:"), &mut meter)
+            .unwrap();
         assert!(
             !stack.declared_here(0, b"D"),
             "the outer one is not this one"
         );
 
-        stack.bind(b"C", b"urn:x", &mut meter).unwrap();
+        stack
+            .bind(b"C", AttributeValue::literal(b"urn:x"), &mut meter)
+            .unwrap();
         assert!(stack.declared_here(1, b"C"));
         assert!(!stack.declared_here(1, b"D"));
     }
@@ -169,8 +205,14 @@ mod tests {
         let limits = Limits::DEFAULT.with_max_prefix_bindings(1);
         let mut meter = Meter::new(limits);
         let mut stack = PrefixStack::new();
-        stack.bind(b"D", b"DAV:", &mut meter).unwrap();
-        assert!(stack.bind(b"C", b"urn:x", &mut meter).is_err());
+        stack
+            .bind(b"D", AttributeValue::literal(b"DAV:"), &mut meter)
+            .unwrap();
+        assert!(
+            stack
+                .bind(b"C", AttributeValue::literal(b"urn:x"), &mut meter)
+                .is_err()
+        );
         assert_eq!(stack.uri_for(b"C"), None, "a refused charge binds nothing");
     }
 }

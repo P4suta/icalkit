@@ -45,11 +45,12 @@ use core::fmt::{self, Debug, Formatter};
 
 use crate::internal::core::{LimitExceeded, Meter};
 
-use crate::internal::dav::element::{ElementName, Namespace};
+use crate::internal::dav::element::{ElementName, Namespace, NamespaceUri};
 use crate::internal::dav::failure::{DavError, SinkFull, SyntaxError};
 use crate::internal::dav::sink::ByteSink;
-use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
+use crate::internal::dav::text::{check_chars, write_escaped_attribute, write_escaped_text};
 use crate::internal::dav::value::{ExtensionName, copy};
+use crate::internal::dav::xml::scan::{XML_URI, XMLNS_URI};
 
 /// The declaration every document this crate writes begins with.
 ///
@@ -62,11 +63,42 @@ const DECLARATION: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 const DECLARED: [Namespace<'static>; 3] =
     [Namespace::Dav, Namespace::CalDav, Namespace::CalendarServer];
 
-/// The prefix a namespace outside the closed vocabulary is bound to.
+/// The generated prefix for extension names that need a declaration.
 ///
 /// Declared on the element that uses it rather than once on the root, because two extension properties in one body routinely come from two different namespaces and a single root declaration could serve only the first.
 /// A redeclaration is scoped to its own element, so the binding a foreign element is read under is always the one written on it.
 const EXTENSION_PREFIX: &[u8] = b"X";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExtensionPrefix {
+    Unqualified,
+    Declared,
+    Xml,
+}
+
+impl ExtensionPrefix {
+    fn of(namespace: &[u8]) -> Result<Self, DavError> {
+        check_chars(namespace)?;
+        if namespace == XMLNS_URI {
+            return Err(SyntaxError::Malformed.into());
+        }
+        Ok(if namespace.is_empty() {
+            Self::Unqualified
+        } else if namespace == XML_URI {
+            Self::Xml
+        } else {
+            Self::Declared
+        })
+    }
+
+    const fn spelling(self) -> &'static [u8] {
+        match self {
+            Self::Unqualified => b"",
+            Self::Declared => EXTENSION_PREFIX,
+            Self::Xml => b"xml",
+        }
+    }
+}
 
 /// One element opened and not yet closed.
 ///
@@ -76,7 +108,10 @@ enum OpenTag {
     /// A row of the closed vocabulary, whose prefix and local name are both `'static`.
     Known(ElementName),
     /// A name outside it, kept as octets so its end tag can be written.
-    Foreign { local: Box<[u8]>, qualified: bool },
+    Foreign {
+        local: Box<[u8]>,
+        prefix: ExtensionPrefix,
+    },
 }
 
 impl OpenTag {
@@ -84,12 +119,7 @@ impl OpenTag {
     fn prefix(&self) -> &[u8] {
         match *self {
             Self::Known(name) => name.namespace().write_prefix(),
-            Self::Foreign {
-                qualified: true, ..
-            } => EXTENSION_PREFIX,
-            Self::Foreign {
-                qualified: false, ..
-            } => b"",
+            Self::Foreign { prefix, .. } => prefix.spelling(),
         }
     }
 
@@ -181,7 +211,8 @@ impl<'a> XmlWriter<'a> {
     /// Open one element whose name is outside the closed vocabulary.
     ///
     /// The one door that writes a name this crate has no row for, and it exists because the crate is symmetric: a client that read a vendor property out of a `PROPFIND` response must be able to ask for it again, and an `ErrorBody` carries the names a server refused whatever namespace they came from.
-    /// The namespace is declared on the element itself, so no binding of this crate's own is touched.
+    /// XML namespace names use the predefined `xml` prefix.
+    /// Other nonempty namespaces declare their generated prefix on the element itself.
     ///
     /// The local name is refused unless it is an ASCII XML `Name`.
     /// XML admits far more than that, and every name this crate writes is ASCII, so a name it cannot verify is refused rather than emitted unchecked — at the stated cost that a server's non-ASCII property name is one this crate can read and not write back.
@@ -190,26 +221,32 @@ impl<'a> XmlWriter<'a> {
         name: &ExtensionName,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
+        meter.admit(|| Ok(()))?;
         let local = name.local_name();
         check_name(local)?;
+        let prefix = ExtensionPrefix::of(name.namespace())?;
         let root = self.begin_element(meter)?;
         let kept = meter.admit(|| copy(local))?;
-        let qualified = !name.namespace().is_empty();
         self.emit(b"<", meter)?;
-        if qualified {
-            self.emit(EXTENSION_PREFIX, meter)?;
+        if !prefix.spelling().is_empty() {
+            self.emit(prefix.spelling(), meter)?;
             self.emit(b":", meter)?;
         }
         self.emit(local, meter)?;
         if root && self.document {
             self.declare_fixed(meter)?;
         }
-        if qualified {
-            self.declare(EXTENSION_PREFIX, name.namespace(), meter)?;
+        match prefix {
+            ExtensionPrefix::Declared => self.declare(
+                prefix.spelling(),
+                NamespaceUri::literal(name.namespace()),
+                meter,
+            )?,
+            ExtensionPrefix::Unqualified | ExtensionPrefix::Xml => {},
         }
         self.open.push(OpenTag::Foreign {
             local: kept,
-            qualified,
+            prefix,
         });
         Ok(())
     }
@@ -391,11 +428,22 @@ impl<'a> XmlWriter<'a> {
     }
 
     /// Declare one prefix on the element currently pending.
-    fn declare(&mut self, prefix: &[u8], uri: &[u8], meter: &mut Meter) -> Result<(), DavError> {
+    fn declare(
+        &mut self,
+        prefix: &[u8],
+        uri: NamespaceUri<'_>,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
         self.emit(b" xmlns:", meter)?;
         self.emit(prefix, meter)?;
         self.emit(b"=\"", meter)?;
-        self.emit_escaped(uri, true, meter)?;
+        if let Some(bytes) = uri.contiguous() {
+            self.emit_escaped(bytes, true, meter)?;
+        } else {
+            for byte in uri.octets() {
+                self.emit_escaped(&[byte?], true, meter)?;
+            }
+        }
         self.emit(b"\"", meter)
     }
 
@@ -671,7 +719,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             composed.extend_from_slice(b" xmlns:");
             composed.extend_from_slice(namespace.write_prefix());
             composed.extend_from_slice(b"=\"");
-            composed.extend_from_slice(namespace.uri());
+            composed.extend(namespace.uri().octets().map(Result::unwrap));
             composed.extend_from_slice(b"\"");
         }
         assert_eq!(

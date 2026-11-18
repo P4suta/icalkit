@@ -351,8 +351,14 @@ fn a_prefix_is_the_document_s_choice_and_the_reserved_ones_are_not() {
         refusal(&fixture("undeclared-prefix.xml")),
         Err(DavError::Syntax(SyntaxError::UnboundPrefix))
     );
-    assert_eq!(refusal(&fixture("xml-prefix-rebound.xml")), Ok(()));
-    assert_eq!(refusal(&fixture("xmlns-prefix-declared.xml")), Ok(()));
+    assert_eq!(
+        refusal(&fixture("xml-prefix-rebound.xml")),
+        Err(DavError::Syntax(SyntaxError::Malformed))
+    );
+    assert_eq!(
+        refusal(&fixture("xmlns-prefix-declared.xml")),
+        Err(DavError::Syntax(SyntaxError::Malformed))
+    );
 }
 
 /// Depth, one name and one attribute, each bounded and none of them on the caller's stack.

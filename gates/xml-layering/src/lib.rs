@@ -119,6 +119,7 @@ pub fn roll_call() -> usize {
         xml::scan::NO_NAMESPACE,
         xml::scan::XML_PREFIX,
         xml::scan::XML_URI,
+        xml::scan::XMLNS_URI,
         xml::scan::XMLNS,
         xml::scan::XMLNS_COLON,
     ] {
@@ -176,7 +177,14 @@ fn refusals() -> usize {
 fn bound() -> usize {
     let mut meter = Meter::new(Limits::DEFAULT.with_max_prefix_bindings(64));
     let mut stack = xml::bind::PrefixStack::new();
-    if stack.bind(b"D", b"DAV:", &mut meter).is_err() {
+    if stack
+        .bind(
+            b"D",
+            xml::chars::AttributeValue::literal(b"DAV:"),
+            &mut meter,
+        )
+        .is_err()
+    {
         return 0;
     }
     let held = usize::from(stack.uri_for(b"D").is_some())

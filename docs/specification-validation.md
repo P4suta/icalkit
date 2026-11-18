@@ -57,6 +57,15 @@ Fragment construction starts at the first child element, so text-only values kee
 Escaping enforces serialized width and shared budgets before buffer growth.
 The [property content decision](adr/retain-property-content-in-event-order.md) records the capture states and allocation boundary.
 
+Namespace declarations use normalized attribute values before vocabulary lookup and expanded-name comparison.
+[Namespaces in XML section 2.3](https://www.w3.org/TR/xml-names/#s-ComparingURIReferences) requires resolving references before comparing namespace names.
+Checked borrowed views keep event names independent of reusable attribute buffers.
+Owned extension names and emitted declarations use decoded namespace octets.
+Extension names in the XML namespace use the predefined `xml` prefix without rebinding it.
+Reserved bindings follow [section 3](https://www.w3.org/TR/xml-names/#ns-decl), which also forbids treating other prefixes starting with `xml` as fatal errors.
+Wire and live-binding limits remain separate from element character-data bounds.
+The [namespace value decision](adr/borrow-normalized-namespace-values.md) records the lifetime and allocation boundary.
+
 The component hierarchy follows [RFC 5545 section 3.6](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6).
 A calendar requires a component, and a time zone requires a standard or daylight observance.
 Conditional start requirements cover events without `METHOD`, recurring components with `RRULE`, and tasks with `DURATION`.

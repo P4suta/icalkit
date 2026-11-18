@@ -43,6 +43,9 @@ const MAX_CLOCK_PRODUCT_BYTES: u64 = 256 * 1024;
 const TEXT_PROPERTY_BYTES: usize = 256 * 1024;
 const FRAGMENT_TEXT_BYTES: usize = 24 * 1024;
 const MAX_REFUSED_FRAGMENT_BYTES: u64 = 64 * 1024;
+const NAMESPACE_CHARACTERS: usize = 32 * 1024;
+const NAMESPACE_CHILDREN: u32 = 64;
+const MAX_NAMESPACE_PEAK_BYTES: u64 = 16 * 1024;
 
 struct CountingAllocator;
 
@@ -453,6 +456,43 @@ fn check_comments() -> Result<(usize, Allocation), Box<dyn std::error::Error>> {
     Ok((comment_bytes.len(), comment_allocation))
 }
 
+fn check_namespace_allocations() -> Result<(), Box<dyn std::error::Error>> {
+    let mut body = b"<x:root xmlns:x=\"urn:example:".to_vec();
+    for _ in 0..NAMESPACE_CHARACTERS {
+        body.extend_from_slice(b"&#97;");
+    }
+    body.extend_from_slice(b"\">");
+    for _ in 0..NAMESPACE_CHILDREN {
+        body.extend_from_slice(b"<x:child/>");
+    }
+    body.extend_from_slice(b"</x:root>");
+    let (seen, allocation) = measure(|| {
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::new(limits);
+        let mut diagnostics = IgnoreDiagnostics;
+        let mut context = DecodeContext::new(limits, &mut meter, &mut diagnostics);
+        let mut reader = XmlReader::new(&body);
+        let mut seen = 0_u32;
+        while reader.next_event(&mut context)?.is_some() {
+            seen = seen.saturating_add(1);
+        }
+        Ok::<_, DavError>(seen)
+    });
+    assert_eq!(
+        seen?,
+        NAMESPACE_CHILDREN.saturating_add(1).saturating_mul(2)
+    );
+    assert!(
+        allocation.peak <= MAX_NAMESPACE_PEAK_BYTES,
+        "namespace events copied decoded names: {allocation:?}"
+    );
+    println!(
+        "namespace normalization allocation: peak={}, allocated={}",
+        allocation.peak, allocation.allocated
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calendar_bytes = calendar_input();
     let (calendar, property_allocation) = measure(|| {
@@ -514,6 +554,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (comment_input_bytes, comment_allocation) = check_comments()?;
     check_property_content()?;
+    check_namespace_allocations()?;
     let (rule_input_bytes, rule_allocation) = check_rule_refusal()?;
     let (staging_input_bytes, staging_allocation, supplied_allocation) =
         check_transition_allocations()?;
