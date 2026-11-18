@@ -334,6 +334,364 @@ fn non_recurring_duration_filters_use_the_same_ordered_arithmetic() {
     );
 }
 
+const FIXED_UTC_TIMEZONE: &str = "BEGIN:VTIMEZONE\r\nTZID:Fixed/UTC\r\nBEGIN:STANDARD\r\n\
+        DTSTART:20200101T000000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0000\r\n\
+        END:STANDARD\r\nEND:VTIMEZONE\r\n";
+
+fn fold_periods(periods: &str, extra: &str) -> String {
+    calendar(&event(&format!(
+        "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT1H\r\n\
+         RDATE;VALUE=PERIOD:{periods}\r\n{extra}"
+    )))
+}
+
+#[test]
+fn fold_periods_with_distinct_durations_keep_both_instants() {
+    let source = fold_periods("20241103T053000Z/PT10M,20241103T063000Z/PT20M", "");
+    assert_times(
+        &source,
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[
+            ("20241103T053000Z", "20241103T054000Z"),
+            ("20241103T063000Z", "20241103T065000Z"),
+        ],
+    );
+}
+
+#[test]
+fn fold_periods_with_equal_durations_keep_both_instants() {
+    let source = fold_periods("20241103T053000Z/PT10M,20241103T063000Z/PT10M", "");
+    let parsed = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::builder().zone_database(DaylightZone).build();
+    let mut session = engine.session();
+    let window =
+        icalkit::recurrence::Window::new(at("2024-11-03T05:00:00Z"), at("2024-11-03T08:00:00Z"))
+            .unwrap();
+    let mut occurrences = parsed
+        .occurrences(&mut session, "one@example.test", window)
+        .unwrap();
+    let mut starts = Vec::new();
+    while let Some(occurrence) = occurrences.try_next().unwrap() {
+        starts.push((occurrence.key(), occurrence.start()));
+    }
+    let earlier = at("2024-11-03T05:30:00Z");
+    let later = at("2024-11-03T06:30:00Z");
+    assert_eq!(starts, [(earlier, earlier), (later, later)]);
+}
+
+#[test]
+fn fold_periods_keep_a_lone_later_instant() {
+    let source = fold_periods("20241103T063000Z/PT10M", "");
+    assert_times(
+        &source,
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[("20241103T063000Z", "20241103T064000Z")],
+    );
+}
+
+#[test]
+fn fold_periods_exclude_only_the_addressed_instant() {
+    let source = fold_periods(
+        "20241103T053000Z/PT10M,20241103T063000Z/PT10M",
+        "EXDATE:20241103T063000Z\r\n",
+    );
+    assert_times(
+        &source,
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[("20241103T053000Z", "20241103T054000Z")],
+    );
+}
+
+#[test]
+fn fold_periods_keep_the_same_civil_range_shift_as_ordinary_dates() {
+    let source = calendar(&format!(
+        "{}{}",
+        event(
+            "DTSTART;TZID=Test/Daylight:20240309T090000\r\nDURATION:PT10M\r\n\
+         RDATE;VALUE=PERIOD:20241103T053000Z/PT10M,20241103T063000Z/PT10M\r\n",
+        ),
+        event(
+            "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=Test/Daylight:20240309T090000\r\n\
+         DTSTART;TZID=Test/Daylight:20240310T090000\r\nDURATION:PT20M\r\n",
+        )
+    ));
+    assert_times(
+        &source,
+        "20241104T040000Z",
+        "20241104T080000Z",
+        &[
+            ("20241104T063000Z", "20241104T065000Z"),
+            ("20241104T063000Z", "20241104T065000Z"),
+        ],
+    );
+}
+
+#[test]
+fn fold_periods_shift_future_occurrences_by_the_stated_instant_difference() {
+    let source = calendar(&format!(
+        "{FIXED_UTC_TIMEZONE}{}{}",
+        event(
+            "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT10M\r\n\
+         RRULE:FREQ=DAILY;COUNT=3\r\nRDATE;VALUE=PERIOD:20241103T063000Z/PT10M\r\n",
+        ),
+        event(
+            "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=Test/Daylight:20241103T013000\r\n\
+         DTSTART;TZID=Fixed/UTC:20241103T063000\r\nDURATION:PT20M\r\n",
+        )
+    ));
+    assert_times(
+        &source,
+        "20241103T050000Z",
+        "20241104T090000Z",
+        &[
+            ("20241103T063000Z", "20241103T065000Z"),
+            ("20241103T073000Z", "20241103T075000Z"),
+            ("20241104T073000Z", "20241104T075000Z"),
+        ],
+    );
+}
+
+#[test]
+fn fold_periods_keep_the_first_exact_override_for_a_repeated_identifier() {
+    let master = event(
+        "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT10M\r\nRRULE:FREQ=DAILY;COUNT=2\r\n",
+    );
+    let first = event(
+        "RECURRENCE-ID;TZID=Test/Daylight:20241103T013000\r\nDTSTART;TZID=Test/Daylight:20241103T023000\r\nDURATION:PT10M\r\n",
+    );
+    let second = event(
+        "RECURRENCE-ID;TZID=Test/Daylight:20241103T013000\r\nDTSTART;TZID=Fixed/UTC:20241103T063000\r\nDURATION:PT20M\r\n",
+    );
+    assert_times(
+        &calendar(&format!("{FIXED_UTC_TIMEZONE}{master}{first}{second}")),
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[("20241103T073000Z", "20241103T074000Z")],
+    );
+}
+
+#[test]
+fn fold_periods_distinguish_a_foreign_zone_identifier_from_the_first_local_reading() {
+    let master = event(
+        "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT10M\r\n\
+        RRULE:FREQ=DAILY;COUNT=2\r\nRDATE;VALUE=PERIOD:20241103T063000Z/PT10M\r\n",
+    );
+    let exception = |range| {
+        event(&format!(
+            "RECURRENCE-ID{range};TZID=Fixed/UTC:20241103T063000\r\n\
+        DTSTART;TZID=Test/Daylight:20241103T023000\r\nDURATION:PT20M\r\n"
+        ))
+    };
+    assert_times(
+        &calendar(&format!("{FIXED_UTC_TIMEZONE}{master}{}", exception(""))),
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[
+            ("20241103T053000Z", "20241103T054000Z"),
+            ("20241103T073000Z", "20241103T075000Z"),
+        ],
+    );
+    let source = calendar(&format!(
+        "{FIXED_UTC_TIMEZONE}{master}{}",
+        exception(";RANGE=THISANDFUTURE")
+    ));
+    assert_eq!(
+        project(&source, "20241103T050000Z", "20241103T080000Z")
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "icalkit.caldav.query-projection"
+    );
+}
+
+#[test]
+fn fold_periods_apply_range_changes_in_recurrence_order() {
+    let master = event(
+        "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT1H\r\n\
+         RDATE;VALUE=PERIOD:20241103T053000Z/PT10M,20241103T054500Z/PT10M,20241103T063000Z/PT10M\r\n",
+    );
+    let range = event(
+        "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=Test/Daylight:20241103T014500\r\n\
+         DTSTART;TZID=Test/Daylight:20241103T014500\r\nDURATION:PT30M\r\n",
+    );
+    let source = calendar(&format!("{master}{range}"));
+    assert_times(
+        &source,
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[
+            ("20241103T053000Z", "20241103T054000Z"),
+            ("20241103T054500Z", "20241103T061500Z"),
+            ("20241103T063000Z", "20241103T070000Z"),
+        ],
+    );
+    let document = projected_document(&source, "20241103T050000Z", "20241103T080000Z");
+    let keys = document
+        .components()
+        .next()
+        .unwrap()
+        .components()
+        .filter_map(|component| property_text(component, b"RECURRENCE-ID"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        keys,
+        ["20241103T053000Z", "20241103T054500Z", "20241103T063000Z"]
+    );
+}
+
+#[test]
+fn fold_periods_match_only_at_the_written_instant() {
+    let source = fold_periods("20241103T063000Z/PT10M,20241103T063000Z/PT10M", "");
+    let parsed = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::builder().zone_database(DaylightZone).build();
+    for (start, end, expected) in [
+        ("20241103T053500Z", "20241103T054000Z", Match::Unmatched),
+        ("20241103T063500Z", "20241103T064000Z", Match::Matched),
+    ] {
+        let query = Query::parse(format!(
+            r#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav"><C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"><C:time-range start="{start}" end="{end}"/></C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"#
+        ).as_bytes()).unwrap();
+        assert_eq!(
+            query.matches(&mut engine.session(), &parsed).unwrap(),
+            expected
+        );
+    }
+    assert_times(
+        &source,
+        "20241103T050000Z",
+        "20241103T080000Z",
+        &[("20241103T063000Z", "20241103T064000Z")],
+    );
+}
+
+#[test]
+fn fold_periods_charge_the_initial_occurrence_once() {
+    let engine = Engine::builder()
+        .zone_database(DaylightZone)
+        .resource_policy(icalkit::ResourcePolicy::secure().with_occurrences_per_search(1))
+        .build();
+    let window =
+        icalkit::recurrence::Window::new(at("2024-11-03T05:00:00Z"), at("2024-11-03T08:00:00Z"))
+            .unwrap();
+    for (rdate, complete) in [("20241103T053000Z", true), ("20241103T063000Z", false)] {
+        let source = calendar(&event(&format!(
+            "DTSTART;TZID=Test/Daylight:20241103T013000\r\nDURATION:PT10M\r\nRDATE:{rdate}\r\n",
+        )));
+        let parsed = Calendar::parse(source.as_bytes()).unwrap();
+        let mut session = engine.session();
+        let mut occurrences = parsed
+            .occurrences(&mut session, "one@example.test", window)
+            .unwrap();
+        if complete {
+            assert_eq!(
+                occurrences.try_next().unwrap().unwrap().key(),
+                at("2024-11-03T05:30:00Z")
+            );
+            assert_eq!(occurrences.try_next().unwrap(), None);
+        } else {
+            assert_eq!(
+                occurrences.try_next().unwrap_err().code().as_str(),
+                "icalkit.recurrence.budget-exhausted"
+            );
+        }
+    }
+}
+
+#[test]
+fn fold_periods_charge_a_reply_for_either_generated_occurrence() {
+    let parties = "ORGANIZER:mailto:chair@example.test\r\nATTENDEE:mailto:alice@example.test\r\n";
+    let master = event(&format!(
+        "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT10M\r\n\
+         RDATE:20241103T053000Z,20241103T063000Z\r\n{parties}"
+    ));
+    let range = event(&format!(
+        "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=Test/Daylight:20241102T013000\r\n\
+         DTSTART;TZID=Test/Daylight:20241102T033000\r\nDURATION:PT10M\r\n{parties}"
+    ));
+    let held = calendar(&format!("{FIXED_UTC_TIMEZONE}{master}{range}"));
+    let parsed = Calendar::parse(held.as_bytes()).unwrap();
+    let actor = icalkit::scheduling::Actor::new("mailto:alice@example.test").unwrap();
+    for key in ["20241103T053000", "20241103T063000"] {
+        let answer = event(&format!(
+            "RECURRENCE-ID;TZID=Fixed/UTC:{key}\r\nORGANIZER:mailto:chair@example.test\r\n\
+             ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@example.test\r\n",
+        ));
+        let source = calendar(&format!("METHOD:REPLY\r\n{FIXED_UTC_TIMEZONE}{answer}"));
+        let message = icalkit::scheduling::Message::read(source.as_bytes()).unwrap();
+        for (cap, accepted) in [(10, true), (0, false)] {
+            let engine = Engine::builder()
+                .zone_database(DaylightZone)
+                .resource_policy(icalkit::ResourcePolicy::secure().with_occurrences_per_search(cap))
+                .build();
+            let result = message.review_in(&mut engine.session(), &parsed, &actor);
+            assert_eq!(result.is_ok(), accepted, "{key}, cap {cap}");
+        }
+    }
+}
+
+#[test]
+fn fold_periods_budget_interrupts_before_publishing_an_unordered_prefix() {
+    let source = fold_periods("20241103T053000Z/PT10M,20241103T063000Z/PT10M", "");
+    let parsed = Calendar::parse(source.as_bytes()).unwrap();
+    let engine = Engine::builder()
+        .zone_database(DaylightZone)
+        .resource_policy(icalkit::ResourcePolicy::secure().with_occurrences_per_search(1))
+        .build();
+    let window =
+        icalkit::recurrence::Window::new(at("2024-11-03T05:00:00Z"), at("2024-11-03T08:00:00Z"))
+            .unwrap();
+    let mut session = engine.session();
+    let mut occurrences = parsed
+        .occurrences(&mut session, "one@example.test", window)
+        .unwrap();
+    assert_eq!(
+        occurrences.try_next().unwrap_err().code().as_str(),
+        "icalkit.recurrence.budget-exhausted"
+    );
+    let cursor = occurrences.cursor();
+    let full = Engine::builder().zone_database(DaylightZone).build();
+    let mut session = full.session();
+    let mut resumed = parsed
+        .resume_occurrences(&mut session, "one@example.test", window, cursor)
+        .unwrap();
+    assert_eq!(
+        resumed.try_next().unwrap().unwrap().key(),
+        at("2024-11-03T05:30:00Z")
+    );
+    assert_eq!(
+        resumed.try_next().unwrap().unwrap().key(),
+        at("2024-11-03T06:30:00Z")
+    );
+    assert_eq!(resumed.try_next().unwrap(), None);
+}
+
+#[test]
+fn fold_periods_keep_the_later_instant_after_a_local_override() {
+    let master = event(
+        "DTSTART;TZID=Test/Daylight:20241102T013000\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=2\r\n\
+         RDATE;VALUE=PERIOD:20241103T063000Z/PT10M\r\n",
+    );
+    let moved = event(
+        "RECURRENCE-ID;TZID=Test/Daylight:20241103T013000\r\nDTSTART;TZID=Test/Daylight:20241103T020000\r\nDURATION:PT20M\r\n",
+    );
+    let mut times = expanded_times(
+        &calendar(&format!("{master}{moved}")),
+        "20241103T050000Z",
+        "20241103T080000Z",
+    );
+    times.sort_unstable();
+    assert_eq!(
+        times,
+        [
+            ("20241103T063000Z".to_owned(), "20241103T064000Z".to_owned()),
+            ("20241103T070000Z".to_owned(), "20241103T072000Z".to_owned()),
+        ]
+    );
+}
+
 #[test]
 fn period_inclusions_keep_their_own_lengths_without_a_rule() {
     let source = calendar(&event(

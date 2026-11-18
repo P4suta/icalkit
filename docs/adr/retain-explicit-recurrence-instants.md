@@ -18,6 +18,8 @@ Keep civil keys for rule generation.
 Keep the original instant of an explicit date when resolving its civil key would change the instant.
 Combine inclusions, exclusions, and override identities at their original starts under [section 3.8.5.2](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.5.2).
 The shared meter bounds both sets.
+A cursor needs an ordering across both sets.
+Refuse a range anchor when its nominal key would also move an earlier occurrence.
 
 ## Alternatives
 

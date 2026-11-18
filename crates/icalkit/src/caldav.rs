@@ -3185,6 +3185,40 @@ mod tests {
     use core::fmt::Write as _;
 
     #[test]
+    fn explicit_dates_do_not_consume_rule_period_candidates() {
+        let policy = ResourcePolicy {
+            limits: Limits::DEFAULT.with_candidates_per_period(0),
+        };
+        let engine = Engine::builder().resource_policy(policy).build();
+        let query = super::Query::parse(br#"<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:">
+                <D:prop><C:calendar-data><C:expand start="20241103T050000Z" end="20241103T070000Z"/></C:calendar-data></D:prop>
+                <C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
+            </C:calendar-query>"#).unwrap();
+        for start in ["20241103T053000Z", "20241103T063000Z"] {
+            let source = alloc::format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//fold test//EN\r\n\
+                 BEGIN:VTIMEZONE\r\nTZID:Fold\r\nBEGIN:STANDARD\r\n\
+                 DTSTART:20241103T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n\
+                 END:STANDARD\r\nEND:VTIMEZONE\r\n\
+                 BEGIN:VEVENT\r\nUID:fold\r\nDTSTAMP:20240101T000000Z\r\n\
+                 DTSTART;TZID=Fold:20241102T013000\r\nDURATION:PT10M\r\nRDATE:{start}\r\n\
+                 END:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let calendar = crate::Calendar::parse(source.as_bytes()).unwrap();
+            let mut session = engine.session();
+            let output = query
+                .project(&mut session, &calendar)
+                .unwrap_or_else(|err| panic!("{start}: {err:?}"));
+            let value = core::str::from_utf8(output.as_bytes()).unwrap();
+            assert_eq!(value.matches("BEGIN:VEVENT\r\n").count(), 1);
+            assert!(
+                value.contains(&alloc::format!("DTSTART:{start}\r\n")),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
     fn a_reserved_storage_status_cannot_add_a_member_over_the_sync_limit() {
         let policy = ResourcePolicy {
             limits: Limits::DEFAULT.with_max_responses(1),
