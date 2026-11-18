@@ -6,7 +6,7 @@
 //!
 //! A prefix is a per-document choice its author made and nothing else.
 //! `DAV:` may be bound to `D:`, to `d:`, to `ns0:`, to no prefix at all through a default declaration, or to a different prefix on every element of one body, and the servers people actually run disagree about which.
-//! Resolving that is this file's whole job, and it does it without knowing a single URI by name: what it answers with is the octets the document bound, and classifying those is the vocabulary's business one layer up.
+//! The stack stores the caller's classification of each accepted URI until its scope ends.
 //!
 //! # Scope is a suffix
 //!
@@ -29,24 +29,24 @@ use super::scan::{XML_PREFIX, XML_URI, XMLNS_URI};
 
 /// A prefix bound to a URI for as long as the element that declared it is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Binding<'a> {
+struct Binding<'a, T> {
     /// The prefix, empty for a default declaration.
     prefix: &'a [u8],
-    uri: AttributeValue<'a>,
+    uri: T,
 }
 
 /// Every namespace binding live at one point in one document, innermost last.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PrefixStack<'a> {
+pub(crate) struct PrefixStack<'a, T> {
     /// The bindings, in declaration order, so a scope ends by truncating the tail.
-    bindings: Vec<Binding<'a>>,
+    bindings: Vec<Binding<'a, T>>,
 }
 
-impl<'a> PrefixStack<'a> {
+impl<'a, T: Copy + From<AttributeValue<'a>>> PrefixStack<'a, T> {
     pub(crate) fn declarations(
         &self,
         local: Option<u16>,
-    ) -> impl DoubleEndedIterator<Item = (&'a [u8], AttributeValue<'a>)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (&'a [u8], T)> + '_ {
         let first = local.map_or(0, |count| {
             self.bindings.len().saturating_sub(usize::from(count))
         });
@@ -92,7 +92,10 @@ impl<'a> PrefixStack<'a> {
             meter.unbind_prefix();
             return Err(error.into());
         }
-        self.bindings.push(Binding { prefix, uri });
+        self.bindings.push(Binding {
+            prefix,
+            uri: T::from(uri),
+        });
         Ok(())
     }
 
@@ -119,9 +122,9 @@ impl<'a> PrefixStack<'a> {
     ///
     /// `xml` is bound to its reserved URI without a declaration, as XML Namespaces 1.0 section 3 requires, because RFC 4918 bodies carry `xml:lang` and a reader that demanded a declaration for it would refuse bodies the specification writes itself.
     #[must_use]
-    pub(crate) fn uri_for(&self, prefix: &[u8]) -> Option<AttributeValue<'a>> {
+    pub(crate) fn uri_for(&self, prefix: &[u8]) -> Option<T> {
         if prefix == XML_PREFIX {
-            return Some(AttributeValue::literal(XML_URI));
+            return Some(T::from(AttributeValue::literal(XML_URI)));
         }
         self.bindings
             .iter()
@@ -135,7 +138,37 @@ impl<'a> PrefixStack<'a> {
 mod tests {
     use ical_core::{LimitExceeded, Limits, Meter};
 
-    use super::{AttributeValue, PrefixStack, XmlFault};
+    use super::{AttributeValue, XmlFault};
+
+    type PrefixStack<'a> = super::PrefixStack<'a, AttributeValue<'a>>;
+
+    #[test]
+    fn scope_lookup_reuses_the_value_classified_at_declaration() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone, Copy)]
+        struct Classified(usize);
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        impl From<AttributeValue<'_>> for Classified {
+            fn from(value: AttributeValue<'_>) -> Self {
+                CALLS.fetch_add(1, Ordering::Relaxed);
+                Self(value.len())
+            }
+        }
+
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let mut stack = super::PrefixStack::<Classified>::new();
+        stack
+            .bind(
+                b"d",
+                AttributeValue::parse(b"D&#65;V:").unwrap(),
+                &mut meter,
+            )
+            .unwrap();
+        assert_eq!(stack.uri_for(b"d").unwrap().0, 4);
+        assert_eq!(stack.declarations(None).next().unwrap().1.0, 4);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn exhaustion_precedes_binding_validation() {

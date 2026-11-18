@@ -165,7 +165,7 @@ pub struct XmlReader<'a> {
     open: Vec<Open<'a>>,
     /// Every live binding.
     /// The layer holds the stack; this file only asks it questions.
-    bindings: PrefixStack<'a>,
+    bindings: PrefixStack<'a, Namespace<'a>>,
     /// The attributes of the element that has just started, as they lie in the body.
     raw: Vec<RawAttribute<'a>>,
     /// The same attributes with their prefixes resolved, sorted by name.
@@ -734,8 +734,7 @@ impl<'a> XmlReader<'a> {
     ///
     /// Named apart from the trait method it answers so that no call inside this file depends on inherent methods winning over trait methods of the same name.
     fn binding_for(&self, prefix: &[u8]) -> Option<Namespace<'a>> {
-        // The layer answers with the octets the document bound; classifying those into the closed vocabulary is this crate's and not the layer's, which is the seam in one line.
-        self.bindings.uri_for(prefix).map(Namespace::from_attribute)
+        self.bindings.uri_for(prefix)
     }
 
     /// Consume the element that has just started, and everything inside it.
@@ -783,8 +782,7 @@ impl<'a> XmlPull<'a> for XmlReader<'a> {
         } else {
             Some(self.open.last()?.bindings)
         };
-        let (prefix, uri) = self.bindings.declarations(local).nth(index)?;
-        Some((prefix, Namespace::from_attribute(uri)))
+        self.bindings.declarations(local).nth(index)
     }
 
     fn next_event(
@@ -953,6 +951,25 @@ mod tests {
     use crate::internal::dav::failure::{DavError, SyntaxError};
     use crate::internal::dav::policy::{DecodeContext, UnknownPolicy};
     use crate::internal::dav::text::{LineEndings, TextPolicy, write_escaped_text};
+
+    #[test]
+    fn an_encoded_binding_resolves_to_dav_for_names_and_fragment_scope() {
+        let limits = Limits::DEFAULT;
+        let mut meter = Meter::new(limits);
+        let mut sink = IgnoreDiagnostics;
+        let mut context = DecodeContext::new(limits, &mut meter, &mut sink);
+        let mut reader = XmlReader::new(br#"<d:prop xmlns:d="D&#65;V:"><d:owner/></d:prop>"#);
+        while let Some(event) = reader.next_event(&mut context).unwrap() {
+            if let XmlEvent::Start { name, .. } = event {
+                assert_eq!(name.namespace, Namespace::Dav);
+                assert_eq!(
+                    reader.binding_at(0, true),
+                    Some((b"d".as_slice(), Namespace::Dav))
+                );
+                assert_eq!(reader.resolve_prefix(b"d"), Some(Namespace::Dav));
+            }
+        }
+    }
 
     /// The `.ics` all three fixtures carry, byte for byte.
     const PAYLOAD: &[u8] = include_bytes!("fixtures/calendar-data-payload.ics");

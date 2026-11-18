@@ -89,6 +89,20 @@ pub enum Namespace<'a> {
     Other(NamespaceUri<'a>),
 }
 
+impl<'a> From<AttributeValue<'a>> for Namespace<'a> {
+    fn from(uri: AttributeValue<'a>) -> Self {
+        if uri.is(Self::DAV_URI) {
+            Self::Dav
+        } else if uri.is(Self::CALDAV_URI) {
+            Self::CalDav
+        } else if uri.is(Self::CALENDARSERVER_URI) {
+            Self::CalendarServer
+        } else {
+            Self::Other(NamespaceUri(uri))
+        }
+    }
+}
+
 impl<'a> Namespace<'a> {
     /// The URI of `DAV:`.
     pub const DAV_URI: &'static [u8] = b"DAV:";
@@ -111,18 +125,6 @@ impl<'a> Namespace<'a> {
             Self::CalendarServer
         } else {
             Self::Other(NamespaceUri::literal(uri))
-        }
-    }
-
-    pub(crate) fn from_attribute(uri: AttributeValue<'a>) -> Self {
-        if uri.is(Self::DAV_URI) {
-            Self::Dav
-        } else if uri.is(Self::CALDAV_URI) {
-            Self::CalDav
-        } else if uri.is(Self::CALENDARSERVER_URI) {
-            Self::CalendarServer
-        } else {
-            Self::Other(NamespaceUri(uri))
         }
     }
 
