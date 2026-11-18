@@ -525,17 +525,7 @@ fn known_relationships_are_valid(component: &Component) -> bool {
 }
 
 fn relationship_is_valid(property: &Property) -> bool {
-    const URI_RELATIONSHIPS: &[&[u8]] = &[
-        b"FINISHTOSTART",
-        b"FINISHTOFINISH",
-        b"STARTTOFINISH",
-        b"STARTTOSTART",
-        b"FIRST",
-        b"NEXT",
-        b"DEPENDS-ON",
-        b"REFID",
-        b"CONCEPT",
-    ];
+    const UID_RELATIONSHIPS: &[&[u8]] = &[b"PARENT", b"CHILD", b"SIBLING", b"SNOOZE"];
     let uri = match property.declared_value_type() {
         Some(Err(_)) => return true,
         None | Some(Ok(ValueType::Text | ValueType::Uid)) => false,
@@ -557,7 +547,7 @@ fn relationship_is_valid(property: &Property) -> bool {
         return true;
     }
     relation.is_some_and(|value| {
-        URI_RELATIONSHIPS
+        !UID_RELATIONSHIPS
             .iter()
             .any(|candidate| value.eq_ignore_ascii_case(candidate))
     }) && UriValue::decode_property(property).is_ok()

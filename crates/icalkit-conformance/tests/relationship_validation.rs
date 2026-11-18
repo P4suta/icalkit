@@ -197,18 +197,29 @@ fn malformed_uri_references_fail_strict_promotion() {
 }
 
 #[test]
-fn hierarchical_unknown_and_snooze_relationships_reference_identifiers() {
+fn hierarchical_and_snooze_relationships_reference_identifiers() {
     for relation in [
         "",
         ";RELTYPE=PARENT",
         ";RELTYPE=Child",
         ";RELTYPE=sibling",
         ";RELTYPE=SNOOZE",
-        ";RELTYPE=X-PRIVATE",
-        ";RELTYPE=FUTURE-RELATION",
     ] {
         rejected(
             &calendar(&format!("RELATED-TO;VALUE=URI{relation}:urn:other")),
+            "icalkit.validation.invalid-relationship",
+        );
+    }
+}
+
+#[test]
+fn extension_relationships_can_reference_uris() {
+    for relation in ["X-BLOCKS", "FUTURE-RELATION"] {
+        accepted(&calendar(&format!(
+            "RELATED-TO;RELTYPE={relation};VALUE=URI:urn:example:task"
+        )));
+        rejected(
+            &calendar(&format!("RELATED-TO;RELTYPE={relation};VALUE=URI:relative")),
             "icalkit.validation.invalid-relationship",
         );
     }
