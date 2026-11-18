@@ -9,10 +9,10 @@
 //! This file closes the gap the only way a test can,
 //! by covering the inputs nobody would have chosen.
 //!
-//! Four sweeps, one set of claims.
-//! Every input, wherever it came from, has to satisfy the same three.
-//! **Parse then serialize is byte-identical, and stays byte-identical on a second pass.** **Nothing panics or aborts.** **A refusal is a [`ParseError`] naming a bound the octets are independently confirmed to have crossed.** The third is what makes the first two mean anything: a reader can satisfy byte identity by refusing every input it finds difficult, so a refusal is accepted here only when the input alone — counted by [`crossed`],
-//! which never asks the reader anything — shows that what the bound governs was really there.
+//! Each sweep checks that accepted input serializes byte for byte and remains a fixed point after a second parse.
+//! A panic or abort fails the test.
+//! For a refusal, [`crossed`] independently checks a necessary condition against the whole input.
+//! For example, a large input can satisfy the size check for a header even when every header fits its limit.
 //!
 //! The inputs come from four places.
 //! Exhaustively, every string of at most six octets over the twelve octets that decide how RFC 5545 section 3.1 reads a line.
@@ -21,12 +21,14 @@
 //! And through the mutation door, one scoped write of each kind the change vocabulary has,
 //! applied to those same fixtures.
 //!
-//! **Why the fourth exists.** `docs/adr/0001` states four claims and the first three sweeps reach two of them: everything above is a parse and a serialize, and P3 — a write reaches the property it named and nothing else — has no parse-only expression at all.
-//! Three of the six breaks this milestone was measured against lived behind that door, and reintroducing two of them left every sweep here passing.
-//! So the write leg is not extra coverage of the same claim; it is the other half of the evidence, and P4 rides along with it, since what a write is checked against includes the diagnostics the reread earns.
+//! The scoped writes exercise part of the mutation-locality requirement in `docs/adr/0001`.
+//! They check serialization stability, component nesting and the expected change in property count.
+//! A change to an unrelated property's bytes can pass all three checks.
+//! The write sweep collects reread diagnostics without asserting their contents.
 //!
-//! **Why the legs are cut into shards.** Every shard is one `#[test]`, so each is one process with its own share of the nextest time bound, and a sweep wide enough to be evidence does not become a sweep that trips a timeout on the slowest machine that runs it.
-//! The shards of one leg partition its inputs; nothing is examined twice and nothing is skipped.
+//! Each shard runs as a separate test under the nextest time limit.
+//! The exhaustive shards partition the indices at each length.
+//! Randomized shards reproduce their draws from a seed and shard index and can generate the same inputs.
 //!
 //! The generator is hand-rolled for the same reason the crates below this one carry no dependency: `just purity` reads dev-dependencies too and `cargo deny` refuses a second copy of anything, so the fact that this crate is `std` and outside the gate does not make a generator crate reachable from it.
 //! Sixty lines of `splitmix64` and a fragment table cost less than the argument would.
@@ -72,7 +74,7 @@ const EXHAUSTIVE_SHARDS: usize = 12;
 /// A policy small enough that a four-octet input crosses something.
 ///
 /// The exhaustive sweep is worth running twice only if one of the passes reaches the refusal path at all, and the default policy is far too generous for four octets to trouble.
-/// Every bound here is set one or two above zero so that what a short input earns names a dimension [`crossed`] can confirm from the octets.
+/// Low ceilings allow short inputs to exercise the refusal conditions checked by [`crossed`].
 /// The input budget is four rather than lower because the ledger is charged with octets drawn from the input, so a budget below the longest input would be crossed by inputs this sweep cannot distinguish from a double charge.
 const TIGHT: Limits = Limits::DEFAULT
     .with_grammar(
@@ -106,7 +108,7 @@ const CALENDARS: usize = 1_100_000;
 
 /// How many tests the randomized leg is cut into.
 ///
-/// Each shard runs its own stream from a seed derived from [`SEED`] and its own index, so the draws are disjoint, every one of them is reproducible from a committed constant, and a failure names the shard that found it.
+/// The committed seed and the shard index determine the draws for each shard.
 const RANDOMIZED_SHARDS: usize = 16;
 
 /// How many edits each committed fixture is put through.
@@ -141,17 +143,14 @@ enum Verdict {
         /// Whether the reader had anything to say about it.
         diagnosed: bool,
     },
-    /// Refused, naming a bound the octets independently confirm was crossed.
+    /// Refused with a limit whose necessary condition holds for the input.
     Refused(ParseError),
 }
 
 /// Put one input through the three claims this whole file exists to check.
 ///
-/// The claims are stated together because they are not separable in practice.
-/// An implementation that satisfies byte identity by refusing everything satisfies nothing, so a refusal is accepted only where [`crossed`] can confirm it from the input; and an implementation that writes back what it read but disagrees with itself on the next read has normalized something, so the octets it wrote are read again rather than taken on trust.
-///
-/// The third claim — that nothing panics or aborts — is the absence of any return value below.
-/// It is asserted by this function being reached a second time.
+/// [`crossed`] checks whether the input could account for the reported refusal.
+/// Accepted input must match the first serialization and the output of the second pass.
 fn examine(octets: &[u8], limits: Limits) -> Result<Verdict, String> {
     let mut kept: Vec<Diagnostic> = Vec::new();
     let tree = match Document::parse(octets, limits, &mut kept) {
@@ -191,11 +190,9 @@ fn examine(octets: &[u8], limits: Limits) -> Result<Verdict, String> {
     }
 }
 
-/// Whether the octets independently confirm the bound `refusal` names.
+/// Whether a reported refusal is plausible from counts over the whole input.
 ///
-/// A reader can always make an input go away by refusing it, so "it refused" is evidence of nothing on its own.
-/// Each arm below is a *necessary* condition computed from the input and from nothing else: a header, a value and a parameter are all drawn from octets the caller handed in, so a bound stated over them cannot be crossed by an input too small to hold what crossed it.
-/// The conditions are deliberately weaker than the reader's own, which is what keeps this a check on the reader rather than a second copy of it.
+/// Every branch checks a necessary condition independently of the parser's field boundaries and nesting state.
 fn crossed(octets: &[u8], refusal: ParseError) -> bool {
     let held = as_units(octets.len());
     match refusal {
@@ -570,7 +567,7 @@ fn mutate(stream: &mut Stream, original: &[u8], edit: Edit) -> Vec<u8> {
 struct Tally {
     /// Inputs put through [`examine`].
     examined: u64,
-    /// Inputs refused at a bound the octets confirmed.
+    /// Inputs refused with a limit whose necessary condition held.
     refused: u64,
     /// Inputs kept, with something reported about them.
     diagnosed: u64,
@@ -683,7 +680,7 @@ fn sweep_fixture(
 }
 
 // ---------------------------------------------------------------------------------------
-// The write leg: P3 and P4, which nothing above this line reaches
+// Scoped writes over the fixture corpus
 // ---------------------------------------------------------------------------------------
 
 /// One scoped write, of each kind `ical-core`'s change vocabulary has.
@@ -832,7 +829,7 @@ fn apply_write(
     outcome.ok()
 }
 
-/// Put one fixture through every kind of scoped write, checking P3 and P4 after each.
+/// Apply every scoped write to the fixture and check the resulting document.
 fn sweep_writes(
     stream: &mut Stream,
     name: &str,
@@ -860,7 +857,7 @@ fn sweep_one_write(
     write: Write,
     tally: &mut WriteTally,
 ) -> Result<(), String> {
-    // A fixture the default policy refuses has no tree to write into, and its refusal is already the subject of the leg above: `generative_shard` asks of every committed fixture whether what it earns is a bound the octets independently confirm.
+    // The generative sweep checks refusals for the original fixtures.
     let Ok(mut document) = Document::parse(original, Limits::DEFAULT, &mut Vec::new()) else {
         tally.absent = tally.absent.saturating_add(1);
         return Ok(());
@@ -943,12 +940,11 @@ enum Anchor {
 
 /// The octets this sweep's own machinery has to agree with a person about.
 ///
-/// Table-driven and written by hand, because everything else in this file is generated and a generated corpus cannot tell anyone that the generator is wrong.
-/// The rows cover the empty input, the terminator section 3.1 asks for beside the three shapes that earn a diagnostic instead of a refusal, and both sides of every bound [`TIGHT`] states — the largest input each one admits, and the one octet, parameter, fold or item past it.
+/// The table covers empty input, line termination, a missing value separator and a blank line.
+/// It includes headers at and above the ceiling and over-limit values, parameter counts, fold counts and item counts.
 const ANCHORS: &[(&str, &[u8], Limits, Anchor)] = &[
     ("the empty input", b"", Limits::DEFAULT, Anchor::Clean),
-    // An `X-` name rather than a registered one, because section 3.8.8 allows an extension property anywhere and this row is the only one in the table that claims *no* diagnostic.
-    // A row that claimed silence for a name some later unit teaches the reader to have an opinion about would be a row that fails for being right.
+    // Section 3.8.8 permits the extension property in this clean fixture.
     (
         "a line terminated the way section 3.1 asks",
         b"X-TEST:v\r\n",
@@ -1054,7 +1050,7 @@ fn a_violation_arrives_as_a_diagnostic_and_not_as_a_refusal() {
 
 /// The stream one shard of a randomized leg draws from.
 ///
-/// Derived from the committed seed and the shard's own index rather than drawn from a shared stream, so that the shards are independent processes covering disjoint inputs and each one's failure is reproducible from two numbers that are both in this file.
+/// A shard's index and the committed seed reproduce its stream, including any inputs that also occur in other shards.
 fn shard_stream(shard: usize) -> Stream {
     let offset = as_units(shard).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     Stream::new(SEED.wrapping_add(offset))
@@ -1064,7 +1060,7 @@ fn shard_stream(shard: usize) -> Stream {
 ///
 /// Exhaustive rather than sampled at this size, because the interesting inputs are the ones nobody would draw: a `DQUOTE` that opens where no value may begin, a `\` with nothing after it, a `CR` followed by a `CR`, a fold introduced before the first octet of the line.
 ///
-/// One shard of the deal, and the shards partition the whole: input `index` of `length` is examined by the shard `index` is congruent to, so nothing here is covered twice and the six of them together cover every string there is at these lengths.
+/// At each length, the input index modulo [`EXHAUSTIVE_SHARDS`] determines its only shard.
 fn exhaustive_shard(shard: usize) -> Result<(), String> {
     let mut tally = Tally::default();
     let mut octets: Vec<u8> = Vec::new();
@@ -1102,8 +1098,7 @@ fn exhaustive_shard(shard: usize) -> Result<(), String> {
 
 /// Calendars drawn from [`SEED`], read under a generous policy and a binding one.
 ///
-/// The default policy is where byte identity is the claim; [`BOUNDED`] is where the refusal is,
-/// and both are asserted over the same octets so that a shape which round-trips is also a shape whose refusal names something real.
+/// Each generated calendar is checked under both policies for byte identity or a plausible refusal.
 /// Nothing here reads a clock, so the calendars are the same on every machine and a failure arrives with the seed that produced it.
 fn randomized_shard(shard: usize) -> Result<(), String> {
     let mut stream = shard_stream(shard);
@@ -1183,8 +1178,7 @@ fn generative_shard(shard: usize) -> Result<(), String> {
 
 /// One scoped write of each kind, into every calendar this shard is responsible for.
 ///
-/// The leg that reaches P3 and P4.
-/// Each write is checked against the three things a second client depends on: what was written reads back and is a fixed point, the document still nests exactly as it did, and the number of properties in it changed by what the change said it would and by nothing more.
+/// Successful writes must yield a serialization fixed point, preserve component nesting and change the property count as expected.
 fn write_shard(shard: usize) -> Result<(), String> {
     let corpus = shard_of_corpus(shard);
     assert!(
