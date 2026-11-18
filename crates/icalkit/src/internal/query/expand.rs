@@ -336,6 +336,29 @@ struct ComponentSpan<'a> {
     key: Instant,
     range: OverrideRange,
     stated: Option<ContextSpan<'a>>,
+    source_position: usize,
+    latest_range: Option<usize>,
+}
+
+impl ComponentSpan<'_> {
+    fn index(components: &mut Vec<Self>, meter: &mut Meter) -> Result<(), LimitExceeded> {
+        let count = u64::try_from(components.len()).unwrap_or(u64::MAX);
+        if count == 0 {
+            return Ok(());
+        }
+        let sort_work = u64::from(count.ilog2()).saturating_add(1);
+        meter.try_charge(count.saturating_mul(sort_work.saturating_add(2)))?;
+        components.sort_unstable_by_key(|component| (component.key, component.source_position));
+        components.dedup_by_key(|component| component.key);
+        let mut latest = None;
+        for (index, component) in components.iter_mut().enumerate() {
+            if component.range == OverrideRange::ThisAndFuture && component.stated.is_some() {
+                latest = Some(index);
+            }
+            component.latest_range = latest;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -368,7 +391,8 @@ impl<'a> InstanceDurations<'a> {
         base: InstanceSpan,
         end_kind: EndKind,
         clock: SeriesClock<'a>,
-    ) -> ContextSpan<'a> {
+        mut charge_probe: impl FnMut() -> Result<(), LimitExceeded>,
+    ) -> Result<ContextSpan<'a>, LimitExceeded> {
         let period = self
             .periods
             .binary_search_by_key(&key, |period| period.key)
@@ -383,21 +407,23 @@ impl<'a> InstanceDurations<'a> {
                 end_kind
             },
         };
-        if let Some(exact) = self
-            .components
-            .iter()
-            .find(|component| component.key == key)
-        {
-            return exact.stated.unwrap_or(base);
+        let mut lower = 0usize;
+        let mut upper = self.components.len();
+        while lower < upper {
+            charge_probe()?;
+            let middle = lower.midpoint(upper);
+            let probe = &self.components[middle];
+            match probe.key.cmp(&key) {
+                core::cmp::Ordering::Equal => return Ok(probe.stated.unwrap_or(base)),
+                core::cmp::Ordering::Less => lower = middle.saturating_add(1),
+                core::cmp::Ordering::Greater => upper = middle,
+            }
         }
-        self.components
-            .iter()
-            .rev()
-            .filter(|component| {
-                component.key < key && component.range == OverrideRange::ThisAndFuture
-            })
-            .find_map(|component| component.stated)
-            .unwrap_or(base)
+        let inherited = lower
+            .checked_sub(1)
+            .and_then(|last| self.components[last].latest_range)
+            .and_then(|anchor| self.components[anchor].stated);
+        Ok(inherited.unwrap_or(base))
     }
 
     fn maximum(self, base: InstanceSpan, clock: SeriesClock<'a>) -> InstanceSpan {
@@ -820,7 +846,11 @@ fn original_override_span(
             periods: &periods,
             components: &[],
         };
-        let span = durations.at(key, occupies, end_kind_of(master), clock);
+        let span = durations
+            .at(key, occupies, end_kind_of(master), clock, || {
+                budget.meter.try_charge(1)
+            })
+            .map_err(QueryError::from)?;
         let start = clock.place(key, zones)?;
         let end = span.finish(key, start, clock, zones)?;
         Instance::new(start, start, end)
@@ -957,8 +987,8 @@ pub(super) fn event_instance_at_key<S: DiagnosticSink + ?Sized>(
         let start = occurrence_start_at(series, key, zones, budget, sink)?
             .map_err(|_| QueryError::Unrepresentable)?
             .ok_or(QueryError::Unrepresentable)?;
-        let instance =
-            placed(series, key, start, zones).map_err(|_| QueryError::Unrepresentable)?;
+        let instance = placed(series, key, start, zones, || budget.meter.try_charge(1))?
+            .map_err(|_| QueryError::Unrepresentable)?;
         (target == instance.recurrence_id())
             .then_some(instance)
             .ok_or(QueryError::Unrepresentable)
@@ -1030,7 +1060,7 @@ fn with_related_series<T>(
         let recurrence_id = decided!(nominal_value(addressed, clock, zones));
         retain(
             &mut durations,
-            component_span(candidate, addressed, recurrence_id, zones)?,
+            component_span(candidate, addressed, recurrence_id, member.position, zones)?,
             budget.meter,
         )?;
         let moved_to = match decided!(optional(candidate.dtstart())) {
@@ -1048,9 +1078,8 @@ fn with_related_series<T>(
             PropertyDiff::empty(),
         ));
     }
+    ComponentSpan::index(&mut durations, budget.meter)?;
     entries.sort_by_key(|entry| entry.recurrence_id());
-    durations.sort_by_key(|entry| entry.key);
-    durations.dedup_by_key(|entry| entry.key);
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
     Ok(Ok(project(
         Series {
@@ -1266,7 +1295,7 @@ where
         let recurrence_id = decided!(nominal_value(addressed, clock, zones));
         retain(
             &mut durations,
-            component_span(candidate, addressed, recurrence_id, zones)?,
+            component_span(candidate, addressed, recurrence_id, member.position, zones)?,
             budget.meter,
         )?;
         let moved_to = match decided!(optional(candidate.dtstart())) {
@@ -1292,9 +1321,8 @@ where
             PropertyDiff::empty(),
         ));
     }
+    ComponentSpan::index(&mut durations, budget.meter)?;
     entries.sort_by_key(|entry| entry.recurrence_id());
-    durations.sort_by_key(|entry| entry.key);
-    durations.dedup_by_key(|entry| entry.key);
     let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
     overlaps(
         Series {
@@ -1576,6 +1604,7 @@ fn component_span<'a>(
     component: &'a Component,
     addressed: DateTimeValue<'a>,
     key: Instant,
+    source_position: usize,
     zones: Zones<'a>,
 ) -> Result<ComponentSpan<'a>, QueryError> {
     let states_length = [b"DTEND".as_slice(), b"DUE", b"DURATION"]
@@ -1602,6 +1631,8 @@ fn component_span<'a>(
     };
     Ok(ComponentSpan {
         key,
+        source_position,
+        latest_range: None,
         range: if is_this_and_future(component) {
             OverrideRange::ThisAndFuture
         } else {
@@ -1805,7 +1836,9 @@ where
         return Ok(Match::Unmatched);
     };
     let mut answer = lone_instance(series).map_or(Match::Unmatched, |(key, start)| {
-        decide(placed(series, key, start, zones), range)
+        let found = placed(series, key, start, zones, || budget.meter.try_charge(1))
+            .unwrap_or(Err(Undecided::SearchExhausted));
+        decide(found, range)
     });
     if !answer.is_matched() {
         let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
@@ -1844,7 +1877,8 @@ where
         collected.undecided = Some(Undecided::SearchExhausted);
     } else if let Some(bounds) = SearchBounds::compose(series, range)? {
         if let Some((key, start)) = lone_instance(series) {
-            let found = placed(series, key, start, zones);
+            let found = placed(series, key, start, zones, || budget.meter.try_charge(1))
+                .unwrap_or(Err(Undecided::SearchExhausted));
             if let Ok(established) = found {
                 collected.offer(found, range);
                 collected.lone = Some(established.recurrence_id());
@@ -2052,14 +2086,9 @@ fn placed<'a>(
     key: Instant,
     start: Instant,
     zones: Zones<'a>,
-) -> Result<Instance, Undecided> {
+    charge_probe: impl FnMut() -> Result<(), LimitExceeded>,
+) -> Result<Result<Instance, Undecided>, LimitExceeded> {
     let clock = series.clock;
-    let happens_at = clock.place(start, zones)?;
-    let addressed = if key == start {
-        happens_at
-    } else {
-        clock.place(key, zones)?
-    };
     let value_kind = series.durations.value_kind_at(key, series.dtstart_kind);
     let span = if series.kind == ComponentKind::Journal {
         ContextSpan {
@@ -2074,16 +2103,24 @@ fn placed<'a>(
     } else {
         series
             .durations
-            .at(key, series.occupies, series.end_kind, clock)
+            .at(key, series.occupies, series.end_kind, clock, charge_probe)?
     };
-    let finishes_at = span.finish(start, happens_at, clock, zones)?;
-    Instance::new(addressed, happens_at, finishes_at).with_shape(
-        series.kind,
-        value_kind,
-        span.end_kind,
-        key,
-        start,
-    )
+    let instance = clock.place(start, zones).and_then(|happens_at| {
+        let addressed = if key == start {
+            happens_at
+        } else {
+            clock.place(key, zones)?
+        };
+        let finishes_at = span.finish(start, happens_at, clock, zones)?;
+        Instance::new(addressed, happens_at, finishes_at).with_shape(
+            series.kind,
+            value_kind,
+            span.end_kind,
+            key,
+            start,
+        )
+    });
+    Ok(instance)
 }
 
 /// The one instance a component with no `RRULE` has, which no search produces.
@@ -2127,6 +2164,9 @@ where
     S: DiagnosticSink + ?Sized,
     V: FnMut(Result<Instance, Undecided>) -> bool,
 {
+    if budget.is_exhausted() {
+        return Ok(Some(Undecided::SearchExhausted));
+    }
     let input = match assemble(series, &mut *budget.meter) {
         Ok(assembled) => assembled,
         Err(Unassembled::Refused(refusal)) => return Err(refusal),
@@ -2140,7 +2180,14 @@ where
         match query_step(search.next(), search.outcome()) {
             ControlFlow::Break(reason) => return Ok(reason),
             ControlFlow::Continue(occurrence) => {
-                if !visit(placed(series, occurrence.key(), occurrence.start(), zones)) {
+                let Ok(instance) =
+                    placed(series, occurrence.key(), occurrence.start(), zones, || {
+                        search.charge_work(1)
+                    })
+                else {
+                    return Ok(Some(Undecided::SearchExhausted));
+                };
+                if !visit(instance) {
                     return Ok(None);
                 }
             },
@@ -2391,6 +2438,93 @@ mod tests {
 
     fn spanning(from: Instant, until: Instant) -> TimeRange {
         TimeRange::new(Some(from), Some(until)).unwrap()
+    }
+
+    #[test]
+    fn duration_lookups_charge_logarithmic_work_and_stop_on_refusal() {
+        let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+        let rule = daily(32);
+        let start = stamp(2024, 1, 1, 0, 0);
+        let range = spanning(start, stamp(2024, 2, 3, 0, 0));
+        let future = stamp(2025, 1, 1, 0, 0).unix_seconds();
+        let components: Vec<_> = (0..4096)
+            .map(|offset| super::ComponentSpan {
+                key: at(future + offset),
+                source_position: usize::try_from(offset).unwrap(),
+                latest_range: None,
+                range: OverrideRange::ThisOnly,
+                stated: None,
+            })
+            .collect();
+        let measure = |rows: &[super::ComponentSpan<'_>], units| {
+            let mut meter = Meter::with_budget(Limits::DEFAULT, units);
+            let mut series = event(Some(&rule), OverrideSet::empty());
+            series.dtstart = start;
+            series.clock = SeriesClock::Utc;
+            series.durations.components = rows;
+            let result = expand(
+                series,
+                range,
+                Zones::new(&utc),
+                &mut spend(&mut meter),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            (result, meter.spent())
+        };
+        let (ordinary, baseline) = measure(&[], 1_000_000);
+        let (indexed, spent) = measure(&components, 1_000_000);
+        assert_eq!(ordinary.instances().len(), 32);
+        assert_eq!(indexed, ordinary);
+        let comparisons = spent.checked_sub(baseline).unwrap();
+        assert!(
+            (32..=32 * 14).contains(&comparisons),
+            "{comparisons} duration comparisons"
+        );
+        let mut first = event(Some(&rule), OverrideSet::empty());
+        first.dtstart = start;
+        first.clock = SeriesClock::Utc;
+        let mut meter = Meter::new(Limits::DEFAULT);
+        assert_eq!(
+            overlaps(
+                first,
+                range,
+                Zones::new(&utc),
+                &mut spend(&mut meter),
+                &mut Vec::new()
+            )
+            .unwrap(),
+            Match::Matched
+        );
+        let first_probe = meter.spent().checked_add(1).unwrap();
+        let (incomplete, refused_at) = measure(&components, first_probe);
+        assert_eq!(refused_at, first_probe.checked_add(1).unwrap());
+        assert_eq!(incomplete.incomplete(), Some(Undecided::SearchExhausted));
+        assert_eq!(incomplete.instances(), []);
+    }
+
+    #[test]
+    fn duration_index_admits_sorting_and_keeps_the_first_duplicate() {
+        let row = |key, source_position| super::ComponentSpan {
+            key: at(key),
+            range: OverrideRange::ThisOnly,
+            stated: None,
+            source_position,
+            latest_range: None,
+        };
+        let mut rows = alloc::vec![row(2, 1), row(1, 2), row(1, 0)];
+        let mut refused = Meter::with_budget(Limits::DEFAULT, 0);
+        assert_eq!(
+            super::ComponentSpan::index(&mut rows, &mut refused),
+            Err(crate::internal::core::LimitExceeded::Budget)
+        );
+        assert!(refused.is_exhausted());
+        assert_eq!(rows[0].key, at(2));
+        let mut meter = Meter::new(Limits::DEFAULT);
+        super::ComponentSpan::index(&mut rows, &mut meter).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].source_position, 0);
+        assert_eq!(rows[1].key, at(2));
     }
 
     fn instance(recurrence_id: i64, start: i64, end: i64) -> Instance {

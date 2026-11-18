@@ -834,6 +834,10 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         asked
     }
 
+    pub(crate) fn charge_work(&mut self, units: u64) -> Result<(), LimitExceeded> {
+        self.meter.try_charge(units)
+    }
+
     /// Why the search is not producing more occurrences, or that it still is.
     #[must_use]
     pub const fn outcome(&self) -> SearchOutcome {

@@ -413,21 +413,25 @@ fn detached_exceptions_keep_their_stated_lengths() {
 
 #[test]
 fn future_length_changes_leave_separate_exceptions_unchanged() {
-    let master = event("DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=4\r\n");
+    let master = event("DTSTART:20240101T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=6\r\n");
     let anchor = event(
         "RECURRENCE-ID;RANGE=THISANDFUTURE:20240102T090000Z\r\n\
          DTSTART:20240102T090000Z\r\nDURATION:PT3H\r\n",
     );
     let exception = event("RECURRENCE-ID:20240104T090000Z\r\nDTSTART:20240104T090000Z\r\n");
+    let unstated_range =
+        event("RECURRENCE-ID;RANGE=THISANDFUTURE:20240105T090000Z\r\nDTSTART:20240105T090000Z\r\n");
     assert_times(
-        &calendar(&format!("{master}{anchor}{exception}")),
+        &calendar(&format!("{master}{unstated_range}{anchor}{exception}")),
         "20240101T000000Z",
-        "20240105T000000Z",
+        "20240107T000000Z",
         &[
             ("20240101T090000Z", "20240101T100000Z"),
             ("20240102T090000Z", "20240102T120000Z"),
             ("20240103T090000Z", "20240103T120000Z"),
             ("20240104T090000Z", "20240104T100000Z"),
+            ("20240105T090000Z", "20240105T100000Z"),
+            ("20240106T090000Z", "20240106T120000Z"),
         ],
     );
 }
