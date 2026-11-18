@@ -112,7 +112,7 @@ impl ZoneSource for ResourceZones<'_> {
 }
 
 impl Query {
-    /// Strictly read one RFC 4791 calendar-query body using secure defaults.
+    /// Parse one RFC 4791 calendar query with strict validation and secure resource limits.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         let policy = ResourcePolicy::secure();
         let mut meter = Meter::new(policy.limits);
@@ -152,7 +152,7 @@ impl Query {
         })
     }
 
-    /// Evaluate this filter without collapsing an unknown answer to a non-match.
+    /// Return the filter's match outcome, including [`Match::Undecided`] when information is missing.
     pub fn matches(&self, session: &mut Session<'_>, calendar: &Calendar) -> Result<Match, Error> {
         let Some(filter) = self.request.filter.as_ref() else {
             return Ok(Match::Matched);
@@ -346,9 +346,9 @@ fn unsupported_transition_types(definition: &Component) -> bool {
 pub enum Match {
     /// The calendar satisfies the filter.
     Matched,
-    /// The calendar does not satisfy the filter.
+    /// The calendar fails the filter.
     Unmatched,
-    /// The filter could not be decided without inventing missing information.
+    /// The available information leaves the match undecided.
     Undecided,
 }
 
@@ -369,7 +369,7 @@ pub struct SyncToken {
 }
 
 impl SyncToken {
-    /// Retain a server-issued token without interpreting it.
+    /// Store the server's token as opaque bytes.
     pub fn new(value: impl AsRef<[u8]>) -> Result<Self, Error> {
         let bytes = value.as_ref();
         if bytes.is_empty()
@@ -557,14 +557,14 @@ impl SyncChange {
         self.etag.as_deref()
     }
 
-    /// Strictly validated full calendar data, when the server returned it.
+    /// The complete, validated calendar when the server includes calendar data.
     #[must_use]
     pub const fn calendar(&self) -> Option<&Calendar> {
         self.calendar.as_ref()
     }
 }
 
-/// A complete RFC 6578 incremental synchronization result.
+/// One page of member changes from an RFC 6578 synchronization report.
 #[derive(Clone, Debug)]
 pub struct SyncResult {
     token: Option<SyncToken>,
@@ -587,7 +587,7 @@ impl SyncResult {
         })
     }
 
-    /// Token that represents the complete returned state.
+    /// The server's token for resuming synchronization after the changes on this page.
     #[must_use]
     pub const fn token(&self) -> Option<&SyncToken> {
         self.token.as_ref()
@@ -722,7 +722,7 @@ impl ScheduleDelivery {
         }
     }
 
-    /// Calendar octets before transport line endings are normalized.
+    /// Calendar payload bytes with their original transport line endings.
     #[must_use]
     pub fn calendar_data_bytes(&self) -> Option<&[u8]> {
         self.calendar_data.as_ref().map(|data| data.bytes.as_ref())
@@ -1930,7 +1930,7 @@ impl Client {
         }))
     }
 
-    /// PUT a validated calendar only if the supplied revision still holds.
+    /// Write a validated calendar with the revision's HTTP precondition.
     /// Interpreted `RSCALE` rules require [`Self::conditional_write_with_rscales`].
     pub fn conditional_write(
         &self,
@@ -2129,7 +2129,7 @@ impl<T> Operation<T> {
         Ok(())
     }
 
-    /// Finish after all required responses have been supplied.
+    /// Return the result after the caller supplies all required responses.
     pub fn finish(mut self) -> Result<T, crate::Error> {
         self.result
             .take()
@@ -2157,7 +2157,7 @@ pub struct StoredResource {
 }
 
 impl StoredResource {
-    /// Construct a stored object, validating its URI and optional entity tag.
+    /// Create a stored resource after checking its URI and optional entity tag.
     pub fn new(
         href: impl Into<String>,
         etag: Option<&str>,
@@ -2504,7 +2504,7 @@ impl Server {
         }
     }
 
-    /// Start a server operation whose application dependency is supplied explicitly.
+    /// Start an operation that asks the caller for one answer.
     #[must_use]
     pub fn operation(
         &self,
@@ -2514,7 +2514,7 @@ impl Server {
         ServerOperation::with_policy(need, responder, self.policy)
     }
 
-    /// Decode a supported request and expose its ACL and storage dependencies as needs.
+    /// Decode a request and expose the access control and storage decisions it needs.
     pub fn handle(&self, request: WireRequest) -> Result<ServerOperation, Error> {
         match request.method.as_str() {
             "REPORT" => self.handle_report(request),
@@ -2821,7 +2821,7 @@ impl Default for Server {
     }
 }
 
-/// A need for application storage, ACL, or routing data.
+/// A request for storage data, access control, or routing information.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerNeed {
     code: &'static str,
@@ -2838,7 +2838,7 @@ pub struct ServerNeed {
 }
 
 impl ServerNeed {
-    /// Construct an application need identified by a stable code.
+    /// Create a request with a stable code.
     #[must_use]
     pub const fn new(code: &'static str) -> Self {
         Self {
@@ -2984,7 +2984,7 @@ impl ServerNeed {
         &self.recipients
     }
 
-    /// Strictly validated calendar associated with a resource write need.
+    /// The validated calendar for a resource write.
     #[must_use]
     pub fn calendar(&self) -> Option<&Calendar> {
         self.calendar.as_deref()
@@ -3002,14 +3002,14 @@ impl ServerNeed {
         self.sync_token.as_ref()
     }
 
-    /// Maximum number of changes requested by the client, when it supplied DAV:limit.
+    /// The change count limit from the client's `DAV:limit`, if present.
     #[must_use]
     pub const fn sync_limit(&self) -> Option<u32> {
         self.sync_limit
     }
 }
 
-/// An application answer supplied to a server workflow.
+/// The caller's answer to a server request for data or a decision.
 #[derive(Clone, Debug)]
 pub struct ServerAnswer {
     kind: ServerAnswerKind,
@@ -3028,7 +3028,7 @@ enum ServerAnswerKind {
 }
 
 impl ServerAnswer {
-    /// Construct an application answer body.
+    /// Create an answer from raw bytes.
     #[must_use]
     pub fn new(body: Vec<u8>) -> Self {
         Self {
@@ -3036,7 +3036,7 @@ impl ServerAnswer {
         }
     }
 
-    /// Supply an application ACL decision.
+    /// Supply the caller's access control decision.
     #[must_use]
     pub const fn authorized(allowed: bool) -> Self {
         Self {
@@ -3044,7 +3044,7 @@ impl ServerAnswer {
         }
     }
 
-    /// Report whether a requested collection was created without a storage conflict.
+    /// Report whether storage created the collection or found a conflict.
     #[must_use]
     pub const fn created(created: bool) -> Self {
         Self {
@@ -3052,7 +3052,7 @@ impl ServerAnswer {
         }
     }
 
-    /// Supply service discovery properties loaded by the application adapter.
+    /// Supply the service discovery properties from the caller's adapter.
     #[must_use]
     pub fn discovery(discovery: Discovery) -> Self {
         Self {
@@ -3060,7 +3060,7 @@ impl ServerAnswer {
         }
     }
 
-    /// Supply validated resources loaded by the application storage adapter.
+    /// Supply validated calendar resources from the caller's storage.
     #[must_use]
     pub fn resources(resources: Vec<StoredResource>) -> Self {
         Self {
@@ -3092,7 +3092,7 @@ impl ServerAnswer {
         }
     }
 
-    /// Application answer octets.
+    /// Return the raw answer bytes, or an empty slice for a typed answer.
     #[must_use]
     pub fn body(&self) -> &[u8] {
         match &self.kind {
@@ -3108,7 +3108,7 @@ impl ServerAnswer {
     }
 }
 
-/// A server operation separated from storage and ACL decisions.
+/// A server operation that delegates storage and access control decisions to the caller.
 pub struct ServerOperation {
     need: Option<ServerNeed>,
     response: Option<WireResponse>,
@@ -3117,7 +3117,7 @@ pub struct ServerOperation {
 }
 
 impl ServerOperation {
-    /// Create an operation with one application need.
+    /// Create an operation that waits for one answer from the caller.
     #[must_use]
     pub fn new(
         need: ServerNeed,
@@ -3151,13 +3151,13 @@ impl ServerOperation {
         }
     }
 
-    /// The storage, ACL, or routing fact needed next.
+    /// The next storage, access control, or routing request.
     #[must_use]
     pub const fn next_need(&self) -> Option<&ServerNeed> {
         self.need.as_ref()
     }
 
-    /// Supply the application-owned answer.
+    /// Provide the answer to the current request.
     pub fn supply(&mut self, answer: ServerAnswer) -> Result<(), crate::Error> {
         self.need
             .take()
@@ -3181,7 +3181,7 @@ impl ServerOperation {
         Ok(())
     }
 
-    /// Finish after all application needs have been supplied.
+    /// Return the wire response after the caller answers each request.
     pub fn finish(mut self) -> Result<WireResponse, crate::Error> {
         self.response
             .take()
@@ -3200,7 +3200,8 @@ impl Debug for ServerOperation {
     }
 }
 
-/// A projected query result that cannot be passed to persistence APIs as a [`Calendar`].
+/// Calendar bytes from a query projection.
+/// Persistence APIs require a complete [`Calendar`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectedCalendar {
     bytes: Box<[u8]>,
