@@ -2,19 +2,16 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The sweep in `tests/sweep.rs`, attacked as an artifact rather than used as one.
+//! Independent checks for the preservation contracts of `tests/sweep.rs`.
 //!
-//! `docs/adr/0001` states four claims — a byte-identical round trip (P1), a fixed point (P2),
-//! mutation locality (P3), and a diagnostic that costs no octet (P4) — and this milestone landed `sweep.rs` as the evidence for them, replacing measurements that were run once and discarded.
-//! A sweep is only evidence for what it examines, so this file examines the sweep.
+//! `ADR-0001` defines byte preservation, serialization stability, mutation locality, and diagnostic reporting.
+//! The tests check whether the input could have crossed the bound named in a refusal.
+//! They compare fixture coverage with the reported sample counts.
+//! Generated inputs also exercise property writes and diagnostic reporting.
 //!
-//! Three things are asked of it and each is answered by running it rather than by reading it.
-//! Does its refusal predicate confirm bounds that were really crossed, or does it accuse the reader of a defect the reader does not have?
-//! Does it reach the claims it is cited for, or only two of the four?
-//! And is it wide enough that a defect has somewhere to show up — which is asked by widening it, and by putting the two claims it never reaches under the same generative pressure it puts P1 and P2 under.
-//!
-//! The generator, the octet alphabet and the `examine` / `crossed` pair below are the ones `sweep.rs` committed, reproduced here because an integration test cannot call into a sibling test binary.
-//! Where a constant differs it is because this file is deliberately wider, and the difference is named at the constant.
+//! Integration tests compile as separate binaries.
+//! The local generator uses the alphabet and checks from `sweep.rs`.
+//! The constants give the sample sizes and fold limits.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -25,42 +22,40 @@ use icalkit_conformance::internal::core::{
     ParseError, Property, PropertyId, ProposedChange, TextValue,
 };
 
-/// A calendar whose one property arrived below a fold at octet zero of its content line.
+/// The first property starts below a fold at octet zero of its content line.
 ///
 /// A fold followed by `SP` and then `HTAB` unfolds to a content line whose first octet is `HTAB`.
-/// The property name therefore begins with whitespace.
-/// The file round trips.
+/// The property name begins with whitespace.
+/// The reader and writer preserve the original octets.
 const FOLD_AT_OFFSET_ZERO: &[u8] = include_bytes!("fixtures/break_sweeps/fold_at_offset_zero.ics");
 
 /// A calendar whose `END` names another component, which section 3.6 recovery keeps as a property.
 const MISMATCHED_END: &[u8] =
     include_bytes!("fixtures/break_sweeps/mismatched_end_kept_as_property.ics");
 
-/// Forty component boundaries whose `BEGIN` is folded, which is past the default depth bound.
+/// Forty nested components with folded `BEGIN` lines exceed the default depth limit.
 const FOLDED_BEGIN_NEST: &[u8] =
     include_bytes!("fixtures/break_sweeps/folded_begin_past_the_depth_bound.ics");
 
 /// The octets `sweep.rs` enumerates exhaustively, reproduced unchanged.
 const ALPHABET: &[u8] = b":;,\"\\^\r\n \tA\xE9";
 
-/// The seed this file's own draws start from, which is not `sweep.rs`'s.
-///
-/// A different constant on purpose: a sweep that reuses another sweep's seed covers the inputs that one already covered and reports that they are still fine.
+/// A separate seed gives the generated sweep a different sequence of inputs.
 const SEED: u64 = 0x5EED_0000_B4EA_C001;
 
-/// The evidence M0-alpha reported for the exhaustive leg and did not commit.
+/// The exhaustive sample count from the M0-alpha report.
 const RECORDED_EXHAUSTIVE: u64 = 1_900_000;
 
-/// The evidence M0-alpha reported for the randomized leg and did not commit.
+/// The randomized sample count from the M0-alpha report.
 const RECORDED_RANDOMIZED: u64 = 2_200_000;
 
-/// The evidence M0-alpha reported for the generative leg and did not commit.
+/// The generative sample count from the M0-alpha report.
 const RECORDED_GENERATIVE: u64 = 135_000;
 
 /// How much of a failing input an assertion message carries before it stops being readable.
 const RENDER_LIMIT: usize = 200;
 
-/// A policy a generated calendar crosses about as often as it does not, as `sweep.rs` states it.
+/// The limits from `sweep.rs` exercise both accepted and refused inputs.
 const BOUNDED: Limits = Limits::DEFAULT
     .with_grammar(
         GrammarLimits::DEFAULT
@@ -78,7 +73,7 @@ const BOUNDED: Limits = Limits::DEFAULT
 enum Verdict {
     /// Read, written back octet for octet, and a second pass agreed with the first.
     Preserved,
-    /// Refused, naming a bound the octets are supposed to independently confirm.
+    /// The reader refused the input and identified the bound to check.
     Refused(ParseError),
 }
 
@@ -129,7 +124,7 @@ fn crossed(octets: &[u8], refusal: ParseError) -> bool {
         ParseError::TooManyParameters { limit } => count_octet(octets, b';') > u64::from(limit),
         ParseError::TooManyFolds { limit } => continuations(octets) > u64::from(limit),
         ParseError::TooManyItems { limit } => segments(octets) > u64::from(limit),
-        // Counted after the folds are taken out: `BEG\r\n IN:VEVENT` opens a component and carries no `BEGIN`, which is the arm this file found unsound in `sweep.rs`.
+        // Unfold before counting component starts such as `BEG\r\n IN:VEVENT`.
         ParseError::TooDeep { limit } => {
             keyword_count(&unfolded(octets), b"BEGIN") > u64::from(limit)
         },
@@ -190,7 +185,7 @@ fn terminator_width(octets: &[u8], at: usize) -> usize {
     }
 }
 
-/// How many terminated segments the input holds, counting a last one that is empty.
+/// Count terminated segments, including an empty final segment.
 fn segments(octets: &[u8]) -> u64 {
     let mut counted = 1_u64;
     let mut at = 0_usize;
@@ -313,7 +308,7 @@ const VALUES: &[&[u8]] = &[
     b"has a space",
 ];
 
-/// The three terminators section 3.1 leaves a reader to tell apart, and none at all.
+/// Generate CRLF, lone LF, lone CR, and unterminated lines.
 const TERMINATORS: &[&[u8]] = &[b"\r\n", b"\r\n", b"\n", b"\r", b""];
 
 /// The ways a producer may introduce a continuation line.
@@ -338,7 +333,7 @@ fn append_line(stream: &mut Stream, out: &mut Vec<u8>) {
         assembled.push(b':');
     }
     extend(&mut assembled, stream.pick(VALUES));
-    // Up to two folds rather than `sweep.rs`'s one, because a second fold is what puts one at octet zero often enough for the shape to be drawn rather than only constructed.
+    // Two folds let the generator place a fold at octet zero.
     for _ in 0..stream.below(3) {
         let at = stream.below(assembled.len().saturating_add(1));
         let fold = stream.pick(FOLDS).copied().unwrap_or(b"\r\n ");
@@ -418,7 +413,7 @@ fn collect_fixtures(directory: &Path, found: &mut Vec<(String, Vec<u8>)>) {
     }
 }
 
-/// The committed `sweep.rs`, read as text so a claim about it can be stated mechanically.
+/// The source of the maintained sweep for checking its input counts and write operations.
 fn sweep_source() -> String {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests");
@@ -426,19 +421,14 @@ fn sweep_source() -> String {
     fs::read_to_string(&path).unwrap_or_default()
 }
 
-/// The value of `const <name>: <type> = <value>;` in `source`, where it is a plain number.
-///
-/// Digit separators are dropped, because the file writes `1_500` and means fifteen hundred.
+/// Read a numeric constant from the source, ignoring digit separators.
 fn constant(source: &str, name: &str) -> Option<u64> {
     let after = source.split_once(&format!("const {name}:"))?.1;
     let value = after.split_once('=')?.1.split_once(';')?.0;
     value.trim().replace('_', "").parse().ok()
 }
 
-/// One node of a document, as the octets it holds rather than as a pointer into a tree.
-///
-/// A scoped write is supposed to reach one of these and no other, so the check that it did is a comparison of two of these lists.
-/// Rendering to text rather than comparing nodes is what lets a failure say which node moved and what it became.
+/// Render each node as text so a failed locality check can show the changed node.
 fn outline_property(depth: usize, property: &Property, out: &mut Vec<String>) {
     let mut row = format!("{depth} property {} ", render(property.name().as_bytes()));
     for parameter in property.parameters() {
@@ -470,7 +460,7 @@ fn outline_component(depth: usize, component: &Component, out: &mut Vec<String>)
     ));
 }
 
-/// One item, whichever of the two variants it is.
+/// Render a property or component at the given depth.
 fn outline_item(depth: usize, item: &Item, out: &mut Vec<String>) {
     match item {
         Item::Property(property) => outline_property(depth, property, out),
@@ -487,9 +477,8 @@ fn outline(document: &Document) -> Vec<String> {
     out
 }
 
-/// How many nodes of `before` are not the node at the same position of `after`.
-///
-/// A count rather than a diff: P3 admits exactly one, the property the write named.
+/// Count the positions whose nodes differ between the two outlines.
+/// P3 expects one changed property.
 fn moved(before: &[String], after: &[String]) -> usize {
     before
         .iter()
@@ -508,10 +497,9 @@ fn first_identity(component: &Component) -> Option<PropertyId> {
         .next()
 }
 
-/// Read `octets`, write `value` into one property of the first component, and read back.
-///
-/// `named` selects the property; `None` takes the first one the component holds.
-/// Returns the octets that were written and the two outlines to compare, or nothing where the input holds no component with a property to name.
+/// Read the input, write a property of the first component, and reopen the output.
+/// Use the first property when `named` supplies no identity.
+/// Return the serialized octets and both outlines if the component has a matching property.
 fn write_one_value(
     octets: &[u8],
     named: Option<&PropertyId>,
@@ -554,8 +542,8 @@ fn p3_a_write_below_a_fold_at_octet_zero_stays_below_it() {
     assert_eq!(moved(&before, &after), 1, "{before:?} became {after:?}");
 }
 
-/// The write is refused, which is the other answer the break named and the one that is available: there is no octet string that stores `END:VEVENT` as a property and reads back as one, so a door that wrote it would be choosing between losing the property and losing the caller's value.
-/// The property keeps every octet it arrived with and stays reachable.
+/// The reader interprets `END:VEVENT` as a component boundary.
+/// Refusing the write preserves the original property and its bytes.
 #[test]
 fn p3_a_write_to_a_property_does_not_turn_it_into_a_component_boundary() {
     assert_eq!(
@@ -658,7 +646,7 @@ fn the_sweep_reaches_the_two_claims_it_is_cited_for_and_not_only_two() {
         !source.is_empty(),
         "sweep.rs is where this milestone put it"
     );
-    // Spelled narrowly enough that `octets.get_mut(at)` in the mutation helper is not mistaken for the tree's own door: what is being asked is whether the sweep ever writes a property.
+    // Match property write methods without counting mutable access to input bytes.
     let doors = [
         "get_mut::<",
         "set_raw",
@@ -773,7 +761,13 @@ impl<'a> ParameterTarget<'a> {
         })
     }
 
-    fn check(&self, source: &[u8], written: &[u8], limits: Limits) -> Result<(), String> {
+    fn check(
+        &self,
+        source: &[u8],
+        written: &[u8],
+        assignment: (&[u8], &[u8]),
+        limits: Limits,
+    ) -> Result<(), String> {
         let describe = |reason: &str| {
             format!(
                 "{reason}: input {} output {}",
@@ -783,16 +777,16 @@ impl<'a> ParameterTarget<'a> {
         };
         let after = Document::parse(written, limits, &mut Vec::new())
             .map_err(|error| describe(&format!("reopen failed with {error:?}")))?;
-        if self.keeps_other_rows(after) {
+        if self.keeps_other_rows(after, assignment) {
             Ok(())
         } else {
             Err(describe(
-                "the edit changed a property name, value, or unrelated row",
+                "the parameter assignment or an unchanged row did not survive reopening",
             ))
         }
     }
 
-    fn keeps_other_rows(&self, mut after: Document) -> bool {
+    fn keeps_other_rows(&self, mut after: Document, (name, value): (&[u8], &[u8])) -> bool {
         let Some(edited) = after
             .items_mut()
             .get_mut(self.component)
@@ -808,7 +802,13 @@ impl<'a> ParameterTarget<'a> {
             else {
                 return false;
             };
-            if new.name() != old.name() || new.value_text() != old.value_text() {
+            let assigned = new
+                .parameters_named(name)
+                .map(|parameter| (parameter.has_value(), parameter.unquoted()));
+            if new.name() != old.name()
+                || new.value_text() != old.value_text()
+                || !assigned.eq([(true, value)])
+            {
                 return false;
             }
             // Restore each permitted row before comparing the complete trees and their layouts.
@@ -828,38 +828,59 @@ fn parameter_edit_checks_accept_duplicate_targets_and_reject_other_rows() {
     );
     let before = Document::parse(source.as_bytes(), Limits::DEFAULT, &mut Vec::new()).unwrap();
     let target = ParameterTarget::first(&before).unwrap();
+    let assignment = (b"LANGUAGE".as_slice(), b"en".as_slice());
+    let check = |written: &str| {
+        target.check(
+            source.as_bytes(),
+            written.as_bytes(),
+            assignment,
+            Limits::DEFAULT,
+        )
+    };
     let both = source
         .replace("X-STATE:first", "X-STATE;LANGUAGE=en:first")
         .replace("x-state:second", "x-state;LANGUAGE=en:second");
-    target
-        .check(source.as_bytes(), both.as_bytes(), Limits::DEFAULT)
+    check(&both).unwrap();
+    let mut edited = before.clone();
+    edited.items_mut()[target.component]
+        .as_component_mut()
+        .unwrap()
+        .apply(
+            &target.identity,
+            &ProposedChange::SetParameters(vec![ParameterEdit::set(assignment.0, assignment.1)]),
+            Limits::DEFAULT,
+        )
         .unwrap();
+    target
+        .check(
+            source.as_bytes(),
+            &edited.to_bytes(),
+            assignment,
+            Limits::DEFAULT,
+        )
+        .unwrap();
+    for unapplied in [
+        source.to_owned(),
+        both.replace(";LANGUAGE=en:", ";LANGUAGE=fr:"),
+        both.replace(";LANGUAGE=en:", ";LANGUAGE=en;LANGUAGE=en:"),
+        source.replace("X-STATE:first", "X-STATE;LANGUAGE=en:first"),
+        source.replace("x-state:second", "x-state;LANGUAGE=en:second"),
+    ] {
+        assert!(check(&unapplied).is_err());
+    }
     for outside in [
         "X-STATE:nested",
         "X-STATE:sibling",
         "SUMMARY:other",
         "X-BEFORE:top",
     ] {
-        let changed = source.replace(outside, &outside.replace(':', ";LANGUAGE=en:"));
-        assert!(
-            target
-                .check(source.as_bytes(), changed.as_bytes(), Limits::DEFAULT)
-                .is_err(),
-            "{outside}"
-        );
+        let changed = both.replace(outside, &outside.replace(':', ";LANGUAGE=en:"));
+        assert!(check(&changed).is_err(), "{outside}");
     }
     let changed_value = both.replace("LANGUAGE=en:first", "LANGUAGE=en:other");
-    assert!(
-        target
-            .check(source.as_bytes(), changed_value.as_bytes(), Limits::DEFAULT)
-            .is_err()
-    );
-    let refolded = source.replace("X-STATE:nested", "X-STATE:nes\r\n ted");
-    assert!(
-        target
-            .check(source.as_bytes(), refolded.as_bytes(), Limits::DEFAULT)
-            .is_err()
-    );
+    assert!(check(&changed_value).is_err());
+    let refolded = both.replace("X-STATE:nested", "X-STATE:nes\r\n ted");
+    assert!(check(&refolded).is_err());
 }
 
 #[test]
@@ -869,7 +890,12 @@ fn parameter_edit_checks_report_a_refused_reread() {
     let target = ParameterTarget::first(&before).unwrap();
     let written = b"BEGIN:VEVENT\r\nSUMMARY;LANGUAGE=en:v\r\nEND:VEVENT\r\n";
     let error = target
-        .check(source, written, Limits::DEFAULT.with_max_input_bytes(1))
+        .check(
+            source,
+            written,
+            (b"LANGUAGE", b"en"),
+            Limits::DEFAULT.with_max_input_bytes(1),
+        )
         .unwrap_err();
     assert!(error.contains("InputTooLarge"), "{error}");
     assert!(
@@ -898,8 +924,11 @@ fn a_parameter_edit_reaches_one_property_across_a_generated_corpus() {
         let component = document.items_mut()[target.component]
             .as_component_mut()
             .unwrap();
-        let value = stream.pick(&[b"a:b".as_slice(), b"plain", b""]).copied();
-        let edit = ParameterEdit::set(b"X-STATE", value.unwrap_or(b"plain"));
+        let value = stream
+            .pick(&[b"a:b".as_slice(), b"plain", b""])
+            .copied()
+            .unwrap();
+        let edit = ParameterEdit::set(b"X-STATE", value);
         if let Err(error) = component.apply(
             &target.identity,
             &ProposedChange::SetParameters(vec![edit]),
@@ -922,7 +951,7 @@ fn a_parameter_edit_reaches_one_property_across_a_generated_corpus() {
         }
         let written = document.to_bytes();
         target
-            .check(&octets, &written, Limits::DEFAULT)
+            .check(&octets, &written, (b"X-STATE", value), Limits::DEFAULT)
             .unwrap_or_else(|report| panic!("seed {SEED:#x}, calendar {index}: {report}"));
         checked = checked.saturating_add(1);
     }
