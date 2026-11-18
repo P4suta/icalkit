@@ -267,6 +267,8 @@ pub enum DiagnosticCode {
     /// A `Z`-terminated value on a zoned series has to be placed through the zone's offset at it, and a series whose `TZID` nothing defines has no offset to place it through.
     /// The exception is kept as the real instant it names, reachable through `ical_tz::ResolvedExclusions::unplaced`, because an exception that removes nothing and says nothing is the silent no-op that layer exists to refuse.
     ExdateZoneUnknown,
+    /// The zone provider found an unreadable boundary for a whole-day `EXDATE`.
+    ExdateBoundaryUnreadable,
     /// A `METHOD` was present and named no method RFC 5546 defines, so the message states no scheduling semantics at all.
     ///
     /// The division `docs/adr/0009` amendment 1 draws for a value that is present and unusable, applied to the one property that decides which rules the rest of a message is read under.
@@ -471,6 +473,7 @@ impl DiagnosticCode {
             Self::VtimezoneComponentsTruncated => "vtimezone-components-truncated",
             Self::VtimezoneObservanceUnreadable => "vtimezone-observance-unreadable",
             Self::ExdateZoneUnknown => "exdate-zone-unknown",
+            Self::ExdateBoundaryUnreadable => "exdate-boundary-unreadable",
             Self::SchedulingMethodUnknown => "scheduling-method-unknown",
             Self::SchedulingCalendarAddressUnreadable => "scheduling-calendar-address-unreadable",
             Self::SchedulingSequenceUnreadable => "scheduling-sequence-unreadable",

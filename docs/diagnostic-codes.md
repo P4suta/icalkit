@@ -105,6 +105,7 @@ Resource failures use the channels defined by the diagnostic and allocation deci
 | vtimezone-components-truncated | A calendar declared more `VTIMEZONE` components than the caller's policy admits, and the ones past the bound were dropped. | LimitReached | M2 |
 | vtimezone-observance-unreadable | An observance's required value was present and unreadable, so it stated no transition at all. | Violation | M2 |
 | exdate-zone-unknown | An `EXDATE` written in UTC named no cadence key because no source recognized the series' zone, so it excluded nothing. | Violation | M2 |
+| exdate-boundary-unreadable | The zone provider found an unreadable boundary for a whole-day `EXDATE`. | Violation | M2 |
 | scheduling-method-unknown | A `METHOD` was present and named no method RFC 5546 defines, so the message states no scheduling semantics at all. | Violation | M3 |
 | scheduling-calendar-address-unreadable | An `ORGANIZER` or `ATTENDEE` was present and its `CAL-ADDRESS` did not decode, so it identifies no party. | Violation | M3 |
 | scheduling-sequence-unreadable | A `SEQUENCE` was present and was not an integer, so no revision ordering could be read from it. | Violation | M3 |

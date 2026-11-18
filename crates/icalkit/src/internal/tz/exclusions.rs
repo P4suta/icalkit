@@ -150,12 +150,10 @@ impl ResolvedExclusions {
         self.spans.iter().any(|span| span.contains(key))
     }
 
-    /// The real instants no zone could place, ascending.
+    /// The unresolved exclusion keys in ascending order.
     ///
-    /// A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes.
-    /// It names a real instant and the cadence keys it would have to match are on the series' own wall clock,
-    /// so nothing here can turn one into the other — but the exception is what the producer wrote, and a caller that later acquires the zone can still apply it.
-    /// `exdate-zone-unknown` travels beside every entry.
+    /// A UTC exclusion retains its instant when the series zone is unknown.
+    /// A whole-day exclusion retains its nominal midnight when either boundary is unreadable.
     #[must_use]
     pub fn unplaced(&self) -> &[Instant] {
         &self.unplaced
@@ -191,7 +189,11 @@ impl ResolvedExclusions {
         // Nothing here can place it — the instant it names is real and the keys it would be compared against are on the series' own wall clock, and only the zone converts between the two.
         // So it is kept as what it is, reachable through `ResolvedExclusions::unplaced`, and reported.
         let Some(point) = project(series, value) else {
-            self.keep_unplaced(value, meter, sink);
+            if let DateTimeValue::Utc(stamp) = value
+                && let Some(instant) = stamp.at_offset(UtcOffset::UTC)
+            {
+                self.keep_unplaced(instant, DiagnosticCode::ExdateZoneUnknown, meter, sink);
+            }
             return;
         };
         if matches!(value, DateTimeValue::Date(_)) == dtstart_dated {
@@ -209,37 +211,28 @@ impl ResolvedExclusions {
         );
         match series.policy().exclusions() {
             ExclusionReading::Instantaneous => self.instants.push(point),
-            // A day that cannot be sized — the last day this calendar can write, or a day the zone never had — falls back to the instant, because a span nobody could compute must not become a value nobody excluded.
             ExclusionReading::WholeDay => match whole_day(series, value.date()) {
-                Some(span) => self.spans.push(span),
-                None => self.instants.push(point),
+                Ok(Some(span)) => self.spans.push(span),
+                Ok(None) => self.instants.push(point),
+                Err(code) => self.keep_unplaced(point, code, meter, sink),
             },
         }
     }
 
-    /// Keep an exclusion no zone could place, and say so.
-    ///
-    /// Only a `Z`-terminated value reaches this with anything to keep: it names a real instant whatever the zone does, and that instant is what a caller holding its own zone data can still act on.
-    /// A wall clock the calendar cannot express names nothing at all, and there is no value to carry and no instant for a diagnostic to point at.
-    fn keep_unplaced<D>(&mut self, value: DateTimeValue<'_>, meter: &mut Meter, sink: &mut D)
-    where
+    fn keep_unplaced<D>(
+        &mut self,
+        named: Instant,
+        code: DiagnosticCode,
+        meter: &mut Meter,
+        sink: &mut D,
+    ) where
         D: DiagnosticSink + ?Sized,
     {
-        let DateTimeValue::Utc(stamp) = value else {
-            return;
-        };
-        let Some(named) = stamp.at_offset(UtcOffset::UTC) else {
-            return;
-        };
         self.unplaced.push(named);
         report_diagnostic(
             sink,
             meter,
-            Diagnostic::at_instant(
-                DiagnosticCode::ExdateZoneUnknown,
-                Severity::Violation,
-                named,
-            ),
+            Diagnostic::at_instant(code, Severity::Violation, named),
         );
     }
 }
@@ -295,16 +288,21 @@ where
 
 /// The nominal span the named day covers in the series' zone.
 ///
-/// `None` in two cases, and a span of no width in neither.
-/// The day after the last day RFC 5545 section 3.3.4 can write has no midnight to end at.
-/// And a day the zone never had — Samoa skipped 2011-12-30 outright when it crossed the date line — opens and closes at the same instant, which [`LocalInterval::new`] refuses for the reason it refuses any empty span.
-fn whole_day<S>(series: &ZonedSeries<'_, S>, date: CivilDate) -> Option<LocalInterval>
+/// A skipped date or the final civil date retains the instantaneous exclusion.
+/// An unreadable boundary leaves the day unresolved.
+fn whole_day<S>(
+    series: &ZonedSeries<'_, S>,
+    date: CivilDate,
+) -> Result<Option<LocalInterval>, DiagnosticCode>
 where
     S: ZoneSource + ?Sized,
 {
+    let Some(tomorrow) = date.checked_add_days(1) else {
+        return Ok(None);
+    };
     let start = day_boundary(series, date)?;
-    let end = day_boundary(series, date.checked_add_days(1)?)?;
-    LocalInterval::new(start, end)
+    let end = day_boundary(series, tomorrow)?;
+    Ok(LocalInterval::new(start, end))
 }
 
 /// The nominal instant at which the zone's clock first reads midnight on `date`.
@@ -312,12 +310,12 @@ where
 /// Shared by the day it opens and the day it closes, which is what makes consecutive whole-day spans tile.
 /// The policy is deliberately not consulted: a fold takes its earlier reading and a gap takes the instant it closed, because a day starts the first moment it can and that is one answer rather than a choice.
 /// An identifier the source does not know leaves the plain civil midnight, which is the only reading available when nothing knows the zone.
-fn day_boundary<S>(series: &ZonedSeries<'_, S>, date: CivilDate) -> Option<Instant>
+fn day_boundary<S>(series: &ZonedSeries<'_, S>, date: CivilDate) -> Result<Instant, DiagnosticCode>
 where
     S: ZoneSource + ?Sized,
 {
     let midnight = CivilDateTime::new(date, CivilTime::MIDNIGHT);
-    let plain = nominal(midnight);
+    let plain = nominal(midnight).ok_or(DiagnosticCode::ExdateBoundaryUnreadable);
     let Some(answer) = series.source().resolve(series.tzid(), midnight) else {
         return plain;
     };
@@ -327,9 +325,11 @@ where
         LocalResolution::Nonexistent { gap_end, .. } => gap_end,
         // A source that recognizes the zone and holds no transition for it says nothing about where this day begins, which leaves the plain civil midnight — the same answer as a source that does not know the identifier, and for the same reason.
         LocalResolution::Undetermined => return plain,
-        LocalResolution::Unreadable => return None,
+        LocalResolution::Unreadable => return Err(DiagnosticCode::ExdateBoundaryUnreadable),
     };
-    series.to_nominal(real).or(plain)
+    series
+        .to_nominal(real)
+        .ok_or(DiagnosticCode::ExdateBoundaryUnreadable)
 }
 
 #[cfg(test)]
@@ -785,6 +785,48 @@ mod tests {
     ///
     /// Samoa's 2011-12-30 is the case: the day opens and closes at one instant, so the whole-day reading has nothing to expand and falls back to the instant, with the mismatch still reported.
     /// Nothing is excluded either way, and nothing needed to be.
+    #[test]
+    fn unreadable_midnight_leaves_the_whole_day_unplaced() {
+        struct UnreadableAt(CivilDateTime);
+        impl ZoneSource for UnreadableAt {
+            fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+                let mut answer = SOURCE.resolve(tzid, local)?;
+                if local == self.0 {
+                    answer.resolution = LocalResolution::Unreadable;
+                }
+                Some(answer)
+            }
+            fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+                SOURCE.offset_at(tzid, instant)
+            }
+        }
+        for boundary in [15, 16] {
+            let source = UnreadableAt(stamp(2026, 6, boundary, 0, 0));
+            let zone = ZonedSeries::new(
+                &source,
+                "Europe/Berlin",
+                ResolutionPolicy::DEFAULT.with_exclusions(ExclusionReading::WholeDay),
+            );
+            let mut notes = Vec::new();
+            let excluded = ResolvedExclusions::read(
+                &zone,
+                ValueType::DateTime,
+                &[DateTimeValue::Date(date(2026, 6, 15))],
+                &mut meter(),
+                &mut notes,
+            );
+            assert_eq!(excluded.unplaced(), &[key(2026, 6, 15, 0, 0)]);
+            assert_eq!(excluded.instants(), []);
+            assert_eq!(
+                codes(&notes),
+                [
+                    DiagnosticCode::ExdateValueTypeMismatch,
+                    DiagnosticCode::ExdateBoundaryUnreadable
+                ]
+            );
+        }
+    }
+
     #[test]
     fn a_date_the_zone_skipped_entirely_falls_back_to_the_instant() {
         let zoned = series("Pacific/Apia", ExclusionReading::WholeDay);
