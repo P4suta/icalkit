@@ -7,10 +7,15 @@ use std::path::Path;
 use std::process::Command;
 
 pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
-    let mise = configured_toolchain(workspace, "mise.toml", "tools.rust.version")?;
-    let rustup = configured_toolchain(workspace, "rust-toolchain.toml", "toolchain.channel")?;
+    let mise = configured_value(workspace, "mise.toml", "tools.rust.version", "value")?;
+    let rustup = configured_value(
+        workspace,
+        "rust-toolchain.toml",
+        "toolchain.channel",
+        "value",
+    )?;
     let mut violations = toolchain_violations(&mise, &rustup);
-    let shellcheck = configured_toolchain(workspace, "mise.toml", "tools.shellcheck")?;
+    let shellcheck = configured_value(workspace, "mise.toml", "tools.shellcheck", "value")?;
     if !exact_version(&shellcheck) {
         violations.push("mise.toml: actionlint requires an exact shellcheck version".to_owned());
     }
@@ -18,15 +23,20 @@ pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
         ("mise.toml", "tools.rust"),
         ("rust-toolchain.toml", "toolchain"),
     ] {
-        let profile = configured_toolchain(workspace, file, &format!("{table}.profile"))?;
+        let profile = configured_value(workspace, file, &format!("{table}.profile"), "value")?;
         if profile != "minimal" {
             violations.push(format!(
                 "{file}: Rust must use the minimal installation profile"
             ));
         }
-        let components = configured_toolchain(workspace, file, &format!("{table}.components"))?;
+        let components = configured_value(workspace, file, &format!("{table}.components"), "json")?;
+        let components = component_names(&components).ok_or_else(|| {
+            io::Error::other(format!(
+                "{file}: Rust components must be an array of component names"
+            ))
+        })?;
         for required in ["rustfmt", "clippy"] {
-            if !components.lines().any(|component| component == required) {
+            if !components.contains(&required) {
                 violations.push(format!("{file}: Rust installation requires {required}"));
             }
         }
@@ -37,9 +47,15 @@ pub(super) fn collect(workspace: &Path) -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-fn configured_toolchain(workspace: &Path, file: &str, key: &str) -> io::Result<String> {
+fn configured_value(workspace: &Path, file: &str, key: &str, format: &str) -> io::Result<String> {
     let output = Command::new("taplo")
-        .args(["get", "--strip-newline", "--file-path"])
+        .args([
+            "get",
+            "--strip-newline",
+            "--output-format",
+            format,
+            "--file-path",
+        ])
         .arg(workspace.join(file))
         .arg(key)
         .output()?;
@@ -51,6 +67,24 @@ fn configured_toolchain(workspace: &Path, file: &str, key: &str) -> io::Result<S
     }
     String::from_utf8(output.stdout)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn component_names(json: &str) -> Option<Vec<&str>> {
+    let entries = json.trim().strip_prefix('[')?.strip_suffix(']')?;
+    if entries.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    entries
+        .split(',')
+        .map(|entry| {
+            let name = entry.trim().strip_prefix('"')?.strip_suffix('"')?;
+            (!name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte)))
+            .then_some(name)
+        })
+        .collect()
 }
 
 fn toolchain_violations(mise: &str, rustup: &str) -> Vec<String> {
@@ -100,6 +134,7 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
         let dependencies = header.split_once('#').map_or(header, |(body, _)| body);
         if !dependencies
             .split_whitespace()
+            .take_while(|word| *word != "&&")
             .any(|word| word == "test-core")
         {
             violations.push(format!("Justfile: {recipe} requires test-core"));
@@ -121,14 +156,16 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
             .split_whitespace()
             .take_while(|word| *word != "--" && !word.starts_with('#'))
             .collect();
+        let operations = match words.as_slice() {
+            ["cargo", selector, operations @ ..] if selector.starts_with('+') => operations,
+            ["cargo", operations @ ..] => operations,
+            _ => continue,
+        };
         let resolves = matches!(
-            words.as_slice(),
-            [
-                "cargo",
-                "build" | "check" | "clippy" | "test" | "doc" | "run",
-                ..
-            ] | ["cargo", "nextest", "run", ..]
-                | ["cargo", "hack", "check", ..]
+            operations,
+            ["build" | "check" | "clippy" | "test" | "doc" | "run", ..]
+                | ["nextest", "run", ..]
+                | ["hack", "check", ..]
         );
         if resolves && !words.contains(&"--locked") {
             violations.push(format!(
@@ -247,6 +284,40 @@ test-core:
     }
 
     #[test]
+    fn each_rust_component_requires_its_own_array_entry() -> io::Result<()> {
+        for components in [
+            "[\"rustfmt\\nclippy\"]",
+            "\"rustfmt\\nclippy\"",
+            "[[\"rustfmt\", \"clippy\"]]",
+            "[\"rustfmt\", \"clippy\", 1]",
+        ] {
+            let replace = |configuration: &str| {
+                configuration.replace("[\"rustfmt\", \"clippy\"]", components)
+            };
+            for (mise, rustup) in [
+                (replace(INSTALLATION), RUSTUP.to_owned()),
+                (INSTALLATION.to_owned(), replace(RUSTUP)),
+            ] {
+                let fixture = ConfigurationFixture::new(&mise, &rustup)?;
+                assert!(
+                    !matches!(collect(&fixture.0), Ok(violations) if violations.is_empty()),
+                    "invalid component entries were admitted: {components}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn extra_named_rust_components_preserve_required_entries() -> io::Result<()> {
+        let extend =
+            |configuration: &str| configuration.replace("\"clippy\"]", "\"clippy\", \"rust-src\"]");
+        let fixture = ConfigurationFixture::new(&extend(INSTALLATION), &extend(RUSTUP))?;
+        assert_eq!(collect(&fixture.0)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
     fn mismatched_installation_profiles_are_refused() -> io::Result<()> {
         let mise = INSTALLATION.replace("minimal", "default");
         let fixture = ConfigurationFixture::new(&mise, RUSTUP)?;
@@ -318,6 +389,50 @@ test-core:
                 &format!("{recipe}: test-core"),
                 &format!("{recipe}: test-core # required coverage"),
             );
+            assert_eq!(recipe_violations(&valid), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn standalone_core_must_be_a_prior_recipe_dependency() {
+        for recipe in ["test", "test-ci"] {
+            let broken = TEST_RECIPES.replace(
+                &format!("{recipe}: test-core"),
+                &format!("{recipe}: && test-core"),
+            );
+            assert!(
+                !recipe_violations(&broken).is_empty(),
+                "a later dependency replaced {recipe}'s prerequisite"
+            );
+            let valid = TEST_RECIPES.replace(
+                &format!("{recipe}: test-core"),
+                &format!("{recipe}: test-core && unrelated"),
+            );
+            assert_eq!(recipe_violations(&valid), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn toolchain_qualified_commands_require_the_committed_lockfile() {
+        for operation in [
+            "build",
+            "check",
+            "clippy",
+            "test",
+            "doc",
+            "run",
+            "nextest run",
+            "hack check",
+        ] {
+            let command = format!("cargo +1.100.0 {operation}");
+            for arguments in ["--workspace", "--workspace -- --locked"] {
+                let broken = format!("{TEST_RECIPES}\nprobe:\n    {command} {arguments}\n");
+                assert!(
+                    !recipe_violations(&broken).is_empty(),
+                    "a toolchain selector bypassed --locked: {command} {arguments}"
+                );
+            }
+            let valid = format!("{TEST_RECIPES}\nprobe:\n    {command} --locked --workspace\n");
             assert_eq!(recipe_violations(&valid), Vec::<String>::new());
         }
     }
