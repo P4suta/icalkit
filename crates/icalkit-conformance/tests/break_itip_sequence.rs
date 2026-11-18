@@ -523,12 +523,7 @@ mod cases {
         );
     }
 
-    /// A stored copy whose own `UID` does not read is still a component the caller holds.
-    ///
-    /// `ScheduledView` answers `None` for a `UID` stated twice, which its own documentation calls the reading that "refuses the message rather than picking a winner out of two".
-    /// The gate reads that same `None` as `PriorState::Absent` — the caller holds nothing — and RFC 5546 section 3.2.2 lets a `REQUEST` act on nothing and looks its sending party up in the message.
-    /// So this case offers a `REQUEST` about the held identity, from a party the held copy names nowhere, naming itself as the `ORGANIZER`, and asks who the gate says may apply it.
-    /// The held copy carries `chair@example.com` on its own `ORGANIZER` line and neither `zz` nor any message may make that line say something else.
+    /// A held component with duplicate identifiers still constrains the organizer of a request.
     #[test]
     fn a_stranger_does_not_become_the_organizer_of_a_component_whose_uid_did_not_read() {
         let answered = judge_files(HELD_UID_TWICE, REQUEST_STRANGER, STRANGER);

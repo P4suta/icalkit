@@ -294,7 +294,8 @@ impl Message {
         match target {
             ReviewTarget::Held(current) => {
                 let uid = message.uid().as_bytes();
-                let current_components = scheduled_components(current, uid, &message)?;
+                let current_components =
+                    scheduled_components(current, uid, &message, &mut session.meter)?;
                 if current_components.is_empty() {
                     self.review_initial(target, actor, &message)
                 } else {
@@ -739,15 +740,30 @@ fn scheduled_components<'a>(
     calendar: &'a Calendar,
     uid: &[u8],
     message: &ItipMessage<'_>,
+    meter: &mut Meter,
 ) -> Result<Vec<(usize, &'a Component)>, Rejection> {
     let mut matches = Vec::new();
-    for (item, component) in root_component(calendar)
-        .into_iter()
-        .flat_map(|calendar| calendar.items().iter())
+    let mut charge = |units: usize| {
+        meter
+            .try_charge(u64::try_from(units).unwrap_or(u64::MAX))
+            .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))
+    };
+    let items = root_component(calendar).map_or(&[][..], Component::items);
+    charge(items.len())?;
+    for (item, component) in items
+        .iter()
         .enumerate()
         .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
         .filter(|(_, component)| is_scheduling_payload(component))
     {
+        charge(component.items().len())?;
+        for property in component.properties_named(&PropertyId::UID) {
+            charge(property.value_text().len())?;
+            for parameter in property.parameters() {
+                charge(parameter.name().len())?;
+                charge(parameter.value().len())?;
+            }
+        }
         let known_uid = decode_single_scalar_text(component, &PropertyId::UID)
             .ok_or_else(|| Rejection::new("icalkit.scheduling.current-identity-unreadable"))?;
         if known_uid.as_bytes() == uid {
@@ -870,8 +886,41 @@ fn format_dtstamp(timestamp: Timestamp) -> Result<Vec<u8>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::Message;
-    use crate::{Calendar, Meter, ResourcePolicy};
+    use super::{Actor, Message};
+    use crate::{Calendar, Engine, Meter, ResourcePolicy};
+    use alloc::{format, string::String, vec::Vec};
+
+    #[test]
+    fn held_identity_review_charges_the_session_for_each_uid() {
+        let event = "BEGIN:VEVENT\r\nUID:event@example.test\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240102T000000Z\r\nSUMMARY:Planning\r\nORGANIZER:mailto:alice@example.test\r\nATTENDEE:mailto:bob@example.test\r\nSEQUENCE:1\r\nEND:VEVENT\r\n";
+        let calendar = |method: &str, components: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit meter//EN\r\n{method}{components}END:VCALENDAR\r\n"
+            )
+        };
+        let incoming = event.replace("SEQUENCE:1", "SEQUENCE:2");
+        let message = Message::read(calendar("METHOD:REQUEST\r\n", &incoming).as_bytes()).unwrap();
+        let actor = Actor::new("mailto:alice@example.test").unwrap();
+        let engine = Engine::default();
+        let mut costs = Vec::new();
+        for extra in [String::new(), event.replace("UID:event", "UID:other")] {
+            let held =
+                Calendar::parse(calendar("", &format!("{event}{extra}")).as_bytes()).unwrap();
+            let mut session = engine.session();
+            message.review_in(&mut session, &held, &actor).unwrap();
+            costs.push(session.meter.spent());
+        }
+        assert!(costs[1] >= costs[0] + u64::try_from("other@example.test".len()).unwrap());
+        let body = format!("{event}{}", event.replace("UID:event", "UID:other"));
+        let held = Calendar::parse(calendar("", &body).as_bytes()).unwrap();
+        let mut session = engine.session();
+        session.meter = Meter::with_budget(ResourcePolicy::secure().limits, costs[0]);
+        let refusal = message.review_in(&mut session, &held, &actor).unwrap_err();
+        assert_eq!(
+            refusal.code().as_str(),
+            "icalkit.scheduling.review-resource-limit"
+        );
+    }
 
     #[test]
     fn message_promotion_requires_a_complete_budgeted_inspection() {
