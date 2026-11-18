@@ -2,57 +2,14 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 6 — the search itself: the iterator, the cursor, and the two entry points.
+//! Search a recurrence set in recurrence identity order.
 //!
-//! # What this unit owns
+//! An occurrence belongs to a window if the window contains its recurrence key or its effective start.
+//! An override can move a start in either direction, so generation widens both bounds by the largest absolute shift.
+//! The upper bound stays exclusive.
 //!
-//! [`RecurrenceSearch`], the `Iterator` whose `Item` is [`SearchStep`], and the two inherent methods [`RecurrenceInput::search`] and [`RecurrenceInput::resume`].
-//! It drives unit 2's period walk, unit 3's expansion, unit 4's selection and unit 5's merge, charging through unit 7 at every point unit 7 names.
-//! It owns [`SearchCursor`] and the opaque [`RuleCursorState`] inside it.
-//!
-//! # The drive protocol, stated because two units share it
-//!
-//! The rule half and the merge half meet here, and the handshake between them is not visible from either side alone.
-//! This unit offers the merge the *head* of the rule stream rather than handing it over: `Merge::step` is called with the next cadence key the rule generated and answers with the next occurrence in cadence order, which may be an earlier `RDATE` instead.
-//! Which of the two the step consumed is [`Merge::takes_rule_key`]'s answer, asked *before* the step because the step moves the `RDATE` cursor that answer reads, and the offer is retired on that answer alone.
-//! Whether anything is left to merge is [`Merge::is_drained`]'s answer, also asked before the step, because `Merge::step` returns `None` both for a candidate an `EXDATE` removed and for no candidate at all — an exclusion landing on the last instance of a series and the end of the series are otherwise the same silence.
-//! Inferring either fact from the step's own answer loses occurrences in both directions: an offered rule key that an earlier `RDATE` preempted is generated once and retired anyway, and an `RDATE` tail whose head was excluded is read as the end of everything.
-//! Every turn either emits an occurrence, consumes an addition or advances the rule stream, which is what keeps `next` from spinning.
-//!
-//! # A window is not a simple filter on generated instants
-//!
-//! Generation runs over the caller's window widened by the largest absolute shift the override set implies — unit 7's `generation_window` — and emission asks two questions rather than one.
-//! An occurrence is emitted when the window the caller asked about contains its cadence key **or** contains its effective start.
-//! The first half is what `crate::internal::recur::search` fixes: a window admits by cadence key, so a `RANGE=THISANDFUTURE` shift can carry a start out of the window that generated it, and [`DiagnosticCode::OverrideLeftWindow`] says so rather than the search hiding it.
-//! The second half is why the widening exists at all: an override that moved an occurrence *into* the caller's window from a key outside it has to appear, and a filter stated only on keys would lose it.
-//! With no time-shifting override present the two questions have one answer and the widening is zero.
-//!
-//! The stop rule follows from the same fact.
-//! The merge is ordered by cadence key and the generation window is already widened by the largest shift there is, so the first key at or past that window's end proves nothing after it can reach the caller's window.
-//!
-//! # What this unit does not decide
-//!
-//! - Precedence between an `EXDATE`, an override and an `RDATE` is unit 5's, and nothing here re-derives it.
-//!   This unit filters by window and charges; it does not adjudicate.
-//! - Where a charge happens is unit 7's.
-//!   The two sites this unit calls are opening a period and emitting an occurrence; candidates are charged inside unit 3's expansion, which runs to completion before unit 4 selects from it, so "charged before selection" holds by construction rather than by a second charge here.
-//!   The candidate *count* this unit keeps is bookkeeping for the terminal step's report — counting is not charging.
-//! - Whether a `DTSTART` that does not match its own rule is an instance is unit 3's answer.
-//!   RFC 5545 section 3.8.5.3 calls the recurrence set of an unsynchronized `DTSTART` undefined, and a second opinion here would eventually disagree with the first.
-//!
-//! # `UNTIL` is compared on the timeline the caller resolved
-//!
-//! RFC 5545 section 3.3.10 requires `UNTIL` to be a `DATE` when `DTSTART` is a `DATE` and a UTC `DATE-TIME` when `DTSTART` is a zoned `DATE-TIME`, and real files violate that constantly.
-//! The comparison still has to happen in a named clock, and the name is the caller's: both instants arrive already resolved, so the comparison is on the UTC timeline and [`crate::internal::recur::rule::UntilClock`] records which reading produced each.
-//! A disagreement about `DATE` versus `DATE-TIME` is reported once, when the search is built, as [`DiagnosticCode::RecurrenceUntilValueTypeMismatch`] — the earliest point at which both halves of the comparison are in one hand.
-//!
-//! # Departures from the sketch this unit was contracted against
-//!
-//! - `RecurrenceSearch` carries a second, defaulted type parameter for the sink.
-//!   `RecurrenceSearch<'a>` still names the erased form, and a caller that wants no vtable —
-//!   the fixed-capacity sink on a target with no heap that `docs/design/ical-recur-api.md` argues for — gets the monomorphized one for free, because the parameter is inferred from the argument.
-//!   A struct with no parameter at all could not hold a `&mut S` at all.
-//! - `Charges::new` is called and is not in unit 7's published signature list; a ledger with no constructor cannot be started.
+//! The search compares recurrence keys with `UNTIL` on the timeline the caller supplies.
+//! RFC 5545 section 3.3.10 defines the value type and time zone for `UNTIL`.
 
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
@@ -76,7 +33,7 @@ use crate::internal::recur::search::{
 };
 use crate::internal::recur::setpos::{SelectedCandidates, select};
 
-/// Fixed-size state for a standalone rule with no additions.
+/// Fixed-size checkpoint for a standalone recurrence rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RuleCheckpoint {
     delivered: Option<Instant>,
@@ -95,7 +52,7 @@ impl From<RuleCheckpoint> for SearchCursor {
     }
 }
 
-/// The opaque continuation state for a recurrence set.
+/// Continuation state for a recurrence rule and its additions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuleCursorState {
     period_index: u64,
@@ -104,7 +61,7 @@ pub struct RuleCursorState {
     pending: PendingRuleKeys,
 }
 
-/// The rule count and delivered additions at a search checkpoint.
+/// Checkpoint for a recurrence set across search windows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchCursor {
     rule: RuleCheckpoint,
@@ -113,7 +70,7 @@ pub struct SearchCursor {
 }
 
 impl SearchCursor {
-    /// Rebuild a checkpoint from its three parts.
+    /// Restore a checkpoint from its parts.
     #[must_use]
     pub fn new(
         resume_after: Option<Instant>,
@@ -132,19 +89,19 @@ impl SearchCursor {
         }
     }
 
-    /// The last occurrence delivered to the caller, if any.
+    /// The recurrence key of the last occurrence the caller received.
     #[must_use]
     pub const fn resume_after(&self) -> Option<Instant> {
         self.rule.delivered
     }
 
-    /// The rule keys that count toward the RFC 5545 recurrence limit.
+    /// The number of rule keys that count toward `COUNT`, including keys a later window can deliver.
     #[must_use]
     pub const fn occurrences_emitted(&self) -> u32 {
         self.rule.produced
     }
 
-    /// The state needed to continue in a new window.
+    /// The continuation state for the rule and its additions.
     #[must_use]
     pub fn rule_cursor(&self) -> RuleCursorState {
         RuleCursorState {
@@ -156,7 +113,7 @@ impl SearchCursor {
     }
 }
 
-/// Counted keys whose identities or effective starts can still enter a later window.
+/// Rule keys that count toward `COUNT` and can enter a later window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PendingRuleKeys(Option<Rc<VecDeque<Instant>>>);
 
@@ -254,7 +211,7 @@ impl PendingRuleKeys {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct DeliveredAdditions {
     prefix: usize,
-    /// Snapshots share these marks until a later delivery needs to change one.
+    /// Snapshots share delivery marks until a search changes them.
     beyond: Option<Rc<Vec<u64>>>,
 }
 
@@ -341,23 +298,18 @@ impl DeliveredAdditions {
     }
 }
 
-/// The rule and the walk over it, absent for an input that is only `RDATE`s.
 struct Cadence<'a> {
-    /// The rule being expanded.
     rule: &'a RecurrenceRule,
-    /// `DTSTART` in civil fields, which is what the walk and the expansion take.
     dtstart: CivilDateTime,
-    /// The period walk this search is stepping.
     walk: PeriodWalk,
-    /// Last visited period, including a position inherited from an earlier search.
+    /// A resumed search can finish before it visits another period.
     period_index: u64,
 }
 
 impl<'a> Cadence<'a> {
-    /// The walk `input` needs, or `None` when there is no rule to walk.
     fn open(input: RecurrenceInput<'a>, cursor: Option<RuleCheckpoint>) -> Option<Self> {
         let rule = input.rule()?;
-        // The caller resolved `DTSTART` onto the timeline, and the expansion works in civil fields; the conversion is at UTC because the zone was already applied by whoever resolved it (`docs/adr/0003`).
+        // The caller resolves the start before the walk reads its civil fields.
         let dtstart = CivilDateTime::from_instant(input.dtstart(), UtcOffset::UTC)?;
         let period_index = cursor.map_or(0, |held| held.period_index);
         let walk = match cursor {
@@ -373,73 +325,50 @@ impl<'a> Cadence<'a> {
     }
 }
 
-/// Cadence keys and distinct terminal outcomes for one rule stream.
 #[derive(Clone, Copy, Debug)]
 enum RuleKey {
-    /// The next cadence key the rule generates.
     Next(Instant),
-    /// The rule ended, at its `COUNT` or at its `UNTIL`.
     RuleEnded,
-    /// The walk reached the end of the window generation runs over.
     WindowEnded,
-    /// The walk reached the end of the calendar RFC 5545 section 3.3.4 can write.
-    ///
-    /// Not the same answer as [`RuleKey::RuleEnded`], and reported separately because the rule did not end: a series with no `COUNT` and no `UNTIL` runs out of years to be written in long before it runs out of instances, and telling a caller that its rule finished would be telling it something false about the rule.
+    /// RFC 5545 section 3.3.4 limits years to four digits.
     CalendarEnded,
-    /// The candidate budget ran out.
     Exhausted,
     CalendarArithmeticFailed,
 }
 
-/// Borrowed search state for one rule-stream step.
 struct StepEnv<'e, S: DiagnosticSink + ?Sized> {
-    /// The window generation runs over.
     generation: Window,
-    /// Where this search charges.
     charges: &'e mut Charges,
-    /// The caller's ledger.
     meter: &'e mut Meter,
-    /// Where diagnostics go.
     sink: &'e mut S,
 }
 
-/// Corrected candidates waiting for the next period's lower bound.
+/// Corrected dates can cross period boundaries under RFC 7529 section 4.1.
 #[derive(Default)]
 struct AdjustedStream {
-    /// Ordered keys with the earliest period that contributed each key.
+    /// Each key keeps the earliest period that contributed it.
     pending: alloc::collections::BTreeMap<Instant, u64>,
-    /// A period inspected for its lower bound but not expanded.
     peeked: Option<(Period, Instant, u64)>,
-    /// Why no more periods can enter the pending set.
     stop: Option<RuleKey>,
-    /// Origin of the key on offer to the merge.
+    /// A checkpoint needs the origin of an offer until the merge commits it.
     offered_period: Option<u64>,
 }
 
-/// The rule half of a search: periods in, cadence keys out.
 struct RuleStream<'a> {
-    /// The rule and its walk, absent for an input that is only `RDATE`s.
     cadence: Option<Cadence<'a>>,
-    /// The candidates unit 4 selected from the period currently open.
     selected: Option<SelectedCandidates>,
-    /// How far through those candidates this stream has read.
     position: usize,
-    /// Cross-period ordering for explicit calendar corrections.
     adjusted: AdjustedStream,
-    /// Instances the rule has produced, which is what `COUNT` counts.
+    /// The live offer counts here until the checkpoint subtracts it.
     produced: u32,
-    /// `DTSTART`: the first instant the recurrence set can hold.
     begins_at: Instant,
-    /// Cadence keys at or before this one belong to an earlier search.
+    /// Earlier searches counted every rule key through this boundary.
     resume_after: Option<Instant>,
-    /// Whether the rule's own end has been reached.
     ended: bool,
-    /// The whole input, for the caller's own gate on a key.
     input: RecurrenceInput<'a>,
 }
 
 impl<'a> RuleStream<'a> {
-    /// The stream `input` describes, resumed from `cursor` when there is one.
     fn new(input: RecurrenceInput<'a>, cursor: Option<RuleCheckpoint>) -> Self {
         Self {
             cadence: Cadence::open(input, cursor),
@@ -454,7 +383,6 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// The next cadence key, or why there is not one.
     fn next_key<S: DiagnosticSink + ?Sized>(&mut self, env: &mut StepEnv<'_, S>) -> RuleKey {
         loop {
             if self.ended || self.count_is_complete() {
@@ -484,14 +412,13 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// Whether missing month days can move across period boundaries.
     fn uses_adjustments(&self) -> bool {
         self.cadence
             .as_ref()
             .is_some_and(|cadence| cadence.rule.skip() != Skip::Omit)
     }
 
-    /// The least corrected key once every period that can precede it has entered the set.
+    /// Release a corrected key once the next period can only supply later keys.
     fn adjusted_candidate<S: DiagnosticSink + ?Sized>(
         &mut self,
         env: &mut StepEnv<'_, S>,
@@ -535,7 +462,7 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// Inspect the next period without spending its expansion budget.
+    /// Read the period bound before charging for expansion.
     fn peek_adjusted_period(&mut self) {
         if self.adjusted.peeked.is_some() || self.adjusted.stop.is_some() {
             return;
@@ -552,10 +479,6 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// The next candidate of the period already open, if that period has one left.
-    ///
-    /// A candidate that leaves the representable timeline is skipped rather than clamped, for the reason `docs/adr/0011` gives about instances that do not exist: a nearby answer is not the answer.
-    /// RFC 5545 section 3.3.4 bounds a year at four digits, so no expansion of a legal rule reaches this; it is handled because the conversion can say so and an `unwrap` here would be a claim about unit 3 that this unit is not entitled to make.
     fn take_candidate(&mut self) -> Option<Instant> {
         loop {
             let at = *self.selected.as_ref()?.as_slice().get(self.position)?;
@@ -566,19 +489,14 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// Whether `key` is this search's next key, and `None` when it is one to skip.
-    ///
-    /// The rule's own end is asked about before the window's, so that a series whose last instance coincides with the window's edge reports that it ended rather than that the view did.
-    /// Both answers are complete; only one of them tells the caller not to ask again.
+    /// Check the rule limit before the window edge so a completed rule reports its own end.
     fn weigh(&mut self, key: Instant, generation: Window) -> Option<RuleKey> {
         if key < self.begins_at {
-            // The period holding `DTSTART` is expanded whole, so it offers candidates before `DTSTART` as readily as after it: `FREQ=MONTHLY;BYMONTHDAY=1,-1` from the 30th of September names the 1st of that same September.
-            // RFC 5545 section 3.8.5.3 begins every recurrence set at `DTSTART`, so those are not instances and they are skipped without counting — a `COUNT` that spent one on them would end the series an instance early, which is exactly what the section's own worked example shows.
-            // Skipped here rather than in the expansion, because `BYSETPOS` selects from the period as the rule describes it and only then does the set begin.
+            // `BYSETPOS` selects from the whole period before the search discards keys earlier than `DTSTART`.
+            // RFC 5545 section 3.8.5.3 defines `DTSTART` as the first instance.
             return None;
         }
         if self.resume_after.is_some_and(|after| key <= after) {
-            // Already produced by the search that handed over the cursor, and already counted in the `produced` this stream started from, so it is skipped without counting.
             return None;
         }
         if self.has_ended_at(key) {
@@ -589,16 +507,13 @@ impl<'a> RuleStream<'a> {
             return Some(RuleKey::WindowEnded);
         }
         if !self.input.admits(key) {
-            // The caller's own second gate, which `docs/adr/0011` puts beside this crate's date gate and which only a caller holding a zone can answer.
-            // Skipped without counting, exactly as a candidate before `DTSTART` is: a `COUNT` spent on an instance nobody receives ends the series an instance early.
-            // Asked after the window's edge so that a gate refusing everything still terminates here.
+            // A nonexistent local time leaves `COUNT` unchanged under RFC 5545 section 3.3.10.
             return None;
         }
         self.produced = self.produced.saturating_add(1);
         Some(RuleKey::Next(key))
     }
 
-    /// Whether the rule has produced its complete `COUNT`.
     fn count_is_complete(&self) -> bool {
         match self.cadence.as_ref().map(|cadence| cadence.rule.limit()) {
             Some(RuleLimit::Count(count)) => self.produced >= count.get(),
@@ -606,7 +521,7 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// Whether the rule's own end falls at or before `key`.
+    /// RFC 5545 section 3.3.10 includes the `UNTIL` instant.
     fn has_ended_at(&self, key: Instant) -> bool {
         match self.cadence.as_ref().map(|cadence| cadence.rule.limit()) {
             Some(RuleLimit::Count(_)) => self.count_is_complete(),
@@ -615,8 +530,6 @@ impl<'a> RuleStream<'a> {
         }
     }
 
-    /// Open the next period, or say why there is not one.
-    /// `None` means one was opened.
     fn open_next_period<S: DiagnosticSink + ?Sized>(
         &mut self,
         env: &mut StepEnv<'_, S>,
@@ -634,7 +547,6 @@ impl<'a> RuleStream<'a> {
         self.expand(period, env)
     }
 
-    /// The next period and its candidate lower bound, or a terminal rule outcome.
     fn advance_walk(&mut self) -> Result<(Period, Instant), RuleKey> {
         let Some(cadence) = self.cadence.as_mut() else {
             return Err(RuleKey::RuleEnded);
@@ -651,15 +563,12 @@ impl<'a> RuleStream<'a> {
             .ok_or(RuleKey::CalendarEnded)
     }
 
-    /// Turn `period` into the candidates selected from it, or say the budget ran out.
     fn expand<S: DiagnosticSink + ?Sized>(
         &mut self,
         period: Period,
         env: &mut StepEnv<'_, S>,
     ) -> Option<RuleKey> {
         let Some(cadence) = self.cadence.as_ref() else {
-            // Unreachable: a period exists only where a rule was walked to produce it.
-            // Answering "the rule ended" rather than looping keeps an impossible state finite.
             self.ended = true;
             return Some(RuleKey::RuleEnded);
         };
@@ -676,7 +585,7 @@ impl<'a> RuleStream<'a> {
         None
     }
 
-    /// The last visited period, preserved when a resumed rule generates nothing.
+    /// Resume from the earliest period that can reproduce a pending key or offer.
     fn period_index(&self) -> u64 {
         let visited = self
             .cadence
@@ -698,67 +607,43 @@ enum OfferSource {
     Addition,
 }
 
-/// What one turn of the search produced.
 #[derive(Debug)]
 enum Progress<'a> {
-    /// An occurrence to hand the caller.
     Emit(Occurrence<'a>),
-    /// Nothing to show, and the search has not finished.
-    /// Turn again.
     Retry,
-    /// The search is over and the outcome is recorded.
     Stop,
-    /// The budget ran out.
     Exhausted(BudgetExhausted),
     CalendarArithmeticFailed,
 }
 
-/// A lazy search over one series, bounded by a window and by a budget.
+/// A recurrence search with a shared budget and a half-open window.
 ///
-/// The `Item` is [`SearchStep`] and never `Result<Occurrence, BudgetExhausted>`;
-/// [`SearchStep`]'s own documentation gives the mechanical reason.
-/// The terminal state is reported three times over, in decreasing order of survivability: as the last [`SearchStep`], as [`RecurrenceSearch::outcome`], and as the caller's own `Meter`, whose exhaustion flag latches and which outlives every combinator applied to this iterator.
-///
-/// The second type parameter is the caller's sink and is defaulted, so `RecurrenceSearch<'a>` names the erased form while a caller passing a concrete sink gets it monomorphized with no vtable.
+/// Budget exhaustion yields one terminal [`SearchStep`] and updates the meter and the search outcome.
 pub struct RecurrenceSearch<'a, S: DiagnosticSink + ?Sized = dyn DiagnosticSink + 'a> {
-    /// The window the caller asked about.
     asked: Window,
-    /// That window widened by the largest shift the override set implies.
     generation: Window,
-    /// The caller's ledger.
     meter: &'a mut Meter,
-    /// Where diagnostics go.
     sink: &'a mut S,
-    /// Where this search charges.
     charges: Charges,
-    /// The rule half.
     stream: RuleStream<'a>,
-    /// The merge half.
     merge: Merge<'a>,
-    /// The cadence key the rule stream produced and the merge has not consumed.
+    /// An earlier `RDATE` can leave the rule offer pending.
     offered: Option<Instant>,
-    /// Whether the rule stream has finished.
     stream_done: bool,
-    /// Additions already returned by this search or its predecessor.
     additions: DeliveredAdditions,
     pending: PendingRuleKeys,
-    /// Replay earlier keys without spending the rule count again.
+    /// Replay earlier rule keys without spending `COUNT` twice.
     replay_through: Option<Instant>,
     replay_position: usize,
-    /// The last cadence key this search reached.
     reached: Instant,
-    /// Last occurrence delivered to the caller.
     delivered: Option<Instant>,
-    /// Last rule offer committed by the merge.
+    /// The merge commits a rule key after it excludes, defers, or delivers the occurrence.
     counted_through: Option<Instant>,
-    /// Why the search is not producing more, or that it still is.
     outcome: SearchOutcome,
-    /// Whether `next` has already answered for the last time.
     finished: bool,
 }
 
 impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
-    /// Assemble a search, reporting what only this point can see about it.
     fn start(
         input: RecurrenceInput<'a>,
         cursor: Option<SearchCursor>,
@@ -767,7 +652,6 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         sink: &'a mut S,
     ) -> Self {
         if !input.until_value_type_agrees() {
-            // The first point holding both halves of the comparison, and therefore the only one that can report the disagreement RFC 5545 section 3.3.10 forbids.
             report_diagnostic(
                 &mut *sink,
                 &mut *meter,
@@ -814,10 +698,7 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         }
     }
 
-    /// The window generation runs over.
-    ///
-    /// When the widening leaves the representable timeline the window the caller asked about is used unchanged and the consequence is reported rather than swallowed: a shift that large guarantees some occurrence's effective start lies outside anything this search can generate, which is exactly what [`DiagnosticCode::OverrideLeftWindow`] names.
-    /// Narrowing the question silently is the one thing unit 7 forbids here.
+    /// If the shift exceeds the timeline, report the overflow and search the requested window.
     fn widen(asked: Window, input: RecurrenceInput<'a>, meter: &mut Meter, sink: &mut S) -> Window {
         if let Some(widened) = generation_window(asked, input.overrides()) {
             return widened;
@@ -838,13 +719,13 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         self.meter.try_charge(units)
     }
 
-    /// Why the search is not producing more occurrences, or that it still is.
+    /// The rule can reach its end while the merge still has additions to deliver.
     #[must_use]
     pub const fn outcome(&self) -> SearchOutcome {
         self.outcome
     }
 
-    /// Where this search has got to, so another can carry on from it.
+    /// Capture a checkpoint that can retry the current rule offer.
     #[must_use]
     pub fn cursor(&self) -> SearchCursor {
         SearchCursor {
@@ -866,12 +747,8 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         }
     }
 
-    /// One turn: an occurrence, a reason to turn again, or a reason to stop.
-    ///
-    /// The three questions are asked in the order unit 5 documents, and the order is the whole of the protocol.
-    /// Drained first, because the answer to it is the only end of the merge.
-    /// Then which source the step will consume, because the step moves the cursor that decides it.
-    /// Then the step.
+    /// Check both sources and identify the next key before the merge advances its addition cursor.
+    /// An exclusion can consume a key while producing no occurrence.
     fn advance(&mut self) -> Progress<'a> {
         let replay = self
             .pending
@@ -908,7 +785,6 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         progress
     }
 
-    /// Make sure a cadence key is on offer, or record why there will not be another.
     fn fill_offer(&mut self) -> Option<Progress<'a>> {
         if self.offered.is_some() || self.stream_done {
             return None;
@@ -951,10 +827,7 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         None
     }
 
-    /// Say that the calendar ran out under a rule that had not.
-    ///
-    /// Once per search, because the stream latches when it answers this and is never asked again.
-    /// The instant is the last cadence key the search reached, which is the last instance the recurrence set has — a caller reading it learns where the series stops rather than that some year it never named does not exist.
+    /// Report the last key the search reached when the rule outlives the calendar.
     fn report_calendar_end(&mut self) {
         report_diagnostic(
             &mut *self.sink,
@@ -967,7 +840,6 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         );
     }
 
-    /// Filter one merged occurrence against the caller's window, and charge what survives.
     fn deliver(&mut self, occurrence: Occurrence<'a>, source: OfferSource) -> Progress<'a> {
         if occurrence.key() >= self.generation.end() {
             self.record(SearchOutcome::WindowEnded);
@@ -1016,16 +888,11 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             return Progress::Exhausted(self.exhausted());
         }
         if occurrence.key() > self.reached {
-            // An addition can extend the reported search position beyond the last rule key.
             self.reached = occurrence.key();
         }
         Progress::Emit(occurrence)
     }
 
-    /// Whether this occurrence belongs to the window the caller asked about.
-    ///
-    /// Two questions, because an override moves a start away from the key that generated it in either direction.
-    /// The key is asked first, since that is what the window bounds; the start is asked second, because an occurrence moved *into* the window has to appear.
     fn admits(&mut self, occurrence: Occurrence<'a>) -> bool {
         let by_key = self.asked.contains(occurrence.key());
         let by_start = occurrence.starts_within(self.asked);
@@ -1043,12 +910,7 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         by_key || by_start
     }
 
-    /// The terminal state, recorded in the outcome and reported through the sink on its way out.
-    ///
-    /// The count is unit 7's `Charges::spent`, which is what this search's candidates actually cost, and never the size of the sets that came back.
-    /// A period refused while filling returns no set at all and has still charged everything it generated, and a rule that produces an instance in no period — `FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30` — produces no sets and spends the whole budget.
-    /// Counting output would report zero for both, which is the opposite of what a caller deciding whether to retry with a larger budget needs to hear.
-    /// The instant is this search's own `reached`, because the ledger counts and only this unit knows which cadence key the count stopped at.
+    /// Report candidate work even when the search yields no occurrences.
     fn exhausted(&mut self) -> BudgetExhausted {
         let terminal = BudgetExhausted::new(self.reached, self.charges.spent(&*self.meter));
         self.outcome = SearchOutcome::BudgetExhausted(terminal);
@@ -1064,7 +926,6 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         terminal
     }
 
-    /// Record why the search stopped, keeping the first answer.
     fn record(&mut self, outcome: SearchOutcome) {
         if matches!(self.outcome, SearchOutcome::Pending) {
             self.outcome = outcome;
@@ -1073,7 +934,6 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
 }
 
 impl<S: DiagnosticSink + ?Sized> fmt::Debug for RecurrenceSearch<'_, S> {
-    /// The sink and the ledger are the caller's and are not this type's to print.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RecurrenceSearch")
@@ -1113,14 +973,11 @@ impl<'a, S: DiagnosticSink + ?Sized> Iterator for RecurrenceSearch<'a, S> {
     }
 }
 
-/// Nothing follows a terminal step, and asking again is defined rather than merely harmless.
 impl<S: DiagnosticSink + ?Sized> FusedIterator for RecurrenceSearch<'_, S> {}
 
 impl<'a> RecurrenceInput<'a> {
-    /// Search this series over `window`, charging `meter` and reporting to `sink`.
-    ///
-    /// The meter is borrowed rather than owned for the whole life of the search, which is what makes a fan-out over five thousand series bounded in aggregate and not only per series (`docs/adr/0010`).
-    /// It is also the second of the three reports of the terminal state: a caller that discarded every [`SearchStep`] can still find `Meter::is_exhausted`.
+    /// Search the series and charge the caller's shared meter.
+    /// The meter bounds the total work across searches.
     pub fn search<S>(
         self,
         window: Window,
@@ -1133,10 +990,8 @@ impl<'a> RecurrenceInput<'a> {
         RecurrenceSearch::start(self, None, window, meter, sink)
     }
 
-    /// Carry on a search from `cursor`, over `window`.
-    ///
-    /// The window is stated again rather than remembered, because a caller resuming into the next month is asking about a different window and a cursor that carried one would make that the exception.
-    /// What the cursor carries instead is the count, so a `COUNT`-bounded rule resumed here yields the recurrence set the file describes.
+    /// Resume the same series in the same window or a later one.
+    /// The cursor preserves `COUNT`, delivered additions, and rule keys that can still enter a later window.
     pub fn resume<S>(
         self,
         cursor: SearchCursor,
@@ -1172,10 +1027,7 @@ mod tests {
         BudgetExhausted, Occurrence, OverrideProvenance, SearchOutcome, SearchStep, Window,
     };
 
-    /// One instant, written the way RFC 5545 section 3.8.5.3 writes its worked examples.
-    ///
-    /// The examples are stated in a named zone; the caller resolves a zone before this crate sees anything, so the wall clock is kept and the resolution is UTC.
-    /// What the tests below assert is the shape of the recurrence set, which is what the examples are about.
+    /// Use UTC to compare the civil dates in the RFC examples.
     fn at(year: u16, month: u8, day: u8, hour: u8) -> Instant {
         let date = CivilDate::from_ymd(year, month, day).unwrap();
         let time = CivilTime::from_hms(hour, 0, 0).unwrap();
@@ -1184,20 +1036,14 @@ mod tests {
             .unwrap()
     }
 
-    /// What one search produced, flattened to values that outlive the borrow of the meter.
     #[derive(Debug)]
     struct Run {
-        /// The effective start of every occurrence emitted.
         starts: Vec<Instant>,
-        /// The terminal step, when there was one.
         terminal: Option<BudgetExhausted>,
-        /// What the search said about itself when it was done.
         outcome: SearchOutcome,
-        /// Steps the iterator produced, terminal step included.
         steps: usize,
     }
 
-    /// Drive `search` to its end.
     fn drain<S>(mut search: RecurrenceSearch<'_, S>) -> Run
     where
         S: crate::internal::core::DiagnosticSink + ?Sized,
@@ -1221,7 +1067,6 @@ mod tests {
         }
     }
 
-    /// A rule at `freq` with `count` occurrences and nothing else stated.
     fn counted(freq: Freq, count: u32) -> RecurrenceRule {
         RecurrenceRuleBuilder::new(freq)
             .limit(RuleLimit::Count(NonZeroU32::new(count).unwrap()))
@@ -1229,7 +1074,6 @@ mod tests {
             .unwrap()
     }
 
-    /// An input with a rule, no additions, no exclusions and no overrides.
     fn plain<'a>(
         dtstart: Instant,
         rule: &'a RecurrenceRule,
@@ -1307,10 +1151,7 @@ mod tests {
         assert_eq!(meter.candidates_charged(), 739);
     }
 
-    /// RFC 5545 section 3.8.5.3, "Daily for 10 occurrences".
-    ///
-    /// `DTSTART;TZID=America/New_York:19970902T090000` with `RRULE:FREQ=DAILY;COUNT=10` gives September 2 through 11 of 1997.
-    /// The expectation is the RFC's own list and not this implementation's output.
+    /// RFC 5545 section 3.8.5.3 lists ten daily occurrences from September 2 through 11, 1997.
     #[test]
     fn a_daily_rule_produces_the_ten_days_the_rfc_lists() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1326,12 +1167,7 @@ mod tests {
         assert_eq!(run.terminal, None);
     }
 
-    /// RFC 5545 section 3.8.5.3, "Monthly on the first and last day of the month for 10 occurrences", which crosses two month lengths and a year boundary.
-    ///
-    /// `DTSTART:19980930T090000` with `RRULE:FREQ=MONTHLY;BYMONTHDAY=1,-1` gives September 30,
-    /// October 1, October 31, November 1, November 30, December 1, December 31, January 1,
-    /// January 31 and February 1. It is also the row the milestone brief singles out:
-    /// `BYMONTHDAY` *expands* under `FREQ=MONTHLY`, so a month yields two candidates from a `DTSTART` that names neither of them.
+    /// RFC 5545 section 3.8.5.3 lists the first and last days of successive months starting September 30, 1998.
     #[test]
     fn by_month_day_expands_under_monthly_across_the_year_boundary() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1360,9 +1196,7 @@ mod tests {
         assert_eq!(run.starts, expected);
     }
 
-    /// RFC 5545 section 3.3.10: an instance naming a date that does not exist is ignored rather than moved to a nearby one.
-    ///
-    /// Not a worked example — the section states the rule instead — so the expectation is read off the calendar: a yearly rule anchored on a leap day recurs only on leap days.
+    /// RFC 5545 section 3.3.10 excludes invalid dates from the recurrence count.
     #[test]
     fn a_leap_day_rule_skips_the_years_that_have_no_leap_day() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1384,7 +1218,6 @@ mod tests {
         );
     }
 
-    /// The window ends where the rule does not, and the rule is free to continue past it.
     #[test]
     fn a_window_that_ends_first_says_so_and_the_rule_does_not_end() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1399,10 +1232,6 @@ mod tests {
         assert!(run.outcome.is_complete());
     }
 
-    /// A window whose upper edge falls between a cadence key and its shifted effective start.
-    ///
-    /// The key is inside, so the occurrence is emitted; the start is outside, so `starts_within` says no and the search reports `override-left-window`.
-    /// Both halves are asserted, because an implementation that admitted by start alone would drop this occurrence and an implementation that never reported would hide the gap.
     #[test]
     fn an_override_that_shifts_a_start_past_the_window_edge_is_still_emitted() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1440,10 +1269,6 @@ mod tests {
         );
     }
 
-    /// A resumed `COUNT`-bounded expansion, against a from-scratch one truncated at the same `COUNT`.
-    ///
-    /// The whole point of the counter inside the cursor: resuming must reproduce the recurrence set the file describes, not start a fresh count from the resume point.
-    /// A resume that counted afresh would yield fourteen occurrences from a rule that has ten.
     #[test]
     fn a_resumed_count_bounded_search_matches_the_one_it_resumed() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1474,14 +1299,8 @@ mod tests {
         assert_eq!(rest.outcome, SearchOutcome::RuleEnded);
     }
 
-    /// `next()` past a terminal step, and the three reports of one fact agreeing.
-    ///
-    /// The budget is spent on the shared ledger rather than on a per-period ceiling, so the meter's own latching flag is the second report and can be read once the search that borrowed it is gone.
-    /// The third is `outcome`, which must carry the same value the terminal step did.
     #[test]
     fn a_search_that_exhausts_its_budget_reports_it_three_times_and_then_stops() {
-        // A shared budget far under the year this window asks about: unit 3 charges one per candidate generated, so a rule with no end runs out inside the window.
-        // The number is a budget and not a count of occurrences, which is the distinction a rule that matches rarely depends on.
         let mut meter = Meter::with_budget(Limits::DEFAULT, 32);
         let rule = RecurrenceRuleBuilder::new(Freq::Daily).build().unwrap();
         let input = plain(at(1997, 9, 2, 9), &rule, &mut meter);
@@ -1521,9 +1340,6 @@ mod tests {
         );
     }
 
-    /// `count()` on an exhausted search, asserted as the known-inflated number it is.
-    ///
-    /// `Iterator::count` counts *steps*. No item type this crate can write changes that, so the number is pinned here rather than explained away: it is the occurrences plus one.
     #[test]
     fn count_on_an_exhausted_search_is_the_occurrences_plus_its_terminal_step() {
         let mut meter = Meter::with_budget(Limits::DEFAULT, 32);
@@ -1546,17 +1362,11 @@ mod tests {
         );
     }
 
-    /// The rule outlives the calendar, and the two ends are told apart.
-    ///
-    /// `FREQ=DAILY` with no `COUNT` and no `UNTIL`, asked about a window that outlasts every calendar.
-    /// The last four days of 9999 are instances — RFC 5545 section 3.3.4 writes 9999-12-31 and every instant of it is representable — and what stops the search is the timeline rather than the rule, which is a fact the rule's own `COUNT` and `UNTIL` cannot carry.
-    /// The answer is complete and it is not `RuleEnded`.
     #[test]
     fn a_rule_that_outlives_the_calendar_says_so_rather_than_claiming_the_rule_ended() {
         let mut meter = Meter::new(Limits::DEFAULT);
         let rule = RecurrenceRuleBuilder::new(Freq::Daily).build().unwrap();
         let input = plain(at(9999, 12, 28, 9), &rule, &mut meter);
-        // A window no calendar can reach the end of, so nothing but the timeline can stop this.
         let window =
             Window::new(at(9999, 12, 28, 0), Instant::from_unix_seconds(i64::MAX)).unwrap();
         let mut sink: Vec<Diagnostic> = Vec::new();
@@ -1579,15 +1389,10 @@ mod tests {
         );
     }
 
-    /// An `EXDATE` that removes an `RDATE` removes that one occurrence and nothing after it.
-    ///
-    /// The merge answers `None` both for a candidate an exclusion removed and for no candidate at all, so the driver asks `Merge::is_drained` first and `Merge::takes_rule_key` second rather than inferring either from that silence.
-    /// Inferring the first ends the series at the exclusion; inferring the second retires a rule key the merge never consumed, which deletes the instance after it — including `DTSTART`, which section 3.8.5.3 makes the first member of every recurrence set.
     #[test]
     fn an_exclusion_on_an_addition_leaves_every_occurrence_around_it() {
         let mut meter = Meter::new(Limits::DEFAULT);
         let rule = counted(Freq::Daily, 3);
-        // Both additions sit before a rule instance and one of them is excluded, so an engine that retired the offered rule key anyway loses September 2nd and 3rd.
         let additions = [at(1997, 9, 2, 7), at(1997, 9, 3, 7)];
         let exclusions = [at(1997, 9, 2, 7)];
         let input = RecurrenceInput::new(
@@ -1617,7 +1422,6 @@ mod tests {
         assert!(run.outcome.is_complete());
     }
 
-    /// An exclusion on the head of an `RDATE` tail is not the end of the tail.
     #[test]
     fn an_exclusion_on_the_first_addition_after_the_rule_leaves_the_rest_of_the_list() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1645,7 +1449,6 @@ mod tests {
         );
     }
 
-    /// A series with no rule at all is its `RDATE` list, and the search still bounds it.
     #[test]
     fn an_input_with_no_rule_yields_its_additions_and_ends_with_the_rule() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -2101,7 +1904,6 @@ mod tests {
         }
     }
 
-    /// A cursor is a position in an algorithm, and rebuilding one from its parts is the only thing a caller can do with the opaque half.
     #[test]
     fn a_cursor_round_trips_through_its_own_constructor() {
         let mut meter = Meter::new(Limits::DEFAULT);
