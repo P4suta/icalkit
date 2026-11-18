@@ -2,26 +2,19 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Building a document out of the token stream, and the recovery rules that make that total.
+//! Build an iCalendar document from content-line tokens under RFC 5545 sections 3.4 and 3.6.
 //!
-//! Specification: RFC 5545 section 3.4 and section 3.6.
+//! The builder keeps malformed component boundaries as ordinary properties.
+//! A mismatched `END` leaves the innermost component open.
+//! A component with no closing line serializes without an `END`.
+//! Diagnostics identify these anomalies while preserving the original bytes.
 //!
-//! There is one recovery rule and it is worth stating on its own, because it is what makes "never discards the file" mechanical rather than promised: anything that is not a well-formed component boundary is stored as an ordinary [`Property`].
-//! A line with no `:`,
-//! a blank line, a `BEGIN` carrying parameters, an `END` with nothing open, an `END` naming another component — each becomes a property, each is reported through the caller's sink,
-//! and each is written back octet for octet.
-//! A `BEGIN` whose `END` never arrived keeps its component and serializes without one.
-//! Every one of those is a diagnostic *and* a byte-identical round trip, which are two claims and not one (`docs/adr/0001`).
+//! [`Document::parse`] feeds the content-line reader into [`Document::from_tokens`].
+//! The builder checks byte limits before appending content.
+//! A limit failure returns [`ParseError`] instead of a shortened document.
 //!
-//! The builder reads tokens and never octets.
-//! [`Document::parse`] is [`Document::from_tokens`] over a `ContentLineReader` and nothing else, so a caller with 64 KB of RAM and a caller who wants a tree are reading through one grammar rather than two that drifted (`docs/adr/0008`).
-//!
-//! Octets are charged as they are appended rather than counted once at the end, so a value folded across five million continuation lines is refused at the octet that crosses the budget rather than after it is resident.
-//! A refusal is never a truncation: writing back fewer octets than were read is the one thing this crate may not do, which is why an oversized value is a [`ParseError`] and not a diagnostic (`docs/adr/0007`).
-//!
-//! Five of the codes reported here concern octets and leave the stored input unchanged.
-//! They report a forbidden control character, a physical line exceeding the width RFC 5545 section 3.1 recommends, an unclosed parameter quote, a parameter without `=`, or an undefined RFC 6868 caret pair.
-//! Each diagnostic is offered once the line has ended, when its folds can map an unfolded offset back to the input octets.
+//! The builder reports control characters, overlong physical lines, malformed parameters, and undefined RFC 6868 caret pairs.
+//! Recorded folds map diagnostic locations to offsets in the original input.
 
 use alloc::vec::Vec;
 use core::mem;
@@ -37,16 +30,11 @@ use crate::internal::core::octets::RawText;
 use crate::internal::core::tree::{Boundary, Component, Document, Item, Parameter, Property};
 
 impl Document {
-    /// Read a document out of `input` under `limits`, reporting what was wrong into `sink`.
+    /// Read `input` under `limits` and report structural and text diagnostics to `sink`.
     ///
-    /// This is a `ContentLineReader` handed to [`Document::from_tokens`], and deliberately nothing else.
-    /// A private fast path is how one name acquires two grammars: the tree builder takes raw octets because that was convenient, the public reader grows its own rules, and the divergence surfaces as a file one path accepts and the other does not.
-    ///
-    /// Nothing the reader could not make sense of is discarded.
-    /// Every structural anomaly degrades to an ordinary property carrying the octets it arrived with, so a caller that wants strictness reads the diagnostics and a caller that wants to show the user their meeting still can.
-    ///
-    /// The meter is minted here and dropped here.
-    /// A caller that needs the budget to span more than one parse — the fan-out case a shared ledger exists for — calls [`Document::from_tokens`] with a meter of its own.
+    /// The document keeps malformed content lines and incomplete components.
+    /// This entry point creates a meter for one parse.
+    /// Use [`Document::from_tokens`] to share a meter across parses.
     pub fn parse<S: DiagnosticSink + ?Sized>(
         input: &[u8],
         limits: Limits,
@@ -57,13 +45,10 @@ impl Document {
         Self::from_tokens(&mut reader, &mut meter, sink)
     }
 
-    /// Read a document out of a token source, charging `meter` as the octets are appended.
+    /// Build a document from tokens and charge `meter` before storing their octets.
     ///
-    /// The entry point for a caller that has a source of its own — a filter wrapped around a reader, a stream arriving over CalDAV — and the one [`Document::parse`] itself calls.
-    /// The ledger is the caller's so that its lifetime is the caller's choice and not the call's: one meter handed to five thousand parses makes five thousand individually bounded parses bounded in aggregate (`docs/adr/0010`).
-    ///
-    /// A sink that refuses is not a reason to stop.
-    /// Refusal is counted against the meter and the rest of the input is read, which is what makes the promise that a violation never discards the file hold with no allocator linked (`docs/adr/0009`).
+    /// The shared meter counts work across parses.
+    /// If the diagnostic sink refuses an entry, the meter records the refusal and parsing continues.
     pub fn from_tokens<T, S>(
         tokens: &mut T,
         meter: &mut Meter,
@@ -84,23 +69,16 @@ impl Document {
     }
 }
 
-/// The recommended physical line width from RFC 5545 section 3.1, terminator excluded.
-///
-/// Counted over a physical line rather than over a content line, which is the distinction section 3.1 draws: a producer that folded a long value obeyed it, and the whitespace octet that introduced each continuation is one of the octets that continuation spent.
+/// RFC 5545 section 3.1 recommends at most 75 octets per physical line.
+/// The count includes continuation whitespace and excludes the line terminator.
 const MAX_PHYSICAL_LINE_OCTETS: usize = 75;
 
-/// A byte count as a charge against the ledger, saturating rather than wrapping.
-///
-/// `usize` is not `u64` on every target these crates build for.
-/// A count that does not fit is charged as the largest the ledger can hold, which refuses rather than admits.
+/// Convert a byte count to meter units, saturating on overflow.
 fn as_units(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(u64::MAX)
 }
 
-/// Whether `bytes` holds an octet RFC 5545 section 3.1 excludes from a value or a parameter.
-///
-/// The predicate is the grammar crate's rather than a second reading of section 3.1 written here.
-/// `HTAB` is whitespace and belongs in a value; the write side already refuses to author what this side reports, and the two answers drifting apart is the whole failure a shared predicate exists to prevent.
+/// RFC 5545 section 3.1 permits horizontal tabs in values and excludes other ASCII control characters.
 fn holds_control_octet(bytes: &[u8]) -> bool {
     bytes.iter().any(|octet| is_control_octet(*octet))
 }
@@ -114,13 +92,9 @@ fn terminator_code(ending: LineEnding) -> Option<DiagnosticCode> {
     }
 }
 
-/// Whether a content line with this name opens or closes a component rather than holding a value.
-///
-/// Compared case-insensitively because RFC 5545 section 3.1 compares names that way, and the spelling that arrived is kept on the [`Boundary`] rather than corrected.
-///
-/// The reader's own question, and also the write side's: a line the tree stores as a property and writes back as `END:VEVENT` is read as a component boundary by the next reader, whoever it is, so the doors that author a line consult this before authoring one.
-/// One predicate,
-/// because two readings of what a boundary is are two trees for one file.
+/// Recognize `BEGIN` and `END` regardless of ASCII case.
+/// Both the reader and writer use this boundary check.
+/// The tree keeps the spelling from the input.
 pub(crate) fn names_a_component_boundary(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(b"BEGIN") || name.eq_ignore_ascii_case(b"END")
 }
@@ -143,19 +117,16 @@ enum LineKind {
     Property(Option<DiagnosticCode>),
     /// A well-formed `BEGIN`.
     Begin,
-    /// A well-formed `END`, which may still be unmatched or may name another component.
+    /// An `END` line with valid syntax.
     End,
 }
 
-/// Where one content line sat in the octets the caller handed in.
-///
-/// Reconstructed rather than reported, because a token carries no offset.
-/// It is exact for as long as the round trip is: what is counted here is what a write puts back.
+/// The input range of one content line with its folds and terminator.
 #[derive(Clone, Copy, Debug)]
 struct Extent {
     /// Offset of the line's first octet.
     start: u64,
-    /// Offset one past its last, folds and terminator included.
+    /// Offset just past the line.
     end: u64,
 }
 
@@ -165,19 +136,14 @@ impl Extent {
         if let Some(span) = Span::new(self.start, self.end) {
             Location::at(span)
         } else {
-            // `end` is only ever `start` plus a saturating sum, so the range cannot run backwards; the first octet is the honest answer if the arithmetic saturates.
             Location::at_offset(self.start)
         }
     }
 }
 
-/// A forward-only walk along one unfolded line, keeping input offsets in step with it.
-///
-/// A [`FoldPoint`] addresses the unfolded line, and the octets a fold spends — its terminator and the whitespace that introduced the continuation — sit *between* the octets it addresses rather than inside them.
-/// Turning an unfolded offset into an offset in the caller's input is therefore a sum over the folds already passed.
-///
-/// Forward-only because the line is taken apart from left to right, and because the honest alternative is a sum over every fold at every lookup.
-/// `max_folds_per_line` admits a million of them and `max_parameters` a thousand parameters on the same line, so the quadratic form is a denial of service wearing a location's clothes.
+/// Map ascending unfolded offsets to the original input.
+/// Each fold adds its terminator and continuation whitespace to the input offset.
+/// Each walk visits folds in order.
 #[derive(Clone, Debug)]
 struct FoldWalk<'a> {
     /// The folds recorded for this line, in the order the producer wrote them.
@@ -201,16 +167,12 @@ impl<'a> FoldWalk<'a> {
         }
     }
 
-    /// Where the unfolded octet at `offset` sits in the input.
-    ///
-    /// A fold recorded *at* `offset` breaks the line immediately before that octet, so the octets it spends come first and are counted here.
+    /// Locate the input octet at `offset`, including any fold immediately before it.
     fn opens(&mut self, offset: usize) -> u64 {
         self.advance(offset, true)
     }
 
-    /// Where a range of unfolded octets that ends at `offset` stops, in the input.
-    ///
-    /// A fold recorded at `offset` breaks before an octet the range does not contain, so its octets lie outside the range and are left for the next lookup to count.
+    /// Locate the end of a half-open range, excluding a fold at its end offset.
     fn closes(&mut self, offset: usize) -> u64 {
         self.advance(offset, false)
     }
@@ -222,9 +184,7 @@ impl<'a> FoldWalk<'a> {
         Extent { start, end }
     }
 
-    /// The input offset of `offset`, having passed the folds that precede it.
-    ///
-    /// `leading` distinguishes the two answers a fold sitting exactly at `offset` deserves: it precedes the octet there and does not precede the end of a range that stops there.
+    /// Advance past earlier folds and optionally include a fold at `offset`.
     fn advance(&mut self, offset: usize, leading: bool) -> u64 {
         let cursor = as_units(offset);
         // Bound by value, because the walk mutates itself inside the loop a borrow of it would still be alive across.
@@ -260,7 +220,7 @@ fn report_extent<S>(
     report_diagnostic(sink, meter, diagnostic);
 }
 
-/// Report a physical line that ran past section 3.1's bound, and nothing for one that did not.
+/// Report a physical line longer than the RFC 5545 section 3.1 recommendation.
 fn report_overlong_line<S>(start: u64, width: usize, meter: &mut Meter, sink: &mut S)
 where
     S: DiagnosticSink + ?Sized,
@@ -281,10 +241,7 @@ where
     );
 }
 
-/// Report what one stretch of stored octets was wrong about, and say where it sat.
-///
-/// One diagnostic per piece rather than per octet.
-/// `ControlCharacterInText` says that a value or a parameter held a control character, and a `DESCRIPTION` of a million `NUL`s held one defect rather than a million — a caller with a fixed-capacity sink would otherwise lose every other diagnostic in the file to that one line.
+/// Report forbidden control characters once per name or value and return its input range.
 fn report_piece<S>(
     walk: &mut FoldWalk<'_>,
     from: usize,
@@ -308,10 +265,7 @@ where
     extent
 }
 
-/// Report what one parameter value, quotes and carets and all, was wrong about.
-///
-/// [`report_piece`] answers for the octets themselves.
-/// What the `DQUOTE`s were doing and what a caret was for are questions only a parameter value is asked, and both are answered by the grammar crate rather than by a second reading of section 3.2 taken here.
+/// Check the parameter's control characters, quoting, and RFC 6868 encoding.
 fn report_parameter_value<S>(
     walk: &mut FoldWalk<'_>,
     from: usize,
@@ -334,13 +288,13 @@ fn report_parameter_value<S>(
             sink,
         );
     }
-    // Asked of the value between the quotes, because that is the scope RFC 6868 defines the encoding over: a `DQUOTE` is a delimiter, and a caret standing against one is not a pair.
-    // The answer is about the value and not about one octet of it, so the whole value is what it points at — the grammar crate walks the pairs left to right and reports whether any was undefined, which is the reading that keeps `^^x` from looking like `^x`.
+    // Check the parameter inside its outer quotes.
+    // An undefined caret pair identifies the parameter value as the diagnostic subject.
     if undefined_caret_escapes(unquoted.value()) {
         report_extent(
             extent,
             DiagnosticCode::UndefinedCaretEscape,
-            // RFC 6868 section 2 requires such a pair be left as it is, so nothing was violated and nothing was repaired; the caller is told a producer may have meant something.
+            // RFC 6868 section 2 preserves an undefined caret pair.
             Severity::Note,
             meter,
             sink,
@@ -383,32 +337,28 @@ where
     value_at.saturating_add(value.len())
 }
 
-/// One content line's octets, copied out of the tokens as they arrive.
-///
-/// Copied rather than borrowed because a token borrows the source and the next token invalidates it, and because the tree owns its memory end to end (`docs/adr/0007`).
+/// Own each token's bytes before advancing the borrowed token source.
 #[derive(Debug, Default)]
 struct PendingLine {
     /// The property name, as written.
     name: Vec<u8>,
-    /// The parameters, in the order they were written.
+    /// Parameters in source order.
     parameters: Vec<Parameter>,
-    /// The value, unfolded, with nothing unescaped and nothing normalized.
+    /// Original value bytes after unfolding.
     value: Vec<u8>,
 }
 
 impl PendingLine {
-    /// Whether no octet of a line has been accumulated yet.
+    /// Whether the builder holds any part of the line.
     fn is_empty(&self) -> bool {
         self.name.is_empty() && self.parameters.is_empty() && self.value.is_empty()
     }
 
-    /// How many octets this line occupies once unfolded, name through value.
-    ///
-    /// This is the count a write reproduces, which is why it is the count offsets are measured against: a `FoldPoint` addresses the unfolded line from the first octet of the name.
+    /// Count the unfolded octets from the name through the value.
+    /// Fold offsets use the same origin.
     fn unfolded_len(&self, has_separator: bool) -> usize {
         let mut total = self.name.len();
         for entry in &self.parameters {
-            // `;` then the name, then `=` and the value when one was written at all.
             total = total.saturating_add(1).saturating_add(entry.name().len());
             if entry.has_value() {
                 total = total.saturating_add(1).saturating_add(entry.value().len());
@@ -421,7 +371,7 @@ impl PendingLine {
     }
 }
 
-/// A component whose `BEGIN` arrived and whose `END` has not.
+/// An open component and its items.
 #[derive(Debug)]
 struct OpenComponent {
     /// The `BEGIN` line, in the spelling it arrived in.
@@ -432,14 +382,14 @@ struct OpenComponent {
     extent: Extent,
 }
 
-/// The document under construction, and the components still open above it.
+/// Document state and the stack of open components.
 #[derive(Debug, Default)]
 struct TreeBuilder {
     /// Entries at the top level of the document.
     root: Vec<Item>,
     /// Components awaiting an `END`, outermost first.
     open: Vec<OpenComponent>,
-    /// The line being accumulated.
+    /// The content line in progress.
     pending: PendingLine,
     /// Offset of the first octet of that line.
     line_start: u64,
@@ -459,7 +409,7 @@ impl TreeBuilder {
         builder.into_items(meter, sink)
     }
 
-    /// Fold one token into the line being accumulated, finishing that line at its end.
+    /// Consume one token and finish its line at `EndOfLine`.
     fn take<S>(
         &mut self,
         token: Token<'_>,
@@ -489,14 +439,7 @@ impl TreeBuilder {
         }
     }
 
-    /// Charge the octets this line's folds occupy, before any of them is retained.
-    ///
-    /// A fold is the one thing the tree keeps that no other charge counts.
-    /// A name, a parameter and a value are charged as they are appended; a fold's terminator and the whitespace octet that introduced the continuation are neither, and yet a [`FoldPoint`] is stored for each of them so the writer can put the fold back.
-    /// A line of a hundred thousand `LF SP` pairs is therefore one item, one octet of value and no header — nothing the ledger sees — while the tree grows with the input rather than with the caller's policy.
-    ///
-    /// Charged against the same octet budget the rest of the line is, because they *are* octets of the caller's input: a caller who stated sixty-four octets has not agreed to sixteen megabytes being read on its behalf (`docs/adr/0010`).
-    /// The reader's own `max_folds_per_line` bounds what one line may retain before this is ever reached; this is the half that binds in aggregate, across every line of the document.
+    /// Charge the terminator and continuation whitespace of each fold before storing it.
     fn charge_folds(folds: &[FoldPoint], meter: &mut Meter) -> Result<(), ParseError> {
         for point in folds {
             // The terminator, plus the one whitespace octet that introduced the continuation.
@@ -506,7 +449,7 @@ impl TreeBuilder {
         Ok(())
     }
 
-    /// Take the property name, charging its octets before they are appended.
+    /// Charge the property name before storing it.
     fn take_name(&mut self, bytes: &[u8], meter: &mut Meter) -> Result<(), ParseError> {
         meter.charge_bytes(as_units(bytes.len()))?;
         self.pending.name.clear();
@@ -514,7 +457,7 @@ impl TreeBuilder {
         Ok(())
     }
 
-    /// Take one parameter, quotes and all, charging its octets before they are appended.
+    /// Charge the parameter's name, written value, and any decoded zone identifier before storing it.
     fn take_parameter(
         &mut self,
         name: &[u8],
@@ -530,18 +473,15 @@ impl TreeBuilder {
             }
             Parameter::new(RawText::from_bytes(name), RawText::from_bytes(value))
         } else {
-            // RFC 5545 section 3.2 has no such shape, and producers write it anyway.
-            // It is kept as it arrived so that it is written back as it arrived.
+            // Preserve a missing equals sign for serialization.
             Parameter::without_value(RawText::from_bytes(name))
         };
         self.pending.parameters.push(stored);
         Ok(())
     }
 
-    /// Take one chunk of the value, refusing before appending rather than after.
-    ///
-    /// The per-value bound is checked against what the append would produce, so a value that crosses it is refused at the chunk that crosses it and never becomes resident.
-    /// Truncating instead would write back fewer octets than were read, and a truncated value is indistinguishable from a preserved one at the serializer.
+    /// Check the total value length before appending a chunk.
+    /// The parser rejects a value that exceeds the limit.
     fn take_value(&mut self, bytes: &[u8], meter: &mut Meter) -> Result<(), ParseError> {
         let limit = meter.limits().max_value_bytes();
         let grown = self.pending.value.len().saturating_add(bytes.len());
@@ -553,13 +493,7 @@ impl TreeBuilder {
         Ok(())
     }
 
-    /// Store the line that just ended, and report what was wrong with it.
-    ///
-    /// The terminators are reported before the verdict because that is the order they were observed in: how a line ended is known while it is read, what it turned out to be is known only once it has.
-    /// What the octets themselves were wrong about sits between the two, walked from the name to the value, so that a line's diagnostics arrive in roughly the order its octets did.
-    ///
-    /// None of the three can refuse.
-    /// A line that violates section 3.1 in four separate ways is stored exactly as it arrived and written back exactly as it arrived, and the four diagnostics are what the caller is given instead of a repair (`docs/adr/0009`).
+    /// Report line endings in physical order, then classify and store the content line.
     fn finish_line<S>(
         &mut self,
         layout: LineLayout,
@@ -601,10 +535,7 @@ impl TreeBuilder {
         }
     }
 
-    /// Report what each of this line's terminators was, in the order they were read.
-    ///
-    /// One diagnostic per physical terminator rather than one per content line.
-    /// A folded line ends a physical line at every fold, and a producer that wrote a bare `LF` at each of them violated RFC 5545 section 3.1 at each of them.
+    /// Check every physical terminator, including the one at each fold.
     fn report_terminators<S>(
         &self,
         layout: &LineLayout,
@@ -652,7 +583,7 @@ impl TreeBuilder {
         let unfolded = self.pending.unfolded_len(layout.has_separator());
         let mut start = self.line_start;
         let mut from = 0_usize;
-        // The first physical line spends nothing on an indent; every continuation spends one.
+        // Each continuation starts with one whitespace octet.
         let mut indent = 0_usize;
         for point in layout.folds() {
             let at = usize::try_from(point.offset)
@@ -670,10 +601,7 @@ impl TreeBuilder {
         report_overlong_line(start, width, meter, sink);
     }
 
-    /// Report what the octets of the line that just ended were wrong about.
-    ///
-    /// Walked in the order they were written — the name, then each parameter, then the value —
-    /// because that is the order [`FoldWalk`] can answer in and because it is the order the producer wrote them in.
+    /// Inspect the name, parameters, and value in source order to locate diagnostics with one fold walk.
     fn report_text<S>(&self, layout: &LineLayout, meter: &mut Meter, sink: &mut S)
     where
         S: DiagnosticSink + ?Sized,
@@ -694,7 +622,7 @@ impl TreeBuilder {
     /// Decide what the accumulated line is, by the one recovery rule.
     fn classify(&self, layout: &LineLayout) -> LineKind {
         if self.pending.name.is_empty() {
-            // A blank line is the degenerate case of an empty name, and its absent `:` is not a second independent defect: it is what a blank line is made of.
+            // A blank line has one empty-name diagnostic.
             return LineKind::Property(Some(DiagnosticCode::EmptyPropertyName));
         }
         if !layout.has_separator() {
@@ -706,8 +634,7 @@ impl TreeBuilder {
         if self.pending.parameters.is_empty() {
             kind
         } else {
-            // Illegal, and seen in the wild.
-            // A `Boundary` has nowhere to keep parameters, so the line is stored as the property it syntactically already is.
+            // Keep parameters on a malformed component boundary by storing the whole line as a property.
             LineKind::Property(Some(DiagnosticCode::ParametersOnComponentBoundary))
         }
     }
@@ -756,7 +683,6 @@ impl TreeBuilder {
     ) -> Result<(), ParseError> {
         meter.charge_item()?;
         meter.enter()?;
-        // The line's parameters are empty here by classification: a boundary that carried any never reaches this arm, precisely because a `Boundary` could not write them back.
         let line = mem::take(&mut self.pending);
         self.open.push(OpenComponent {
             begin: Boundary::new(
@@ -770,10 +696,8 @@ impl TreeBuilder {
         Ok(())
     }
 
-    /// Close the innermost open component, or degrade the `END` to a property.
-    ///
-    /// An `END` that named another component leaves that component open on purpose.
-    /// Guessing which of the open components it meant would reorder entries the producer wrote, and reordering is the one repair this crate does not perform.
+    /// Close the innermost component only when its name matches.
+    /// Keep a mismatched `END` as a property in its original position.
     fn close_component(
         &mut self,
         layout: LineLayout,
@@ -799,9 +723,8 @@ impl TreeBuilder {
         }
     }
 
-    /// Close the innermost open component with the `END` line that arrived for it.
-    ///
-    /// The component was charged as an item when its `BEGIN` opened it, so its `END` is not charged again: one component is one item however many lines delimit it.
+    /// Close the open component without charging another item.
+    /// Its `BEGIN` already consumed the item charge.
     fn close_open(&mut self, layout: LineLayout, meter: &mut Meter) {
         let Some(open) = self.open.pop() else {
             return;
@@ -831,9 +754,8 @@ impl TreeBuilder {
     where
         S: DiagnosticSink + ?Sized,
     {
-        // A source that stopped in the middle of a line would otherwise lose the octets it had already handed over.
-        // The reader ends every line with an `EndOfLine`, so this is insurance against a source that does not rather than a path a file reaches.
-        // A `:` is assumed exactly when a value arrived, since a value is what follows one.
+        // A custom source can stop before `EndOfLine`.
+        // Keep the pending bytes and infer a separator from the presence of a value.
         if !self.pending.is_empty() {
             let separated = !self.pending.value.is_empty();
             let layout = LineLayout::preserved(Vec::new(), None, separated);
@@ -918,15 +840,12 @@ mod tests {
         }
     }
 
-    /// A token source over a fixed script.
-    ///
-    /// The reader is a separate implementation unit, and a builder tested through it would be tested through somebody else's bugs.
-    /// A script says exactly what the grammar layer handed over, which is the only input this unit has.
+    /// A fixed sequence of tokens for testing tree construction apart from lexing.
     #[derive(Debug)]
     struct ScriptedSource {
         /// The tokens to yield, in order.
         script: Vec<Scripted>,
-        /// How many have been yielded.
+        /// Index of the next token.
         next: usize,
     }
 
@@ -1005,9 +924,7 @@ mod tests {
         kept.iter().copied().map(Diagnostic::code).collect()
     }
 
-    /// Write the tree back out, so a test can say what octets went in and came out.
-    ///
-    /// The serializer is another implementation unit; this is the oracle that says the tree kept enough for one to be possible at all.
+    /// Reconstruct the input from tree fields independently of the serializer.
     fn rewrite(document: &Document) -> Vec<u8> {
         let mut out = Vec::new();
         write_items(document.items(), &mut out);
@@ -1231,7 +1148,7 @@ mod tests {
 
     #[test]
     fn a_folded_line_is_written_back_where_the_producer_folded_it() {
-        // The most decorated line this unit sees: quoted and unquoted parameters, folded twice, once after a bare LF with a space and once after a CRLF with a tab.
+        // The fixture combines two quoted forms, two folds, and distinct continuation whitespace.
         let folds = vec![
             FoldPoint {
                 offset: 20,
@@ -1370,7 +1287,7 @@ mod tests {
         vec![b'a'; count]
     }
 
-    /// The crate reports lines above the recommended width and preserves their bytes.
+    /// An overlong physical line keeps its original bytes.
     #[test]
     fn a_physical_line_is_measured_against_the_recommended_width() {
         // Fourteen octets of name and one `:` leave sixty for the value at the bound.
@@ -1408,7 +1325,7 @@ mod tests {
         );
     }
 
-    /// The distinction section 3.1 draws is between physical lines, so a content line longer than the bound is inside it once its producer folded, and the leading whitespace of each continuation is one of the octets that continuation spent.
+    /// Each physical line has its own width, including the leading whitespace on a continuation.
     #[test]
     fn a_folded_line_is_measured_one_physical_line_at_a_time() {
         let cases: Vec<(u32, usize, Vec<DiagnosticCode>)> = vec![
@@ -1442,10 +1359,10 @@ mod tests {
         }
     }
 
-    /// A scripted line, the octets it has to be written back as, and the span the one diagnostic it earns must name.
+    /// Token script, expected bytes, and expected diagnostic span.
     type PlacedCase<'a> = (Vec<Scripted>, &'a [u8], (u64, u64));
 
-    /// Four places section 3.1 excludes a control character from, and one it does not.
+    /// RFC 5545 section 3.1 distinguishes horizontal tabs from forbidden control characters.
     #[test]
     fn a_control_character_is_reported_wherever_section_3_1_excludes_it() {
         let cases: Vec<PlacedCase<'_>> = vec![
@@ -1518,8 +1435,7 @@ mod tests {
         );
     }
 
-    /// The case the reader used to describe only as a missing `:`.
-    /// Both are true and both are reported: the quote was never closed, and the line really has no separator left.
+    /// An unclosed parameter quote can hide the value separator.
     #[test]
     fn an_unterminated_quote_is_named_beside_the_separator_it_swallowed() {
         let (document, kept) = build(vec![
@@ -1593,11 +1509,11 @@ mod tests {
         assert_eq!(kept.as_slice(), []);
     }
 
-    /// A parameter value as written, and the span of the note it earns — `None` where RFC 6868 gives every pair in it a meaning and nothing is reported.
+    /// Written parameter bytes and the expected diagnostic span for an undefined caret pair.
     type CaretCase<'a> = (&'a [u8], Option<(u64, u64)>);
 
-    /// RFC 6868 section 2 requires an undefined pair be left as it is, so this is the one code this unit reports as a note: nothing was violated and nothing was repaired.
-    /// The value it points at is the value the caret sits in, quotes and all, because that is the scope the grammar crate answers over.
+    /// RFC 6868 section 2 leaves undefined pairs intact.
+    /// The diagnostic covers the entire parameter value, including its outer quotes.
     #[test]
     fn an_undefined_caret_pair_is_a_note_over_the_value_that_stays_as_it_is() {
         let cases: Vec<CaretCase<'_>> = vec![
@@ -1633,7 +1549,7 @@ mod tests {
         }
     }
 
-    /// The claim every one of these diagnostics rests on: an offset into the caller's octets is not an offset into the unfolded line, and a fold is exactly the difference.
+    /// A diagnostic after a fold includes the skipped fold bytes in its input offset.
     #[test]
     fn an_offset_inside_a_folded_line_counts_the_octets_the_folds_spent() {
         let folds = vec![FoldPoint {
@@ -1659,7 +1575,7 @@ mod tests {
         );
     }
 
-    /// Every one of these is a diagnostic and none of them is a refusal, which is the half of `docs/adr/0001` that a code cannot state on its own.
+    /// Each diagnostic must preserve the complete input.
     #[test]
     fn a_line_wrong_in_six_ways_is_kept_whole_and_diagnosed_six_times() {
         let (document, kept) = build(vec![
