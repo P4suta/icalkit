@@ -93,7 +93,7 @@ pub struct RuleCursorState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchCursor {
     /// Cadence keys at or before this one belong to the search that produced this cursor.
-    resume_after: Instant,
+    resume_after: Option<Instant>,
     /// Instances the rule has produced, which is what `COUNT` counts.
     occurrences_emitted: u32,
     /// Where the expansion algorithm had got to.
@@ -104,7 +104,7 @@ impl SearchCursor {
     /// A cursor resuming after `resume_after`, having already produced `occurrences_emitted`.
     #[must_use]
     pub const fn new(
-        resume_after: Instant,
+        resume_after: Option<Instant>,
         occurrences_emitted: u32,
         rule_cursor: RuleCursorState,
     ) -> Self {
@@ -115,9 +115,9 @@ impl SearchCursor {
         }
     }
 
-    /// The last cadence key the search that produced this cursor reached.
+    /// The last cadence key the search consumed, if any.
     #[must_use]
-    pub const fn resume_after(self) -> Instant {
+    pub const fn resume_after(self) -> Option<Instant> {
         self.resume_after
     }
 
@@ -246,7 +246,7 @@ impl<'a> RuleStream<'a> {
             adjusted: AdjustedStream::default(),
             produced: cursor.map_or(0, SearchCursor::occurrences_emitted),
             begins_at: input.dtstart(),
-            resume_after: cursor.map(SearchCursor::resume_after),
+            resume_after: cursor.and_then(SearchCursor::resume_after),
             ended: false,
             input,
         }
@@ -533,7 +533,7 @@ pub struct RecurrenceSearch<'a, S: DiagnosticSink + ?Sized = dyn DiagnosticSink 
     /// The last cadence key this search reached.
     reached: Instant,
     /// Last key consumed by the merge, excluding an unconsumed rule offer.
-    consumed: Instant,
+    consumed: Option<Instant>,
     /// Why the search is not producing more, or that it still is.
     outcome: SearchOutcome,
     /// Whether `next` has already answered for the last time.
@@ -562,7 +562,8 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             );
         }
         let generation = Self::widen(asked, input, &mut *meter, &mut *sink);
-        let origin = cursor.map_or(input.dtstart(), SearchCursor::resume_after);
+        let consumed = cursor.and_then(SearchCursor::resume_after);
+        let origin = consumed.unwrap_or(input.dtstart());
         let charges = Charges::new(origin, &*meter);
         Self {
             asked,
@@ -574,9 +575,9 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
             merge: Merge::new(input),
             offered: None,
             stream_done: false,
-            resume_after: cursor.map(SearchCursor::resume_after),
+            resume_after: consumed,
             reached: origin,
-            consumed: origin,
+            consumed,
             outcome: SearchOutcome::Pending,
             finished: false,
         }
@@ -636,21 +637,16 @@ impl<'a, S: DiagnosticSink + ?Sized> RecurrenceSearch<'a, S> {
         }
         let consumes_offer = self.merge.takes_rule_key(offered);
         let produced = self.merge.step(offered, &mut *self.meter, &mut *self.sink);
-        if consumes_offer {
-            if let Some(key) = offered {
-                self.consumed = self.consumed.max(key);
-            }
-            self.offered = None;
+        let progress = produced.map_or(Progress::Retry, |occurrence| self.deliver(occurrence));
+        if matches!(progress, Progress::Emit(_) | Progress::Retry) {
+            let key = if consumes_offer {
+                self.offered.take()
+            } else {
+                produced.map(Occurrence::key)
+            };
+            self.consumed = self.consumed.max(key);
         }
-        if let Some(occurrence) = produced {
-            self.consumed = self.consumed.max(occurrence.key());
-        }
-        match produced {
-            // Nothing to show for this candidate: an `EXDATE` removed it, or its start was not representable.
-            // The merge is not over — that is `Merge::is_drained`'s answer at the top of the next turn, and never this silence.
-            None => Progress::Retry,
-            Some(occurrence) => self.deliver(occurrence),
-        }
+        progress
     }
 
     /// Make sure a cadence key is on offer, or record why there will not be another.
@@ -1386,6 +1382,66 @@ mod tests {
             "the addition outside the window is not a step"
         );
         assert!(run.outcome.is_complete());
+    }
+
+    #[test]
+    fn a_cursor_keeps_the_first_addition_beyond_the_window() {
+        let mut meter = Meter::new(Limits::DEFAULT);
+        let additions = [at(1997, 9, 2, 9), at(1997, 9, 20, 9)];
+        let input = RecurrenceInput::new(
+            additions[0],
+            ValueKind::DateTime,
+            None,
+            &additions,
+            &[],
+            OverrideSet::empty(),
+            &mut meter,
+        )
+        .unwrap();
+        let mut sink: Vec<Diagnostic> = Vec::new();
+        let first = Window::new(at(1997, 9, 1, 0), at(1997, 9, 10, 0)).unwrap();
+        let later = Window::new(first.end(), at(1997, 10, 1, 0)).unwrap();
+        let cursor = {
+            let mut search = input.search(first, &mut meter, &mut sink);
+            assert_eq!(
+                search.next().unwrap().occurrence().unwrap().key(),
+                additions[0]
+            );
+            assert!(search.next().is_none());
+            search.cursor()
+        };
+        assert_eq!(
+            drain(input.resume(cursor, later, &mut meter, &mut sink)).starts,
+            [additions[1]]
+        );
+    }
+
+    #[test]
+    fn a_cursor_retries_the_initial_rule_key_after_a_refused_step() {
+        let start = at(1997, 9, 2, 9);
+        let window = Window::new(start, at(1997, 9, 10, 0)).unwrap();
+        let rule = counted(Freq::Daily, 2);
+        let mut fresh = Meter::new(Limits::DEFAULT);
+        let input = plain(start, &rule, &mut fresh);
+        for mut tight in [
+            Meter::with_budget(Limits::DEFAULT, 1),
+            Meter::new(Limits::DEFAULT.with_occurrences_per_search(0)),
+        ] {
+            let mut sink: Vec<Diagnostic> = Vec::new();
+            let cursor = {
+                let mut search = input.search(window, &mut tight, &mut sink);
+                assert!(matches!(
+                    search.next(),
+                    Some(SearchStep::BudgetExhausted(_))
+                ));
+                search.cursor()
+            };
+            assert_eq!(cursor.occurrences_emitted(), 0);
+            assert_eq!(
+                drain(input.resume(cursor, window, &mut fresh, &mut sink)).starts,
+                [start, at(1997, 9, 3, 9)]
+            );
+        }
     }
 
     /// A cursor is a position in an algorithm, and rebuilding one from its parts is the only thing a caller can do with the opaque half.
