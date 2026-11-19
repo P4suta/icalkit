@@ -37,7 +37,7 @@ ignored = ["icu_calendar", "xmlparser"]
 ignored-paths = ["src/itip.rs"]
 
 [dependencies]
-icalkit = { path = "../icalkit", version = "0.0.0" }
+icalkit = { path = "../icalkit", version = "0.1.0" }
 icu_calendar = { version = "2.4.0", default-features = false, features = [
   "compiled_data",
 ] }
