@@ -7,7 +7,13 @@ Version changes, registry publication, and GitHub publication require a separate
 
 Add a section with the approved version to the root changelog before running release-plz.
 Summarize the supported API and behavior in the first entry.
-Update the workspace with `mise x -- release-plz set-version "$VERSION"`.
+Use the approved first version for `VERSION`.
+
+```sh
+VERSION=0.1.0
+mise x -- release-plz set-version "$VERSION"
+```
+
 Review the workspace manifest, local dependency requirements, and lockfile.
 Run the normal pull request checks.
 
@@ -38,10 +44,12 @@ Run the workflow manually from `main` to retry a proposal and continue its revie
 
 ## Qualify a release commit
 
-Use the full commit ID on protected `main` and the expected version from the merged preparation pull request.
-Pass both values to the candidate workflow.
+Use a clean checkout of the merged preparation commit on protected `main`.
+Match `VERSION` to the crate version.
 
 ```sh
+REVISION=$(git rev-parse --verify HEAD)
+VERSION=0.1.0
 gh workflow run candidate.yml --ref main -f revision="$REVISION" -f release_version="$VERSION"
 ```
 
