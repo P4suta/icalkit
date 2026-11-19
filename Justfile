@@ -54,6 +54,10 @@ allocation:
 doc:
     cargo doc --locked --workspace --all-features --no-deps
 
+# Test the extracted Cargo package and compare its license and fixture bytes.
+package-check:
+    cargo run --locked --quiet -p xtask -- package-check
+
 # Compile no-default, every individual feature, and representative feature pairs.
 feature-matrix:
     cargo hack check --locked --workspace --all-targets --each-feature
@@ -131,5 +135,5 @@ check: fmt-check toml-check typos lint test-ci allocation doc purity architectur
     @echo "fast local checks passed"
 
 # Every practical CI gate available on a developer machine.
-ci: fmt-check toml-check typos lint feature-matrix test-ci allocation doc no-std wasm purity architecture repository public-api codes deny shear reuse actionlint zizmor msrv
+ci: fmt-check toml-check typos lint feature-matrix test-ci allocation doc no-std wasm purity architecture repository public-api codes deny shear reuse actionlint zizmor msrv package-check
     @echo "local CI passed"

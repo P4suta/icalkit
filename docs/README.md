@@ -14,6 +14,12 @@ The project has no published release.
 Publishing requires a separate explicit decision.
 Applications still own HTTP execution, persistence, credentials, current-time input, and access control decisions.
 
+Add the dependency from the Git repository before the first crates.io release.
+
+```sh
+cargo add icalkit --git https://github.com/P4suta/icalkit.git
+```
+
 The normal data flow is explicit:
 
 ```text
@@ -253,6 +259,7 @@ Development of `icalkit` is public.
 The project remains intentionally unreleased.
 Start with [Contributing](../CONTRIBUTING.md) for the TDD workflow and review rules, [Support](../SUPPORT.md) for choosing between Discussions and an issue, and the [Security policy](../SECURITY.md) for private vulnerability reports.
 The checked [repository policy](repository-policy.md) records the protected-branch, merge, automation, and release posture mirrored in GitHub.
+The [release runbook](releasing.md) describes version proposals and package qualification.
 
 Questions belong in [GitHub Discussions](https://github.com/P4suta/icalkit/discussions).
 Report defects and proposals through the structured issue forms.

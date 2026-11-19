@@ -11,6 +11,10 @@ on:
         description: Complete commit ID to qualify
         required: true
         type: string
+      release_version:
+        description: Expected icalkit version for release qualification
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -38,7 +42,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.revision }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Require protected main for release qualification
+        if: ${{ inputs.release_version != '' }}
+        env:
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$REF_PROTECTED" = true
+          git merge-base --is-ancestor "$CANDIDATE_REVISION" refs/remotes/origin/main
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: v2026.11.7
@@ -46,6 +59,9 @@ jobs:
       - run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise x -- just check
+      - run: mise x -- just package-check
+        env:
+          ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}
       - name: Recheck candidate source
         if: always()
         run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"

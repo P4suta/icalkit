@@ -57,6 +57,8 @@ Keep each regression test and its implementation in one passing commit.
 Before pushing, run `just check`.
 Use candidate qualification to verify portability and compatibility.
 Candidate qualification records verification results without publishing a release.
+Run `mise x -- just package-check` from a clean checkout to test the crate in isolation.
+The [release runbook](docs/releasing.md) records the version proposal and release qualification steps.
 
 Work on a topic branch and open a draft pull request while the change is still evolving.
 Keep generated artifacts, public API snapshots, corpus evidence, and documentation in the same pull request as the source change that requires them.

@@ -102,6 +102,7 @@ mod development;
 mod hook_scope;
 #[cfg(test)]
 mod nextest_output;
+mod package;
 mod public_api;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
@@ -166,6 +167,12 @@ fn main() -> ExitCode {
         Some("codes") => report("codes", collect_codes_violations()),
         Some("public-api") => report("public-api", collect_public_api_violations()),
         Some("repository") => report("repository", collect_repository_violations()),
+        Some("package-check") => report(
+            "package-check",
+            workspace_root().and_then(|root| {
+                package::check(&root, &std::env::args().skip(2).collect::<Vec<_>>())
+            }),
+        ),
         Some("candidate-revision") => report(
             "candidate-revision",
             candidate_revision(&std::env::args().skip(2).collect::<Vec<_>>()),
@@ -188,7 +195,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "usage: cargo run -p xtask -- <purity|architecture|codes|public-api|repository|candidate-revision COMMIT|ci-summary PHASE JOB RESULT ...>"
+        "usage: cargo run -p xtask -- <purity|architecture|codes|public-api|repository|package-check [--allow-dirty]|candidate-revision COMMIT|ci-summary PHASE JOB RESULT ...>"
     );
 }
 
@@ -777,6 +784,7 @@ fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
     }
     for (name, command) in [
         ("ordinary", "check"),
+        ("ordinary", "package-check"),
         ("platform", "test-ci"),
         ("features", "feature-matrix"),
         ("portability", "no-std wasm"),
@@ -798,6 +806,19 @@ fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
             &format!("run: mise x -- just {command}"),
             name,
         ));
+    }
+    let package = workflow_job(candidate, "ordinary").unwrap_or("");
+    for marker in [
+        "if: ${{ inputs.release_version != '' }}",
+        "REF_PROTECTED: ${{ github.ref_protected }}",
+        "test \"$GITHUB_REF\" = refs/heads/main",
+        "test \"$REF_PROTECTED\" = true",
+        "git merge-base --is-ancestor \"$CANDIDATE_REVISION\" refs/remotes/origin/main",
+        "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}",
+    ] {
+        if !package.lines().any(|line| line.trim() == marker) {
+            violations.push(format!("release qualification is missing {marker}"));
+        }
     }
     let platform = workflow_job(candidate, "platform").unwrap_or("");
     if !platform
@@ -967,7 +988,14 @@ fn recipe_phase_violations(justfile: &str, hooks: &str) -> Vec<String> {
             violations.push(format!("ordinary recipe is missing {command}"));
         }
     }
-    for command in ["feature-matrix", "no-std", "wasm", "public-api", "msrv"] {
+    for command in [
+        "feature-matrix",
+        "no-std",
+        "wasm",
+        "public-api",
+        "msrv",
+        "package-check",
+    ] {
         if ordinary_recipe
             .split_whitespace()
             .any(|word| word == command)
@@ -1006,6 +1034,7 @@ fn candidate_recipe_violations(justfile: &str, hooks: &str) -> Vec<String> {
         "no-std",
         "wasm",
         "msrv",
+        "package-check",
         "prove-ci",
     ] {
         if commit.contains(&format!("just {candidate}")) {
@@ -1500,11 +1529,42 @@ fn release_config_violations(workspace: &Path) -> io::Result<Vec<String>> {
     }
     violations.extend(core_list_violations(&published));
     violations.extend(private_crate_violations(&private_tools));
-    violations.extend(release_violations(
-        &published,
-        &fs::read_to_string(workspace.join(RELEASE_CONFIG))?,
-    ));
+    let config = fs::read_to_string(workspace.join(RELEASE_CONFIG))?;
+    violations.extend(release_violations(&published, &config));
+    violations.extend(proposal_config_violations(&config));
     Ok(violations)
+}
+
+fn proposal_config_violations(config: &str) -> Vec<String> {
+    let (workspace, package) = config.split_once("\n[[package]]\n").unwrap_or_default();
+    let mut violations = Vec::new();
+    for required in [
+        "release = false",
+        "allow_dirty = false",
+        "publish = false",
+        "git_tag_enable = false",
+        "git_release_enable = false",
+        "pr_draft = true",
+    ] {
+        if !declares(workspace, required) {
+            violations.push(format!("{RELEASE_CONFIG}: proposals require `{required}`"));
+        }
+    }
+    for key in package
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.split_once('=').map(|(key, _)| key.trim()))
+    {
+        if !["name", "release", "changelog_update", "changelog_path"].contains(&key) {
+            violations.push(format!(
+                "{RELEASE_CONFIG}: unexpected package setting `{key}`"
+            ));
+        }
+    }
+    if !declares(package, "release = true") {
+        violations.push(format!("{RELEASE_CONFIG}: icalkit must receive proposals"));
+    }
+    violations
 }
 
 fn core_list_violations(published: &[String]) -> Vec<String> {
@@ -4506,6 +4566,8 @@ name = \"icalkit\"
         for broken in [
             candidate.replace("  platform:\n", "  unexpected-platform:\n"),
             candidate.replace("ref: ${{ inputs.revision }}", "ref: main"),
+            candidate.replace("ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}", ""),
+            candidate.replace("git merge-base --is-ancestor", "git log"),
             candidate.replace(
                 "candidate-revision \"$CANDIDATE_REVISION\"",
                 "unrelated-command",
@@ -4538,6 +4600,43 @@ name = \"icalkit\"
             assert!(
                 !super::ci_source_violations(&ci, &candidate, &broken, &hooks).is_empty(),
                 "missing {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_requires_packaged_tests_between_source_checks() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let command = "      - run: mise x -- just package-check\n";
+        let omitted = candidate.replace(command, "");
+        let moved = omitted.replacen("\n  platform:\n", &format!("{command}\n  platform:\n"), 1);
+        for unchecked in [omitted, moved] {
+            assert!(
+                !super::ci_source_violations(&ci, &unchecked, &justfile, &hooks).is_empty(),
+                "accepted a candidate without package checks between source checks"
+            );
+        }
+    }
+
+    #[test]
+    fn release_proposals_cannot_enable_publication() {
+        let root = super::workspace_root().unwrap();
+        let proposal = std::fs::read_to_string(root.join(super::RELEASE_CONFIG)).unwrap();
+        let violations = super::proposal_config_violations;
+        assert_eq!(violations(&proposal), Vec::<String>::new());
+        for key in ["publish", "git_tag_enable", "git_release_enable"] {
+            let enabled = format!("{key} = true");
+            let workspace = proposal.replacen(&format!("{key} = false"), &enabled, 1);
+            let overridden = format!("{proposal}\n{enabled}\n");
+            assert!(!violations(&workspace).is_empty(), "accepted {enabled}");
+            assert!(
+                !violations(&overridden).is_empty(),
+                "accepted package override for {key}"
             );
         }
     }
