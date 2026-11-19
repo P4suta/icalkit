@@ -1,6 +1,6 @@
 # Icalkit
 
-An unreleased Rust library for parsing, editing, and querying iCalendar data.
+A Rust library for parsing, editing, and querying iCalendar data.
 
 ## Installation
 

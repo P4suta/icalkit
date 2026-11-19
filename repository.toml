@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 name = "icalkit"
-summary = "An unreleased Rust library for parsing, editing, and querying iCalendar data"
+summary = "A Rust library for parsing, editing, and querying iCalendar data"
 install = "cargo add icalkit --git https://github.com/P4suta/icalkit.git"
 usage_language = "rust"
 usage = '''
