@@ -807,8 +807,22 @@ fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
             name,
         ));
     }
-    let package = workflow_job(candidate, "ordinary").unwrap_or("");
-    if package.lines().any(|line| {
+    violations.extend(release_qualification_violations(
+        workflow_job(candidate, "ordinary").unwrap_or(""),
+    ));
+    let platform = workflow_job(candidate, "platform").unwrap_or("");
+    if !platform
+        .lines()
+        .any(|line| line.trim() == "os: [windows-2025, macos-15]")
+    {
+        violations.push("candidate platform tests must cover Windows and macOS".to_owned());
+    }
+    violations
+}
+
+fn release_qualification_violations(ordinary: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    if ordinary.lines().any(|line| {
         line.trim()
             .trim_start_matches("- ")
             .strip_prefix("continue-on-error:")
@@ -816,24 +830,35 @@ fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
     }) {
         violations.push("candidate ordinary checks must fail when a step fails".to_owned());
     }
+    let (job, steps) = ordinary.split_once("    steps:\n").unwrap_or_default();
+    let has_condition = |line: &str| {
+        line.trim()
+            .trim_start_matches("- ")
+            .split_once(':')
+            .is_some_and(|(key, _)| key.trim().trim_matches(['\'', '"']) == "if")
+    };
+    let mut package_checks = steps
+        .split("\n      - ")
+        .filter(|step| workflow_step_runs(step, "mise x -- just package-check"));
+    let unconditional = package_checks.next().is_some_and(|step| {
+        !step.lines().any(has_condition)
+            && step
+                .lines()
+                .any(|line| line.trim() == "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}")
+    });
+    if job.lines().any(has_condition) || !unconditional || package_checks.next().is_some() {
+        violations.push("candidate package checks require one unconditional step".to_owned());
+    }
     for marker in [
         "if: ${{ inputs.release_version != '' }}",
         "REF_PROTECTED: ${{ github.ref_protected }}",
         "test \"$GITHUB_REF\" = refs/heads/main",
         "test \"$REF_PROTECTED\" = true",
         "git merge-base --is-ancestor \"$CANDIDATE_REVISION\" refs/remotes/origin/main",
-        "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}",
     ] {
-        if !package.lines().any(|line| line.trim() == marker) {
+        if !ordinary.lines().any(|line| line.trim() == marker) {
             violations.push(format!("release qualification is missing {marker}"));
         }
-    }
-    let platform = workflow_job(candidate, "platform").unwrap_or("");
-    if !platform
-        .lines()
-        .any(|line| line.trim() == "os: [windows-2025, macos-15]")
-    {
-        violations.push("candidate platform tests must cover Windows and macOS".to_owned());
     }
     violations
 }
@@ -4632,7 +4657,17 @@ name = \"icalkit\"
             "  ordinary:\n    continue-on-error: true\n",
             1,
         );
-        for unchecked in [omitted, moved, nonfatal_step, nonfatal_job] {
+        let skipped_step =
+            candidate.replace(command, &format!("{command}        if: ${{{{ false }}}}\n"));
+        let skipped_job = candidate.replacen("  ordinary:\n", "  ordinary:\n    if: false\n", 1);
+        for unchecked in [
+            omitted,
+            moved,
+            nonfatal_step,
+            nonfatal_job,
+            skipped_step,
+            skipped_job,
+        ] {
             assert!(
                 !super::ci_source_violations(&ci, &unchecked, &justfile, &hooks).is_empty(),
                 "accepted a candidate without mandatory package checks between source checks"
