@@ -48,6 +48,7 @@ jobs:
         if: ${{ inputs.release_version != '' }}
         env:
           REF_PROTECTED: ${{ github.ref_protected }}
+        shell: bash
         run: |
           test "$GITHUB_REF" = refs/heads/main
           test "$REF_PROTECTED" = true
@@ -62,6 +63,7 @@ jobs:
       - run: mise x -- just package-check
         env:
           ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}
+        shell: bash
       - name: Recheck candidate source
         if: always()
         run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"

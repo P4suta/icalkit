@@ -821,44 +821,49 @@ fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
 }
 
 fn release_qualification_violations(ordinary: &str) -> Vec<String> {
+    const PROTECTED_MAIN: &str = concat!(
+        "name: Require protected main for release qualification\n",
+        "        if: ${{ inputs.release_version != '' }}\n",
+        "        env:\n",
+        "          REF_PROTECTED: ${{ github.ref_protected }}\n",
+        "        shell: bash\n",
+        "        run: |\n",
+        "          test \"$GITHUB_REF\" = refs/heads/main\n",
+        "          test \"$REF_PROTECTED\" = true\n",
+        "          git merge-base --is-ancestor \"$CANDIDATE_REVISION\" refs/remotes/origin/main",
+    );
+    const PACKAGE_CHECK: &str = concat!(
+        "run: mise x -- just package-check\n",
+        "        env:\n",
+        "          ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}\n",
+        "        shell: bash",
+    );
     let mut violations = Vec::new();
     if ordinary.lines().any(|line| {
         line.trim()
             .trim_start_matches("- ")
-            .strip_prefix("continue-on-error:")
-            .is_some_and(|value| value.split('#').next().map(str::trim) != Some("false"))
+            .split_once(':')
+            .is_some_and(|(key, value)| {
+                key.trim().trim_matches(['\'', '"']) == "continue-on-error"
+                    && value.split('#').next().map(str::trim) != Some("false")
+            })
     }) {
         violations.push("candidate ordinary checks must fail when a step fails".to_owned());
     }
-    let (job, steps) = ordinary.split_once("    steps:\n").unwrap_or_default();
-    let has_condition = |line: &str| {
-        line.trim()
-            .trim_start_matches("- ")
-            .split_once(':')
-            .is_some_and(|(key, _)| key.trim().trim_matches(['\'', '"']) == "if")
-    };
-    let mut package_checks = steps
-        .split("\n      - ")
-        .filter(|step| workflow_step_runs(step, "mise x -- just package-check"));
-    let unconditional = package_checks.next().is_some_and(|step| {
-        !step.lines().any(has_condition)
-            && step
-                .lines()
-                .any(|line| line.trim() == "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}")
-    });
-    if job.lines().any(has_condition) || !unconditional || package_checks.next().is_some() {
-        violations.push("candidate package checks require one unconditional step".to_owned());
-    }
-    for marker in [
-        "if: ${{ inputs.release_version != '' }}",
-        "REF_PROTECTED: ${{ github.ref_protected }}",
-        "test \"$GITHUB_REF\" = refs/heads/main",
-        "test \"$REF_PROTECTED\" = true",
-        "git merge-base --is-ancestor \"$CANDIDATE_REVISION\" refs/remotes/origin/main",
-    ] {
-        if !ordinary.lines().any(|line| line.trim() == marker) {
-            violations.push(format!("release qualification is missing {marker}"));
-        }
+    let has_job_condition = ordinary
+        .lines()
+        .filter_map(|line| line.strip_prefix("    "))
+        .filter(|line| !line.starts_with(' '))
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, _)| key.trim().trim_matches(['\'', '"']) == "if");
+    let mut steps = ordinary.split("\n      - ").skip(1).map(str::trim_end);
+    if has_job_condition
+        || !steps.by_ref().any(|step| step == PROTECTED_MAIN)
+        || !steps.any(|step| step == PACKAGE_CHECK)
+    {
+        violations.push(
+            "release qualification requires protected main and unconditional package checks in order, both using Bash".to_owned(),
+        );
     }
     violations
 }
@@ -4660,6 +4665,16 @@ name = \"icalkit\"
         let skipped_step =
             candidate.replace(command, &format!("{command}        if: ${{{{ false }}}}\n"));
         let skipped_job = candidate.replacen("  ordinary:\n", "  ordinary:\n    if: false\n", 1);
+        let weakened_admission = candidate.replacen(
+            "        shell: bash\n        run: |\n          test \"$GITHUB_REF\"",
+            "        shell: bash {0}\n        run: |\n          test \"$GITHUB_REF\"",
+            1,
+        );
+        let weakened_package = candidate.replacen(
+            "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}\n        shell: bash\n",
+            "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}\n        shell: bash {0}\n",
+            1,
+        );
         for unchecked in [
             omitted,
             moved,
@@ -4667,6 +4682,8 @@ name = \"icalkit\"
             nonfatal_job,
             skipped_step,
             skipped_job,
+            weakened_admission,
+            weakened_package,
         ] {
             assert!(
                 !super::ci_source_violations(&ci, &unchecked, &justfile, &hooks).is_empty(),
