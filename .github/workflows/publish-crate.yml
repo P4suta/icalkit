@@ -111,8 +111,8 @@ jobs:
           [[ "$QUALIFIED_SHA256" =~ ^[a-f0-9]{64}$ ]]
           mise x -- cargo publish --dry-run --registry crates-io --locked --no-verify -p icalkit \
             --target-dir "$RUNNER_TEMP/crate-publication"
-          printf '%s  %s\n' "$QUALIFIED_SHA256" "$RUNNER_TEMP/crate-publication/package/icalkit-$RELEASE_VERSION.crate" |
-            sha256sum --check --strict
+          archive="$RUNNER_TEMP/crate-publication/package/tmp-crate/icalkit-$RELEASE_VERSION.crate"
+          printf '%s  %s\n' "$QUALIFIED_SHA256" "$archive" | sha256sum -c -
       - name: Reconcile an existing registry version
         id: registry
         run: |
