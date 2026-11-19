@@ -7,7 +7,7 @@ Maintainers compare the remote settings with the policy.
 ## Release posture
 
 `icalkit` is the sole future production package and remains at `0.0.0`.
-The public repository doesn't imply a published crate, a release, or semantic-version compatibility.
+Crates.io lists the public `icalkit` crate.
 A tag, GitHub Release, registry publish, or version change requires a separate explicit release decision.
 Ordinary pull requests and dependency updates must not trigger a release.
 
@@ -70,12 +70,13 @@ Follow the [release runbook](releasing.md) to prepare a draft proposal and quali
 
 The [worktree decision](adr/candidate-worktree-validation.md) defines the private index used to compare tracked files without trusting the caller's cached flags or stat data.
 The check preserves the original index, detects missing tracked content, and removes scratch storage on success and failure.
-A future publication workflow must require successful qualification of the exact commit it publishes.
+Crates.io publication requires successful release qualification of the exact revision and version.
 
 ## Automation and permissions
 
 GitHub Actions receives read-only repository permissions by default and may not approve pull requests.
-Each workflow grants write permission only where a job needs it: `security-events: write` for CodeQL uploads.
+CodeQL grants `security-events: write` to upload analysis.
+Only the two jobs bound to the `crates-io` environment request `id-token: write`.
 Workflows pin third-party Actions to full commit SHAs, and actionlint and zizmor audit the workflows.
 The opt-in proposal workflow uses a repository-scoped GitHub App installation token to write the draft branch and pull request.
 
