@@ -1,0 +1,139 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Crates.io publication
+run-name: Crates.io ${{ inputs.operation }} ${{ inputs.release_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Verify Trusted Publishing or publish an approved version
+        type: choice
+        default: verify
+        options: [verify, publish]
+        required: true
+      revision:
+        description: Complete commit ID on main required for publication
+        type: string
+      release_version:
+        description: Exact icalkit version required for publication
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.operation }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  admit:
+    name: Check publication inputs
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Require protected main and explicit publication inputs
+        env:
+          REF_PROTECTED: ${{ github.ref_protected }}
+          OPERATION: ${{ inputs.operation }}
+          REVISION: ${{ inputs.revision }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          test "$GITHUB_REPOSITORY" = P4suta/icalkit
+          test "$GITHUB_REF" = refs/heads/main
+          test "$REF_PROTECTED" = true
+          case "$OPERATION" in
+            verify)
+              test -z "$REVISION"
+              test -z "$RELEASE_VERSION"
+              ;;
+            publish)
+              test "$REVISION" = "$GITHUB_SHA"
+              test -n "$RELEASE_VERSION"
+              ;;
+            *) exit 1 ;;
+          esac
+
+  verify:
+    name: Verify Trusted Publishing
+    needs: admit
+    if: ${{ inputs.operation == 'verify' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    environment: crates-io
+    permissions:
+      id-token: write # Exchange the GitHub identity without uploading a crate.
+    steps:
+      - name: Verify the crates.io identity exchange
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+
+  qualify:
+    needs: admit
+    if: ${{ inputs.operation == 'publish' }}
+    permissions:
+      contents: read
+    # actionlint 1.7.12 recognizes the relative call, which also resolves to the caller's commit.
+    uses: ./.github/workflows/candidate.yml # zizmor: ignore[self-repository]
+    with:
+      revision: ${{ github.sha }}
+      release_version: ${{ inputs.release_version }}
+
+  publish:
+    name: Publish icalkit
+    needs: qualify
+    if: ${{ inputs.operation == 'publish' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write # Request the short-lived crates.io publishing token.
+    env:
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      QUALIFIED_SHA256: ${{ needs.qualify.outputs.crate_sha256 }}
+      MISE_AUTO_INSTALL: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: v2026.11.7
+          install_args: rust
+      - name: Match the qualified archive before authentication
+        run: |
+          [[ "$QUALIFIED_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          mise x -- cargo publish --dry-run --registry crates-io --locked --no-verify -p icalkit \
+            --target-dir "$RUNNER_TEMP/crate-publication"
+          printf '%s  %s\n' "$QUALIFIED_SHA256" "$RUNNER_TEMP/crate-publication/package/icalkit-$RELEASE_VERSION.crate" |
+            sha256sum --check --strict
+      - name: Reconcile an existing registry version
+        id: registry
+        run: |
+          recorded=$(curl --fail --silent --show-error --max-time 30 https://index.crates.io/ic/al/icalkit |
+            jq -r -s --arg version "$RELEASE_VERSION" 'map(select(.vers == $version))[0].cksum // ""')
+          if [[ -n "$recorded" ]]; then
+            test "$recorded" = "$QUALIFIED_SHA256"
+            printf 'already_published=true\n' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Authenticate to crates.io
+        if: ${{ steps.registry.outputs.already_published != 'true' }}
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish the qualified icalkit version
+        if: ${{ steps.registry.outputs.already_published != 'true' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: >-
+          mise x -- cargo publish --registry crates-io --locked --no-verify -p icalkit
+          --target-dir "$RUNNER_TEMP/crate-publication"
+      - name: Verify the published archive checksum
+        run: |
+          curl --fail --silent --show-error --max-time 30 https://index.crates.io/ic/al/icalkit |
+            jq -e -s --arg version "$RELEASE_VERSION" --arg sha "$QUALIFIED_SHA256" 'any(.[]; .vers == $version and .cksum == $sha)'

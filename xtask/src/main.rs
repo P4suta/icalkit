@@ -836,6 +836,7 @@ fn release_qualification_violations(ordinary: &str) -> Vec<String> {
         "run: mise x -- just package-check\n",
         "        env:\n",
         "          ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}\n",
+        "          ICALKIT_RELEASE_ARCHIVE: ${{ inputs.release_version != '' && format('{0}/icalkit-candidate.crate', runner.temp) || '' }}\n",
         "        shell: bash",
     );
     let mut violations = Vec::new();
@@ -4671,8 +4672,8 @@ name = \"icalkit\"
             1,
         );
         let weakened_package = candidate.replacen(
-            "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}\n        shell: bash\n",
-            "ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}\n        shell: bash {0}\n",
+            "        shell: bash\n      - name: Record qualified archive checksum",
+            "        shell: bash {0}\n      - name: Record qualified archive checksum",
             1,
         );
         for unchecked in [
@@ -4690,6 +4691,20 @@ name = \"icalkit\"
                 "accepted a candidate without mandatory package checks between source checks"
             );
         }
+    }
+
+    #[test]
+    fn crate_publication_has_a_manual_authentication_check() {
+        let root = super::workspace_root().unwrap();
+        let path = root.join(".github/workflows/publish-crate.yml");
+        let workflow = std::fs::read_to_string(&path).unwrap();
+        let verification = super::workflow_job(&workflow, "verify").unwrap();
+        let publication = super::workflow_job(&workflow, "publish").unwrap();
+        assert!(verification.contains("inputs.operation == 'verify'"));
+        assert!(!verification.contains("cargo publish"));
+        assert!(publication.contains("inputs.operation == 'publish'"));
+        assert!(publication.contains("needs: qualify"));
+        assert!(!workflow.contains("\n  push:"));
     }
 
     #[test]

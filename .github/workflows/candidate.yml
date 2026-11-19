@@ -15,6 +15,18 @@ on:
         description: Expected icalkit version for release qualification
         required: false
         type: string
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+      release_version:
+        required: true
+        type: string
+    outputs:
+      crate_sha256:
+        description: SHA-256 of the qualified icalkit archive
+        value: ${{ jobs.ordinary.outputs.crate_sha256 }}
 
 permissions:
   contents: read
@@ -38,6 +50,8 @@ jobs:
     name: candidate ordinary Linux checks
     runs-on: ubuntu-26.04
     timeout-minutes: 30
+    outputs:
+      crate_sha256: ${{ steps.archive.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,7 +77,14 @@ jobs:
       - run: mise x -- just package-check
         env:
           ICALKIT_RELEASE_VERSION: ${{ inputs.release_version }}
+          ICALKIT_RELEASE_ARCHIVE: ${{ inputs.release_version != '' && format('{0}/icalkit-candidate.crate', runner.temp) || '' }}
         shell: bash
+      - name: Record qualified archive checksum
+        if: ${{ inputs.release_version != '' }}
+        id: archive
+        run: |
+          checksum=$(sha256sum "$RUNNER_TEMP/icalkit-candidate.crate" | cut -d ' ' -f 1)
+          printf 'sha256=%s\n' "$checksum" >> "$GITHUB_OUTPUT"
       - name: Recheck candidate source
         if: always()
         run: mise x -- cargo run --quiet --locked -p xtask -- candidate-revision "$CANDIDATE_REVISION"

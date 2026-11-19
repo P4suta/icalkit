@@ -68,14 +68,46 @@ Repeat qualification if the selected source or version changes.
 
 ## Publish after authorization
 
-The [crates.io setup](https://crates.io/docs/trusted-publishing) requires an existing crate for Trusted Publishing.
-Use a short-lived registry token for the authorized first upload and retire it after use.
+### Publisher configuration
+
+Create the GitHub Actions environment `crates-io` with the maintainer as a required reviewer.
+Restrict deployments to the `main` branch, permit self-review, and turn off administrator bypass.
+Add the exact pin for `rust-lang/crates-io-auth-action` from the [publication workflow](../.github/workflows/publish-crate.yml) to the repository's selected actions policy.
+
+In the [icalkit crate settings](https://crates.io/crates/icalkit/settings), add a GitHub Trusted Publisher for `P4suta/icalkit`, workflow filename `publish-crate.yml`, and environment `crates-io`.
+The crate already has the published version that [Trusted Publishing](https://crates.io/docs/trusted-publishing) requires.
+Run the verification operation and approve only its authentication job.
+The auth action exchanges the GitHub identity and revokes the temporary token at job completion.
+The verification job performs no upload.
+
+```sh
+gh workflow run publish-crate.yml --ref main -f operation=verify
+```
+
+### Publish to crates.io
+
+Use the approved version and the full revision at the tip of protected `main`.
+The workflow runs the full candidate qualification for that revision and version.
+Approve the `crates-io` deployment after the candidate jobs succeed and the run matches the release decision.
+The publication job compares a fresh Cargo package with the qualified archive before requesting a temporary token.
+It checks the published checksum in the crates.io index.
+If the index already lists the version, the job requires the matching checksum and skips the upload.
+
+```sh
+REVISION=$(git rev-parse --verify HEAD)
+VERSION=$(mise x -- cargo pkgid -p icalkit)
+VERSION=${VERSION##*#}
+gh workflow run publish-crate.yml --ref main -f operation=publish -f revision="$REVISION" -f release_version="$VERSION"
+```
+
+If the upload result is uncertain, wait for the registry index and check the version and checksum before retrying the same run.
 Verify the registry checksum for the approved version and install the published crate from a clean consumer project with `cargo add icalkit`.
+
+### GitHub publication
+
+Start the GitHub Release only after separate authorization.
 Create and push the signed version tag at the approved commit.
 Create the draft from the existing tag with `gh release create "v$VERSION" --draft --verify-tag` and supply the approved release notes.
 Verify that the draft GitHub Release matches the approved archive, source revision, and version.
 Attach the final checksums and provenance before publishing the GitHub Release.
 Keep the exact release files for recovery.
-
-After the registry records the first version, configure Trusted Publishing for the approved publication workflow.
-Bind it to the exact repository, workflow, and protected environment.
