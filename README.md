@@ -5,15 +5,21 @@ An unreleased Rust library for parsing, editing, and querying iCalendar data.
 ## Installation
 
 ```sh
-git clone https://github.com/P4suta/icalkit.git
-cd icalkit
-mise install
+cargo add icalkit --git https://github.com/P4suta/icalkit.git
 ```
 
 ## Usage
 
-```sh
-mise x -- cargo run --locked -p icalkit --example golden_path
+```rust
+fn print_event_ids(bytes: &[u8]) -> Result<(), icalkit::Error> {
+    let calendar = icalkit::Calendar::parse(bytes)?;
+    for event in calendar.events() {
+        if let Some(uid) = event.uid() {
+            println!("{uid}");
+        }
+    }
+    Ok(())
+}
 ```
 
 ## Documentation

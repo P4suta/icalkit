@@ -609,10 +609,8 @@ fn one_review_applies_every_matching_component_in_a_scheduling_object() {
 
 #[test]
 fn a_counter_can_remove_and_add_multiple_recurrence_dates() {
-    let held = include_str!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
-    let proposal = include_str!(
-        "../../icalkit-conformance/tests/fixtures/itip/counter_proposes_a_new_time.ics"
-    );
+    let held = include_str!("fixtures/conformance/itip/held_series.ics");
+    let proposal = include_str!("fixtures/conformance/itip/counter_proposes_a_new_time.ics");
     let dates = "RDATE:20260312T140000Z\r\nRDATE:20260314T140000Z\r\n";
     let attendee = Actor::new("mailto:bo@example.com").unwrap();
     for removing in [true, false] {
@@ -645,11 +643,9 @@ fn a_counter_can_remove_and_add_multiple_recurrence_dates() {
 
 #[test]
 fn a_counter_proposes_a_new_time_until_the_organizer_accepts_it() {
-    const HELD: &[u8] =
-        include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
-    const COUNTER: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/itip/counter_proposes_a_new_time.ics"
-    );
+    const HELD: &[u8] = include_bytes!("fixtures/conformance/itip/held_series.ics");
+    const COUNTER: &[u8] =
+        include_bytes!("fixtures/conformance/itip/counter_proposes_a_new_time.ics");
     let current = Calendar::parse(HELD).unwrap();
     let message = Message::read(COUNTER).unwrap();
     let attendee = Actor::new("mailto:bo@example.com").unwrap();
@@ -676,11 +672,8 @@ fn a_counter_proposes_a_new_time_until_the_organizer_accepts_it() {
 
 #[test]
 fn a_reply_can_echo_or_omit_the_start_but_cannot_reschedule() {
-    const HELD: &[u8] =
-        include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
-    const REPLY: &str = include_str!(
-        "../../icalkit-conformance/tests/fixtures/itip/reply_restates_a_new_dtstart.ics"
-    );
+    const HELD: &[u8] = include_bytes!("fixtures/conformance/itip/held_series.ics");
+    const REPLY: &str = include_str!("fixtures/conformance/itip/reply_restates_a_new_dtstart.ics");
     let current = Calendar::parse(HELD).unwrap();
     let attendee = Actor::new("mailto:bo@example.com").unwrap();
     let moved = "DTSTART:20260315T220000Z\r\n";
@@ -704,8 +697,8 @@ fn a_reply_can_echo_or_omit_the_start_but_cannot_reschedule() {
 
 #[test]
 fn a_reply_can_echo_a_property_name_in_another_case() {
-    let held = include_str!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
-    let reply = include_str!("../../icalkit-conformance/tests/fixtures/itip/reply_accepted.ics");
+    let held = include_str!("fixtures/conformance/itip/held_series.ics");
+    let reply = include_str!("fixtures/conformance/itip/reply_accepted.ics");
     let actor = Actor::new("mailto:bo@example.com").unwrap();
     for (original, restated, accepted) in [
         ("SUMMARY:Planning", "summary:Planning", true),
@@ -741,10 +734,8 @@ fn a_reply_can_echo_a_property_name_in_another_case() {
 
 #[test]
 fn a_reply_may_omit_the_organizers_agent_but_cannot_nominate_one() {
-    const HELD: &[u8] =
-        include_bytes!("../../icalkit-conformance/tests/fixtures/itip/held_series.ics");
-    const REPLY: &str =
-        include_str!("../../icalkit-conformance/tests/fixtures/itip/reply_accepted.ics");
+    const HELD: &[u8] = include_bytes!("fixtures/conformance/itip/held_series.ics");
+    const REPLY: &str = include_str!("fixtures/conformance/itip/reply_accepted.ics");
     let current = Calendar::parse(HELD).unwrap();
     let attendee = Actor::new("mailto:bo@example.com").unwrap();
     let agent = ";SENT-BY=\"mailto:pa@example.com\"";
@@ -775,12 +766,9 @@ fn a_reply_may_omit_the_organizers_agent_but_cannot_nominate_one() {
 
 #[test]
 fn review_authorization_borrows_inputs_and_apply_consumes_it() {
-    const HELD: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_methods/held_series.ics"
-    );
-    const REQUEST: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_methods/request_reschedules.ics"
-    );
+    const HELD: &[u8] = include_bytes!("fixtures/conformance/break_itip_methods/held_series.ics");
+    const REQUEST: &[u8] =
+        include_bytes!("fixtures/conformance/break_itip_methods/request_reschedules.ics");
     let current = Calendar::parse(&repaired(HELD).unwrap()).unwrap();
     let message = Message::read(&repaired(REQUEST).unwrap()).unwrap();
     let actor = Actor::new("mailto:chair@example.com").unwrap();
@@ -803,15 +791,11 @@ fn review_authorization_borrows_inputs_and_apply_consumes_it() {
 
 #[test]
 fn a_later_reply_persists_its_ordering_witness_and_refuses_an_earlier_replay() {
-    const HELD: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_sequence/held_series.ics"
-    );
-    const EARLIER: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_sequence/reply_cy_accepted_earlier.ics"
-    );
-    const LATER: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_sequence/reply_cy_declined_later.ics"
-    );
+    const HELD: &[u8] = include_bytes!("fixtures/conformance/break_itip_sequence/held_series.ics");
+    const EARLIER: &[u8] =
+        include_bytes!("fixtures/conformance/break_itip_sequence/reply_cy_accepted_earlier.ics");
+    const LATER: &[u8] =
+        include_bytes!("fixtures/conformance/break_itip_sequence/reply_cy_declined_later.ics");
     let current = Calendar::parse(HELD).unwrap();
     let actor = Actor::new("mailto:cy@example.com").unwrap();
     let updated = Message::read(LATER)
@@ -2186,12 +2170,9 @@ fn a_range_anchor_in_a_dst_gap_is_refused_through_the_session_zone_port() {
 
 #[test]
 fn a_stranger_cannot_authorize_an_organizer_request() {
-    const HELD: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_methods/held_series.ics"
-    );
-    const REQUEST: &[u8] = include_bytes!(
-        "../../icalkit-conformance/tests/fixtures/break_itip_methods/request_reschedules.ics"
-    );
+    const HELD: &[u8] = include_bytes!("fixtures/conformance/break_itip_methods/held_series.ics");
+    const REQUEST: &[u8] =
+        include_bytes!("fixtures/conformance/break_itip_methods/request_reschedules.ics");
     let current = Calendar::parse(&repaired(HELD).unwrap()).unwrap();
     let message = Message::read(&repaired(REQUEST).unwrap()).unwrap();
     let stranger = Actor::new("mailto:eve@example.com").unwrap();

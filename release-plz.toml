@@ -2,31 +2,20 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# Release configuration. Nothing here publishes automatically: the workspace is at 0.0.0
-# and the first published version should be a decision, not a side effect of merging.
-#
-# `icalkit` is the sole future registry contract. The six temporary implementation crates and
-# the conformance runner are unpublished workspace members and intentionally absent from this
-# release graph (docs/adr/0013).
-
 [workspace]
+release = false
+allow_dirty = false
 dependencies_update = false
 release_always = false
-# Pre-1.0 the public surface is still being discovered. A future release phase must choose
-# and document its own compatibility policy rather than silently freezing this.
-semver_check = false
+semver_check = true
+publish = false
 git_tag_enable = false
 git_release_enable = false
 changelog_update = false
+pr_draft = true
 
-# The root changelog belongs to the facade. `xtask architecture` holds this list against the
-# workspace's publish flags; actual publication remains deferred until the private implementation
-# sources have moved into `icalkit`.
 [[package]]
 name = "icalkit"
+release = true
 changelog_update = true
 changelog_path = "./CHANGELOG.md"
-git_tag_enable = true
-git_tag_name = "v{{ version }}"
-git_release_enable = true
-git_release_draft = true

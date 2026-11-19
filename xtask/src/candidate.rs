@@ -131,13 +131,17 @@ impl<'a> Repository<'a> {
 }
 
 struct ScratchIndex {
-    directory: PathBuf,
+    _directory: ScratchDirectory,
     path: PathBuf,
 }
 
 impl ScratchIndex {
     fn from_commit(parent: &Path, repository: &Repository<'_>, commit: &str) -> io::Result<Self> {
-        let index = Self::create(parent)?;
+        let directory = ScratchDirectory::create(parent, "candidate-index")?;
+        let index = Self {
+            path: directory.path().join("index"),
+            _directory: directory,
+        };
         let status = repository
             .command()
             .env("GIT_INDEX_FILE", &index.path)
@@ -148,36 +152,39 @@ impl ScratchIndex {
         }
         Ok(index)
     }
+}
 
-    fn create(parent: &Path) -> io::Result<Self> {
+pub(super) struct ScratchDirectory(PathBuf);
+
+impl ScratchDirectory {
+    pub(super) fn create(parent: &Path, purpose: &str) -> io::Result<Self> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let parent = std::path::absolute(parent)?;
         for _ in 0..8 {
             let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-            let directory = parent.join(format!(
-                "icalkit-candidate-index-{}-{serial}",
-                std::process::id()
-            ));
+            let directory =
+                parent.join(format!("icalkit-{purpose}-{}-{serial}", std::process::id()));
             match create_private_directory(&directory) {
-                Ok(()) => {
-                    let path = directory.join("index");
-                    return Ok(Self { directory, path });
-                },
+                Ok(()) => return Ok(Self(directory)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
                 Err(error) => return Err(error),
             }
         }
         Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "could not create a temporary candidate index",
+            "could not create a temporary directory",
         ))
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.0
     }
 }
 
-impl Drop for ScratchIndex {
+impl Drop for ScratchDirectory {
     fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.directory) {
-            eprintln!("could not remove temporary candidate index: {error}");
+        if let Err(error) = fs::remove_dir_all(self.path()) {
+            eprintln!("could not remove {}: {error}", self.path().display());
         }
     }
 }

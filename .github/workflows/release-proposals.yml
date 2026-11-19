@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 icalkit contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Release proposals
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-proposals
+  cancel-in-progress: false
+
+jobs:
+  proposal:
+    name: Draft the icalkit release proposal
+    if: ${{ github.repository == 'P4suta/icalkit' && github.ref == 'refs/heads/main' && vars.RELEASE_PLZ_PROPOSALS == 'enabled' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    environment: release-proposals
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+        with:
+          version: v2026.11.10
+          install_args: rust cargo-binstall cargo:release-plz cargo:cargo-semver-checks
+      - name: Check the proposal tools
+        run: mise x -- cargo semver-checks --version
+      - uses: dopplerhq/secrets-fetch-action@451892f16195f9ac360e1a5bcbf0b5fd0e957534 # v2.0.0
+        id: app-credentials
+        with:
+          auth-method: token
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+          doppler-project: ${{ vars.RELEASE_PLZ_DOPPLER_PROJECT }}
+          doppler-config: ${{ vars.RELEASE_PLZ_DOPPLER_CONFIG }}
+          inject-env-vars: false
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        id: app
+        with:
+          client-id: ${{ steps.app-credentials.outputs.RELEASE_PLZ_APP_CLIENT_ID }}
+          private-key: ${{ steps.app-credentials.outputs.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or refresh a draft proposal
+        env:
+          GIT_TOKEN: ${{ steps.app.outputs.token }}
+        run: mise x -- release-plz release-pr -p icalkit

@@ -63,8 +63,10 @@ The remote rule requires the GitHub Actions `required` context with strict branc
 
 The candidate qualification workflow verifies that a complete commit ID matches every checkout before running the full inventory.
 It adds Windows and macOS tests, feature combinations, bare-metal and WebAssembly compilation, pinned-nightly API snapshots, and every workspace crate's MSRV verification.
+It tests the extracted icalkit package and checks the source of its license texts and mirrored fixtures.
+Release qualification also checks the requested version and the selected commit's inclusion in protected `main`.
 Its summary rejects incomplete or unsuccessful results.
-The repository has no publication workflow, so successful candidate qualification is verification evidence rather than an enforced publication boundary.
+Follow the [release runbook](releasing.md) to prepare a draft proposal and qualify a release.
 
 The [worktree decision](adr/candidate-worktree-validation.md) defines the private index used to compare tracked files without trusting the caller's cached flags or stat data.
 The check preserves the original index, detects missing tracked content, and removes scratch storage on success and failure.
@@ -75,6 +77,7 @@ A future publication workflow must require successful qualification of the exact
 GitHub Actions receives read-only repository permissions by default and may not approve pull requests.
 Each workflow grants write permission only where a job needs it: `security-events: write` for CodeQL uploads.
 Workflows pin third-party Actions to full commit SHAs, and actionlint and zizmor audit the workflows.
+The opt-in proposal workflow uses a repository-scoped GitHub App installation token to write the draft branch and pull request.
 
 The repository uses GitHub's [selected actions policy](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#allowing-select-actions-and-reusable-workflows-to-run) for external action sources.
 The patterns permit `actions/checkout@*`, `jdx/mise-action@*`, and `Swatinem/rust-cache@*`.
@@ -83,6 +86,7 @@ The candidate proof helper pattern is `P4suta/project-template/.github/actions/c
 GitHub requires every action to use a full commit SHA.
 Broad permissions for GitHub actions and verified Marketplace creators are off.
 Review the source and update the allowed patterns before adding an action from another repository.
+The release runbook lists the pins required before enabling proposals.
 
 Renovate checks Cargo and GitHub Actions through the centrally managed repository configuration.
 Renovate groups compatible Cargo updates and isolates major updates for explicit compatibility review.
