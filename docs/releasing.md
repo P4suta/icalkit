@@ -63,6 +63,8 @@ Repeat qualification if the selected source or version changes.
 The [crates.io setup](https://crates.io/docs/trusted-publishing) requires an existing crate for Trusted Publishing.
 Use a short-lived registry token for the authorized first upload and retire it after use.
 Verify the registry checksum for the approved version and install the published crate from a clean consumer project with `cargo add icalkit`.
+Create and push the signed version tag at the approved commit.
+Create the draft from the existing tag with `gh release create "v$VERSION" --draft --verify-tag` and supply the approved release notes.
 Verify that the draft GitHub Release matches the approved archive, source revision, and version.
 Attach the final checksums and provenance before publishing the GitHub Release.
 Keep the exact release files for recovery.

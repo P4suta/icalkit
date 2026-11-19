@@ -808,6 +808,14 @@ fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
         ));
     }
     let package = workflow_job(candidate, "ordinary").unwrap_or("");
+    if package.lines().any(|line| {
+        line.trim()
+            .trim_start_matches("- ")
+            .strip_prefix("continue-on-error:")
+            .is_some_and(|value| value.split('#').next().map(str::trim) != Some("false"))
+    }) {
+        violations.push("candidate ordinary checks must fail when a step fails".to_owned());
+    }
     for marker in [
         "if: ${{ inputs.release_version != '' }}",
         "REF_PROTECTED: ${{ github.ref_protected }}",
@@ -4605,7 +4613,7 @@ name = \"icalkit\"
     }
 
     #[test]
-    fn candidate_requires_packaged_tests_between_source_checks() {
+    fn candidate_requires_successful_packaged_tests_between_source_checks() {
         let root = super::workspace_root().unwrap();
         let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
         let candidate =
@@ -4615,10 +4623,19 @@ name = \"icalkit\"
         let command = "      - run: mise x -- just package-check\n";
         let omitted = candidate.replace(command, "");
         let moved = omitted.replacen("\n  platform:\n", &format!("{command}\n  platform:\n"), 1);
-        for unchecked in [omitted, moved] {
+        let nonfatal_step = candidate.replace(
+            command,
+            &format!("{command}        continue-on-error: true\n"),
+        );
+        let nonfatal_job = candidate.replacen(
+            "  ordinary:\n",
+            "  ordinary:\n    continue-on-error: true\n",
+            1,
+        );
+        for unchecked in [omitted, moved, nonfatal_step, nonfatal_job] {
             assert!(
                 !super::ci_source_violations(&ci, &unchecked, &justfile, &hooks).is_empty(),
-                "accepted a candidate without package checks between source checks"
+                "accepted a candidate without mandatory package checks between source checks"
             );
         }
     }
