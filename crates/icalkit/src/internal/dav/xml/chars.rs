@@ -4,26 +4,226 @@
 
 //! Characters, references and attribute-value normalization: XML 1.0 sections 2.2, 3.3.3 and 4.6.
 //!
-//! Nothing here writes to a sink and nothing here knows an element from another. What it owns is
-//! the answer to three questions any XML processor has to answer the same way: is this run of
-//! octets a run of characters, what does this reference resolve to, and what value does an
-//! attribute actually have.
+//! Nothing here writes to a sink and nothing here knows an element from another.
+//! What it owns is the answer to three questions any XML processor has to answer the same way: is this run of octets a run of characters, what does this reference resolve to, and what value does an attribute actually have.
 //!
-//! The escaping *table* is here too, as data, while the plumbing that pushes it into a caller's
-//! sink stays above: the rules are XML's and the sink is `ical-dav`'s.
+//! The escaping *table* is here too, as data, while the plumbing that pushes it into a caller's sink stays above: the rules are XML's and the sink is `ical-dav`'s.
 
 use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::hash::{Hash, Hasher};
 
 use ical_core::LimitExceeded;
 
 use super::fault::{XmlFault, XmlSyntax};
 
-/// The most octets a reference may occupy, `&` and `;` included.
-///
-/// `&#x10FFFF;` is ten, and no predefined entity name is longer than `apos`. A `&` followed by
-/// megabytes of digits is not a reference anybody wrote, and scanning for its terminator without
-/// a ceiling is work an attacker chooses the size of.
-const MAX_REFERENCE_BYTES: usize = 12;
+#[derive(Clone, Copy, Debug)]
+enum AttributeSource<'a> {
+    Literal(&'a [u8]),
+    Encoded(&'a [u8]),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AttributeValue<'a> {
+    source: AttributeSource<'a>,
+    length: usize,
+}
+
+impl<'a> AttributeValue<'a> {
+    pub(crate) const fn literal(bytes: &'a [u8]) -> Self {
+        Self {
+            source: AttributeSource::Literal(bytes),
+            length: bytes.len(),
+        }
+    }
+
+    pub(crate) fn parse(raw: &'a [u8]) -> Result<Self, XmlFault> {
+        check_chars(raw)?;
+        if !raw
+            .iter()
+            .any(|byte| matches!(byte, b'&' | b'\r' | b'\n' | b'\t'))
+        {
+            return Ok(Self::literal(raw));
+        }
+        let mut value = Self {
+            source: AttributeSource::Encoded(raw),
+            length: 0,
+        };
+        for byte in value.bytes() {
+            byte?;
+            value.length = value.length.checked_add(1).ok_or(XmlSyntax::Malformed)?;
+        }
+        Ok(value)
+    }
+
+    pub(crate) const fn len(self) -> usize {
+        self.length
+    }
+
+    pub(crate) const fn source_len(self) -> usize {
+        match self.source {
+            AttributeSource::Literal(bytes) | AttributeSource::Encoded(bytes) => bytes.len(),
+        }
+    }
+
+    pub(crate) const fn contiguous(self) -> Option<&'a [u8]> {
+        match self.source {
+            AttributeSource::Literal(bytes) => Some(bytes),
+            AttributeSource::Encoded(_) => None,
+        }
+    }
+
+    pub(crate) fn is(self, bytes: &[u8]) -> bool {
+        if self.length != bytes.len() {
+            return false;
+        }
+        match self.contiguous() {
+            Some(literal) => literal == bytes,
+            None => self.bytes().eq(bytes.iter().copied().map(Ok)),
+        }
+    }
+
+    pub(crate) fn bytes(self) -> AttributeBytes<'a> {
+        #[cfg(test)]
+        normalization_work::record(self.source_len());
+        AttributeBytes {
+            source: self.source,
+            at: 0,
+            pending: [0; 4],
+            pending_at: 0,
+            pending_len: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn observe_normalization<R>(run: impl FnOnce() -> R) -> (R, u64) {
+    normalization_work::observe(run)
+}
+
+#[cfg(test)]
+mod normalization_work {
+    use core::cell::Cell;
+
+    std::thread_local! {
+        static WIDTH: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record(width: usize) {
+        WIDTH.with(|total| {
+            total.set(
+                total
+                    .get()
+                    .saturating_add(u64::try_from(width).unwrap_or(u64::MAX)),
+            );
+        });
+    }
+
+    pub(super) fn observe<R>(run: impl FnOnce() -> R) -> (R, u64) {
+        WIDTH.with(|total| total.set(0));
+        let result = run();
+        let width = WIDTH.with(Cell::get);
+        (result, width)
+    }
+}
+
+impl PartialEq for AttributeValue<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.length == other.length && self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for AttributeValue<'_> {}
+
+impl PartialOrd for AttributeValue<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AttributeValue<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let same_view = match (self.source, other.source) {
+            (AttributeSource::Literal(left), AttributeSource::Literal(right))
+            | (AttributeSource::Encoded(left), AttributeSource::Encoded(right)) => {
+                core::ptr::eq(left, right)
+            },
+            _ => false,
+        };
+        if same_view {
+            return Ordering::Equal;
+        }
+        match (self.contiguous(), other.contiguous()) {
+            (Some(left), Some(right)) => left.cmp(right),
+            _ => self.bytes().cmp(other.bytes()),
+        }
+    }
+}
+
+impl Hash for AttributeValue<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.length.hash(state);
+        for byte in self.bytes() {
+            byte.hash(state);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AttributeBytes<'a> {
+    source: AttributeSource<'a>,
+    at: usize,
+    pending: [u8; 4],
+    pending_at: usize,
+    pending_len: usize,
+}
+
+impl Iterator for AttributeBytes<'_> {
+    type Item = Result<u8, XmlSyntax>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pending_at < self.pending_len {
+            let byte = self.pending.get(self.pending_at).copied();
+            self.pending_at = self.pending_at.saturating_add(1);
+            return Some(byte.ok_or(XmlSyntax::Malformed));
+        }
+        let raw = match self.source {
+            AttributeSource::Literal(raw) | AttributeSource::Encoded(raw) => raw,
+        };
+        let byte = *raw.get(self.at)?;
+        if matches!(self.source, AttributeSource::Literal(_)) {
+            self.at = self.at.saturating_add(1);
+            return Some(Ok(byte));
+        }
+        match byte {
+            b'&' => match read_reference(raw, self.at) {
+                Ok((character, after)) => {
+                    self.at = after;
+                    self.pending_len = character.encode_utf8(&mut self.pending).len();
+                    self.pending_at = 1;
+                    Some(self.pending.first().copied().ok_or(XmlSyntax::Malformed))
+                },
+                Err(error) => {
+                    self.at = raw.len();
+                    Some(Err(error))
+                },
+            },
+            b'\r' => {
+                let paired = raw.get(self.at.saturating_add(1)) == Some(&b'\n');
+                self.at = self.at.saturating_add(if paired { 2 } else { 1 });
+                Some(Ok(b' '))
+            },
+            b'\n' | b'\t' => {
+                self.at = self.at.saturating_add(1);
+                Some(Ok(b' '))
+            },
+            _ => {
+                self.at = self.at.saturating_add(1);
+                Some(Ok(byte))
+            },
+        }
+    }
+}
 
 /// Whether a code point is one XML 1.0 section 2.2's `Char` production admits.
 const fn is_xml_char(character: char) -> bool {
@@ -32,10 +232,9 @@ const fn is_xml_char(character: char) -> bool {
 
 /// Refuse octets no conformant XML processor would deliver as characters.
 ///
-/// Two rules in one pass, because they are one question — "is this a run of characters?" — asked
-/// of octets a peer chose. XML 1.0 section 4.3.3 makes the document entity UTF-8, and section
-/// 2.2's `Char` production excludes `U+0000`, the C0 controls other than tab, line feed and
-/// carriage return, the surrogates, and `U+FFFE`/`U+FFFF`.
+/// Two rules in one pass, because they are one question — "is this a run of characters?"
+/// — asked of octets a peer chose.
+/// XML 1.0 section 4.3.3 makes the document entity UTF-8, and section 2.2's `Char` production excludes `U+0000`, the C0 controls other than tab, line feed and carriage return, the surrogates, and `U+FFFE`/`U+FFFF`.
 pub(crate) fn check_chars(bytes: &[u8]) -> Result<(), XmlFault> {
     let text = core::str::from_utf8(bytes).map_err(|_| XmlSyntax::ForbiddenCharacter)?;
     if text.chars().all(is_xml_char) {
@@ -55,84 +254,65 @@ pub(crate) fn push(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), XmlFault> {
 
 /// Normalize an attribute value the way XML 1.0 section 3.3.3 requires, into `out`.
 ///
-/// The value between the quotes is not the value the attribute has. Section 3.3.3 resolves
-/// character and entity references in it and replaces every literal tab, line feed and carriage
-/// return — the last two after section 2.11 has already folded `CRLF` to one line feed — with a
-/// single space, all before the value is delivered. Handing back the raw octets made a
-/// `comp-filter name="VE&#78;T"` name a component spelled `VE&#78;T` here and `VENT` in every
-/// conformant processor, so two implementations disagreed about which components a hostile query
-/// selects; it also made the request round trip grow by four octets a hop, because the encoder
-/// escaped the `&` that the reader had never resolved.
+/// The value between the quotes is not the value the attribute has.
+/// Section 3.3.3 resolves character and entity references in it and replaces every literal tab, line feed and carriage return — the last two after section 2.11 has already folded `CRLF` to one line feed — with a single space, all before the value is delivered.
+/// Handing back the raw octets made a `comp-filter name="VE&#78;T"` name a component spelled `VE&#78;T` here and `VENT` in every conformant processor, so two implementations disagreed about which components a hostile query selects; it also made the request round trip grow by four octets a hop, because the encoder escaped the `&` that the reader had never resolved.
 ///
-/// Every attribute this workspace writes is `CDATA`-typed, so no further whitespace collapsing
-/// applies.
+/// Every attribute this workspace writes is `CDATA`-typed, so no further whitespace collapsing applies.
 pub(crate) fn normalize_attribute(raw: &[u8], out: &mut Vec<u8>) -> Result<(), XmlFault> {
-    let mut at = 0;
-    while let Some(&byte) = raw.get(at) {
-        match byte {
-            b'&' => {
-                at = push_reference(raw, at, out)?;
-                continue;
-            },
-            b'\r' => {
-                push(out, b" ")?;
-                // Section 2.11 makes `CRLF` one line break, and section 3.3.3 then makes that
-                // one break one space rather than two.
-                let paired = raw.get(at.saturating_add(1)) == Some(&b'\n');
-                at = at.saturating_add(if paired { 2 } else { 1 });
-                continue;
-            },
-            b'\n' | b'\t' => push(out, b" ")?,
-            _ => push(out, &[byte])?,
-        }
-        at = at.saturating_add(1);
+    let value = AttributeValue::parse(raw)?;
+    for byte in value.bytes() {
+        push(out, &[byte?])?;
     }
     check_chars(out)
 }
 
 /// Resolve one reference into `out` and answer where the octet after its `;` is.
 ///
-/// Nothing beyond the five entities XML 1.0 section 4.6 predefines is resolvable, because this
-/// layer accepts no `DOCTYPE` and so nothing can ever have been declared. An undefined name is
-/// refused rather than passed through: a reader that emitted `&file;` unchanged would hand its
-/// caller octets the peer did not write, and one that dropped it would hide an attempt.
+/// Nothing beyond the five entities XML 1.0 section 4.6 predefines is resolvable, because this layer accepts no `DOCTYPE` and so nothing can ever have been declared.
+/// An undefined name is refused rather than passed through: a reader that emitted `&file;` unchanged would hand its caller octets the peer did not write, and one that dropped it would hide an attempt.
 pub(crate) fn push_reference(
     raw: &[u8],
     start: usize,
     out: &mut Vec<u8>,
 ) -> Result<usize, XmlFault> {
-    let window = raw
-        .get(start..)
-        .and_then(|rest| rest.get(..MAX_REFERENCE_BYTES.min(rest.len())))
-        .ok_or(XmlSyntax::Malformed)?;
+    let (character, after) = read_reference(raw, start)?;
+    let mut encoded = [0; 4];
+    push(out, character.encode_utf8(&mut encoded).as_bytes())?;
+    Ok(after)
+}
+
+pub(crate) fn read_reference(raw: &[u8], start: usize) -> Result<(char, usize), XmlSyntax> {
+    let window = raw.get(start..).ok_or(XmlSyntax::Malformed)?;
     let semicolon = window
         .iter()
         .position(|byte| *byte == b';')
         .ok_or(XmlSyntax::Malformed)?;
     let name = window.get(1..semicolon).ok_or(XmlSyntax::Malformed)?;
-    match name {
-        b"amp" => push(out, b"&")?,
-        b"lt" => push(out, b"<")?,
-        b"gt" => push(out, b">")?,
-        b"quot" => push(out, b"\"")?,
-        b"apos" => push(out, b"'")?,
-        _ => push_character_reference(name, out)?,
-    }
-    Ok(start
+    let character = match name {
+        b"amp" => '&',
+        b"lt" => '<',
+        b"gt" => '>',
+        b"quot" => '"',
+        b"apos" => '\'',
+        _ => character_reference(name)?,
+    };
+    let after = start
         .saturating_add(semicolon)
         .saturating_add(1)
-        .min(raw.len()))
+        .min(raw.len());
+    Ok((character, after))
 }
 
 /// Resolve a numeric character reference, which is what carries a `CR` past section 2.11.
-fn push_character_reference(name: &[u8], out: &mut Vec<u8>) -> Result<(), XmlFault> {
+fn character_reference(name: &[u8]) -> Result<char, XmlSyntax> {
     let digits = name.strip_prefix(b"#").ok_or(XmlSyntax::UndefinedEntity)?;
     let (radix, body) = match digits.strip_prefix(b"x") {
         Some(hex) => (16_u32, hex),
         None => (10_u32, digits),
     };
     if body.is_empty() {
-        return Err(XmlSyntax::Malformed.into());
+        return Err(XmlSyntax::Malformed);
     }
     let mut code: u32 = 0;
     for byte in body {
@@ -144,20 +324,16 @@ fn push_character_reference(name: &[u8], out: &mut Vec<u8>) -> Result<(), XmlFau
             .and_then(|shifted| shifted.checked_add(digit))
             .ok_or(XmlSyntax::ForbiddenCharacter)?;
     }
-    let character = char::from_u32(code)
+    char::from_u32(code)
         .filter(|found| is_xml_char(*found))
-        .ok_or(XmlSyntax::ForbiddenCharacter)?;
-    let mut encoded = [0_u8; 4];
-    push(out, character.encode_utf8(&mut encoded).as_bytes())
+        .ok_or(XmlSyntax::ForbiddenCharacter)
 }
 
 /// What one octet is written as, or `None` when it is written as itself.
 ///
-/// `CR` becomes `&#13;` because a literal one would be folded to `LF` by XML 1.0 section 2.11
-/// before any reader saw it, and a reference is markup resolved *after* normalization. `>` is
-/// escaped although XML does not require it, so that a `]]>` inside a value cannot end a `CDATA`
-/// section this workspace never opens. Inside quotes the three whitespace characters section
-/// 3.3.3 would replace with a space are written as references instead, so they survive.
+/// `CR` becomes `&#13;` because a literal one would be folded to `LF` by XML 1.0 section 2.11 before any reader saw it, and a reference is markup resolved *after* normalization.
+/// `>` is escaped although XML does not require it, so that a `]]>` inside a value cannot end a `CDATA` section this workspace never opens.
+/// Inside quotes the three whitespace characters section 3.3.3 would replace with a space are written as references instead, so they survive.
 pub(crate) const fn escape_for(byte: u8, in_attribute: bool) -> Option<&'static [u8]> {
     match byte {
         b'&' => Some(b"&amp;"),
@@ -175,7 +351,52 @@ pub(crate) const fn escape_for(byte: u8, in_attribute: bool) -> Option<&'static 
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{XmlFault, XmlSyntax, check_chars, escape_for, normalize_attribute};
+    use super::{
+        AttributeValue, XmlFault, XmlSyntax, check_chars, escape_for, normalize_attribute,
+    };
+
+    #[test]
+    fn shared_source_octets_keep_their_distinct_normalization_modes() {
+        let raw = b"&#65;";
+        let literal = AttributeValue::literal(raw);
+        let decoded = AttributeValue::parse(raw).unwrap();
+        assert_ne!(literal, decoded);
+        assert_eq!(literal.cmp(&decoded), core::cmp::Ordering::Less);
+        assert_eq!(decoded.cmp(&literal), core::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn repeated_comparisons_of_one_checked_value_do_not_decode_again() {
+        let value = AttributeValue::parse(b"u&#0000000000114;n:example").unwrap();
+        let ((), work) = super::observe_normalization(|| {
+            for _ in 0..128 {
+                assert_eq!(value, value);
+                assert_eq!(value.cmp(&value), core::cmp::Ordering::Equal);
+            }
+        });
+        assert_eq!(work, 0);
+    }
+
+    #[test]
+    fn normalized_views_match_literal_octets() {
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"a\r\nb\tc\n", b"a b c "),
+            (b"&#9;&#10;&#13;", b"\t\n\r"),
+            (b"&amp;&lt;&gt;&quot;&apos;", b"&<>\"'"),
+            (b"&#x1F600;", b"\xf0\x9f\x98\x80"),
+            (b"literal", b"literal"),
+        ];
+        for (raw, expected) in cases {
+            let value = AttributeValue::parse(raw).unwrap();
+            assert_eq!(value.len(), expected.len());
+            assert_eq!(value, AttributeValue::literal(expected));
+            assert!(value.is(expected));
+            assert_eq!(
+                value.bytes().collect::<Result<Vec<_>, _>>().unwrap(),
+                *expected
+            );
+        }
+    }
 
     #[test]
     fn an_attribute_value_is_the_value_and_not_the_octets_between_the_quotes() {

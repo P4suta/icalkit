@@ -4,33 +4,24 @@
 
 //! The channel for "this exchange cannot be completed".
 //!
-//! [`DavError`] is `docs/adr/0009`'s structural channel raised one layer: nothing in it is
-//! recoverable by ignoring it. A body a reader cannot finish, an element the build cannot
-//! honor, a value that contradicts itself, a sink with no room left — each of those ends the
-//! read or the write, and there is no partial answer to hand back.
+//! [`DavError`] is `docs/adr/0009`'s structural channel raised one layer: nothing in it is recoverable by ignoring it.
+//! A body a reader cannot finish, an element the build cannot honor, a value that contradicts itself, a sink with no room left — each of those ends the read or the write, and there is no partial answer to hand back.
 //!
-//! Everything tolerable travels the other channel instead, as an `crate::internal::core::Diagnostic` on
-//! the caller's sink with the read continuing: a foreign element skipped per RFC 4918
-//! section 17, a property this crate has no model for, a `calendar-data` payload that had to
-//! be copied. A reader that turned any of those into an error would discard a multistatus a
-//! server was entitled to send.
+//! Everything tolerable travels the other channel instead, as an `crate::internal::core::Diagnostic` on the caller's sink with the read continuing: a foreign element skipped per RFC 4918 section 17, a property this crate has no model for, a `calendar-data` payload that had to be copied.
+//! A reader that turned any of those into an error would discard a multistatus a server was entitled to send.
 //!
-//! Every type here is `Copy` and allocates nothing, so a refusal costs no memory on the path
-//! where memory has already run out.
+//! Every type here is `Copy` and allocates nothing, so a refusal costs no memory on the path where memory has already run out.
 
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 
-use crate::internal::core::LimitExceeded;
+use crate::internal::core::{LimitExceeded, Meter};
 
 use crate::internal::dav::element::ElementName;
 
 /// A refusal that ends a read or a write.
 ///
-/// The variants divide by *who* has to act: a limit is the caller's policy, a syntax error is
-/// the peer's body, an unsupported element is this build's own configuration, an unexpected
-/// element is the peer using a legal name in an illegal place, an invalid value is a
-/// self-contradicting value, and a full sink is the caller's buffer.
+/// The variants divide by *who* has to act: a limit is the caller's policy, a syntax error is the peer's body, an unsupported element is this build's own configuration, an unexpected element is the peer using a legal name in an illegal place, an invalid value is a self-contradicting value, and a full sink is the caller's buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum DavError {
@@ -40,30 +31,38 @@ pub enum DavError {
     Syntax(SyntaxError),
     /// The element is in the vocabulary and this build cannot honor it.
     ///
-    /// Distinct from a foreign element, which is skipped with a diagnostic. A row exists for
-    /// every element unconditionally, precisely so that a build without a feature refuses the
-    /// `REPORT` it cannot answer instead of quietly ignoring it.
+    /// Distinct from a foreign element, which is skipped with a diagnostic.
+    /// A row exists for every element unconditionally, precisely so that a build without a feature refuses the `REPORT` it cannot answer instead of quietly ignoring it.
     Unsupported(ElementName),
     /// The element is in the vocabulary and is not permitted where it appeared.
     Unexpected(ElementName),
     /// An element outside the closed vocabulary appeared where none may be tolerated.
     ///
-    /// A foreign element is normally skipped with a diagnostic (RFC 4918 section 17), so this
-    /// is what [`crate::internal::dav::UnknownPolicy::Reject`] raises, plus the two places where skipping is
-    /// not an option at all: a document whose root is foreign, where skipping would leave no
-    /// body, and a foreign element in a position whose content model this crate reads
-    /// structurally.
+    /// A foreign element is normally skipped with a diagnostic (RFC 4918 section 17), so this is what [`crate::internal::dav::UnknownPolicy::Reject`] raises, plus the two places where skipping is not an option at all: a document whose root is foreign, where skipping would leave no body, and a foreign element in a position whose content model this crate reads structurally.
     ///
-    /// It carries nothing. Naming the element would mean holding octets borrowed from a body
-    /// this type outlives, and the whole point of a foreign element is that it has no row in
-    /// [`ElementName`] to name it by. What a caller wants is on the diagnostic sink beside it;
-    /// what a caller needs here is to know the body was refused for extending the vocabulary
-    /// rather than for being ill-formed.
+    /// It carries nothing.
+    /// Naming the element would mean holding octets borrowed from a body this type outlives, and the whole point of a foreign element is that it has no row in [`ElementName`] to name it by.
+    /// What a caller wants is on the diagnostic sink beside it;
+    /// what a caller needs here is to know the body was refused for extending the vocabulary rather than for being ill-formed.
     Foreign,
     /// A value was read and contradicts itself or its grammar.
     Invalid(ValueError),
     /// The caller's output buffer has no room left.
     Output(SinkFull),
+}
+
+impl DavError {
+    pub(crate) fn record_resource_refusal(self, meter: &mut Meter) -> Self {
+        match self {
+            Self::Limit(breach) => Self::Limit(meter.refuse_limit(breach)),
+            Self::Syntax(_)
+            | Self::Unsupported(_)
+            | Self::Unexpected(_)
+            | Self::Foreign
+            | Self::Invalid(_)
+            | Self::Output(_) => self,
+        }
+    }
 }
 
 impl From<LimitExceeded> for DavError {
@@ -113,24 +112,23 @@ impl Error for DavError {}
 
 /// What was wrong with the octets, at the XML layer.
 ///
-/// Several of these are refusals of constructs XML 1.0 defines and this crate declines to
-/// accept. The private lexer recognizes XML grammar; this wrapper still refuses constructs the
-/// DAV vocabulary does not need, loudly rather than guessing at their semantics.
+/// Several of these are refusals of constructs XML 1.0 defines and this crate declines to accept.
+/// The private lexer recognizes XML grammar; this wrapper still refuses constructs the DAV vocabulary does not need, loudly rather than guessing at their semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum SyntaxError {
-    /// A `DOCTYPE` declaration appeared. This crate accepts none, ever.
+    /// A `DOCTYPE` declaration appeared.
+    /// This crate accepts none, ever.
     ///
-    /// No CalDAV or WebDAV body needs one, and every entity-expansion attack — the billion
-    /// laughs, an external parameter entity, a general entity pointing at a local file —
-    /// needs one to declare the entity it expands. Refusing the declaration closes the class
-    /// rather than bounding it.
+    /// No CalDAV or WebDAV body needs one, and every entity-expansion attack — the billion laughs, an external parameter entity, a general entity pointing at a local file —
+    /// needs one to declare the entity it expands.
+    /// Refusing the declaration closes the class rather than bounding it.
     Doctype,
     /// An entity reference named something other than the five XML 1.0 predefines.
     ///
     /// With no `DOCTYPE` accepted, nothing can be declared, so `&anything;` beyond `&amp;`,
-    /// `&lt;`, `&gt;`, `&quot;` and `&apos;` names an entity that does not exist. A reader
-    /// that silently dropped it would deliver a value the peer did not write.
+    /// `&lt;`, `&gt;`, `&quot;` and `&apos;` names an entity that does not exist.
+    /// A reader that silently dropped it would deliver a value the peer did not write.
     UndefinedEntity,
     /// A processing instruction appeared outside the XML declaration.
     ProcessingInstruction,
@@ -173,9 +171,7 @@ impl Error for SyntaxError {}
 impl From<crate::internal::dav::xml::fault::XmlSyntax> for SyntaxError {
     /// The one seam between the private XML layer's classification and this public one.
     ///
-    /// Written out arm by arm rather than shared, because the two types are the same list for a
-    /// reason that will not survive the extraction `docs/adr/0012` deferred: `webdav-core` would
-    /// own the layer's copy and every consumer would map it, exactly as this crate does now.
+    /// Written out arm by arm rather than shared, because the two types are the same list for a reason that will not survive the extraction `docs/adr/0012` deferred: `webdav-core` would own the layer's copy and every consumer would map it, exactly as this crate does now.
     /// Nothing in `src/xml/` may name this type, so the mapping has to live on this side.
     fn from(error: crate::internal::dav::xml::fault::XmlSyntax) -> Self {
         match error {
@@ -204,8 +200,7 @@ impl From<crate::internal::dav::xml::fault::XmlFault> for DavError {
 pub enum ValueError {
     /// A `time-range` carried neither a `start` nor an `end`.
     ///
-    /// RFC 4791 section 9.9 permits either bound to be absent and requires at least one, so
-    /// a range with neither states no interval at all.
+    /// RFC 4791 section 9.9 permits either bound to be absent and requires at least one, so a range with neither states no interval at all.
     TimeRangeUnbounded,
     /// A `time-range` ended at or before it started.
     TimeRangeInverted,
@@ -217,14 +212,13 @@ pub enum ValueError {
     NotUtf8,
     /// A `calendar-data` selection states "every property" and names properties beside it.
     ///
-    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two
-    /// halves of each pair are alternatives. A value holding both is one no body can express,
+    /// RFC 4791 section 9.6.1 writes `comp ((allprop | prop*), (allcomp | comp*))`, so the two halves of each pair are alternatives.
+    /// A value holding both is one no body can express,
     /// and reducing it to one of them silently would send a request the caller did not write.
     SelectionContradiction,
     /// A filter states a condition and its own negation.
     ///
-    /// RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test in the
-    /// same filter: a component that is not defined has no time range and no properties.
+    /// RFC 4791 section 9.7.1 makes `is-not-defined` exclusive with every other test in the same filter: a component that is not defined has no time range and no properties.
     FilterContradiction,
     /// An instant does not fit the `YYYYMMDDTHHMMSSZ` form RFC 4791 section 9.9 writes.
     TimeUnrepresentable,
@@ -234,14 +228,14 @@ pub enum ValueError {
     SyncLevel,
     /// An element did not carry an attribute its grammar requires.
     ///
-    /// `comp-filter`, `prop-filter`, `param-filter`, `comp` and `prop` each require a `name`
-    /// (RFC 4791 sections 9.6 and 9.7). A body missing one is well-formed XML that states no
-    /// filter, so it is a value refusal and not a syntax one.
+    /// `comp-filter`, `prop-filter`, `param-filter`, `comp` and `prop` each require a `name` (RFC 4791 sections 9.6 and 9.7).
+    /// `expand`, `limit-recurrence-set` and `limit-freebusy-set` require both range bounds.
+    /// A body missing one is well-formed XML that states no filter, so it is a value refusal and not a syntax one.
     AttributeMissing,
     /// An attribute carried a value outside the enumeration its specification declares.
     ///
-    /// RFC 4791 section 9.7.5 writes `negate-condition` as `(yes | no)`, and section 9.6.4
-    /// writes `novalue` the same way. Guessing at a third spelling would invert a filter.
+    /// RFC 4791 section 9.7.5 writes `negate-condition` as `(yes | no)`, and section 9.6.4 writes `novalue` the same way.
+    /// Guessing at a third spelling would invert a filter.
     AttributeValue,
 }
 
@@ -271,8 +265,7 @@ impl Error for ValueError {}
 
 /// The caller's output buffer has no room for what an encoder was about to write.
 ///
-/// A distinct type from [`DavError`] so that [`crate::internal::dav::ByteSink`] can be implemented without
-/// naming the protocol's whole failure vocabulary — a sink knows about room and nothing else.
+/// A distinct type from [`DavError`] so that [`crate::internal::dav::ByteSink`] can be implemented without naming the protocol's whole failure vocabulary — a sink knows about room and nothing else.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SinkFull;
 

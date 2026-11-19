@@ -4,11 +4,12 @@
 
 //! Private bounded recurrence kernel.
 //!
-//! The unpublished conformance helper also compiles these files to exercise the low-level
-//! adversarial corpus. This module is the single source of truth.
+//! The unpublished conformance helper also compiles these files to exercise the low-level adversarial corpus.
+//! This module is the single source of truth.
 
 mod accounting;
 mod byparts;
+mod calendar;
 mod engine;
 mod grammar;
 mod input;
@@ -21,8 +22,10 @@ mod table;
 
 pub use accounting::{Charges, admit, generation_window, max_absolute_shift};
 pub use byparts::{CandidateSet, expand_period};
+pub(crate) use engine::RuleCheckpoint;
 pub use engine::{RecurrenceSearch, RuleCursorState, SearchCursor};
-pub use grammar::{RulePartText, parse_recur, parts};
+pub(crate) use grammar::decode_positive_decimal;
+pub use grammar::{RulePartText, is_gregorian_scale, parse_recur, parts};
 pub use input::{
     AppliedDiffs, InputError, InputList, Override, OverrideRange, OverrideSet, PropertyChange,
     PropertyDiff, RecurrenceInput,
@@ -30,7 +33,7 @@ pub use input::{
 pub use merge::{Merge, keep_first_rule};
 pub use period::{Period, PeriodWalk};
 pub use rule::{
-    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart,
+    ByList, Freq, RecurrenceRule, RecurrenceRuleBuilder, RuleError, RuleLimit, RulePart, Skip,
     UntilClock, ValueKind, WeekdayNum,
 };
 pub use search::{

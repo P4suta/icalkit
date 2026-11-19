@@ -6,25 +6,19 @@
 //!
 //! Specification: RFC 5545 section 3.2, section 3.7 and section 3.8.
 //!
-//! The two levels are named on different axes, and that is what keeps a `geo()` from being
-//! callable on a property that is not `GEO`. [`Property::value`] is a *value type* decoder:
-//! section 3.3 asks what a value is, never what it is called. [`Component::get`] is a
-//! *property name* accessor: sections 3.7 and 3.8 ask what a property is called and say
-//! nothing about how its octets are shaped. There is exactly one accessor at each level and
-//! every convenience here is one line of delegation, so the three states a caller matches on
-//! cannot drift apart property by property as more of them are added (`docs/adr/0001`).
+//! The two levels are named on different axes, and that is what keeps a `geo()` from being callable on a property that is not `GEO`.
+//! [`Property::value`] is a *value type* decoder:
+//! section 3.3 asks what a value is, never what it is called.
+//! [`Component::get`] is a *property name* accessor: sections 3.7 and 3.8 ask what a property is called and say nothing about how its octets are shaped.
+//! There is exactly one accessor at each level and every convenience here is one line of delegation, so the three states a caller matches on cannot drift apart property by property as more of them are added (`docs/adr/0001`).
 //!
-//! Nothing is cached. A decoded value kept beside the octets is a second place for the answer
-//! to live and therefore a second place for the two to disagree, and the octets are the half
-//! that gets written back. `dtstart()` decodes again on every call, and a caller sorting a
-//! thousand events by start time caches at its own call site.
+//! Nothing is cached.
+//! A decoded value kept beside the octets is a second place for the answer to live and therefore a second place for the two to disagree, and the octets are the half that gets written back.
+//! `dtstart()` decodes again on every call, and a caller sorting a thousand events by start time caches at its own call site.
 //!
-//! A name the specification declares at most once, arriving more than once, is
-//! [`View::Malformed`] carrying [`DiagnosticCode::DuplicateProperty`] rather than a silently
-//! chosen winner. "I cannot hand you one trusted value here" is what malformed already means,
-//! so no fourth state is needed, and every occurrence stays reachable through
-//! [`Component::properties_named`] — which is the only shape that can name more than one of
-//! them.
+//! A name the specification declares at most once, arriving more than once, is [`View::Malformed`] carrying [`DiagnosticCode::DuplicateProperty`] rather than a silently chosen winner.
+//! "I cannot hand you one trusted value here" is what malformed already means,
+//! so no fourth state is needed, and every occurrence stays reachable through [`Component::properties_named`] — which is the only shape that can name more than one of them.
 
 use crate::internal::core::{Diagnostic, DiagnosticCode, Location, Severity};
 
@@ -35,25 +29,25 @@ use crate::internal::core::view::{DecodeValue, Geo, TextValue, View};
 
 /// A diagnostic about a property whose octets are present and could not be read.
 ///
-/// The location is [`Location::NOWHERE`], and that is a statement rather than an omission. A
-/// [`Property`] owns fresh unfolded octets and not the offsets they were read from, so any
-/// span produced here would address a buffer the caller never handed in. A plausible-looking
-/// offset into the wrong buffer is worse than admitting there is none, and the caller holds
-/// the property itself in both non-absent arms of a [`View`] anyway.
+/// The location is [`Location::NOWHERE`], and that is a statement rather than an omission.
+/// A [`Property`] owns fresh unfolded octets and not the offsets they were read from, so any span produced here would address a buffer the caller never handed in.
+/// A plausible-looking offset into the wrong buffer is worse than admitting there is none, and the caller holds the property itself in both non-absent arms of a [`View`] anyway.
 fn about_this_property(code: DiagnosticCode) -> Diagnostic {
-    Diagnostic::new(code, Severity::Violation, Location::NOWHERE)
+    let severity = if code == DiagnosticCode::UnknownValueType {
+        Severity::Note
+    } else {
+        Severity::Violation
+    };
+    Diagnostic::new(code, severity, Location::NOWHERE)
 }
 
 impl Property {
     /// This property's value, read as `T`.
     ///
-    /// The only accessor at this level. `T` names a section 3.3 value type rather than a
-    /// property, so there is nothing here to misapply: asking a `SUMMARY` for a
-    /// [`DateTimeValue`] is a question about octets, and the answer is a diagnostic rather
-    /// than a category error the caller has to have anticipated.
+    /// The only accessor at this level.
+    /// `T` names a section 3.3 value type rather than a property, so there is nothing here to misapply: asking a `SUMMARY` for a [`DateTimeValue`] is a question about octets, and the answer is a diagnostic rather than a category error the caller has to have anticipated.
     ///
-    /// The octets are untouched whichever arm comes back, and they are read again on the next
-    /// call.
+    /// The octets are untouched whichever arm comes back, and they are read again on the next call.
     #[must_use]
     pub fn value<'a, T: DecodeValue<'a>>(&'a self) -> View<'a, T> {
         match T::decode_property(self) {
@@ -72,41 +66,29 @@ impl Property {
 impl Parameter {
     /// This parameter's value with a section 3.2 `DQUOTE` pair removed.
     ///
-    /// Removed on read and never in storage. RFC 5545 lets a producer quote a value that did
-    /// not need quoting, so stripping the pair at parse time would write back a line the
-    /// producer did not send; a caller matching `TZID="Europe/Paris"` against a zone name
-    /// still needs it gone. Only a matched pair goes: a value that opens a quote and never
-    /// closes it comes back whole, because deciding where the missing `DQUOTE` belonged would
-    /// invent an octet, and a lone `"` is one octet rather than an empty quoted string.
+    /// Removed on read and never in storage.
+    /// RFC 5545 lets a producer quote a value that did not need quoting, so stripping the pair at parse time would write back a line the producer did not send; a caller matching `TZID="Europe/Paris"` against a zone name still needs it gone.
+    /// Only a matched pair goes: a value that opens a quote and never closes it comes back whole, because deciding where the missing `DQUOTE` belonged would invent an octet, and a lone `"` is one octet rather than an empty quoted string.
     ///
-    /// A parameter that arrived with no `=` at all has no value, and this reports the empty
-    /// octets stored in place of one.
+    /// A parameter that arrived with no `=` at all has no value, and this reports the empty octets stored in place of one.
     #[must_use]
     pub fn unquoted(&self) -> &[u8] {
-        let written = self.value().as_bytes();
-        written
-            .strip_prefix(b"\"")
-            .and_then(|inside| inside.strip_suffix(b"\""))
-            .unwrap_or(written)
+        Self::remove_quotes(self.value().as_bytes())
     }
 }
 
 impl Component {
     /// The one property of this component named `id`, read as `T`.
     ///
-    /// For the identities RFC 5545 gives a cardinality of at most one. Everything repeatable —
+    /// For the identities RFC 5545 gives a cardinality of at most one.
+    /// Everything repeatable —
     /// which is every `X-` property and every property from an RFC published after this code —
-    /// goes through [`Component::properties_named`], an iterator that cannot silently keep the
-    /// first match.
+    /// goes through [`Component::properties_named`], an iterator that cannot silently keep the first match.
     ///
-    /// Cardinality is a claim about well-formed input and not about the documents this library
-    /// is handed, so a name that arrives twice is [`View::Malformed`] with
-    /// [`DiagnosticCode::DuplicateProperty`] even when both occurrences decode. The source is
-    /// the first occurrence, so a caller has somewhere to start reading, and the occurrences
-    /// themselves are reached through the general lookup.
+    /// Cardinality is a claim about well-formed input and not about the documents this library is handed, so a name that arrives twice is [`View::Malformed`] with [`DiagnosticCode::DuplicateProperty`] even when both occurrences decode.
+    /// The source is the first occurrence, so a caller has somewhere to start reading, and the occurrences themselves are reached through the general lookup.
     ///
-    /// Nested components are not searched: a `DTSTART` inside a `VALARM` is the alarm's, and
-    /// answering with it would answer a question nobody asked.
+    /// Nested components are not searched: a `DTSTART` inside a `VALARM` is the alarm's, and answering with it would answer a question nobody asked.
     #[must_use]
     pub fn get<'a, T: DecodeValue<'a>>(&'a self, id: &PropertyId) -> View<'a, T> {
         let mut occurrences = self.properties().filter(|property| property.has_id(id));
@@ -124,9 +106,7 @@ impl Component {
 
     /// The `DTSTART`, RFC 5545 section 3.8.2.4.
     ///
-    /// The zone is part of the answer: a value written beside a `TZID` reads as
-    /// [`DateTimeValue::Zoned`] carrying that parameter's octets, so a caller cannot read one
-    /// and write it back without the zone it came with.
+    /// The zone is part of the answer: a value written beside a `TZID` reads as [`DateTimeValue::Zoned`] carrying that parameter's octets, so a caller cannot read one and write it back without the zone it came with.
     #[must_use]
     pub fn dtstart(&self) -> View<'_, DateTimeValue<'_>> {
         self.get(&PropertyId::DTSTART)
@@ -178,8 +158,7 @@ mod tests {
     use crate::internal::core::tree::{Boundary, Component, Item, Parameter, Property};
     use crate::internal::core::view::{DecodeValue, View};
 
-    /// A decoder with no dependence on the value codecs, so that what these tests measure is
-    /// this unit rather than that one: a non-empty run of ASCII digits, and nothing else.
+    /// A decoder with no dependence on the value codecs, so that what these tests measure is this unit rather than that one: a non-empty run of ASCII digits, and nothing else.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct Digits<'a>(&'a [u8]);
 
@@ -192,8 +171,8 @@ mod tests {
         }
     }
 
-    /// How many times [`Counted`] has been decoded. One test reads it, and it reads a
-    /// difference rather than an absolute, so a second reader would not have to be added here.
+    /// How many times [`Counted`] has been decoded.
+    /// One test reads it, and it reads a difference rather than an absolute, so a second reader would not have to be added here.
     static DECODES: AtomicUsize = AtomicUsize::new(0);
 
     /// A decoder that accepts anything and says how often it was asked.
@@ -243,9 +222,7 @@ mod tests {
         closed(b"VEVENT", items)
     }
 
-    /// A vendor property may repeat as often as its producer liked, and the general lookup is
-    /// what every name goes through — so the singular accessors cannot be the only route to a
-    /// value, and no occurrence is dropped on the way.
+    /// A vendor property may repeat as often as its producer liked, and the general lookup is what every name goes through — so the singular accessors cannot be the only route to a value, and no occurrence is dropped on the way.
     #[test]
     fn every_occurrence_of_a_repeatable_name_is_reachable() {
         let vendor = PropertyId::from_name(b"X-MICROSOFT-CDO-BUSYSTATUS");
@@ -262,8 +239,7 @@ mod tests {
         assert_eq!(found, vec![&b"BUSY"[..], &b"FREE"[..]]);
     }
 
-    /// Both occurrences decode here, which is the point: the refusal is about there being two
-    /// of them, not about either one being unreadable.
+    /// Both occurrences decode here, which is the point: the refusal is about there being two of them, not about either one being unreadable.
     #[test]
     fn a_name_the_specification_allows_once_arriving_twice_is_a_refusal_with_evidence() {
         let component = event(vec![
@@ -321,8 +297,7 @@ mod tests {
         assert_eq!(property.value_text().as_bytes(), b"");
     }
 
-    /// A missing terminator is the serializer's problem and never the accessor's; reading a
-    /// value must not depend on how the line it arrived on ended.
+    /// A missing terminator is the serializer's problem and never the accessor's; reading a value must not depend on how the line it arrived on ended.
     #[test]
     fn a_line_that_ended_without_a_terminator_still_reads_its_value() {
         let property = unterminated(b"SEQUENCE", b"7");
@@ -331,9 +306,9 @@ mod tests {
         assert_eq!(view.value(), Some(Digits(b"7")));
     }
 
-    /// The largest value the default policy admits. Nothing here bounds a value on its own —
-    /// the bound is the caller's, charged where the octets are read — so the accessor has to
-    /// hand back the whole of one.
+    /// The largest value the default policy admits.
+    /// Nothing here bounds a value on its own —
+    /// the bound is the caller's, charged where the octets are read — so the accessor has to hand back the whole of one.
     #[test]
     fn the_longest_value_the_default_policy_admits_decodes_whole() {
         let size = usize::try_from(Limits::DEFAULT.max_value_bytes()).unwrap();
@@ -358,8 +333,8 @@ mod tests {
         assert_eq!(view.value(), Some(Digits(b"9")));
     }
 
-    /// Two reads are two decodes. Were the answer kept anywhere, it would be a second place
-    /// for it to disagree with the octets.
+    /// Two reads are two decodes.
+    /// Were the answer kept anywhere, it would be a second place for it to disagree with the octets.
     #[test]
     fn nothing_decoded_is_kept_between_calls() {
         let property = line(b"X-VENDOR", b"anything at all");
@@ -388,8 +363,8 @@ mod tests {
         );
     }
 
-    /// Only a matched pair is a pair. Everything else is octets a producer chose and this
-    /// crate writes back.
+    /// Only a matched pair is a pair.
+    /// Everything else is octets a producer chose and this crate writes back.
     #[test]
     fn an_unmatched_quote_is_not_a_pair() {
         let cases: [(&[u8], &[u8]); 7] = [
@@ -419,8 +394,7 @@ mod tests {
         assert_eq!(parameter.unquoted(), &b""[..]);
     }
 
-    /// Each convenience is a call into the general accessor, so each inherits absence and the
-    /// duplicate rule from it rather than restating either.
+    /// Each convenience is a call into the general accessor, so each inherits absence and the duplicate rule from it rather than restating either.
     #[test]
     fn every_convenience_answers_the_way_the_general_accessor_does() {
         let empty = event(Vec::new());

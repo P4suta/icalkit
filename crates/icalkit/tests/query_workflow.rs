@@ -5,7 +5,6 @@
 //! CalDAV query parsing and evaluation through the public facade only.
 
 use icalkit::caldav::{Match, Query};
-use icalkit::time::{DateTime, OffsetResolution, Timestamp, ZoneDatabase, ZoneResolution};
 use icalkit::{Calendar, Engine};
 
 const CALENDAR: &[u8] = b"BEGIN:VCALENDAR\r\n\
@@ -50,6 +49,34 @@ fn a_query_is_read_and_evaluated_without_exposing_xml_vocabulary() {
     assert_eq!(
         missing.matches(&mut session, &calendar).unwrap(),
         Match::Unmatched
+    );
+}
+
+#[test]
+fn failed_recurrence_queries_release_their_component_depth() {
+    let bad = Calendar::parse(concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit query tests//EN\r\n",
+        "BEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240101T090000Z\r\n",
+        "SUMMARY:Planning\r\nRDATE;VALUE=PERIOD:20240102T090000Z/PT1H,20240102T090000Z/PT2H\r\n",
+        "END:VEVENT\r\nEND:VCALENDAR\r\n",
+    ).as_bytes()).unwrap();
+    let source = String::from_utf8(summary_query("Planning"))
+        .unwrap()
+        .replace(
+            "<C:prop-filter",
+            "<C:time-range start=\"20240101T000000Z\" end=\"20240103T000000Z\"/><C:prop-filter",
+        );
+    let failing = Query::parse(source.as_bytes()).unwrap();
+    let valid = Query::parse(&summary_query("Planning")).unwrap();
+    let calendar = Calendar::parse(CALENDAR).unwrap();
+    let engine = Engine::default();
+    let mut session = engine.session();
+    for _ in 0..64 {
+        assert!(failing.matches(&mut session, &bad).is_err());
+    }
+    assert_eq!(
+        valid.matches(&mut session, &calendar).unwrap(),
+        Match::Matched
     );
 }
 
@@ -403,27 +430,14 @@ END:VCALENDAR\r\n";
     );
 }
 
-struct FixedNewYork;
-
-impl ZoneDatabase for FixedNewYork {
-    fn resolve_local(&self, tzid: &str, _local: DateTime) -> Option<ZoneResolution> {
-        if tzid != "America/New_York" {
-            return None;
-        }
-        let instant = "2026-08-14T13:00:00Z".parse::<Timestamp>().ok()?;
-        Some(ZoneResolution::exact(instant, "test-fixed-zone", true))
-    }
-
-    fn offset_at(&self, tzid: &str, _instant: Timestamp) -> Option<OffsetResolution> {
-        (tzid == "America/New_York")
-            .then_some(())
-            .and_then(|()| OffsetResolution::new(-14_400, "test-fixed-zone", true))
-    }
-}
-
 #[test]
-fn a_query_timezone_places_floating_values_through_the_engine_zone_port() {
-    let timezone = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nTZID:America/New_York\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n";
+fn a_query_timezone_places_floating_values_from_the_supplied_definition() {
+    let timezone = concat!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit query zone//EN\r\n",
+        "BEGIN:VTIMEZONE\r\nTZID:Test/Supplied\r\nBEGIN:STANDARD\r\n",
+        "DTSTART:20260814T000000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0400\r\n",
+        "END:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n",
+    );
     let body = format!(
         r#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
 <D:prop><C:calendar-data/></D:prop>
@@ -439,7 +453,7 @@ fn a_query_timezone_places_floating_values_through_the_engine_zone_port() {
     );
     let query = Query::parse(body.as_bytes()).unwrap();
     let calendar = Calendar::parse(CALENDAR).unwrap();
-    let engine = Engine::builder().zone_database(FixedNewYork).build();
+    let engine = Engine::default();
     let mut session = engine.session();
 
     assert_eq!(

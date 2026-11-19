@@ -3,17 +3,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use alloc::boxed::Box;
+use core::cell::Cell;
 use core::fmt::{self, Debug, Formatter};
 
 use alloc::vec::Vec;
 
-use crate::internal::core::{Diagnostic, Meter};
+use crate::internal::core::{
+    CivilDateTime, Diagnostic, DiagnosticCode, Instant, Location, Meter, Severity,
+};
+use crate::internal::tz::{AnswerBasis, OffsetAnswer, ZoneAnswer, ZoneSource};
 
 use crate::caldav::Query;
 use crate::calendar::parse_calendar;
 use crate::interop::Import;
-use crate::time::ZoneDatabase;
-use crate::{Calendar, Error, ResourcePolicy};
+use crate::time::{ZoneAdapter, ZoneDatabase};
+use crate::{Calendar, Error, Issue, ResourcePolicy};
 
 /// Shared configuration and adapters for calendar workflows.
 pub struct Engine {
@@ -35,6 +39,7 @@ impl Engine {
             engine: self,
             meter: Meter::new(self.policy.limits),
             recurrence_diagnostics: Vec::new(),
+            workflow_issues: Vec::new(),
         }
     }
 
@@ -119,9 +124,46 @@ pub struct Session<'a> {
     pub(crate) engine: &'a Engine,
     pub(crate) meter: Meter,
     pub(crate) recurrence_diagnostics: Vec<Diagnostic>,
+    workflow_issues: Vec<Issue>,
 }
 
 impl Session<'_> {
+    /// Notes from this session's zone-dependent workflows, including failed operations.
+    ///
+    /// Unasserted provider coverage is reported once per session without a boundary date.
+    #[must_use]
+    pub fn issues(&self) -> &[Issue] {
+        &self.workflow_issues
+    }
+
+    pub(crate) fn with_zone_source<R>(
+        &mut self,
+        run: impl FnOnce(&dyn ZoneSource, &mut Meter, &mut Vec<Diagnostic>) -> R,
+    ) -> R {
+        let source = CoverageObserver {
+            source: ZoneAdapter::new(self.engine.zone_database()),
+            unasserted: Cell::new(false),
+        };
+        let result = self
+            .meter
+            .with_live_scope(|meter| run(&source, meter, &mut self.recurrence_diagnostics));
+        let code = DiagnosticCode::TimeZoneCoverageUnasserted;
+        if source.unasserted.get()
+            && !self
+                .workflow_issues
+                .iter()
+                .any(|issue| issue.code().as_str() == code.as_str())
+        {
+            self.workflow_issues
+                .push(Issue::from_diagnostic(Diagnostic::new(
+                    code,
+                    Severity::Note,
+                    Location::NOWHERE,
+                )));
+        }
+        result
+    }
+
     /// Strictly parse and validate one calendar.
     pub fn parse(&mut self, bytes: &[u8]) -> Result<Calendar, Error> {
         parse_calendar(bytes, self.engine.policy, &mut self.meter)
@@ -140,5 +182,36 @@ impl Session<'_> {
     /// Strictly read one CalDAV calendar-query under this session's aggregate budget.
     pub fn query(&mut self, bytes: &[u8]) -> Result<Query, Error> {
         Query::parse_with_policy(bytes, self.engine.policy, &mut self.meter)
+    }
+}
+
+struct CoverageObserver<'a> {
+    source: ZoneAdapter<'a>,
+    unasserted: Cell<bool>,
+}
+
+impl CoverageObserver<'_> {
+    fn observe(&self, basis: AnswerBasis) {
+        if matches!(basis, AnswerBasis::CoverageUnasserted) {
+            self.unasserted.set(true);
+        }
+    }
+}
+
+impl ZoneSource for CoverageObserver<'_> {
+    fn resolve(&self, tzid: &str, local: CivilDateTime) -> Option<ZoneAnswer> {
+        let answer = self.source.resolve(tzid, local)?;
+        self.observe(answer.basis);
+        Some(answer)
+    }
+
+    fn offset_at(&self, tzid: &str, instant: Instant) -> Option<OffsetAnswer> {
+        let answer = self.source.offset_at(tzid, instant)?;
+        self.observe(answer.basis);
+        Some(answer)
+    }
+
+    fn recognizes(&self, tzid: &str) -> bool {
+        self.source.recognizes(tzid)
     }
 }

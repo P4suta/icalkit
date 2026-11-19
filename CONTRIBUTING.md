@@ -3,29 +3,57 @@
 ## Setup
 
 ```sh
-mise install        # toolchain and gate tooling
-mise run hooks      # install the git hooks
-just                # list the available commands
+mise trust
+mise install
+mise run hooks
+mise x -- just
 ```
+
+`mise.toml` and `rust-toolchain.toml` select the same exact development toolchain.
+Both declare the minimal profile with `rustfmt` and `clippy` so a fresh installation can run the maintained checks.
+`mise trust` approves the project configuration before installing tools or running tasks.
+Inspect configuration changes before trusting them.
+The [mise Rust documentation](https://mise.jdx.dev/lang/rust.html) explains how mise selects the toolchain through `RUSTUP_TOOLCHAIN`.
+An explicit mise Rust entry declares its own installation options instead of inheriting components from `rust-toolchain.toml`.
+The declared MSRV remains separate from the development toolchain.
 
 ## The loop
 
 ```sh
-just check          # fast deterministic gates
-just ci             # full compatibility checks available on this host
+mise x -- just check
+mise x -- just ci
 ```
 
 The pre-push hook runs `just check`, matching the ordinary Linux CI inventory.
 The ordinary gate includes workspace tests and doctests, allocation and documentation checks, strict linting, dependency policy, and repository checks.
+`just test-core` also runs the standalone library tests and doctests without default features.
+Both `just test` and `just test-ci` include `test-core`, so workspace feature unification can't hide a dependency on the default adapters.
+The maintained test recipes explicitly select Nextest's `leak` status level.
+They show [leaky test names](https://nexte.st/docs/features/leaky-tests/) even when `NEXTEST_STATUS_LEVEL` requests failure-only output.
+Clippy checks the standalone library without default features in its own invocation.
+Build, lint, test, and documentation recipes use [Cargo's `--locked` option](https://doc.rust-lang.org/cargo/commands/cargo-test.html#manifest-options) to reject a missing or stale `Cargo.lock`.
+Review dependency updates and their lockfile diff together.
+`just repository` rejects moving or mismatched Rust versions, missing standalone test coverage, and unlocked dependency-resolving recipes.
+The pre-commit hook runs that gate when development configuration changes.
+Pre-commit checks preserve staged content and restore unstaged hunks when Lefthook completes cleanup.
+After interrupting a check, inspect the Lefthook backup stash and Git diff before making further edits.
+Staged paths select which hooks run.
+Formatting checks inspect the workspace after Lefthook hides unstaged hunks from files with staged changes.
+Run the formatters and repair spelling findings before staging the intended changes.
+Stage intended formatting fixes before retrying a commit.
 `just ci` also runs feature combinations, target builds, nightly API snapshots, and MSRV verification.
 The candidate qualification workflow runs those checks and the Windows and macOS tests on one complete commit ID.
 It also verifies the actual CI decision core with Kani 0.68.0 and the declared rejecting probe.
 `just prove-ci` runs that source-bound proof inventory on Linux or macOS with the pinned verifier and the shared `ci-policy` helper.
 
+The candidate source check compares working files through a private Git index built from the observed commit.
+Index flags and cached stat data can't hide tracked changes, and the caller's staged index stays unchanged.
+
 ## Test-driven changes
 
 Start by adding the smallest test that expresses the missing behavior and confirm that it fails for the intended reason.
 Add the behavior, run the focused test until it passes, then run `just check` and the relevant portability or conformance gates.
+Keep each regression test and its implementation in one passing commit.
 Before pushing, run `just check`.
 Use candidate qualification to verify portability and compatibility.
 Candidate qualification records verification results without publishing a release.
@@ -33,6 +61,34 @@ Candidate qualification records verification results without publishing a releas
 Work on a topic branch and open a draft pull request while the change is still evolving.
 Keep generated artifacts, public API snapshots, corpus evidence, and documentation in the same pull request as the source change that requires them.
 The complete hosting and merge rules are in the [repository policy](docs/repository-policy.md).
+
+## Continuing development
+
+The [public guide](docs/README.md) describes the supported workflows.
+The [architecture](ARCHITECTURE.md) and [private kernel decision](docs/adr/0014-private-kernel-and-conformance-isolation.md) define the current crate boundaries.
+The design documents describe earlier package boundaries.
+
+Place consumer workflow regressions in `crates/icalkit/tests/`.
+Place specification and interoperability cases in `crates/icalkit-conformance/tests/`, with the relevant RFC section.
+Run focused targets before the complete gate:
+
+```sh
+mise x -- cargo nextest run --locked -p icalkit --test golden_path
+mise x -- cargo nextest run --locked -p icalkit-conformance --test write_side_grammar
+mise x -- cargo test --locked -p xtask hook_scope
+mise x -- cargo run --locked -p icalkit --example golden_path
+```
+
+The xtask tests exercise Lefthook's file selection rules.
+Keep root and nested source paths covered when changing hook responsibilities.
+Hook fixtures copy the project's pinned mise configuration and use an empty global configuration.
+Platform test runners install the helper tools used by the real hooks.
+Workflow checks install the pinned shellcheck helper alongside actionlint.
+The standalone compilation test checks the proof wrapper without Cargo edition defaults.
+Keep ordinary unit tests outside standalone proof inputs so the verifier can check each input without test-only attributes.
+
+The [roadmap](ROADMAP.md) records the remaining external observations.
+Use the [producer capture intake](crates/icalkit-conformance/CAPTURE.md) for the scenario and privacy requirements before collecting real-client evidence.
 
 ## Required boundaries
 
@@ -46,7 +102,8 @@ The `std` and `system-tz` features activate only the documented adapter boundary
 A zone answer names its caller-supplied source, as defined in [ADR 0003](docs/adr/0003-caller-supplied-time-zones.md).
 The caller supplies the current instant, as defined in [ADR 0004](docs/adr/0004-sans-io-protocol-layer.md).
 `just purity` checks the linked package identity, so renaming a dependency key can't hide a new boundary.
-Jiff and xmlparser are the two recorded third-party boundaries.
+Jiff, xmlparser, and ICU4X form the recorded third-party boundaries.
+The [calendar conversion decision](docs/adr/calendar-conversion-at-the-jiff-boundary.md) records the private `icu_calendar` adapter and shared Rust 1.88 floor.
 Another dependency requires an architecture decision.
 
 The production crate declares `extern crate alloc;`, and `just purity` checks for the declaration.
@@ -79,7 +136,8 @@ The textual check doesn't resolve macros or generated paths.
 Use checked time arithmetic with `checked_*`, `div_euclid`, and `rem_euclid`.
 No `Duration` carries years or months.
 Filter recurrence instances with nonexistent dates or local times under RFC 5545 section 3.3.10.
-Don't move the instances to nearby values.
+Move missing calendar dates only when an admitted RFC 7529 `SKIP` policy requires correction.
+Keep calendar correction separate from local time admission.
 [ADR 0011](docs/adr/0011-civil-time-arithmetic-and-resolution-types.md) defines the arithmetic and resolution types.
 
 A supported property's parse and serialization round trip must preserve every byte, including uninterpreted parameters, casing, and ordering.

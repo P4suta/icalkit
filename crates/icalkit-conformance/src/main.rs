@@ -217,8 +217,8 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
-    let pairs = encoded.as_bytes().chunks_exact(2);
-    if !pairs.remainder().is_empty() {
+    let (pairs, remainder) = encoded.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
         return None;
     }
     let mut bytes = Vec::with_capacity(encoded.len() / 2);

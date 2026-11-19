@@ -12,6 +12,7 @@ PRODID:-//icalkit example//EN\n\
 BEGIN:VEVENT\n\
 UID:example@example.test\n\
 DTSTAMP:20260814T000000Z\n\
+DTSTART:20260815T090000Z\n\
 SUMMARY:Before\n\
 END:VEVENT\n\
 END:VCALENDAR\n";

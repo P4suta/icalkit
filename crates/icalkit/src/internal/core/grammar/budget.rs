@@ -4,41 +4,34 @@
 
 //! One policy, one running ledger, threaded through every hostile-input entry point.
 //!
-//! A limit is two things. [`Limits`] is the caller's immutable policy — the thresholds,
-//! cheap to copy, identical for every call. [`Meter`] is the caller's mutable ledger, a
-//! running count of work already done under that policy. Both travel together because a
-//! threshold checked per call is bounded per call and unbounded in aggregate: five thousand
-//! individually bounded searches driven by a fan-out loop above this workspace add up to
-//! whatever the attacker chose the fan-out to be (`docs/adr/0010`).
+//! A limit is two things.
+//! [`Limits`] is the caller's immutable policy — the thresholds,
+//! cheap to copy, identical for every call.
+//! [`Meter`] is the caller's mutable ledger, a running count of work already done under that policy.
+//! Both travel together because a threshold checked per call is bounded per call and unbounded in aggregate: five thousand individually bounded searches driven by a fan-out loop above this workspace add up to whatever the attacker chose the fan-out to be (`docs/adr/0010`).
 //!
-//! The ledger is passed as `&mut` precisely so its lifetime is the caller's choice and not
-//! the call's. [`Meter`] is neither `Copy` nor `Default` nor `Clone` for the same reason:
-//! minting a fresh one inside a loop is how a budget silently stops binding, and none of
-//! those three traits leaves a mark at the call site. Nothing here can force reuse — a
-//! caller who writes `Meter::new(..)` inside its own loop reproduces the attack exactly —
+//! The ledger is passed as `&mut` precisely so its lifetime is the caller's choice and not the call's.
+//! [`Meter`] is neither `Copy` nor `Default` nor `Clone` for the same reason:
+//! minting a fresh one inside a loop is how a budget silently stops binding, and none of those three traits leaves a mark at the call site.
+//! Nothing here can force reuse — a caller who writes `Meter::new(..)` inside its own loop reproduces the attack exactly —
 //! so this makes the mistake visible rather than impossible.
 //!
-//! These types live at the bottom of the stack rather than beside the model because the crates
-//! that name them do not all depend on each other, and because the running count of refused
-//! diagnostics has to live outside the sink, which is defined here.
+//! These types live at the bottom of the stack rather than beside the model because the crates that name them do not all depend on each other, and because the running count of refused diagnostics has to live outside the sink, which is defined here.
 
 use super::{LimitExceeded, ParseError};
 
-// Named only by this file's tests. A nested module reaches the grammar root through the
-// module it sits in, because no path under `grammar/` may climb past that root (ADR 0004),
+// Named only by this file's tests.
+// A nested module reaches the grammar root through the module it sits in, because no path under `grammar/` may climb past that root (ADR 0004),
 // which leaves a test module one `super::` and nothing above it.
 #[cfg(test)]
 use super::{ContentLineReader, ContentLineSource, Token};
 
 /// The bounds that apply to the content-line grammar alone.
 ///
-/// Separate from the rest of [`Limits`] because a caller of the token layer has no component
-/// tree, no recurrence and no XML, and should not have to state bounds for them to read a
-/// line.
+/// Separate from the rest of [`Limits`] because a caller of the token layer has no component tree, no recurrence and no XML, and should not have to state bounds for them to read a line.
 ///
-/// Every field is a ceiling, which is what the type is for, so none of them says so again in
-/// its own name. The accessors do, because `max_header_bytes()` is read at a call site where
-/// the type has already been forgotten.
+/// Every field is a ceiling, which is what the type is for, so none of them says so again in its own name.
+/// The accessors do, because `max_header_bytes()` is read at a call site where the type has already been forgotten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GrammarLimits {
     /// The most octets one content line's name and parameters may occupy together.
@@ -66,9 +59,8 @@ impl GrammarLimits {
 
     /// The most octets one content line's name and parameters may occupy together.
     ///
-    /// A header has a ceiling because it is reassembled across folds through a scratch
-    /// buffer. A value has no such ceiling here, because a value is delivered in chunks that
-    /// the reader never buffers.
+    /// A header has a ceiling because it is reassembled across folds through a scratch buffer.
+    /// A value has no such ceiling here, because a value is delivered in chunks that the reader never buffers.
     #[must_use]
     pub const fn max_header_bytes(self) -> u32 {
         self.header_bytes
@@ -82,24 +74,14 @@ impl GrammarLimits {
 
     /// The most continuation lines one content line may be folded across.
     ///
-    /// A value has no octet ceiling at this layer because its chunks are never buffered, but
-    /// each fold *is* retained: the reader records where the producer folded so the writer can
-    /// put the fold back, and a caller that never states this bound has a line of nothing but
-    /// continuations charging its memory rather than its budget. A hundred thousand octets of
-    /// `LF SP` is one item, one octet of value, and no header at all, so no other bound here
-    /// sees it.
+    /// A value has no octet ceiling at this layer because its chunks are never buffered, but each fold *is* retained: the reader records where the producer folded so the writer can put the fold back, and a caller that never states this bound has a line of nothing but continuations charging its memory rather than its budget.
+    /// A hundred thousand octets of `LF SP` is one item, one octet of value, and no header at all, so no other bound here sees it.
     ///
-    /// The default is measured rather than divided. A three-quarter mebibyte file is the
-    /// largest an inline `ATTACH;ENCODING=BASE64` can carry under the default
-    /// `max_value_bytes`, base64 spending four octets on every three; folded at section 3.1's
-    /// 75 octets, this crate's own reader retains 14,170 continuations for it, and 14,564 for
-    /// the same file folded at the 73 octets some producers use instead. The bound of 16,384
-    /// stands above both, and that is where its headroom goes: not to a longer value, which
-    /// the layer that stores one refuses on `max_value_bytes` first, but to a producer folding
-    /// tighter than any this corpus has seen. Under `GENEROUS`, whose value ceiling is
-    /// sixty-four times larger, the same shape reaches 906,877 continuations against a bound
-    /// of 1,048,576. The tests in this file build those lines and read them back, so these
-    /// numbers are observations of this reader and not a division.
+    /// The default is measured rather than divided.
+    /// A three-quarter mebibyte file is the largest an inline `ATTACH;ENCODING=BASE64` can carry under the default `max_value_bytes`, base64 spending four octets on every three; folded at section 3.1's 75 octets, this crate's own reader retains 14,170 continuations for it, and 14,564 for the same file folded at the 73 octets some producers use instead.
+    /// The bound of 16,384 stands above both, and that is where its headroom goes: not to a longer value, which the layer that stores one refuses on `max_value_bytes` first, but to a producer folding tighter than any this corpus has seen.
+    /// Under `GENEROUS`, whose value ceiling is sixty-four times larger, the same shape reaches 906,877 continuations against a bound of 1,048,576.
+    /// The tests in this file build those lines and read them back, so these numbers are observations of this reader and not a division.
     #[must_use]
     pub const fn max_folds_per_line(self) -> u32 {
         self.folds_per_line
@@ -141,14 +123,11 @@ impl Default for GrammarLimits {
 
 /// The caller's immutable policy for every bound this workspace observes.
 ///
-/// `Copy` with private fields and `with_*` builders, so adding a field is not a breaking
-/// change and no caller can construct a policy that skips a bound. Every accessor takes
-/// `self` by value: the type is small enough that a reference would be the slower option and
-/// the workspace's own Clippy profile rejects it.
+/// `Copy` with private fields and `with_*` builders, so adding a field is not a breaking change and no caller can construct a policy that skips a bound.
+/// Every accessor takes `self` by value: the type is small enough that a reference would be the slower option and the workspace's own Clippy profile rejects it.
 ///
-/// The numbers below are provisional. A budget right for a phone rendering one month is
-/// wrong for a server indexing a decade, and `docs/adr/0007` is explicit that the real
-/// numbers want corpus measurement before they are asserted anywhere.
+/// The numbers below are provisional.
+/// A budget right for a phone rendering one month is wrong for a server indexing a decade, and `docs/adr/0007` is explicit that the real numbers want corpus measurement before they are asserted anywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Limits {
     /// The bounds the content-line grammar observes on its own.
@@ -212,9 +191,7 @@ impl Limits {
         max_component_depth: 32,
         max_items: 100_000,
         candidates_per_period: 65_536,
-        // Four times the period ceiling, which is where `ical-recur`'s own workload table puts
-        // the candidate budget: a day of `FREQ=SECONDLY` is 86,400 occurrences, and a retention
-        // bound under that refuses a workload the candidate calibration admits.
+        // Four times the period ceiling, which is where `ical-recur`'s own workload table puts the candidate budget: a day of `FREQ=SECONDLY` is 86,400 occurrences, and a retention bound under that refuses a workload the candidate calibration admits.
         occurrences_per_search: 262_144,
         rdate_entries: 4096,
         exdate_entries: 4096,
@@ -222,8 +199,7 @@ impl Limits {
         max_vtimezone_observances: 4096,
         max_vtimezone_components: 256,
         max_payload_components: 1024,
-        // Twice the attendee ceiling, so a payload holding the longest admissible list still
-        // has room for the properties around it and nothing else.
+        // Twice the attendee ceiling, so a payload holding the longest admissible list still has room for the properties around it and nothing else.
         max_payload_properties: 8192,
         max_attendees: 4096,
         max_xml_depth: 64,
@@ -233,20 +209,18 @@ impl Limits {
         max_href_bytes: 4096,
         max_responses: 10_000,
         max_props_per_response: 256,
-        // 1 MiB, the same ceiling one property value gets: the largest character run a
-        // CalDAV body carries is a `calendar-data` payload, which is an `.ics` file.
+        // 1 MiB, the same ceiling one property value gets: the largest character run a CalDAV body carries is a `calendar-data` payload, which is an `.ics` file.
         max_xml_text_bytes: 1_048_576,
         max_prefix_bindings: 64,
-        // The same ceiling an `RDATE` list gets. A free-busy report over a week is a handful
-        // of periods; a report this large is a query whose window is the calibration problem,
+        // The same ceiling an `RDATE` list gets.
+        // A free-busy report over a week is a handful of periods; a report this large is a query whose window is the calibration problem,
         // and a bound the caller can raise is the honest place to say so.
         max_freebusy_periods: 4096,
     };
 
     /// The policy for a server that has memory and expects large calendars.
     ///
-    /// A named second policy rather than a builder chain, because two crates each invented
-    /// one separately and a name they can share is worth more than the flexibility.
+    /// A named second policy rather than a builder chain, because two crates each invented one separately and a name they can share is worth more than the flexibility.
     pub const GENEROUS: Self = Self {
         grammar: GrammarLimits::GENEROUS,
         // 512 MiB.
@@ -310,9 +284,8 @@ impl Limits {
 
     /// The most recurrence candidates that may be generated per period.
     ///
-    /// Counted over candidates *generated*, not instances emitted. A fine `BYxxx`
-    /// combination under a negative `BYSETPOS` does the work either way, and counting the
-    /// output would leave that work unbounded.
+    /// Counted over candidates *generated*, not instances emitted.
+    /// A fine `BYxxx` combination under a negative `BYSETPOS` does the work either way, and counting the output would leave that work unbounded.
     #[must_use]
     pub const fn candidates_per_period(self) -> u32 {
         self.candidates_per_period
@@ -321,16 +294,11 @@ impl Limits {
     /// The most occurrences one recurrence search may emit.
     ///
     /// A separate dimension from the candidate budget because the two bound different costs.
-    /// Candidates bound the work a search does; emitted occurrences bound what a caller
-    /// collecting them *retains*, and a rule that matches on every candidate spends the first
-    /// bound at exactly the rate it spends this one while a rule that matches rarely does not.
+    /// Candidates bound the work a search does; emitted occurrences bound what a caller collecting them *retains*, and a rule that matches on every candidate spends the first bound at exactly the rate it spends this one while a rule that matches rarely does not.
     /// A caller rendering one month wants both, and neither implies the other.
     ///
-    /// Its default has to sit at or above the largest workload the candidate budget admits, or
-    /// the calibration behind that budget is a fiction: a whole day of `FREQ=SECONDLY` is
-    /// 86,400 candidates and 86,400 occurrences, and a retention bound below it would cut off a
-    /// search whose every candidate the budget had already agreed to pay for. The two are
-    /// different costs and the smaller of them still has to reach the same workload.
+    /// Its default has to sit at or above the largest workload the candidate budget admits, or the calibration behind that budget is a fiction: a whole day of `FREQ=SECONDLY` is 86,400 candidates and 86,400 occurrences, and a retention bound below it would cut off a search whose every candidate the budget had already agreed to pay for.
+    /// The two are different costs and the smaller of them still has to reach the same workload.
     #[must_use]
     pub const fn occurrences_per_search(self) -> u32 {
         self.occurrences_per_search
@@ -344,10 +312,8 @@ impl Limits {
 
     /// The most `EXDATE` instants one series may carry.
     ///
-    /// Counted apart from [`Limits::rdate_entries`] because the two lists cost different
-    /// things: an `RDATE` adds an instant the merge must order, an `EXDATE` only removes one,
-    /// and a caller that wants to admit a long deletion list without also admitting a long
-    /// addition list has no way to say so from one shared number.
+    /// Counted apart from [`Limits::rdate_entries`] because the two lists cost different things: an `RDATE` adds an instant the merge must order, an `EXDATE` only removes one,
+    /// and a caller that wants to admit a long deletion list without also admitting a long addition list has no way to say so from one shared number.
     #[must_use]
     pub const fn exdate_entries(self) -> u32 {
         self.exdate_entries
@@ -379,10 +345,7 @@ impl Limits {
 
     /// The most properties one scheduling payload may carry.
     ///
-    /// Read where a scheduling message is checked and charged, because the properties of a
-    /// payload are what a transition is described over: a message nothing counted costs a
-    /// judgment one allocation per line, and the ratio of that work to what the ledger was
-    /// told would otherwise be the sender's to choose.
+    /// Read where a scheduling message is checked and charged, because the properties of a payload are what a transition is described over: a message nothing counted costs a judgment one allocation per line, and the ratio of that work to what the ledger was told would otherwise be the sender's to choose.
     #[must_use]
     pub const fn max_payload_properties(self) -> u32 {
         self.max_payload_properties
@@ -420,14 +383,11 @@ impl Limits {
 
     /// The most responses one multistatus may carry, and `href`s one multiget may ask for.
     ///
-    /// One bound for both because they are one cardinality read from two ends: a client that
-    /// asks for `n` `href`s is asking for `n` responses, and a policy that admits the request
-    /// and refuses its answer describes an exchange nobody can complete.
+    /// One bound for both because they are one cardinality read from two ends: a client that asks for `n` `href`s is asking for `n` responses, and a policy that admits the request and refuses its answer describes an exchange nobody can complete.
     ///
-    /// No number here separates a truthful collection from a forged one, which is why the
-    /// default is a phone's answer and [`Limits::GENEROUS`] is a server's. A reader that
-    /// cannot afford either drains the responses one at a time and never builds the
-    /// collection, and then this bound binds nothing because nothing is retained.
+    /// No number here separates a truthful collection from a forged one, which is why the default is a phone's answer and [`Limits::GENEROUS`] is a server's.
+    /// Streaming reduces retained memory while ordinary responses still spend the shared response budget.
+    /// Reading the whole collection requires limits and an aggregate budget that admit its enumeration.
     #[must_use]
     pub const fn max_responses(self) -> u32 {
         self.max_responses
@@ -435,9 +395,7 @@ impl Limits {
 
     /// The most properties one response or one property request may carry.
     ///
-    /// Per response rather than per body, because a body's total is what
-    /// [`Limits::max_xml_elements`] already counts and a single response carrying a hundred
-    /// thousand properties crosses no cardinality bound the body has.
+    /// Per response rather than per body, because a body's total is what [`Limits::max_xml_elements`] already counts and a single response carrying a hundred thousand properties crosses no cardinality bound the body has.
     #[must_use]
     pub const fn max_props_per_response(self) -> u32 {
         self.max_props_per_response
@@ -445,10 +403,7 @@ impl Limits {
 
     /// The most octets one XML element's character data may occupy.
     ///
-    /// Counted apart from [`Limits::max_response_bytes`] because the body budget bounds what
-    /// is read and this bounds what one element *retains*: a `calendar-data` payload is
-    /// copied out of the body and handed on, so a single element can hold the whole budget's
-    /// worth of octets a second time.
+    /// Counted apart from [`Limits::max_response_bytes`] because the body budget bounds what is read and this bounds what one element *retains*: a `calendar-data` payload is copied out of the body and handed on, so a single element can hold the whole budget's worth of octets a second time.
     #[must_use]
     pub const fn max_xml_text_bytes(self) -> u32 {
         self.max_xml_text_bytes
@@ -456,10 +411,8 @@ impl Limits {
 
     /// The most namespace prefix bindings that may be live at once.
     ///
-    /// The dimension `docs/adr/0010` predicted would be missing, and it was. A document may
-    /// declare `xmlns:` bindings without limit, each one retained for as long as its element
-    /// is open, and neither a depth bound nor an element count reaches them: one element can
-    /// carry a thousand declarations at depth one.
+    /// The dimension `docs/adr/0010` predicted would be missing, and it was.
+    /// A document may declare `xmlns:` bindings without limit, each one retained for as long as its element is open, and neither a depth bound nor an element count reaches them: one element can carry a thousand declarations at depth one.
     #[must_use]
     pub const fn max_prefix_bindings(self) -> u16 {
         self.max_prefix_bindings
@@ -467,11 +420,8 @@ impl Limits {
 
     /// The most busy periods one free-busy report may hold.
     ///
-    /// A free-busy report is generated rather than read, so no octet budget reaches it: the
-    /// input is one query and one collection, and the output is however many periods the
-    /// expansion of that collection produces inside the window. The occurrence bound does not
-    /// stand in for it, because one occurrence may contribute several periods and because a
-    /// report merges across resources that were each expanded under their own search.
+    /// A free-busy report is generated rather than read, so no octet budget reaches it: the input is one query and one collection, and the output is however many periods the expansion of that collection produces inside the window.
+    /// The occurrence bound does not stand in for it, because one occurrence may contribute several periods and because a report merges across resources that were each expanded under their own search.
     #[must_use]
     pub const fn max_freebusy_periods(self) -> u32 {
         self.max_freebusy_periods
@@ -699,26 +649,16 @@ impl Default for Limits {
 
 /// The caller's running ledger of work already done under a [`Limits`] policy.
 ///
-/// Exhaustion latches: once any bound this ledger keeps has refused a charge, every later
-/// charge fails, so a caller that ignores one `false` cannot spend its way back into a clean
-/// answer. *Any* bound, not only the octet budget: a recurrence search terminated by
-/// `Limits::candidates_per_period` or by `Limits::occurrences_per_search` has stopped short of
-/// the answer it was asked for, and [`Meter::is_exhausted`] is the report of that fact which
-/// `docs/adr/0002` says outlives every combinator applied to the iterator. A per-period ceiling
-/// that refused without latching left that report reading clean beside a truncated answer,
+/// Exhaustion latches: once any bound this ledger keeps has refused a charge, every later charge fails, so a caller that ignores one `false` cannot spend its way back into a clean answer.
+/// *Any* bound, not only the octet budget: a recurrence search terminated by `Limits::candidates_per_period` or by `Limits::occurrences_per_search` has stopped short of the answer it was asked for, and [`Meter::is_exhausted`] is the report of that fact which `docs/adr/0002` says outlives every combinator applied to the iterator.
+/// A per-period ceiling that refused without latching left that report reading clean beside a truncated answer,
 /// which is the one shape the ADR exists to prevent.
 ///
-/// The cost is deliberate and is the shape `docs/adr/0010` argues for: one hostile series in a
-/// fan-out over a shared ledger stops the fan-out, loudly, rather than letting every later
-/// search pay for it. A caller that wants one series' cost isolated from the next gives each
-/// its own ledger, which is the same choice that ADR names about aggregate bounding.
+/// The cost is deliberate and is the shape `docs/adr/0010` argues for: one hostile series in a fan-out over a shared ledger stops the fan-out, loudly, rather than letting every later search pay for it.
+/// A caller that wants one series' cost isolated from the next gives each its own ledger, which is the same choice that ADR names about aggregate bounding.
 ///
-/// Three shapes over one accounting, rather than three accountings. [`Meter::charge`]
-/// returns `bool` because a recurrence search needs a budget breach to be a reported outcome
-/// it can keep iterating past; [`Meter::try_charge`] is the identical charge for callers
-/// whose surrounding code is already `Result`-shaped; and the `charge_*` methods convert the
-/// same breach into a [`ParseError`], because a document a reader cannot finish is not one
-/// it can hand back.
+/// Three shapes over one accounting, rather than three accountings.
+/// [`Meter::charge`] returns `bool` because a recurrence search needs a budget breach to be a reported outcome it can keep iterating past; [`Meter::try_charge`] is the identical charge for callers whose surrounding code is already `Result`-shaped; and the `charge_*` methods convert the same breach into a [`ParseError`], because a document a reader cannot finish is not one it can hand back.
 #[derive(Debug)]
 pub struct Meter {
     /// The policy this ledger is kept under.
@@ -743,9 +683,8 @@ pub struct Meter {
     candidates: u32,
     /// Recurrence candidates charged so far, across every period and every search.
     ///
-    /// Never reset, unlike `candidates`, and counted apart from `spent` because that number
-    /// also holds the octets of whatever was parsed under the same ledger. It is what lets a
-    /// search report the candidates *it* paid for as a difference between two readings.
+    /// Never reset, unlike `candidates`, and counted apart from `spent` because that number also holds the octets of whatever was parsed under the same ledger.
+    /// It is what lets a search report the candidates *it* paid for as a difference between two readings.
     candidates_charged: u64,
     /// Occurrences emitted so far by every search this ledger has served.
     occurrences: u32,
@@ -763,8 +702,23 @@ pub struct Meter {
     freebusy_periods: u32,
     /// Diagnostics a sink refused, saturating.
     dropped: u32,
-    /// Whether the octet budget has been crossed.
+    /// Whether a resource refusal has latched exhaustion.
     exhausted: bool,
+}
+
+struct LiveScope<'a> {
+    depth: u16,
+    element_depth: u16,
+    bindings: u16,
+    meter: &'a mut Meter,
+}
+
+impl Drop for LiveScope<'_> {
+    fn drop(&mut self) {
+        self.meter.depth = self.depth;
+        self.meter.element_depth = self.element_depth;
+        self.meter.bindings = self.bindings;
+    }
 }
 
 impl Meter {
@@ -776,8 +730,7 @@ impl Meter {
 
     /// A ledger over `limits` with an octet budget of the caller's own choosing.
     ///
-    /// The budget is separate from the policy so that one policy can be spread across many
-    /// calls with a shared ceiling — the fan-out case this whole type exists for.
+    /// The budget is separate from the policy so that one policy can be spread across many calls with a shared ceiling — the fan-out case this whole type exists for.
     #[must_use]
     pub const fn with_budget(limits: Limits, budget: u64) -> Self {
         Self {
@@ -804,23 +757,26 @@ impl Meter {
         }
     }
 
-    /// Charge `units` octets. `false` once the budget is crossed, and `false` forever after.
+    /// Charge `units` octets.
+    /// `false` once the budget is crossed, and `false` forever after.
     pub fn charge(&mut self, units: u64) -> bool {
         if self.exhausted {
             return false;
         }
-        // Saturating rather than checked: at `u64::MAX` spent octets the answer is the same
-        // refusal either way, and a wrap would report a clean ledger.
-        self.spent = self.spent.saturating_add(units);
+        let Some(next) = self.spent.checked_add(units) else {
+            self.spent = u64::MAX;
+            return self.refuse(false);
+        };
+        self.spent = next;
         if self.spent > self.budget {
-            self.exhausted = true;
-            return false;
+            return self.refuse(false);
         }
         true
     }
 
     /// Charge `units` octets, as a `Result`.
     pub fn try_charge(&mut self, units: u64) -> Result<(), LimitExceeded> {
+        self.available()?;
         if self.charge(units) {
             Ok(())
         } else {
@@ -830,6 +786,7 @@ impl Meter {
 
     /// Charge `count` octets, as the failure a reader cannot continue past.
     pub fn charge_bytes(&mut self, count: u64) -> Result<(), ParseError> {
+        self.available().map_err(|_| ParseError::Exhausted)?;
         if self.charge(count) {
             Ok(())
         } else {
@@ -837,63 +794,78 @@ impl Meter {
         }
     }
 
-    /// Charge `count` octets against the shared ledger, as a `Result` a protocol reader can
-    /// carry.
+    /// Charge `count` octets against the shared ledger, as a `Result` a protocol reader can carry.
     pub fn try_charge_bytes(&mut self, count: u64) -> Result<(), LimitExceeded> {
         self.try_charge(count)
     }
 
     /// Charge one item — one property or one component.
     pub fn charge_item(&mut self) -> Result<(), ParseError> {
-        let next = self.items.saturating_add(1);
-        if next > self.limits.max_items {
-            return Err(ParseError::TooManyItems {
+        self.available().map_err(|_| ParseError::Exhausted)?;
+        let Some(next) = self
+            .items
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_items)
+        else {
+            return Err(self.refuse_parse(ParseError::TooManyItems {
                 limit: self.limits.max_items,
-            });
-        }
+            }));
+        };
         self.items = next;
         Ok(())
     }
 
     /// Charge one XML element against the shared ledger.
     pub fn try_charge_element(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.elements.saturating_add(1);
-        if next > self.limits.max_xml_elements {
-            return Err(LimitExceeded::Elements);
-        }
+        self.available()?;
+        let Some(next) = self
+            .elements
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_xml_elements)
+        else {
+            return Err(self.refuse(LimitExceeded::Elements));
+        };
         self.elements = next;
         Ok(())
     }
 
-    /// Open one component. Paired with [`Meter::leave`].
+    /// Open one component.
+    /// Paired with [`Meter::leave`].
     ///
-    /// The depth is not restored on refusal, because a reader that has been told it is too
-    /// deep has nothing left to close.
+    /// The depth is not restored on refusal, because a reader that has been told it is too deep has nothing left to close.
     pub fn enter(&mut self) -> Result<(), ParseError> {
-        let next = self.depth.saturating_add(1);
-        if next > self.limits.max_component_depth {
-            return Err(ParseError::TooDeep {
+        self.available().map_err(|_| ParseError::Exhausted)?;
+        let Some(next) = self
+            .depth
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_component_depth)
+        else {
+            return Err(self.refuse_parse(ParseError::TooDeep {
                 limit: self.limits.max_component_depth,
-            });
-        }
+            }));
+        };
         self.depth = next;
         Ok(())
     }
 
     /// Close one component.
     ///
-    /// Saturating at zero rather than refusing, because an unmatched `END` is a diagnostic
-    /// about the calendar and must not become an error about the ledger.
+    /// Saturating at zero rather than refusing, because an unmatched `END` is a diagnostic about the calendar and must not become an error about the ledger.
     pub fn leave(&mut self) {
         self.depth = self.depth.saturating_sub(1);
     }
 
-    /// Open one XML element. Paired with [`Meter::leave_element`].
+    /// Open one XML element.
+    /// Paired with [`Meter::leave_element`].
     pub fn try_enter_element(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.element_depth.saturating_add(1);
-        if next > self.limits.max_xml_depth {
-            return Err(LimitExceeded::Depth);
-        }
+        self.available()?;
+        let Some(next) = self
+            .element_depth
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_xml_depth)
+        else {
+            return Err(self.refuse(LimitExceeded::Depth));
+        };
         self.element_depth = next;
         Ok(())
     }
@@ -905,53 +877,50 @@ impl Meter {
 
     /// Charge one multistatus response against the shared ledger.
     ///
-    /// Counted here as well as capped at the collection that holds them, because the reader
-    /// that most needs the bound builds no collection at all: a caller draining responses one
-    /// at a time retains one and would otherwise have nothing counting how many arrived. The
-    /// count runs across bodies rather than being reset per body, which is the aggregate
-    /// posture `docs/adr/0010` exists for — a caller wanting each exchange bounded on its own
-    /// gives each its own ledger.
+    /// Counted here as well as capped at the collection that holds them, because the reader that most needs the bound builds no collection at all: a caller draining responses one at a time retains one and would otherwise have nothing counting how many arrived.
+    /// The count runs across bodies rather than being reset per body, which is the aggregate posture `docs/adr/0010` exists for — a caller wanting each exchange bounded on its own gives each its own ledger.
     pub fn try_charge_response(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.responses.saturating_add(1);
-        if next > self.limits.max_responses {
-            return Err(LimitExceeded::Responses);
-        }
+        self.available()?;
+        let Some(next) = self
+            .responses
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_responses)
+        else {
+            return Err(self.refuse(LimitExceeded::Responses));
+        };
         self.responses = next;
         Ok(())
     }
 
     /// Charge `count` octets of one XML element's character data.
     ///
-    /// Two bounds cross here, for the reason [`Limits::max_xml_text_bytes`] gives: the
-    /// per-element ceiling refuses one enormous `calendar-data`, and the shared octet budget
-    /// below it refuses a body of ten thousand merely large ones.
+    /// Two bounds cross here, for the reason [`Limits::max_xml_text_bytes`] gives: the per-element ceiling refuses one enormous `calendar-data`, and the shared octet budget below it refuses a body of ten thousand merely large ones.
     pub fn try_charge_text(&mut self, count: u32) -> Result<(), LimitExceeded> {
-        if count > self.limits.max_xml_text_bytes {
-            return Err(LimitExceeded::Text);
-        }
+        let count = self.check_width(count, self.limits.max_xml_text_bytes, LimitExceeded::Text)?;
         self.try_charge(u64::from(count))
     }
 
-    /// Open one namespace prefix binding. Paired with [`Meter::unbind_prefix`].
+    /// Open one namespace prefix binding.
+    /// Paired with [`Meter::unbind_prefix`].
     ///
-    /// Live bindings rather than declarations seen: a binding costs memory for as long as its
-    /// element is open and nothing after that, so a document that declares one prefix per
-    /// element at depth two is not the attack this bounds. One element carrying a thousand
-    /// `xmlns:` attributes is, and no depth or element count sees it.
+    /// Live bindings rather than declarations seen: a binding costs memory for as long as its element is open and nothing after that, so a document that declares one prefix per element at depth two is not the attack this bounds.
+    /// One element carrying a thousand `xmlns:` attributes is, and no depth or element count sees it.
     pub fn try_bind_prefix(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.bindings.saturating_add(1);
-        if next > self.limits.max_prefix_bindings {
-            return Err(LimitExceeded::PrefixBindings);
-        }
+        self.available()?;
+        let Some(next) = self
+            .bindings
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_prefix_bindings)
+        else {
+            return Err(self.refuse(LimitExceeded::PrefixBindings));
+        };
         self.bindings = next;
         Ok(())
     }
 
     /// Close one namespace prefix binding.
     ///
-    /// Saturating at zero rather than refusing, for the reason [`Meter::leave`] is: an
-    /// unbalanced close is a fact about the document and must not become an error about the
-    /// ledger.
+    /// Saturating at zero rather than refusing, for the reason [`Meter::leave`] is: an unbalanced close is a fact about the document and must not become an error about the ledger.
     pub const fn unbind_prefix(&mut self) {
         self.bindings = self.bindings.saturating_sub(1);
     }
@@ -970,107 +939,120 @@ impl Meter {
 
     /// Begin a recurrence period, clearing the per-period candidate count.
     ///
-    /// The per-period bound is per period, so something has to say where one ends. Naming
-    /// that boundary here rather than letting an expander keep a counter of its own is what
-    /// keeps the aggregate ledger below and the per-period ceiling one accounting: a period
-    /// opened here still spends the shared budget it never resets.
+    /// The per-period bound is per period, so something has to say where one ends.
+    /// Naming that boundary here rather than letting an expander keep a counter of its own is what keeps the aggregate ledger below and the per-period ceiling one accounting: a period opened here still spends the shared budget it never resets.
     pub const fn open_period(&mut self) {
         self.candidates = 0;
     }
 
     /// Charge one recurrence candidate, generated rather than emitted.
     ///
-    /// Two bounds cross here. The per-period ceiling refuses a single period that expands
-    /// without end — a `BYSETPOS` rule filling its period before selecting from it, which is
-    /// where a negative position forces the whole set to exist. The shared ledger below it is
-    /// never reset, so a rule that matches rarely and walks years between hits spends the
-    /// caller's whole budget rather than one period's, which is the case a bound charged per
-    /// *emitted* occurrence never sees at all.
-    /// The refusal latches, for the reason the type's own documentation gives: a search
-    /// stopped by the per-period ceiling has produced a truncated answer, and a ledger still
-    /// reading clean beside one is the report `docs/adr/0002` promised and did not deliver.
+    /// Two bounds cross here.
+    /// The per-period ceiling refuses a single period that expands without end — a `BYSETPOS` rule filling its period before selecting from it, which is where a negative position forces the whole set to exist.
+    /// The shared ledger below it is never reset, so a rule that matches rarely and walks years between hits spends the caller's whole budget rather than one period's, which is the case a bound charged per *emitted* occurrence never sees at all.
+    /// The refusal latches, for the reason the type's own documentation gives: a search stopped by the per-period ceiling has produced a truncated answer, and a ledger still reading clean beside one is the report `docs/adr/0002` promised and did not deliver.
     pub fn try_charge_candidate(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.candidates.saturating_add(1);
-        if next > self.limits.candidates_per_period {
-            self.exhausted = true;
-            return Err(LimitExceeded::Candidates);
-        }
-        self.candidates = next;
+        self.available()?;
+        let Some(next) = self
+            .candidates
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.candidates_per_period)
+        else {
+            return Err(self.refuse(LimitExceeded::Candidates));
+        };
         self.try_charge(1)?;
+        self.candidates = next;
         self.candidates_charged = self.candidates_charged.saturating_add(1);
         Ok(())
     }
 
     /// Charge one emitted occurrence.
     ///
-    /// Latching for the same reason [`Meter::try_charge_candidate`] does: a search cut off at
-    /// `Limits::occurrences_per_search` answered less than it was asked, and the caller's
-    /// ledger is the report of that which survives being collected through an adapter.
+    /// Latching for the same reason [`Meter::try_charge_candidate`] does: a search cut off at `Limits::occurrences_per_search` answered less than it was asked, and the caller's ledger is the report of that which survives being collected through an adapter.
     pub fn try_charge_occurrence(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.occurrences.saturating_add(1);
-        if next > self.limits.occurrences_per_search {
-            self.exhausted = true;
-            return Err(LimitExceeded::Occurrences);
-        }
+        self.available()?;
+        let Some(next) = self
+            .occurrences
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.occurrences_per_search)
+        else {
+            return Err(self.refuse(LimitExceeded::Occurrences));
+        };
         self.occurrences = next;
         Ok(())
     }
 
     /// Charge `count` `RDATE` instants.
     pub fn try_charge_rdate_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
-        let next = self.rdates.saturating_add(count);
-        if next > self.limits.rdate_entries {
-            return Err(LimitExceeded::RdateEntries);
-        }
+        self.available()?;
+        let Some(next) = self
+            .rdates
+            .checked_add(count)
+            .filter(|next| *next <= self.limits.rdate_entries)
+        else {
+            return Err(self.refuse(LimitExceeded::RdateEntries));
+        };
         self.rdates = next;
         Ok(())
     }
 
     /// Charge `count` `EXDATE` instants.
     pub fn try_charge_exdate_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
-        let next = self.exdates.saturating_add(count);
-        if next > self.limits.exdate_entries {
-            return Err(LimitExceeded::ExdateEntries);
-        }
+        self.available()?;
+        let Some(next) = self
+            .exdates
+            .checked_add(count)
+            .filter(|next| *next <= self.limits.exdate_entries)
+        else {
+            return Err(self.refuse(LimitExceeded::ExdateEntries));
+        };
         self.exdates = next;
         Ok(())
     }
 
     /// Charge `count` `RECURRENCE-ID` overrides.
     pub fn try_charge_override_entries(&mut self, count: u32) -> Result<(), LimitExceeded> {
-        let next = self.overrides.saturating_add(count);
-        if next > self.limits.override_entries {
-            return Err(LimitExceeded::OverrideEntries);
-        }
+        self.available()?;
+        let Some(next) = self
+            .overrides
+            .checked_add(count)
+            .filter(|next| *next <= self.limits.override_entries)
+        else {
+            return Err(self.refuse(LimitExceeded::OverrideEntries));
+        };
         self.overrides = next;
         Ok(())
     }
 
     /// Charge `count` `VTIMEZONE` observances.
     ///
-    /// Charged where the observances are admitted into a transition table rather than on the
-    /// lookup path: after construction the table is finite and its rules are evaluated in
-    /// closed form, so the only unbounded quantity a zone has is how many transitions a file
-    /// declares. A `VTIMEZONE` carrying a million `RDATE` lines is a file somebody can write.
+    /// Charged where the observances are admitted into a transition table rather than on the lookup path: after construction the table is finite and its rules are evaluated in closed form, so the only unbounded quantity a zone has is how many transitions a file declares.
+    /// A `VTIMEZONE` carrying a million `RDATE` lines is a file somebody can write.
     pub fn try_charge_vtimezone_observances(&mut self, count: u32) -> Result<(), LimitExceeded> {
-        let next = self.observances.saturating_add(count);
-        if next > self.limits.max_vtimezone_observances {
-            return Err(LimitExceeded::VtimezoneObservances);
-        }
+        self.available()?;
+        let Some(next) = self
+            .observances
+            .checked_add(count)
+            .filter(|next| *next <= self.limits.max_vtimezone_observances)
+        else {
+            return Err(self.refuse(LimitExceeded::VtimezoneObservances));
+        };
         self.observances = next;
         Ok(())
     }
 
     /// Charge one `VTIMEZONE` component.
     ///
-    /// Counted apart from the observances inside it because the two bound different costs: a
-    /// calendar declaring ten thousand zones of one observance each crosses no observance
-    /// bound at all.
+    /// Counted apart from the observances inside it because the two bound different costs: a calendar declaring ten thousand zones of one observance each crosses no observance bound at all.
     pub fn try_charge_vtimezone_component(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.zones.saturating_add(1);
-        if next > self.limits.max_vtimezone_components {
-            return Err(LimitExceeded::VtimezoneComponents);
-        }
+        self.available()?;
+        let Some(next) = self
+            .zones
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_vtimezone_components)
+        else {
+            return Err(self.refuse(LimitExceeded::VtimezoneComponents));
+        };
         self.zones = next;
         Ok(())
     }
@@ -1089,16 +1071,17 @@ impl Meter {
 
     /// Charge one busy period against a free-busy report's bound.
     ///
-    /// Latching, for the reason [`Meter::try_charge_occurrence`] latches: a report cut off at
-    /// `Limits::max_freebusy_periods` states less busy time than the collection holds, and a
-    /// caller reading it as "free" would double-book somebody. The ledger reading exhausted is
-    /// the report of that which survives being handed on as a plain list of periods.
+    /// Latching, for the reason [`Meter::try_charge_occurrence`] latches: a report cut off at `Limits::max_freebusy_periods` states less busy time than the collection holds, and a caller reading it as "free" would double-book somebody.
+    /// The ledger reading exhausted is the report of that which survives being handed on as a plain list of periods.
     pub fn try_charge_freebusy_period(&mut self) -> Result<(), LimitExceeded> {
-        let next = self.freebusy_periods.saturating_add(1);
-        if next > self.limits.max_freebusy_periods {
-            self.exhausted = true;
-            return Err(LimitExceeded::FreeBusyPeriods);
-        }
+        self.available()?;
+        let Some(next) = self
+            .freebusy_periods
+            .checked_add(1)
+            .filter(|next| *next <= self.limits.max_freebusy_periods)
+        else {
+            return Err(self.refuse(LimitExceeded::FreeBusyPeriods));
+        };
         self.freebusy_periods = next;
         Ok(())
     }
@@ -1117,10 +1100,8 @@ impl Meter {
 
     /// Recurrence candidates charged so far, across every period and every search.
     ///
-    /// Monotone and never reset, so one search's own cost is the difference between this
-    /// reading before it began and after it stopped. That difference is what a terminal report
-    /// carries, and it is exact because a search holds this ledger exclusively for as long as
-    /// it runs.
+    /// Monotone and never reset, so one search's own cost is the difference between this reading before it began and after it stopped.
+    /// That difference is what a terminal report carries, and it is exact because a search holds this ledger exclusively for as long as it runs.
     #[must_use]
     pub const fn candidates_charged(&self) -> u64 {
         self.candidates_charged
@@ -1135,14 +1116,13 @@ impl Meter {
     /// Record that a sink refused a diagnostic.
     ///
     /// Called through [`report_diagnostic`](crate::report_diagnostic) rather than directly.
-    /// The count lives here because a sink that keeps nothing cannot also remember how much
-    /// it did not keep, and a caller that loses *which* violations occurred must not also
-    /// lose *that* they did.
+    /// The count lives here because a sink that keeps nothing cannot also remember how much it did not keep, and a caller that loses *which* violations occurred must not also lose *that* they did.
     pub fn note_dropped_diagnostic(&mut self) {
         self.dropped = self.dropped.saturating_add(1);
     }
 
-    /// Diagnostics a sink refused. A nonzero count is not a clean parse.
+    /// Diagnostics a sink refused.
+    /// A nonzero count is not a clean parse.
     #[must_use]
     pub const fn diagnostics_dropped(&self) -> u32 {
         self.dropped
@@ -1150,13 +1130,70 @@ impl Meter {
 
     /// Whether any bound this ledger keeps has refused a charge.
     ///
-    /// The octet budget, the per-period recurrence ceiling, and the per-search occurrence
-    /// ceiling all latch it. One flag rather than three because what a caller asks this
-    /// question for is "is what I am holding the whole answer", and every one of the three
-    /// answers that question the same way.
+    /// Every resource refusal latches the ledger until the caller creates another meter.
     #[must_use]
     pub const fn is_exhausted(&self) -> bool {
         self.exhausted
+    }
+
+    pub(crate) fn refuse_parse(&mut self, error: ParseError) -> ParseError {
+        self.refuse(error)
+    }
+
+    /// Run an owned operation and restore live counters on scope exit.
+    pub fn with_live_scope<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
+        let scope = LiveScope {
+            depth: self.depth,
+            element_depth: self.element_depth,
+            bindings: self.bindings,
+            meter: self,
+        };
+        operation(scope.meter)
+    }
+
+    pub(crate) fn refuse_limit(&mut self, error: LimitExceeded) -> LimitExceeded {
+        self.refuse(error)
+    }
+
+    pub(crate) fn admit<T>(
+        &mut self,
+        operation: impl FnOnce() -> Result<T, LimitExceeded>,
+    ) -> Result<T, LimitExceeded> {
+        self.available()?;
+        operation().map_err(|error| self.refuse_limit(error))
+    }
+
+    pub(crate) fn check_bound(
+        &mut self,
+        within: bool,
+        dimension: LimitExceeded,
+    ) -> Result<(), LimitExceeded> {
+        self.admit(|| if within { Ok(()) } else { Err(dimension) })
+    }
+
+    pub(crate) fn check_width(
+        &mut self,
+        width: impl TryInto<u32>,
+        cap: u32,
+        dimension: LimitExceeded,
+    ) -> Result<u32, LimitExceeded> {
+        self.available()?;
+        let width = width.try_into().map_err(|_| self.refuse_limit(dimension))?;
+        self.check_bound(width <= cap, dimension)?;
+        Ok(width)
+    }
+
+    fn available(&self) -> Result<(), LimitExceeded> {
+        if self.exhausted {
+            Err(LimitExceeded::Exhausted)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn refuse<E>(&mut self, error: E) -> E {
+        self.exhausted = true;
+        error
     }
 
     /// Octets charged so far.
@@ -1202,8 +1239,8 @@ mod tests {
     /// RFC 5545 section 3.1's ceiling on one physical line, terminator excluded.
     const SPEC_FOLD_WIDTH: usize = 75;
 
-    /// A width the corpus records producers folding at instead. Not a violation: section 3.1
-    /// states a ceiling, so anything at or under it is a file that has to be read.
+    /// A width the corpus records producers folding at instead.
+    /// Not a violation: section 3.1 states a ceiling, so anything at or under it is a file that has to be read.
     const TIGHTER_FOLD_WIDTH: usize = 73;
 
     /// The header RFC 5545 section 3.8.1.1 requires of an attachment carried inline.
@@ -1215,8 +1252,7 @@ mod tests {
 
     /// Continuations this reader retained for that attachment folded at 75 octets.
     ///
-    /// Written here and in `max_folds_per_line`'s documentation and nowhere else, because it
-    /// is an observation: the only thing entitled to change it is measuring again.
+    /// Written here and in `max_folds_per_line`'s documentation and nowhere else, because it is an observation: the only thing entitled to change it is measuring again.
     const FOLDS_AT_THE_SPECIFIED_WIDTH: u32 = 14_170;
 
     /// The same attachment folded at 73 octets, which costs 394 continuations more.
@@ -1233,8 +1269,7 @@ mod tests {
 
     /// One `ATTACH;ENCODING=BASE64` content line whose value is `octets` of base64 text.
     ///
-    /// Real base64 rather than filler, because the thing being measured is a line a client
-    /// emits: an image reaches a calendar as an inline attachment written exactly like this,
+    /// Real base64 rather than filler, because the thing being measured is a line a client emits: an image reaches a calendar as an inline attachment written exactly like this,
     /// and a value of one repeated octet would fold the same way only by accident.
     fn inline_attachment(octets: usize) -> Vec<u8> {
         let end = ATTACH_HEADER.len().saturating_add(octets);
@@ -1249,8 +1284,8 @@ mod tests {
     /// Fold `line` the way a producer does: no physical line longer than `width` octets.
     ///
     /// A continuation spends one of its `width` octets on the whitespace that introduces it,
-    /// so a fold buys `width - 1` octets of content and not `width`. That single octet is the
-    /// difference between the count below and the one a division produces.
+    /// so a fold buys `width - 1` octets of content and not `width`.
+    /// That single octet is the difference between the count below and the one a division produces.
     fn fold_at(line: &[u8], width: usize) -> Vec<u8> {
         let (first, rest) = line.split_at(line.len().min(width));
         let mut out = Vec::from(first);
@@ -1264,8 +1299,7 @@ mod tests {
 
     /// How many continuations a logical line of `octets` takes at `width`.
     ///
-    /// The shape of the fold, stated once so it can be held against an observation before it
-    /// is believed about a file nobody is going to build.
+    /// The shape of the fold, stated once so it can be held against an observation before it is believed about a file nobody is going to build.
     fn continuations_for(octets: usize, width: usize) -> usize {
         let carried = width.saturating_sub(1).max(1);
         octets.saturating_sub(width).div_ceil(carried)
@@ -1273,9 +1307,8 @@ mod tests {
 
     /// A line of nothing but continuations: no name, `count` folds, one octet of value.
     ///
-    /// The shape this bound exists for. It is one item, its header is empty, its value is one
-    /// octet and the whole thing sits far inside the octet budget, so every other bound in
-    /// this file looks straight past it.
+    /// The shape this bound exists for.
+    /// It is one item, its header is empty, its value is one octet and the whole thing sits far inside the octet budget, so every other bound in this file looks straight past it.
     fn continuation_bomb(count: usize) -> Vec<u8> {
         let mut bomb = Vec::from(&b":"[..]);
         for _ in 0..count {
@@ -1298,13 +1331,10 @@ mod tests {
         Ok(retained)
     }
 
-    /// The bound comes from a file rather than from a division, and it still refuses the
-    /// shape it was added for.
+    /// The bound comes from a file rather than from a division, and it still refuses the shape it was added for.
     ///
-    /// One attachment, read under both policies, because a number justified against one of
-    /// them is not justified. The last two rows are the attack: a line whose continuations
-    /// are its entire content, refused at the fold that crosses the bound rather than after
-    /// the line is resident.
+    /// One attachment, read under both policies, because a number justified against one of them is not justified.
+    /// The last two rows are the attack: a line whose continuations are its entire content, refused at the fold that crosses the bound rather than after the line is resident.
     #[test]
     fn the_fold_bound_admits_a_real_inline_attachment_and_refuses_a_line_of_continuations() {
         let attachment = inline_attachment(value_ceiling(Limits::DEFAULT));
@@ -1317,8 +1347,7 @@ mod tests {
             "the bomb stays inside every other bound, so its refusal is about this one"
         );
 
-        // What the line is, the octets it arrives as, the policy reading it, and the folds
-        // the reader is left holding — or the bound it refused at.
+        // What the line is, the octets it arrives as, the policy reading it, and the folds the reader is left holding — or the bound it refused at.
         let cases = [
             (
                 "an empty input is folded nowhere",
@@ -1373,11 +1402,8 @@ mod tests {
 
     /// What that measurement says about the policy no test can build a file for.
     ///
-    /// The largest value `GENEROUS` admits is sixty-four mebibytes, which is sixty-eight
-    /// million octets once folded and not a thing to allocate here. So the shape of a fold is
-    /// pinned to the two observations above first and only then applied to a ceiling nobody
-    /// materialized — which is still not a division nobody checked, because the divisor is
-    /// the one the reader was just watched using.
+    /// The largest value `GENEROUS` admits is sixty-four mebibytes, which is sixty-eight million octets once folded and not a thing to allocate here.
+    /// So the shape of a fold is pinned to the two observations above first and only then applied to a ceiling nobody materialized — which is still not a division nobody checked, because the divisor is the one the reader was just watched using.
     #[test]
     fn the_bound_generous_states_covers_the_largest_value_generous_admits() {
         let header = ATTACH_HEADER.len();
@@ -1424,12 +1450,62 @@ mod tests {
     fn one_accounting_is_reported_in_three_shapes() {
         let mut meter = Meter::with_budget(Limits::DEFAULT, 4);
         assert_eq!(meter.try_charge(8), Err(LimitExceeded::Budget));
-        assert_eq!(
-            meter.charge_bytes(1),
-            Err(ParseError::InputTooLarge { limit: 4 })
-        );
+        assert_eq!(meter.charge_bytes(1), Err(ParseError::Exhausted));
         assert!(!meter.charge(1));
         assert_eq!(meter.spent(), 8, "one ledger, whichever shape charged it");
+        let mut fresh = Meter::with_budget(Limits::DEFAULT, 4);
+        assert_eq!(
+            fresh.charge_bytes(8),
+            Err(ParseError::InputTooLarge { limit: 4 })
+        );
+    }
+
+    #[test]
+    fn owned_scopes_restore_only_live_counts_after_success_or_error() {
+        for rejected in [false, true] {
+            let mut meter = Meter::new(Limits::DEFAULT);
+            meter.enter().unwrap();
+            meter.try_enter_element().unwrap();
+            meter.try_bind_prefix().unwrap();
+            let result = meter.with_live_scope(|meter| {
+                meter.enter().unwrap();
+                meter.try_enter_element().unwrap();
+                meter.try_bind_prefix().unwrap();
+                meter.charge_item().unwrap();
+                meter.try_charge_response().unwrap();
+                meter.try_charge_bytes(3).unwrap();
+                meter.note_dropped_diagnostic();
+                if rejected { Err("invalid") } else { Ok(()) }
+            });
+            assert_eq!(result, if rejected { Err("invalid") } else { Ok(()) });
+            assert_eq!(meter.depth, 1);
+            assert_eq!(meter.element_depth, 1);
+            assert_eq!(meter.bindings, 1);
+            assert_eq!(meter.items(), 1);
+            assert_eq!(meter.responses(), 1);
+            assert_eq!(meter.spent(), 3);
+            assert_eq!(meter.diagnostics_dropped(), 1);
+            assert!(!meter.is_exhausted());
+        }
+    }
+
+    #[test]
+    fn owned_scope_cleanup_keeps_the_first_refusal_and_exhaustion() {
+        let mut meter = Meter::new(Limits::DEFAULT.with_occurrences_per_search(0));
+        let result = meter.with_live_scope(|meter| {
+            meter.enter().unwrap();
+            meter.try_enter_element().unwrap();
+            meter.try_bind_prefix().unwrap();
+            meter.try_charge_bytes(3).unwrap();
+            meter.try_charge_occurrence()
+        });
+        assert_eq!(result, Err(LimitExceeded::Occurrences));
+        assert_eq!(meter.depth, 0);
+        assert_eq!(meter.element_depth, 0);
+        assert_eq!(meter.bindings, 0);
+        assert_eq!(meter.spent(), 3);
+        assert!(meter.is_exhausted());
+        assert_eq!(meter.try_charge_bytes(0), Err(LimitExceeded::Exhausted));
     }
 
     #[test]
@@ -1445,9 +1521,7 @@ mod tests {
 
     /// The per-period ceiling resets and the ledger under it does not.
     ///
-    /// Both halves in one test because the bug this guards is believing one is the other: a
-    /// rule that matches rarely walks period after period, each of them individually inside
-    /// `candidates_per_period`, and only the ledger that never resets ever refuses it.
+    /// Both halves in one test because the bug this guards is believing one is the other: a rule that matches rarely walks period after period, each of them individually inside `candidates_per_period`, and only the ledger that never resets ever refuses it.
     #[test]
     fn a_period_bound_resets_and_the_shared_ledger_it_charges_does_not() {
         let limits = Limits::DEFAULT.with_candidates_per_period(2);
@@ -1474,12 +1548,8 @@ mod tests {
 
     /// A period ceiling ends the ledger it refused inside, and not only that period.
     ///
-    /// The ceiling refuses before the octet budget is touched, so for a while a recurrence
-    /// search terminated by it left this flag reading clean — a truncated answer beside a
-    /// ledger claiming nothing had been cut short, which is the state `docs/adr/0002` names as
-    /// the reason the meter is one of its three reports. The cost is that one runaway period in
-    /// a fan-out stops the fan-out; a caller wanting one series' cost isolated gives each
-    /// series a ledger of its own.
+    /// The ceiling refuses before the octet budget is touched, so for a while a recurrence search terminated by it left this flag reading clean — a truncated answer beside a ledger claiming nothing had been cut short, which is the state `docs/adr/0002` names as the reason the meter is one of its three reports.
+    /// The cost is that one runaway period in a fan-out stops the fan-out; a caller wanting one series' cost isolated gives each series a ledger of its own.
     #[test]
     fn a_period_ceiling_latches_the_ledger_rather_than_only_the_period() {
         let limits = Limits::DEFAULT.with_candidates_per_period(2);
@@ -1499,7 +1569,7 @@ mod tests {
         meter.open_period();
         assert_eq!(
             meter.try_charge_candidate(),
-            Err(LimitExceeded::Budget),
+            Err(LimitExceeded::Exhausted),
             "and the latch outlives the period, against a ledger with octets to spare"
         );
     }
@@ -1519,7 +1589,7 @@ mod tests {
 
     /// Each recurrence list is refused under its own name.
     #[test]
-    fn the_three_recurrence_lists_are_bounded_separately() {
+    fn each_recurrence_list_names_its_first_refusal() {
         let limits = Limits::DEFAULT
             .with_rdate_entries(1)
             .with_exdate_entries(1)
@@ -1531,15 +1601,21 @@ mod tests {
             meter.try_charge_rdate_entries(1),
             Err(LimitExceeded::RdateEntries)
         );
+        assert!(meter.is_exhausted());
+        let mut meter = Meter::new(limits);
         assert_eq!(
             meter.try_charge_exdate_entries(2),
             Err(LimitExceeded::ExdateEntries),
             "a list is refused as a whole rather than admitted up to the bound"
         );
+        assert!(meter.is_exhausted());
+        let mut meter = Meter::new(limits);
         assert_eq!(
             meter.try_charge_override_entries(9),
             Err(LimitExceeded::OverrideEntries)
         );
+        assert!(meter.is_exhausted());
+        let mut meter = Meter::new(limits);
         assert_eq!(meter.try_charge_occurrence(), Ok(()));
         assert_eq!(
             meter.try_charge_occurrence(),
@@ -1558,5 +1634,235 @@ mod tests {
             Err(ParseError::TooManyItems { limit: 2 })
         );
         assert_eq!(meter.items(), 2);
+    }
+
+    #[test]
+    fn the_widest_byte_budget_refuses_overflow_and_latches() {
+        for prefix in [0, 1, u64::MAX - 1, u64::MAX] {
+            let mut meter = Meter::with_budget(Limits::DEFAULT, u64::MAX);
+            assert!(meter.charge(prefix));
+            assert!(meter.charge(u64::MAX.checked_sub(prefix).unwrap()));
+            assert!(meter.charge(0));
+            assert_eq!(meter.spent(), u64::MAX);
+            assert!(!meter.charge(1));
+            assert_eq!(meter.spent(), u64::MAX);
+            assert!(meter.is_exhausted());
+            assert!(!meter.charge(0));
+        }
+    }
+
+    #[test]
+    fn byte_overflow_keeps_each_error_adapter() {
+        let mut meter = Meter::with_budget(Limits::DEFAULT, u64::MAX);
+        assert!(meter.charge(u64::MAX));
+        assert_eq!(meter.try_charge_bytes(1), Err(LimitExceeded::Budget));
+        assert_eq!(meter.charge_bytes(1), Err(ParseError::Exhausted));
+        assert_eq!(meter.try_charge_text(1), Err(LimitExceeded::Exhausted));
+        let mut fresh = Meter::with_budget(Limits::DEFAULT, u64::MAX);
+        assert!(fresh.charge(u64::MAX));
+        assert_eq!(
+            fresh.charge_bytes(1),
+            Err(ParseError::InputTooLarge { limit: u64::MAX })
+        );
+    }
+
+    fn check_bulk_boundary(
+        limits: Limits,
+        charge: fn(&mut Meter, u32) -> Result<(), LimitExceeded>,
+        held: fn(&Meter) -> u32,
+        error: LimitExceeded,
+    ) {
+        for prefix in [0, 1, u32::MAX - 1, u32::MAX] {
+            let mut meter = Meter::new(limits);
+            assert_eq!(charge(&mut meter, prefix), Ok(()));
+            assert_eq!(
+                charge(&mut meter, u32::MAX.checked_sub(prefix).unwrap()),
+                Ok(())
+            );
+            assert_eq!(charge(&mut meter, 0), Ok(()));
+            assert_eq!(held(&meter), u32::MAX);
+            assert_eq!(charge(&mut meter, 1), Err(error));
+            assert_eq!(held(&meter), u32::MAX);
+        }
+        let mut meter = Meter::new(limits);
+        assert_eq!(charge(&mut meter, u32::MAX - 2), Ok(()));
+        assert_eq!(charge(&mut meter, 3), Err(error));
+        assert_eq!(held(&meter), u32::MAX - 2);
+    }
+
+    #[test]
+    fn rdate_entry_charges_refuse_overflow_atomically() {
+        check_bulk_boundary(
+            Limits::DEFAULT.with_rdate_entries(u32::MAX),
+            Meter::try_charge_rdate_entries,
+            |meter| meter.rdates,
+            LimitExceeded::RdateEntries,
+        );
+    }
+
+    #[test]
+    fn exdate_entry_charges_refuse_overflow_atomically() {
+        check_bulk_boundary(
+            Limits::DEFAULT.with_exdate_entries(u32::MAX),
+            Meter::try_charge_exdate_entries,
+            |meter| meter.exdates,
+            LimitExceeded::ExdateEntries,
+        );
+    }
+
+    #[test]
+    fn override_entry_charges_refuse_overflow_atomically() {
+        check_bulk_boundary(
+            Limits::DEFAULT.with_override_entries(u32::MAX),
+            Meter::try_charge_override_entries,
+            |meter| meter.overrides,
+            LimitExceeded::OverrideEntries,
+        );
+    }
+
+    #[test]
+    fn observance_charges_refuse_overflow_atomically() {
+        check_bulk_boundary(
+            Limits::DEFAULT.with_max_vtimezone_observances(u32::MAX),
+            Meter::try_charge_vtimezone_observances,
+            Meter::vtimezone_observances,
+            LimitExceeded::VtimezoneObservances,
+        );
+    }
+
+    fn check_increment_boundary(
+        limits: Limits,
+        charge: fn(&mut Meter) -> Result<(), LimitExceeded>,
+        counter: fn(&mut Meter) -> &mut u32,
+        error: LimitExceeded,
+    ) {
+        let mut meter = Meter::new(limits);
+        *counter(&mut meter) = u32::MAX - 1;
+        assert_eq!(charge(&mut meter), Ok(()));
+        assert_eq!(*counter(&mut meter), u32::MAX);
+        assert_eq!(charge(&mut meter), Err(error));
+        assert_eq!(*counter(&mut meter), u32::MAX);
+    }
+
+    #[test]
+    fn xml_element_charges_refuse_overflow() {
+        check_increment_boundary(
+            Limits::DEFAULT.with_max_xml_elements(u32::MAX),
+            Meter::try_charge_element,
+            |meter| &mut meter.elements,
+            LimitExceeded::Elements,
+        );
+    }
+
+    #[test]
+    fn response_charges_refuse_overflow() {
+        check_increment_boundary(
+            Limits::DEFAULT.with_max_responses(u32::MAX),
+            Meter::try_charge_response,
+            |meter| &mut meter.responses,
+            LimitExceeded::Responses,
+        );
+    }
+
+    #[test]
+    fn candidate_charges_refuse_overflow() {
+        check_increment_boundary(
+            Limits::DEFAULT.with_candidates_per_period(u32::MAX),
+            Meter::try_charge_candidate,
+            |meter| &mut meter.candidates,
+            LimitExceeded::Candidates,
+        );
+    }
+
+    #[test]
+    fn occurrence_charges_refuse_overflow() {
+        check_increment_boundary(
+            Limits::DEFAULT.with_occurrences_per_search(u32::MAX),
+            Meter::try_charge_occurrence,
+            |meter| &mut meter.occurrences,
+            LimitExceeded::Occurrences,
+        );
+    }
+
+    #[test]
+    fn zone_charges_refuse_overflow() {
+        check_increment_boundary(
+            Limits::DEFAULT.with_max_vtimezone_components(u32::MAX),
+            Meter::try_charge_vtimezone_component,
+            |meter| &mut meter.zones,
+            LimitExceeded::VtimezoneComponents,
+        );
+    }
+
+    #[test]
+    fn freebusy_charges_refuse_overflow() {
+        check_increment_boundary(
+            Limits::DEFAULT.with_max_freebusy_periods(u32::MAX),
+            Meter::try_charge_freebusy_period,
+            |meter| &mut meter.freebusy_periods,
+            LimitExceeded::FreeBusyPeriods,
+        );
+    }
+
+    #[test]
+    fn item_charges_refuse_overflow() {
+        let mut meter = Meter::new(Limits::DEFAULT.with_max_items(u32::MAX));
+        meter.items = u32::MAX - 1;
+        assert_eq!(meter.charge_item(), Ok(()));
+        assert_eq!(
+            meter.charge_item(),
+            Err(ParseError::TooManyItems { limit: u32::MAX })
+        );
+        assert_eq!(meter.items(), u32::MAX);
+    }
+
+    #[test]
+    fn component_depth_refuses_overflow_and_cleanup_releases_one_level() {
+        let mut meter = Meter::new(Limits::DEFAULT.with_max_component_depth(u16::MAX));
+        for _ in 0..u16::MAX {
+            assert_eq!(meter.enter(), Ok(()));
+        }
+        assert_eq!(meter.enter(), Err(ParseError::TooDeep { limit: u16::MAX }));
+        assert_eq!(meter.depth(), u16::MAX);
+        meter.leave();
+        assert_eq!(meter.enter(), Err(ParseError::Exhausted));
+        assert_eq!(meter.depth(), u16::MAX - 1);
+    }
+
+    #[test]
+    fn xml_depth_refuses_overflow_and_cleanup_releases_one_level() {
+        let mut meter = Meter::new(Limits::DEFAULT.with_max_xml_depth(u16::MAX));
+        for _ in 0..u16::MAX {
+            assert_eq!(meter.try_enter_element(), Ok(()));
+        }
+        assert_eq!(meter.try_enter_element(), Err(LimitExceeded::Depth));
+        assert_eq!(meter.element_depth, u16::MAX);
+        meter.leave_element();
+        assert_eq!(meter.try_enter_element(), Err(LimitExceeded::Exhausted));
+        assert_eq!(meter.element_depth, u16::MAX - 1);
+    }
+
+    #[test]
+    fn prefix_bindings_refuse_overflow_and_cleanup_releases_one_binding() {
+        let mut meter = Meter::new(Limits::DEFAULT.with_max_prefix_bindings(u16::MAX));
+        for _ in 0..u16::MAX {
+            assert_eq!(meter.try_bind_prefix(), Ok(()));
+        }
+        assert_eq!(meter.try_bind_prefix(), Err(LimitExceeded::PrefixBindings));
+        assert_eq!(meter.live_prefix_bindings(), u16::MAX);
+        meter.unbind_prefix();
+        assert_eq!(meter.try_bind_prefix(), Err(LimitExceeded::Exhausted));
+        assert_eq!(meter.live_prefix_bindings(), u16::MAX - 1);
+    }
+
+    #[test]
+    fn diagnostic_statistics_saturate_without_charging_resources() {
+        let mut meter = Meter::new(Limits::DEFAULT);
+        meter.dropped = u32::MAX - 1;
+        meter.note_dropped_diagnostic();
+        meter.note_dropped_diagnostic();
+        assert_eq!(meter.diagnostics_dropped(), u32::MAX);
+        assert_eq!(meter.spent(), 0);
+        assert!(!meter.is_exhausted());
     }
 }

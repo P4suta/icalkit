@@ -22,6 +22,28 @@ Development is test-driven: add or identify a failing test, make the smallest co
 Conventional Commits describe the final change.
 Review generated files, public API snapshots, and conformance evidence with the source that changes them.
 
+The development Rust version is an exact pin shared by `mise.toml` and `rust-toolchain.toml`.
+Both installation declarations select the minimal profile with `rustfmt` and `clippy`.
+CI installs the configured compiler before installing Cargo tools, including the API generator that also uses a dated nightly.
+Workflow `install_args` values use unquoted, single-line tool lists so the repository gate can check installation dependencies.
+The declared MSRV remains a separate compatibility promise.
+Dependency-resolving verification recipes use `--locked` and reject changes to the committed dependency resolution.
+The ordinary test commands run the standalone core without default features before testing the workspace.
+`just repository` enforces the toolchain pins, standalone test inventory, and lockfile flags in the maintained recipes.
+The development configuration pre-commit hook runs the same repository gate as ordinary CI.
+
+API generation resolves the installed dated nightly through `rustup which`.
+It uses that toolchain's Cargo, rustc, and rustdoc for the command and child processes, overriding inherited compiler selections.
+The [cargo-public-api detector](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/toolchain.rs) reads Cargo through PATH, so the selected toolchain's binary directory precedes inherited entries.
+An unavailable selected toolchain fails without selecting or installing a replacement.
+The command disables automatic installation with `RUSTUP_AUTO_INSTALL=0`, following the [Rustup environment contract](https://rust-lang.github.io/rustup/environment-variables.html).
+API generation runs [`cargo rustdoc --locked`](https://doc.rust-lang.org/cargo/commands/cargo-rustdoc.html#manifest-options) with the pinned native target and a fixed output directory.
+[`cargo-public-api --rustdoc-json`](https://github.com/cargo-public-api/cargo-public-api/blob/v0.52.0/cargo-public-api/src/main.rs) formats the generated file without resolving dependencies.
+The command removes inherited `CARGO_BUILD_TARGET` and overrides Cargo's configured target with an explicit `--target`.
+API generation rejects Rustdoc warnings in both feature profiles.
+The Rustdoc lint cap is `deny`, preserving `-D warnings`.
+The command removes inherited `CARGO_ENCODED_RUSTDOCFLAGS` values because [Cargo gives them priority](https://doc.rust-lang.org/cargo/reference/config.html#buildrustdocflags) over `RUSTDOCFLAGS`.
+
 The repository uses squash merging so one reviewed pull request becomes one linear commit.
 Repository settings prohibit merge commits and rebase merges and delete merged branches automatically.
 A branch must be current with `main` before it can merge.
@@ -43,6 +65,9 @@ The candidate qualification workflow verifies that a complete commit ID matches 
 It adds Windows and macOS tests, feature combinations, bare-metal and WebAssembly compilation, pinned-nightly API snapshots, and every workspace crate's MSRV verification.
 Its summary rejects incomplete or unsuccessful results.
 The repository has no publication workflow, so successful candidate qualification is verification evidence rather than an enforced publication boundary.
+
+The [worktree decision](adr/candidate-worktree-validation.md) defines the private index used to compare tracked files without trusting the caller's cached flags or stat data.
+The check preserves the original index, detects missing tracked content, and removes scratch storage on success and failure.
 A future publication workflow must require successful qualification of the exact commit it publishes.
 
 ## Automation and permissions
@@ -50,6 +75,14 @@ A future publication workflow must require successful qualification of the exact
 GitHub Actions receives read-only repository permissions by default and may not approve pull requests.
 Each workflow grants write permission only where a job needs it: `security-events: write` for CodeQL uploads.
 Workflows pin third-party Actions to full commit SHAs, and actionlint and zizmor audit the workflows.
+
+The repository uses GitHub's [selected actions policy](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#allowing-select-actions-and-reusable-workflows-to-run) for external action sources.
+The patterns permit `actions/checkout@*`, `jdx/mise-action@*`, and `Swatinem/rust-cache@*`.
+The CodeQL patterns are `github/codeql-action/init@*` and `github/codeql-action/analyze@*`.
+The candidate proof helper pattern is `P4suta/project-template/.github/actions/ci-policy@*`.
+GitHub requires every action to use a full commit SHA.
+Broad permissions for GitHub actions and verified Marketplace creators are off.
+Review the source and update the allowed patterns before adding an action from another repository.
 
 Renovate checks Cargo and GitHub Actions through the centrally managed repository configuration.
 Renovate groups compatible Cargo updates and isolates major updates for explicit compatibility review.

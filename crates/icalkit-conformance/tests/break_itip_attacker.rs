@@ -4,21 +4,14 @@
 
 //! `ical-itip` attacked by the party `SECURITY.md` names: somebody who was merely invited.
 //!
-//! The claim under attack is the one the crate's own documentation makes twice — "an attendee
-//! cannot move a meeting by replying", and, more broadly, that authorization is the first half
-//! of the semantics rather than a layer above them. Every case below supplies the gate a real
-//! message, a real prior state, and an actor, and reads back what `evaluate_message` answered.
-//! Nothing here reasons about the implementation: the transitions asserted are the ones the
-//! gate returned when this file was run.
+//! The claim under attack is the one the crate's own documentation makes twice — "an attendee cannot move a meeting by replying", and, more broadly, that authorization is the first half of the semantics rather than a layer above them.
+//! Every case below supplies the gate a real message, a real prior state, and an actor, and reads back what `evaluate_message` answered.
+//! Nothing here reasons about the implementation: the transitions asserted are the ones the gate returned when this file was run.
 //!
-//! The state every case is judged against is `held_series.ics`: `SEQUENCE:2`, organized by
-//! `chair@example.com` through the assistant `pa@example.com`, with `cy@example.com` first and
-//! `bo@example.com` second on the attendee list. `bo` is the attacker throughout — an ordinary
-//! invitee with no organizer rights whatsoever — and `eve@example.com` is a party the meeting
-//! has never named.
+//! The state every case is judged against is `held_series.ics`: `SEQUENCE:2`, organized by `chair@example.com` through the assistant `pa@example.com`, with `cy@example.com` first and `bo@example.com` second on the attendee list.
+//! `bo` is the attacker throughout — an ordinary invitee with no organizer rights whatsoever — and `eve@example.com` is a party the meeting has never named.
 
-/// Every case in this chapter, in a module so that the helpers beside them are test
-/// code to the lint table as well as to the compiler.
+/// Every case in this chapter, in a module so that the helpers beside them are test code to the lint table as well as to the compiler.
 #[cfg(test)]
 mod attacker {
     use icalkit_conformance::internal::core::{
@@ -446,8 +439,7 @@ mod attacker {
 
     /// Judge `message` against `held` on behalf of `actor`, and also write what was authorized.
     ///
-    /// The write is the point of the case rather than an extra: a transition that is merely
-    /// described has changed nothing, and a break is only a break once the octets land.
+    /// The write is the point of the case rather than an extra: a transition that is merely described has changed nothing, and a break is only a break once the octets land.
     fn judge(held_source: &[u8], message_source: &[u8], actor: &str) -> Answer {
         let held = subject(held_source);
         let calendar = subject(message_source);
@@ -513,15 +505,11 @@ mod attacker {
 
     /// An attendee's `COUNTER` may rewrite the `ORGANIZER` line, and the gate authorizes it.
     ///
-    /// `field_rule` gives `ORGANIZER` [`icalkit_conformance::internal::itip::FieldRule::EitherParty`], which is a statement
-    /// about a party *echoing* the organizer's own line. The octet diff makes no distinction
-    /// between echoing a line and replacing it, so an attendee-authored `COUNTER` whose every other
-    /// property is byte-identical to the held copy describes exactly one change — `ORGANIZER`
-    /// becoming the attacker — and passes the field gate.
+    /// `field_rule` gives `ORGANIZER` [`icalkit_conformance::internal::itip::FieldRule::EitherParty`], which is a statement about a party *echoing* the organizer's own line.
+    /// The octet diff makes no distinction between echoing a line and replacing it, so an attendee-authored `COUNTER` whose every other property is byte-identical to the held copy describes exactly one change — `ORGANIZER` becoming the attacker — and passes the field gate.
     ///
-    /// The second half of the case is what that buys: applied, the meeting's organizer is the
-    /// attacker, and a `CANCEL` from the attacker against the resulting state is authorized. RFC
-    /// 5546 section 3.2.7 gives an attendee no authority over the `ORGANIZER` property at all.
+    /// The second half of the case is what that buys: applied, the meeting's organizer is the attacker, and a `CANCEL` from the attacker against the resulting state is authorized.
+    /// RFC 5546 section 3.2.7 gives an attendee no authority over the `ORGANIZER` property at all.
     #[test]
     fn a_counter_cannot_make_the_attendee_the_organizer() {
         let answer = judge(HELD, COUNTER_REWRITES_ORGANIZER, BO);
@@ -533,21 +521,13 @@ mod attacker {
 
     /// The consequence, recorded separately so it survives whatever the fix to the case above is.
     ///
-    /// If the state the attendee's `COUNTER` produced is what the caller then holds, the attacker
-    /// is the organizer of a meeting it was invited to, and cancelling it is authorized.
+    /// If the state the attendee's `COUNTER` produced is what the caller then holds, the attacker is the organizer of a meeting it was invited to, and cancelling it is authorized.
     ///
-    /// The fix closes that at its cause and not at its effect, and the difference is worth
-    /// stating because it is the whole of what this case now proves. A component whose
-    /// `ORGANIZER` line names `bo` says that `bo` organizes it, and RFC 5546 section 1.3 lets one
-    /// calendar user be both organizer and attendee — every real invitation lists the organizer
-    /// on the attendee list — so no rule readable from that file alone can refuse `bo` there
-    /// without refusing every organizer who attends their own meeting. What the gate can refuse
-    /// is the message that would have written that line, and the state below is therefore
-    /// reached the only way a caller can reach it: by applying what the gate authorized.
+    /// The fix closes that at its cause and not at its effect, and the difference is worth stating because it is the whole of what this case now proves.
+    /// A component whose `ORGANIZER` line names `bo` says that `bo` organizes it, and RFC 5546 section 1.3 lets one calendar user be both organizer and attendee — every real invitation lists the organizer on the attendee list — so no rule readable from that file alone can refuse `bo` there without refusing every organizer who attends their own meeting.
+    /// What the gate can refuse is the message that would have written that line, and the state below is therefore reached the only way a caller can reach it: by applying what the gate authorized.
     ///
-    /// `held_after_takeover.ics` stays in the corpus and stays judged, as the record of what the
-    /// old answer bought: the attacker's `CANCEL` against it is still authorized, and the reason
-    /// it never arrives is that the state cannot be produced.
+    /// `held_after_takeover.ics` stays in the corpus and stays judged, as the record of what the old answer bought: the attacker's `CANCEL` against it is still authorized, and the reason it never arrives is that the state cannot be produced.
     #[test]
     fn an_attendee_cannot_cancel_a_meeting_it_does_not_organize() {
         let direct = judge(HELD, CANCEL_FROM_AN_ATTENDEE, BO);
@@ -559,9 +539,8 @@ mod attacker {
             "a CANCEL from an attendee must be refused on the sender rule"
         );
 
-        // The takeover, offered. `judge` writes whatever it authorizes through
-        // `apply_transition`, so a refusal is a state that did not move: the copy the next
-        // message is judged against still names the organizer it always named.
+        // The takeover, offered.
+        // `judge` writes whatever it authorizes through `apply_transition`, so a refusal is a state that did not move: the copy the next message is judged against still names the organizer it always named.
         let after = judge(HELD, COUNTER_REWRITES_ORGANIZER, BO);
         assert!(!after.allowed(), "{after:?}");
         assert!(
@@ -578,9 +557,7 @@ mod attacker {
             "the attacker is still an attendee of the meeting it tried to take over: {then:?}"
         );
 
-        // And the state the old answer produced, judged for the record: a file that names `bo`
-        // as its `ORGANIZER` authorizes `bo` to cancel it, which is why the fix is that no
-        // message may write that line and not that this file is read some other way.
+        // And the state the old answer produced, judged for the record: a file that names `bo` as its `ORGANIZER` authorizes `bo` to cancel it, which is why the fix is that no message may write that line and not that this file is read some other way.
         let counterfactual = judge(HELD_AFTER_TAKEOVER, CANCEL_FROM_THE_NEW_ORGANIZER, BO);
         assert!(
             counterfactual.allowed(),
@@ -590,19 +567,14 @@ mod attacker {
 
     /// An attendee's `COUNTER` may raise `SEQUENCE`, which freezes the real organizer out.
     ///
-    /// `field_rule` gave `SEQUENCE` [`icalkit_conformance::internal::itip::FieldRule::EitherParty`]. RFC 5546 section 2.1.4
-    /// makes `SEQUENCE` the ordering of the *organizer's* revisions, and the gate's own replay
-    /// defense reads it: once an attendee has written 99 into the caller's copy, the organizer's
-    /// genuine `SEQUENCE:3` update is refused as stale. The attacker cannot forge a newer version,
+    /// `field_rule` gave `SEQUENCE` [`icalkit_conformance::internal::itip::FieldRule::EitherParty`].
+    /// RFC 5546 section 2.1.4 makes `SEQUENCE` the ordering of the *organizer's* revisions, and the gate's own replay defense reads it: once an attendee has written 99 into the caller's copy, the organizer's genuine `SEQUENCE:3` update is refused as stale.
+    /// The attacker cannot forge a newer version,
     /// but it can make every real one look older.
     ///
-    /// The lockout is closed at its cause. Nothing in a file distinguishes a `SEQUENCE:99` an
-    /// attendee wrote from one the organizer wrote, and a rule that let a lower revision through
-    /// on some other evidence — a fresher `DTSTAMP`, say — would be the replay defense answering
-    /// to a number the sender chooses. So what this case now proves is that the revision the
-    /// organizer's update is judged against is one no attendee could have moved: the `COUNTER` is
-    /// refused, `judge` therefore writes nothing, and the organizer's `SEQUENCE:3` applies against
-    /// the `SEQUENCE:2` the caller still holds.
+    /// The lockout is closed at its cause.
+    /// Nothing in a file distinguishes a `SEQUENCE:99` an attendee wrote from one the organizer wrote, and a rule that let a lower revision through on some other evidence — a fresher `DTSTAMP`, say — would be the replay defense answering to a number the sender chooses.
+    /// So what this case now proves is that the revision the organizer's update is judged against is one no attendee could have moved: the `COUNTER` is refused, `judge` therefore writes nothing, and the organizer's `SEQUENCE:3` applies against the `SEQUENCE:2` the caller still holds.
     #[test]
     fn a_counter_cannot_raise_the_revision_an_attendee_does_not_own() {
         let answer = judge(HELD, COUNTER_RAISES_SEQUENCE, BO);
@@ -622,9 +594,8 @@ mod attacker {
              {organizer:?}"
         );
 
-        // The state the old answer produced, judged for the record. Against a stored 99 the
-        // organizer's SEQUENCE:3 is an older version and stays refused, which is section 2.1.4
-        // working exactly as it must — and is why the attendee may not write that number.
+        // The state the old answer produced, judged for the record.
+        // Against a stored 99 the organizer's SEQUENCE:3 is an older version and stays refused, which is section 2.1.4 working exactly as it must — and is why the attendee may not write that number.
         let locked = judge(
             HELD_AFTER_SEQUENCE_RAISED,
             REQUEST_FROM_THE_ORGANIZER,
@@ -639,10 +610,8 @@ mod attacker {
 
     /// An attendee's `COUNTER` may put a stranger on its own `ATTENDEE` occurrence.
     ///
-    /// `FieldRule::AttendeeOwn` is checked as "the occurrence this actor sits at", not as "a line
-    /// that still names this actor". A `COUNTER` replacing the attacker's own line with
-    /// `eve@example.com` therefore passes: the meeting acquires a participant it never invited and
-    /// loses the one it did, on one authorized change.
+    /// `FieldRule::AttendeeOwn` is checked as "the occurrence this actor sits at", not as "a line that still names this actor".
+    /// A `COUNTER` replacing the attacker's own line with `eve@example.com` therefore passes: the meeting acquires a participant it never invited and loses the one it did, on one authorized change.
     #[test]
     fn a_counter_cannot_put_a_stranger_on_the_attendees_own_line() {
         let answer = judge(HELD, COUNTER_SUBSTITUTES_STRANGER, BO);
@@ -652,34 +621,32 @@ mod attacker {
         );
     }
 
-    /// The first attack `SECURITY.md` names, from both methods an attendee may send.
-    ///
-    /// A `REPLY` restating `DTSTART`, `LOCATION` and `RRULE` must describe none of them, and a
-    /// `COUNTER` moving `DTSTART` must be refused outright.
     #[test]
-    fn an_attendee_cannot_move_a_meeting() {
+    fn an_attendee_proposes_a_time_change_only_in_a_counter() {
         let reply = judge(HELD, REPLY_MOVES_THE_MEETING, BO);
-        assert!(reply.allowed(), "a plain acceptance is a normal reply");
-        assert_eq!(reply.reason, Some(TransitionReason::ParticipationChanged));
-        assert!(
-            !reply.touches("DTSTART") && !reply.touches("RRULE") && !reply.touches("LOCATION"),
-            "a REPLY described a change to a property that says when the meeting is: {reply:?}"
+        assert_eq!(
+            reply.denied,
+            Some(AuthorizationDenied::MethodForbidsField(
+                PropertyOccurrence::named(b"DTSTART", 0)
+            ))
         );
 
         let counter = judge(HELD, COUNTER_MOVES_THE_MEETING, BO);
+        assert_eq!(counter.reason, Some(TransitionReason::CounterProposed));
         assert_eq!(
-            counter.denied,
-            Some(AuthorizationDenied::MethodForbidsField(
-                PropertyOccurrence::named(b"DTSTART", 0)
-            )),
-            "a COUNTER that moves the meeting must be refused on the field rule"
+            counter.changes,
+            [(
+                "DTSTART".to_owned(),
+                0,
+                "DTSTART:20260310T230000Z".to_owned()
+            )]
         );
     }
 
     /// Every other way an attendee was asked to reach a line that is not its own.
     ///
-    /// These are the cases that held. They are the security claim: a list of attacks that a gate
-    /// refused is worth more than the absence of one.
+    /// These are the cases that held.
+    /// They are the security claim: a list of attacks that a gate refused is worth more than the absence of one.
     #[test]
     fn the_attendee_list_is_not_reachable_from_an_attendee() {
         let removes = judge(HELD, COUNTER_REMOVES_THE_OTHER, BO);
@@ -733,8 +700,8 @@ mod attacker {
     /// Identity, in the four shapes that differ from the held address by something invisible.
     ///
     /// RFC 5321 section 2.4 makes the domain the receiver's to case-fold and the mailbox nobody's,
-    /// so `BO@` is a different party and `EXAMPLE.COM` is the same one. A missing scheme, a
-    /// trailing space and a Cyrillic `а` are all different parties.
+    /// so `BO@` is a different party and `EXAMPLE.COM` is the same one.
+    /// A missing scheme, a trailing space, or a Cyrillic letter (`U+0430`) changes the address.
     #[test]
     fn an_address_that_is_not_the_attendees_matches_nobody() {
         for (name, source, actor) in [
@@ -767,29 +734,21 @@ mod attacker {
         assert_eq!(folded.role, Some(ActorRole::Attendee));
     }
 
-    /// A `REPLY` that also rewrites `ORGANIZER` is the same attack through the other method.
-    ///
-    /// It survives, and for a reason unrelated to the field rule: `describe_reply` looks at the
-    /// answering `ATTENDEE` line and nothing else, so the reply's `ORGANIZER` is never diffed. The
-    /// case is here so that a later change to the reply diff cannot open the hole the `COUNTER`
-    /// case above already shows.
     #[test]
-    fn a_reply_never_describes_the_organizer_line() {
+    fn a_reply_must_echo_the_organizer() {
         let answer = judge(HELD, REPLY_REWRITES_ORGANIZER, BO);
-        assert!(
-            !answer.touches("ORGANIZER"),
-            "a REPLY described a change to the ORGANIZER line: {answer:?}"
+        assert_eq!(
+            answer.denied,
+            Some(AuthorizationDenied::MethodForbidsField(
+                PropertyOccurrence::named(b"ORGANIZER", 0)
+            ))
         );
-        assert_eq!(answer.reason, Some(TransitionReason::ParticipationChanged));
     }
 
     /// The same takeover, reached by a party who is not on the attendee list at all.
     ///
-    /// `ActorRole::Delegate` is the window RFC 5546 section 2.1.2 leaves open: a party the held
-    /// copy names only inside another attendee's `DELEGATED-TO` value satisfies
-    /// `SenderRule::Attendee` and may therefore send a `COUNTER`. `attendee_occurrence_of` answers
-    /// `None` for such a party, so it owns no `ATTENDEE` line — but `ORGANIZER` is `EitherParty`
-    /// and does not consult ownership, so the takeover is open to somebody who was never invited.
+    /// `ActorRole::Delegate` is the window RFC 5546 section 2.1.2 leaves open: a party the held copy names only inside another attendee's `DELEGATED-TO` value satisfies `SenderRule::Attendee` and may therefore send a `COUNTER`.
+    /// `attendee_occurrence_of` answers `None` for such a party, so it owns no `ATTENDEE` line — but `ORGANIZER` is `EitherParty` and does not consult ownership, so the takeover is open to somebody who was never invited.
     #[test]
     fn a_party_named_only_in_a_delegation_cannot_become_the_organizer() {
         let answer = judge(HELD_WITH_A_DELEGATION, COUNTER_FROM_THE_DELEGATE, EVE);
@@ -802,14 +761,10 @@ mod attacker {
 
     /// The byte boundary, asked the two ways an attacker can ask it.
     ///
-    /// An `Authorization` borrows both inputs and has no owned form, so there is nothing to
-    /// serialize and nothing to forge — that is a compile-time fact and the reason no case here
-    /// can even be written. What does cross bytes is a `Commitment`, and it is checked here for
-    /// the two properties its own documentation claims: it grants nothing, and it notices when the
-    /// thing being confirmed is not the thing that was described.
+    /// An `Authorization` borrows both inputs and has no owned form, so there is nothing to serialize and nothing to forge — that is a compile-time fact and the reason no case here can even be written.
+    /// What does cross bytes is a `Commitment`, and it is checked here for the two properties its own documentation claims: it grants nothing, and it notices when the thing being confirmed is not the thing that was described.
     ///
-    /// The replay row is the other half: a genuine attendee `COUNTER` at `SEQUENCE:2` replayed
-    /// against a state that has moved to `SEQUENCE:99` is refused as stale rather than reapplied.
+    /// The replay row is the other half: a genuine attendee `COUNTER` at `SEQUENCE:2` replayed against a state that has moved to `SEQUENCE:99` is refused as stale rather than reapplied.
     #[test]
     fn a_vetted_transition_does_not_replay_against_a_state_that_moved() {
         let stale = judge(HELD_AFTER_SEQUENCE_RAISED, COUNTER_REWRITES_ORGANIZER, BO);
@@ -821,27 +776,23 @@ mod attacker {
 
         let held = subject(HELD);
         let moved = subject(HELD_AFTER_SEQUENCE_RAISED);
-        // An attendee's answer rather than an attendee's counter: every `COUNTER` in this
-        // chapter is one the field rule now refuses, and a commitment is only made about a
-        // decision the gate reached.
-        let calendar = subject(REPLY_MOVES_THE_MEETING);
+        let calendar = subject(COUNTER_MOVES_THE_MEETING);
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let mut sink: Vec<Diagnostic> = Vec::new();
         let message = ItipMessage::read(&calendar, limits, &mut meter, &mut sink)
-            .expect("the reply reads as a message");
+            .expect("the counter reads as a message");
 
         let first = evaluate_message(&message, held.component(), PartyId::new(BO))
-            .expect("the gate authorized this reply when it was first described");
+            .expect("the attendee can propose a new start at the original revision");
         let commitment = Commitment::of(&first);
         assert!(
             first.honors(&commitment),
             "a commitment describes the decision it was taken from"
         );
 
-        // The confirm turn, against state that moved underneath. The gate refuses on the
-        // revision, so there is nothing left for the commitment to be asked about — which is the
-        // ordering its documentation claims: the gate ran fresh either way.
+        // The confirm turn, against state that moved underneath.
+        // The gate refuses on the revision, so there is nothing left for the commitment to be asked about — which is the ordering its documentation claims: the gate ran fresh either way.
         let confirm = evaluate_message(&message, moved.component(), PartyId::new(BO));
         assert_eq!(
             confirm.err(),
@@ -852,8 +803,8 @@ mod attacker {
 
     /// What the transitions above actually contain, printed so a reader can check the claim.
     ///
-    /// A break reported without the message, the prior state and the returned transition beside it
-    /// is a suspicion. This prints all three for every case in this file.
+    /// A break reported without the message, the prior state and the returned transition beside it is a suspicion.
+    /// This prints all three for every case in this file.
     #[test]
     fn the_gate_answers_are_recorded_in_full() {
         for (name, held, message, actor) in [

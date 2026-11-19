@@ -4,31 +4,20 @@
 
 //! An adversary's pass over RFC 5546 authorization: one test per named attack.
 //!
-//! Specification: RFC 5546 section 1.3 (the two roles), section 2.1.4 (`SEQUENCE`), section
-//! 2.1.5 (`DTSTAMP`), section 3.2 (the per-method constraint tables); `SECURITY.md` for the
-//! three positions this crate exists to hold, and `docs/adr/0010` for the bounds.
+//! Specification: RFC 5546 section 1.3 (the two roles), section 2.1.4 (`SEQUENCE`), section 2.1.5 (`DTSTAMP`), section 3.2 (the per-method constraint tables); `SECURITY.md` for the three positions this crate exists to hold, and `docs/adr/0010` for the bounds.
 //!
-//! Every expected column below is read off RFC 5546's own text and written beside the row it
-//! justifies, never off what the implementation happens to answer. Where the two diverge the
-//! divergence is stated in the test rather than smoothed over: an attendee's `DTSTART` inside a
-//! `REPLY` is *ignored* rather than refused, and the test asserts the security property (the
-//! meeting does not move) while saying so out loud.
+//! Every expected column below is read off RFC 5546's own text and written beside the row it justifies, never off what the implementation happens to answer.
+//! Where the two diverge the divergence is stated in the test rather than smoothed over: an attendee's `DTSTART` inside a `REPLY` is *ignored* rather than refused, and the test asserts the security property (the meeting does not move) while saying so out loud.
 //!
 //! # The state carrier
 //!
-//! The fixtures implement [`ScheduledComponent`] directly rather than going through
-//! `icalkit_conformance::internal::core::Component`. That is the seam `docs/design/ical-itip-api.md` names for a server
-//! whose state is a database row, and it is the only carrier that can reach two of these
-//! attacks at all: a fold side is something a *zone* resolved, so a component built from octets
-//! alone can only ever report [`FoldSide::Unresolved`], and a hundred thousand `ATTENDEE` lines
-//! are a claim about a list's length rather than about four megabytes of text.
+//! The fixtures implement [`ScheduledComponent`] directly rather than going through `icalkit_conformance::internal::core::Component`.
+//! That is the seam `docs/design/ical-itip-api.md` names for a server whose state is a database row, and it is the only carrier that can reach two of these attacks at all: a fold side is something a *zone* resolved, so a component built from octets alone can only ever report [`FoldSide::Unresolved`], and a hundred thousand `ATTENDEE` lines are a claim about a list's length rather than about four megabytes of text.
 //!
 //! # What is asserted here that no unit test can be
 //!
-//! The gate's *order*. Each case below is built so that exactly one rule can fire, and the
-//! variant asserted is the first reason a caller could act on. A refusal that arrived for the
-//! right reason by accident — a stale `SEQUENCE` caught by a `UID` check — would pass a unit
-//! test of either half and fail here.
+//! The gate's *order*. Each case below is built so that exactly one rule can fire, and the variant asserted is the first reason a caller could act on.
+//! A refusal that arrived for the right reason by accident — a stale `SEQUENCE` caught by a `UID` check — would pass a unit test of either half and fail here.
 
 #[cfg(test)]
 mod tests {
@@ -61,8 +50,8 @@ mod tests {
     /// The `ATTENDEE` line a crowded payload repeats.
     const CROWD_LINE: &str = "ATTENDEE:mailto:ann@example.com";
 
-    /// The wall clock `20261101T013000` in `America/New_York`, projected onto the nominal
-    /// timeline the seam walks. Both halves of that night's repeated hour carry this key.
+    /// The wall clock `20261101T013000` in `America/New_York`, projected onto the nominal timeline the seam walks.
+    /// Both halves of that night's repeated hour carry this key.
     const REPEATED_HOUR: i64 = 1_793_496_600;
     /// `20261101T053000Z`: the first of the two instants, still on the daylight offset.
     const BEFORE_THE_FALL: i64 = 1_793_511_000;
@@ -73,9 +62,7 @@ mod tests {
 
     /// A `DTSTAMP`: the octets a file carries and the instant they name.
     ///
-    /// Both halves, because the trait hands the gate a typed instant while the diff compares
-    /// the line — a fixture that carried only one of them could not be wrong in the way a real
-    /// message is wrong.
+    /// Both halves, because the trait hands the gate a typed instant while the diff compares the line — a fixture that carried only one of them could not be wrong in the way a real message is wrong.
     #[derive(Clone, Copy, Debug)]
     struct Stamp {
         /// The value as a file spells it.
@@ -105,8 +92,7 @@ mod tests {
     }
 
     impl Guest {
-        /// An attendee who states no participation status, which RFC 5545 section 3.2.12
-        /// reads as `NEEDS-ACTION`.
+        /// An attendee who states no participation status, which RFC 5545 section 3.2.12 reads as `NEEDS-ACTION`.
         fn new(address: &str) -> Self {
             Self {
                 address: address.to_owned(),
@@ -120,8 +106,7 @@ mod tests {
             self
         }
 
-        /// The content line this attendee is, so that the octet diff and the typed accessors
-        /// cannot disagree about one fixture.
+        /// The content line this attendee is, so that the octet diff and the typed accessors cannot disagree about one fixture.
         fn written(&self) -> String {
             match &self.part_stat {
                 Some(status) => format!("ATTENDEE;PARTSTAT={status}:{}", self.address),
@@ -184,9 +169,7 @@ mod tests {
 
         /// Set the single-valued property `name` to the whole line `written`.
         ///
-        /// Replaces rather than appends, so that a builder call may be re-applied by a case
-        /// that changes one property: appending would leave two `UID` lines and turn every
-        /// later assertion into a test of the fixture.
+        /// Replaces rather than appends, so that a builder call may be re-applied by a case that changes one property: appending would leave two `UID` lines and turn every later assertion into a test of the fixture.
         fn set_line(&mut self, name: &str, written: &str) {
             match self.lines.iter_mut().find(|(had, _)| had.as_str() == name) {
                 Some(slot) => slot.1 = written.to_owned(),
@@ -301,8 +284,7 @@ mod tests {
         }
 
         fn attendee_occurrence(&self, index: usize) -> Option<PropertyOccurrence> {
-            // Every attendee is appended together with its own `ATTENDEE` line, so the two
-            // numberings agree by construction rather than by coincidence.
+            // Every attendee is appended together with its own `ATTENDEE` line, so the two numberings agree by construction rather than by coincidence.
             (index < self.guests.len()).then(|| PropertyOccurrence::named(b"ATTENDEE", index))
         }
 
@@ -329,9 +311,7 @@ mod tests {
 
     /// A payload claiming a hundred thousand attendees without allocating one.
     ///
-    /// Every line is the same address on purpose: what is under test is the *length* of the
-    /// list, and a fixture that built a hundred thousand distinct addresses would be measuring
-    /// itself rather than the bound.
+    /// Every line is the same address on purpose: what is under test is the *length* of the list, and a fixture that built a hundred thousand distinct addresses would be measuring itself rather than the bound.
     #[derive(Debug)]
     struct Crowd {
         /// How many `ATTENDEE` lines this payload claims.
@@ -442,11 +422,7 @@ mod tests {
 
     /// An organizer's update of the summary, at revision `sequence`.
     ///
-    /// Stamped later than the state it updates, which is what a message is: RFC 5545 section
-    /// 3.8.7.2 makes `DTSTAMP` the time the object was created, and RFC 5546 section 2.1.4 only
-    /// requires `SEQUENCE` to move for a *significant* change — so a summary edit is ordered by
-    /// the stamp alone, and a message carrying neither a newer number nor a newer stamp is the
-    /// version already held rather than an update of it.
+    /// Stamped later than the state it updates, which is what a message is: RFC 5545 section 3.8.7.2 makes `DTSTAMP` the time the object was created, and RFC 5546 section 2.1.4 only requires `SEQUENCE` to move for a *significant* change — so a summary edit is ordered by the stamp alone, and a message carrying neither a newer number nor a newer stamp is the version already held rather than an update of it.
     fn request_at(sequence: u32) -> Node {
         held_at(sequence)
             .stamped(LATE)
@@ -481,8 +457,7 @@ mod tests {
 
     /// The half of that repeated hour whose real instant is `named`.
     ///
-    /// One key and one side: the key is the wall clock both halves share, and the side is
-    /// something the zone answered — never something the octets said.
+    /// One key and one side: the key is the wall clock both halves share, and the side is something the zone answered — never something the octets said.
     fn half(named: i64) -> InstanceRef {
         unresolved_half().with_side(FoldSide::from_resolution(
             fold(),
@@ -533,15 +508,12 @@ mod tests {
 
     /// The one value here designed to cross a request boundary.
     ///
-    /// `T: 'static` is the machine-checked half of this crate's claim: a [`Commitment`] owns
-    /// everything it holds and can be encoded, and an `Authorization` cannot be handed to this
-    /// function at all — it borrows both of its inputs, so no lifetime satisfies the bound.
+    /// `T: 'static` is the machine-checked half of this crate's claim: a [`Commitment`] owns everything it holds and can be encoded, and an `Authorization` cannot be handed to this function at all — it borrows both of its inputs, so no lifetime satisfies the bound.
     fn crosses_bytes<T: 'static + Clone + PartialEq + Debug>(value: &T) {
         assert_eq!(value.clone(), *value);
     }
 
-    /// The baseline: the party RFC 5546 section 1.3 names may make the change, and the
-    /// transition says which kind of change section 3.2.2 calls it.
+    /// The baseline: the party RFC 5546 section 1.3 names may make the change, and the transition says which kind of change section 3.2.2 calls it.
     #[test]
     fn a_request_from_the_organizer_is_authorized_and_names_the_change_it_makes() {
         let current = held_at(2);
@@ -568,8 +540,7 @@ mod tests {
                 .is_some()
         );
 
-        // Section 3.2.2.1: a rescheduling `REQUEST` increments `SEQUENCE`, so the transition
-        // carries both changes and is reported as a move rather than as an edit.
+        // Section 3.2.2.1: a rescheduling `REQUEST` increments `SEQUENCE`, so the transition carries both changes and is reported as a move rather than as an edit.
         let moved = Node::calendar(
             "REQUEST",
             held_at(3).property("DTSTART", "20260902T150000Z"),
@@ -580,11 +551,8 @@ mod tests {
         assert_eq!(authorized.reason(), TransitionReason::Rescheduled);
         assert_eq!(authorized.transition().len(), 2);
 
-        // RFC 5546 section 2.1.4: two messages at one revision are one version, and one of them
-        // is not the one the organizer sent. Neither newer nor older is not an update, so the
-        // same edit carrying neither a newer number nor a newer stamp describes nothing at all
-        // — which is also what makes a message that has already been applied idempotent when it
-        // arrives a second time.
+        // RFC 5546 section 2.1.4: two messages at one revision are one version, and one of them is not the one the organizer sent.
+        // Neither newer nor older is not an update, so the same edit carrying neither a newer number nor a newer stamp describes nothing at all — which is also what makes a message that has already been applied idempotent when it arrives a second time.
         let restated = Node::calendar("REQUEST", request_at(2).stamped(EARLY));
         let message = message_of(&restated, &mut meter);
         let authorized = evaluate_message(&message, &current, party(CHAIR))
@@ -596,77 +564,45 @@ mod tests {
         assert_eq!(authorized.reason(), TransitionReason::Updated);
     }
 
-    /// `SECURITY.md`'s first named attack, in both of the shapes it has.
-    ///
-    /// Through a `REPLY` the meeting does not move, and it does not move because nothing in a
-    /// reply but the sender's own answer is ever described — RFC 5546 section 3.2.3 says an
-    /// attendee's other properties MUST NOT differ, and this crate's answer to one that does
-    /// is to ignore it rather than to refuse the message. That divergence is worth stating:
-    /// the security property holds, the strict-conformance one does not.
-    ///
-    /// Through a `COUNTER`, where the diff does describe the whole component, the same
-    /// overreach is refused whole and names the occurrence it was refused for.
     #[test]
-    fn an_attendee_cannot_move_a_meeting_by_replying_to_it() {
+    fn an_attendee_proposes_a_new_start_with_a_counter() {
         let current = held_at(2);
         let mut meter = Meter::new(Limits::DEFAULT);
-
-        let calendar = Node::calendar(
+        let start = PropertyOccurrence::named(b"DTSTART", 0);
+        let reply = Node::calendar(
             "REPLY",
             reply_from(ANN).property("DTSTART", "20260902T150000Z"),
         );
-        let message = message_of(&calendar, &mut meter);
-        let authorized = evaluate_message(&message, &current, party(ANN))
-            .expect("an attendee may answer an invitation");
-        assert_eq!(authorized.reason(), TransitionReason::ParticipationChanged);
+        let message = message_of(&reply, &mut meter);
         assert_eq!(
-            authorized.transition().len(),
-            1,
-            "a reply describes one answer and nothing else"
+            evaluate_message(&message, &current, party(ANN)).err(),
+            Some(AuthorizationDenied::MethodForbidsField(start.clone()))
         );
+        let described = describe_message(&message, &current);
+        assert_eq!(described.reason(), TransitionReason::ParticipationChanged);
+        assert_eq!(described.len(), 1);
         assert!(matches!(
-            authorized
-                .transition()
-                .change(&PropertyOccurrence::named(b"ATTENDEE", 0)),
+            described.change(&PropertyOccurrence::named(b"ATTENDEE", 0)),
             Some(ProposedChange::SetParameters(_))
         ));
-        assert!(
-            authorized
-                .transition()
-                .change(&PropertyOccurrence::named(b"DTSTART", 0))
-                .is_none(),
-            "the meeting moves only if something describes it moving"
-        );
 
-        let countered = Node::calendar(
+        let counter = Node::calendar(
             "COUNTER",
             held_at(2)
                 .stamped(LATE)
                 .property("DTSTART", "20260902T150000Z"),
         );
-        let message = message_of(&countered, &mut meter);
-        let verdict = evaluate_message(&message, &current, party(ANN));
-        assert_eq!(
-            verdict.err(),
-            Some(AuthorizationDenied::MethodForbidsField(
-                PropertyOccurrence::named(b"DTSTART", 0)
-            )),
-            "section 3.2.2's restriction table: the start time is the organizer's"
-        );
-
-        // ADR-0005: a refused message stays inspectable, so a user can be shown what it tried.
-        let attempted = describe_message(&message, &current);
-        match attempted.change(&PropertyOccurrence::named(b"DTSTART", 0)) {
-            Some(ProposedChange::Replace(text)) => {
-                assert_eq!(text.as_bytes(), b"DTSTART:20260902T150000Z");
-            },
-            other => panic!("the refused counter must stay describable, and was {other:?}"),
-        }
+        let message = message_of(&counter, &mut meter);
+        let authorized = evaluate_message(&message, &current, party(ANN)).unwrap();
+        assert_eq!(authorized.reason(), TransitionReason::CounterProposed);
+        assert!(matches!(
+            authorized.transition().change(&start),
+            Some(ProposedChange::Replace(text)) if text.as_bytes() == b"DTSTART:20260902T150000Z"
+        ));
     }
 
-    /// `SECURITY.md`'s second named attack. RFC 5546 section 3.2.3: a `REPLY` comes from an
-    /// attendee of the component, so an address on neither list is a refusal and never a
-    /// silently added participant.
+    /// `SECURITY.md`'s second named attack.
+    /// RFC 5546 section 3.2.3: a `REPLY` comes from an attendee of the component, so an address on neither list is a refusal and never a silently added participant.
     #[test]
     fn a_reply_from_an_address_on_no_list_is_refused_rather_than_added() {
         let current = held_at(2);
@@ -680,9 +616,9 @@ mod tests {
 
     /// The same attack from the inside: a sender who *is* invited, naming somebody who is not.
     ///
-    /// Two shapes. A reply about a stranger describes nothing, because inventing the
-    /// participant is exactly what the gate exists to refuse. A reply that states two
-    /// `ATTENDEE` lines fails section 3.2.3's table outright, which prints `1` for that row.
+    /// Two shapes.
+    /// A reply about a stranger describes nothing, because inventing the participant is exactly what the gate exists to refuse.
+    /// A reply that states two `ATTENDEE` lines fails section 3.2.3's table outright, which prints `1` for that row.
     #[test]
     fn a_reply_cannot_add_a_participant_nobody_invited() {
         let current = held_at(2);
@@ -715,8 +651,8 @@ mod tests {
         );
     }
 
-    /// RFC 5546 section 3.2.3 again, from the other side: the `ATTENDEE` of a `REPLY` is the
-    /// replying attendee. Answering for somebody else is refused at their own occurrence.
+    /// RFC 5546 section 3.2.3 again, from the other side: the `ATTENDEE` of a `REPLY` is the replying attendee.
+    /// Answering for somebody else is refused at their own occurrence.
     #[test]
     fn an_attendee_may_not_answer_for_another() {
         let current = held_at(2);
@@ -734,8 +670,7 @@ mod tests {
         );
     }
 
-    /// `SECURITY.md`'s third named attack, and RFC 5546 section 2.1.4: a lower `SEQUENCE` is an
-    /// older version and an older version never overwrites a newer one.
+    /// `SECURITY.md`'s third named attack, and RFC 5546 section 2.1.4: a lower `SEQUENCE` is an older version and an older version never overwrites a newer one.
     #[test]
     fn an_older_sequence_never_overwrites_a_newer_one() {
         let current = held_at(2);
@@ -751,8 +686,7 @@ mod tests {
         );
     }
 
-    /// RFC 5546 section 2.1.5: `DTSTAMP` breaks the tie `SEQUENCE` leaves, and it breaks it
-    /// towards the version already held.
+    /// RFC 5546 section 2.1.5: `DTSTAMP` breaks the tie `SEQUENCE` leaves, and it breaks it towards the version already held.
     #[test]
     fn an_equal_sequence_with_an_older_dtstamp_never_overwrites_one() {
         let current = held_at(2).stamped(LATE);
@@ -769,10 +703,8 @@ mod tests {
         );
     }
 
-    /// RFC 5546 section 3.2 reads an absent `SEQUENCE` as zero. Zero is a revision, so such a
-    /// message is *stale* against a held revision 3 rather than unknown — and it is accepted
-    /// against a held revision that is also zero, which is what makes it a number and not a
-    /// missing value.
+    /// RFC 5546 section 3.2 reads an absent `SEQUENCE` as zero.
+    /// Zero is a revision, so such a message is *stale* against a held revision 3 rather than unknown — and it is accepted against a held revision that is also zero, which is what makes it a number and not a missing value.
     #[test]
     fn a_message_with_no_sequence_is_revision_zero_and_not_unknown() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -793,8 +725,7 @@ mod tests {
         );
     }
 
-    /// A `SEQUENCE` that is present and is not an integer is the absence of a revision, and a
-    /// message with no revision cannot be held against the one a caller has.
+    /// A `SEQUENCE` that is present and is not an integer is the absence of a revision, and a message with no revision cannot be held against the one a caller has.
     #[test]
     fn a_sequence_that_is_not_a_number_is_no_revision_at_all() {
         let current = held_at(2);
@@ -806,9 +737,8 @@ mod tests {
         assert_eq!(verdict.err(), Some(AuthorizationDenied::SequenceUnreadable));
     }
 
-    /// RFC 5545 section 3.8.4.7 gives a `UID` no case folding and no whitespace stripping, so
-    /// an identifier differing by either is another meeting. Folding them is how a `CANCEL` for
-    /// one meeting cancels a different one.
+    /// RFC 5545 section 3.8.4.7 gives a `UID` no case folding and no whitespace stripping, so an identifier differing by either is another meeting.
+    /// Folding them is how a `CANCEL` for one meeting cancels a different one.
     #[test]
     fn a_uid_that_differs_by_case_or_by_whitespace_is_another_meeting() {
         let current = held_at(2);
@@ -830,9 +760,8 @@ mod tests {
         }
     }
 
-    /// A `REPLY` answers the instance it names and not every later one, so a `RECURRENCE-ID`
-    /// reaching `THISANDFUTURE` is refused under that method. The same reference under a
-    /// `REQUEST`, which is the organizer's to make, is not.
+    /// A `REPLY` answers the instance it names and not every later one, so a `RECURRENCE-ID` reaching `THISANDFUTURE` is refused under that method.
+    /// The same reference under a `REQUEST`, which is the organizer's to make, is not.
     #[test]
     fn a_reply_may_not_reach_this_and_future() {
         let current = held_at(2).addressing(onwards(), ONWARDS_LINE);
@@ -851,9 +780,8 @@ mod tests {
         );
     }
 
-    /// Matching a range anchor against a master changes only identity lookup. It must not
-    /// substitute the message for the held organizer state, because that would let a stranger
-    /// write their own organizer line and then authorize it.
+    /// Matching a range anchor against a master changes only identity lookup.
+    /// It must not substitute the message for the held organizer state, because that would let a stranger write their own organizer line and then authorize it.
     #[test]
     fn a_this_and_future_split_still_uses_the_held_master_to_name_the_organizer() {
         let current = held_at(2);
@@ -865,9 +793,8 @@ mod tests {
         assert_eq!(verdict.err(), Some(AuthorizationDenied::OrganizerMismatch));
     }
 
-    /// A master does not choose between two range anchors in one message. Even if both are
-    /// individually well formed, picking the first would make component order an authorization
-    /// input and could apply a different split than the sender intended.
+    /// A master does not choose between two range anchors in one message.
+    /// Even if both are individually well formed, picking the first would make component order an authorization input and could apply a different split than the sender intended.
     #[test]
     fn two_this_and_future_anchors_do_not_ambiguously_match_one_master() {
         let current = held_at(2);
@@ -880,9 +807,8 @@ mod tests {
         assert_eq!(verdict.err(), Some(AuthorizationDenied::NoMatchingInstance));
     }
 
-    /// RFC 5546 section 1.3 divides the exchange into two roles, and section 3's prose names
-    /// which role authors each method. An organizer does not reply and an attendee does not
-    /// cancel; the second is how one participant cancels everybody's meeting.
+    /// RFC 5546 section 1.3 divides the exchange into two roles, and section 3's prose names which role authors each method.
+    /// An organizer does not reply and an attendee does not cancel; the second is how one participant cancels everybody's meeting.
     #[test]
     fn only_the_party_rfc_5546_names_may_send_a_method() {
         let current = held_at(2);
@@ -911,8 +837,8 @@ mod tests {
         );
     }
 
-    /// RFC 5546 section 3.2.5 cancels a component the recipient has. A `CANCEL` for a meeting
-    /// nobody holds is refused at the first gate, before any of the rest is consulted.
+    /// RFC 5546 section 3.2.5 cancels a component the recipient has.
+    /// A `CANCEL` for a meeting nobody holds is refused at the first gate, before any of the rest is consulted.
     #[test]
     fn a_cancel_for_a_meeting_the_caller_does_not_hold_is_refused() {
         let current = holds_nothing();
@@ -927,8 +853,7 @@ mod tests {
         );
     }
 
-    /// A message whose `UID` matches and whose `RECURRENCE-ID` names an instance the series
-    /// does not have addresses nothing, and is refused rather than applied to the series.
+    /// A message whose `UID` matches and whose `RECURRENCE-ID` names an instance the series does not have addresses nothing, and is refused rather than applied to the series.
     #[test]
     fn a_reply_naming_an_instance_the_series_does_not_have_is_refused() {
         let current = held_at(2);
@@ -944,9 +869,8 @@ mod tests {
         );
     }
 
-    /// Agenda item 1 as an attack. The two halves of the hour `America/New_York` repeats are
-    /// one cadence key and two meetings: resolved, a reply reaches the half it names and no
-    /// other, and the octets of the two `RECURRENCE-ID` lines are identical.
+    /// Agenda item 1 as an attack.
+    /// The two halves of the hour `America/New_York` repeats are one cadence key and two meetings: resolved, a reply reaches the half it names and no other, and the octets of the two `RECURRENCE-ID` lines are identical.
     #[test]
     fn the_two_halves_of_one_repeated_hour_are_two_meetings() {
         assert_eq!(
@@ -982,8 +906,8 @@ mod tests {
         );
     }
 
-    /// The same collision with nothing to resolve it, from either side. An ambiguous match is
-    /// not a match: a guess between the two halves cancels or moves the wrong meeting.
+    /// The same collision with nothing to resolve it, from either side.
+    /// An ambiguous match is not a match: a guess between the two halves cancels or moves the wrong meeting.
     #[test]
     fn an_instance_nothing_resolved_is_refused_rather_than_guessed() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -1016,8 +940,7 @@ mod tests {
     }
 
     /// ADR-0010, and the reason this crate refuses a limit breach instead of reporting one:
-    /// truncating the list would turn "this party may reply" into "this party is unknown", and
-    /// an attacker who can pad a list past the threshold would pick which the server believes.
+    /// truncating the list would turn "this party may reply" into "this party is unknown", and an attacker who can pad a list past the threshold would pick which the server believes.
     #[test]
     fn a_hundred_thousand_attendees_refuse_the_whole_message() {
         assert!(MEETING_LINE.ends_with(MEETING) && CROWD_LINE.ends_with(ANN));
@@ -1035,8 +958,7 @@ mod tests {
         );
     }
 
-    /// Nesting is attacker-chosen, so the ceiling is the caller's policy and one level past it
-    /// is a refusal of the whole message rather than a deep walk that reports afterwards.
+    /// Nesting is attacker-chosen, so the ceiling is the caller's policy and one level past it is a refusal of the whole message rather than a deep walk that reports afterwards.
     #[test]
     fn a_payload_nested_past_the_ceiling_is_refused() {
         let ceiling = usize::from(Limits::DEFAULT.max_component_depth());
@@ -1054,8 +976,7 @@ mod tests {
 
     /// The payload the recipient holds, with `alarms` components chained beneath it.
     ///
-    /// The chain is built inner-first because a component owns the ones inside it, and a
-    /// hostile message's nesting is exactly this shape: legal at every level, and unbounded.
+    /// The chain is built inner-first because a component owns the ones inside it, and a hostile message's nesting is exactly this shape: legal at every level, and unbounded.
     fn nested_payload(alarms: usize) -> Node {
         let mut deepest = Node::alarm();
         for _ in 1..alarms {
@@ -1064,10 +985,8 @@ mod tests {
         held_at(2).containing(deepest)
     }
 
-    /// ADR-0010's aggregate bound, which is the whole reason [`Meter`] outlives one call: a
-    /// thousand individually bounded messages are bounded together only if they share a
-    /// ledger. The second half is the documented negative — moving the ledger inside the loop
-    /// reproduces the attack exactly, and no gate in this workspace sees that caller's code.
+    /// ADR-0010's aggregate bound, which is the whole reason [`Meter`] outlives one call: a thousand individually bounded messages are bounded together only if they share a ledger.
+    /// The second half is the documented negative — moving the ledger inside the loop reproduces the attack exactly, and no gate in this workspace sees that caller's code.
     #[test]
     fn a_thousand_counters_are_bounded_only_by_a_shared_ledger() {
         let counters: Vec<Node> = (0..1000_u32)
@@ -1107,15 +1026,11 @@ mod tests {
 
     /// The byte boundary, in both directions.
     ///
-    /// An `Authorization` borrows the message and the state, so the propose turn below can let
-    /// exactly one value out of the scope its inputs live in — the [`Commitment`], which is
-    /// owned and carries no authority. Writing `let carried = { .. authorized }` instead does
-    /// not compile, and that is the whole improvement over a wrapper documented as
-    /// unserializable: there is no owned form to encode, to store in a session, or to forge.
+    /// An `Authorization` borrows the message and the state, so the propose turn below can let exactly one value out of the scope its inputs live in — the [`Commitment`], which is owned and carries no authority.
+    /// Writing `let carried = { .. authorized }` instead does not compile, and that is the whole improvement over a wrapper documented as unserializable: there is no owned form to encode, to store in a session, or to forge.
     ///
-    /// The confirm turn then re-evaluates against freshly read state. It gets a decision from
-    /// the gate either way — the commitment is never consulted to grant — and the commitment
-    /// is what tells it that the target moved while the user was deciding.
+    /// The confirm turn then re-evaluates against freshly read state.
+    /// It gets a decision from the gate either way — the commitment is never consulted to grant — and the commitment is what tells it that the target moved while the user was deciding.
     #[test]
     fn an_authorization_cannot_cross_a_request_boundary_and_a_commitment_refuses_a_moved_target() {
         let shown = {

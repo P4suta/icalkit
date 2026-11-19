@@ -19,11 +19,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
-# This target is an unpublished shared-source isolation helper for white-box tests, not a Rust
-# API. Keep doctests enabled, but do not ask workspace rustdoc to publish internal links under
-# this second crate root.
+# This target is an unpublished shared-source isolation helper for white-box tests, not a Rust API.
+# Keep doctests enabled, but do not ask workspace rustdoc to publish internal links under this second crate root.
 [lib]
 doc = false
 
@@ -31,23 +29,25 @@ doc = false
 name = "capture-audit"
 path = "src/bin/capture_audit.rs"
 
-# The private source is path-included from `crates/icalkit`, outside this package directory, so
-# cargo-shear cannot see its direct xmlparser import. jiff is visible through capture-audit. The
-# iTIP chapter is likewise included by tests/itip_chapter.rs until that corpus moves behind the
-# subject protocol.
+# The private source is path-included from `crates/icalkit`, outside this package directory, so cargo-shear cannot see its direct xmlparser and icu_calendar imports.
+# jiff is visible through capture-audit.
+# The iTIP chapter is likewise included by tests/itip_chapter.rs until that corpus moves behind the subject protocol.
 [package.metadata.cargo-shear]
-ignored = ["xmlparser"]
+ignored = ["icu_calendar", "xmlparser"]
 ignored-paths = ["src/itip.rs"]
 
 [dependencies]
 icalkit = { path = "../icalkit", version = "0.0.0" }
+icu_calendar = { version = "2.4.0", default-features = false, features = [
+  "compiled_data",
+] }
 jiff = { version = "0.2.35", default-features = false, features = [
   "alloc",
   "tz-fat",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
+sha2 = "0.10.9"
 xmlparser = { version = "0.13.6", default-features = false }
 
 [lints]

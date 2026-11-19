@@ -2,14 +2,11 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The WebDAV XML layer, compiled with no CalDAV vocabulary in scope. A path from it into the
-//! protocol above it resolves inside `icalkit` and does not resolve here, which is what makes the
-//! layer a fact rather than a promise (ADR 0004, ADR 0012).
+//! The WebDAV XML layer, compiled with no CalDAV vocabulary in scope.
+//! A path from it into the protocol above it resolves inside `icalkit` and does not resolve here, which is what makes the layer a fact rather than a promise (ADR 0004, ADR 0012).
 
-// The layer names `alloc` and `alloc` is not in a std crate's extern prelude, so the declaration
-// is needed here even though nothing in this file uses it directly. Deliberately not
-// `#![no_std]`: that attribute is what `xtask purity` reads to decide a directory holds a core
-// crate, and this member is not one.
+// The layer names `alloc` and `alloc` is not in a std crate's extern prelude, so the declaration is needed here even though nothing in this file uses it directly.
+// Deliberately not `#![no_std]`: that attribute is what `xtask purity` reads to decide a directory holds a core crate, and this member is not one.
 extern crate alloc;
 extern crate self as ical_core;
 
@@ -17,9 +14,10 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 
-/// The three resource dimensions the isolated XML layer can cross.
+/// Resource refusals the isolated XML layer can report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum LimitExceeded {
+    Exhausted,
     Budget,
     Text,
     PrefixBindings,
@@ -55,6 +53,7 @@ impl Limits {
 pub(crate) struct Meter {
     limits: Limits,
     live_prefix_bindings: u16,
+    exhausted: bool,
 }
 
 impl Meter {
@@ -62,15 +61,31 @@ impl Meter {
         Self {
             limits,
             live_prefix_bindings: 0,
+            exhausted: false,
         }
     }
 
     pub(crate) fn try_bind_prefix(&mut self) -> Result<(), LimitExceeded> {
-        if self.live_prefix_bindings >= self.limits.max_prefix_bindings {
-            return Err(LimitExceeded::PrefixBindings);
-        }
+        let within = self.live_prefix_bindings < self.limits.max_prefix_bindings;
+        self.admit(|| {
+            if within {
+                Ok(())
+            } else {
+                Err(LimitExceeded::PrefixBindings)
+            }
+        })?;
         self.live_prefix_bindings = self.live_prefix_bindings.saturating_add(1);
         Ok(())
+    }
+
+    pub(crate) fn admit<T>(
+        &mut self,
+        operation: impl FnOnce() -> Result<T, LimitExceeded>,
+    ) -> Result<T, LimitExceeded> {
+        if self.exhausted {
+            return Err(LimitExceeded::Exhausted);
+        }
+        operation().inspect_err(|_| self.exhausted = true)
     }
 
     pub(crate) fn unbind_prefix(&mut self) {
@@ -83,21 +98,14 @@ mod xml;
 
 /// Name every item the layer offers, so that this member compiles the whole layer.
 ///
-/// Two things make this necessary rather than decorative, and both are about what a gate is
-/// worth when nobody watches it fail.
+/// Two things make this necessary rather than decorative, and both are about what a gate is worth when nobody watches it fail.
 ///
-/// The layer's items are `pub(crate)` — that is the point of `docs/adr/0012`, which keeps the
-/// grammar unexported so the deferred extraction stays a file move — so there is nothing here to
-/// re-export the way `gates/grammar-layering` re-exports the private core grammar, and every item
-/// the consumers in `icalkit::internal::dav` use is dead code in *this* root. Silencing that with an attribute
-/// is refused by this workspace and would be the wrong fix anyway: a gate that compiles with
-/// half the layer deleted proves nothing about the half that is gone. Naming each item here
-/// makes deleting one a compile error in the gate rather than a lint nobody reads.
+/// The layer's items are `pub(crate)` — that is the point of `docs/adr/0012`, which keeps the grammar unexported so the deferred extraction stays a file move — so there is nothing here to re-export the way `gates/grammar-layering` re-exports the private core grammar, and every item the consumers in `icalkit::internal::dav` use is dead code in *this* root.
+/// Silencing that with an attribute is refused by this workspace and would be the wrong fix anyway: a gate that compiles with half the layer deleted proves nothing about the half that is gone.
+/// Naming each item here makes deleting one a compile error in the gate rather than a lint nobody reads.
 ///
-/// It is also a smoke test of the only thing this member can assert: that the layer *builds* in
-/// a root that has never heard of CalDAV. Behavior is asserted by the layer's own tests, which
-/// run inside `icalkit` and the conformance isolation helper — `[lib] test = false` on this
-/// member is what stops them gaining a third compilation root.
+/// It is also a smoke test of the only thing this member can assert: that the layer *builds* in a root that has never heard of CalDAV.
+/// Behavior is asserted by the layer's own tests, which run inside `icalkit` and the conformance isolation helper — `[lib] test = false` on this member is what stops them gaining a third compilation root.
 #[must_use]
 pub fn roll_call() -> usize {
     let mut named = 0_usize;
@@ -111,6 +119,7 @@ pub fn roll_call() -> usize {
         xml::scan::NO_NAMESPACE,
         xml::scan::XML_PREFIX,
         xml::scan::XML_URI,
+        xml::scan::XMLNS_URI,
         xml::scan::XMLNS,
         xml::scan::XMLNS_COLON,
     ] {
@@ -127,6 +136,7 @@ pub fn roll_call() -> usize {
         xml::scan::split_name(b"D:href").is_ok(),
         xml::scan::check_encoding(b" encoding=\"utf-8\"").is_ok(),
         xml::chars::check_chars(b"ok").is_ok(),
+        xml::chars::read_reference(b"&amp;", 0).is_ok(),
     ] {
         named = named.saturating_add(usize::from(answered));
     }
@@ -149,10 +159,8 @@ fn buffered() -> usize {
 
 /// The layer's own refusal vocabulary, named so that deleting a class is a compile error here.
 ///
-/// Four syntax classes and not the ten CalDAV kernel `SyntaxError` carries, because these
-/// are the four this layer raises; the six the tokenizer's state machine raises stay above it.
-/// Naming them from a root that has never heard of CalDAV is the assertion that the layer
-/// classifies for itself rather than borrowing a protocol's vocabulary to do it.
+/// Four syntax classes and not the ten CalDAV kernel `SyntaxError` carries, because these are the four this layer raises; the six the tokenizer's state machine raises stay above it.
+/// Naming them from a root that has never heard of CalDAV is the assertion that the layer classifies for itself rather than borrowing a protocol's vocabulary to do it.
 fn refusals() -> usize {
     [
         xml::fault::XmlFault::Limit(LimitExceeded::Text),
@@ -170,10 +178,22 @@ fn refusals() -> usize {
 fn bound() -> usize {
     let mut meter = Meter::new(Limits::DEFAULT.with_max_prefix_bindings(64));
     let mut stack = xml::bind::PrefixStack::new();
-    if stack.bind(b"D", b"DAV:", &mut meter).is_err() {
+    if stack
+        .bind(
+            b"D",
+            xml::chars::AttributeValue::literal(b"DAV:"),
+            &mut meter,
+        )
+        .is_err()
+    {
         return 0;
     }
     let held = usize::from(stack.uri_for(b"D").is_some())
+        .saturating_add(
+            stack
+                .uri_for(b"D")
+                .map_or(0, xml::chars::AttributeValue::source_len),
+        )
         .saturating_add(usize::from(stack.declared_here(1, b"D")))
         .saturating_add(usize::from(stack.uri_for(b"C").is_none()));
     stack.unbind(1, &mut meter);

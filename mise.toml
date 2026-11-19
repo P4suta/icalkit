@@ -2,10 +2,14 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# Install tools with `mise install`. Rust configuration is in rust-toolchain.toml.
+# Install tools with `mise install`.
+# Rust configuration is in rust-toolchain.toml.
 
 [tools]
-rust = "stable"
+rust = { version = "1.100.0", profile = "minimal", components = [
+  "rustfmt",
+  "clippy",
+] }
 
 lefthook = "2.2.2"
 committed = "1.1.12"
@@ -14,13 +18,13 @@ just = "1.59.0"
 typos = "1.52.2"
 taplo = "0.10.0"
 actionlint = "1.7.12"
+shellcheck = "0.11.0"
 zizmor = "1.32.0"
 
 # REUSE runs through uvx.
 uv = "0.13.8"
 
 cargo-binstall = "1.27.0"
-
 "cargo:cargo-msrv" = "0.19.6"
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-hack" = "0.6.46"

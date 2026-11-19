@@ -2,26 +2,36 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Owned iTIP messages and a borrowed read-review-authorize-apply workflow.
+//! Owned iTIP messages and single-use authorization for reviewed changes.
 
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Formatter, Write as _};
+use core::str;
 
 use crate::internal::core::{
-    CivilDateTime, Component, ContentLineReader, Diagnostic, Document, Instant, Item, Meter,
-    Property, PropertyId, TextValue, UtcOffset,
+    CivilDateTime, Component, ContentLineReader, DateTimeValue, DecodeValue as _, Diagnostic,
+    Document, Instant, Item, LimitExceeded, Meter, Property, PropertyId, TextValue, UriValue,
+    UtcOffset,
 };
 use crate::internal::itip::{
-    ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method, PartyId,
-    ScheduleTarget, ScheduledComponent, ScheduledView, Transition, evaluate_initial_payload,
-    evaluate_message, evaluate_new_instance_payload, inspect_message,
+    ANSWERED_AT, ComponentTarget, InstanceMatch, InstanceRef, ItipMessage, MediaTypeParams, Method,
+    PartyId, ScheduleTarget, ScheduledComponent, ScheduledView, Transition,
+    evaluate_initial_payload, evaluate_message, evaluate_new_instance_payload, inspect_message,
 };
 
 use crate::calendar::parse_calendar;
 use crate::failure::{Issue, IssueCode};
-use crate::internal::query::{Budget, Match as KernelMatch, Zones, recurrence_set_contains};
-use crate::time::{Timestamp, ZoneAdapter};
+use crate::internal::core::codec::decode_single_scalar_text;
+use crate::internal::query::{
+    Budget, Match as KernelMatch, ReplyOccurrence, Zones, event_for_instance_reply,
+    recurrence_set_contains,
+};
+use crate::internal::tz::FixedOffsetSource;
+use crate::time::{ResourceZones, Timestamp};
 use crate::{Calendar, Engine, Error, ResourcePolicy, Session};
 
 /// An owned scheduling message that has passed strict calendar and iTIP validation.
@@ -31,35 +41,110 @@ pub struct Message {
     method: Method,
 }
 
+#[derive(Debug)]
+pub(crate) struct BusyTimeEnvelope<'a> {
+    pub(crate) uid: Cow<'a, str>,
+    pub(crate) start: CivilDateTime,
+    pub(crate) end: CivilDateTime,
+    pub(crate) originator: &'a str,
+    pub(crate) recipients: Vec<&'a str>,
+}
+
+fn calendar_address(property: &Property) -> Option<&str> {
+    let uri = property.value::<UriValue<'_>>().value()?;
+    str::from_utf8(uri.as_bytes()).ok()
+}
+
 impl Message {
-    /// Strictly read a complete inbound iTIP message.
+    pub(crate) fn busy_time_envelope(&self) -> Option<BusyTimeEnvelope<'_>> {
+        self.busy_time_envelope_for(Method::Request)
+    }
+
+    pub(crate) fn busy_time_reply_envelope(&self) -> Option<BusyTimeEnvelope<'_>> {
+        self.busy_time_envelope_for(Method::Reply)
+    }
+
+    fn busy_time_envelope_for(&self, method: Method) -> Option<BusyTimeEnvelope<'_>> {
+        if self.method != method {
+            return None;
+        }
+        let mut payloads = root_component(&self.calendar)?
+            .components()
+            .filter(|component| is_scheduling_payload(component));
+        let payload = payloads.next()?;
+        if !payload.is_named(b"VFREEBUSY") || payloads.next().is_some() {
+            return None;
+        }
+        let uid = decode_single_scalar_text(payload, &PropertyId::UID)?;
+        let utc = |id: &PropertyId| -> Option<CivilDateTime> {
+            let property = payload.properties().find(|property| property.has_id(id))?;
+            match property.value::<DateTimeValue<'_>>().value()? {
+                DateTimeValue::Utc(stamp) => Some(stamp),
+                _ => None,
+            }
+        };
+        utc(&PropertyId::DTSTAMP)?;
+        let start = utc(&PropertyId::DTSTART)?;
+        let end = utc(&PropertyId::DTEND)?;
+        if end <= start {
+            return None;
+        }
+        let organizer = payload
+            .properties()
+            .find(|property| property.has_id(&PropertyId::ORGANIZER))?;
+        let originator = calendar_address(organizer)?;
+        let mut recipients = Vec::new();
+        for property in payload
+            .properties()
+            .filter(|property| property.has_id(&PropertyId::ATTENDEE))
+        {
+            let address = calendar_address(property)?;
+            if !recipients.contains(&address) {
+                recipients.push(address);
+            }
+        }
+        (!recipients.is_empty()).then_some(BusyTimeEnvelope {
+            uid,
+            start,
+            end,
+            originator,
+            recipients,
+        })
+    }
+
+    /// Read and validate a complete inbound iTIP message.
     pub fn read(bytes: &[u8]) -> Result<Self, Error> {
         let engine = Engine::default();
         let mut session = engine.session();
         Self::read_in(&mut session, bytes)
     }
 
-    /// Strictly read an iTIP message under an engine session's aggregate resource budget.
+    /// Read and validate an iTIP message using the session's shared budget.
     pub fn read_in(session: &mut Session<'_>, bytes: &[u8]) -> Result<Self, Error> {
-        let calendar = session.parse(bytes)?;
-        Self::from_calendar_in(calendar, session.engine.policy, &mut session.meter)
+        Self::read_with_policy(bytes, session.engine.policy, &mut session.meter)
     }
 
-    /// Read a decoded RFC 6047 section 2.4 `text/calendar` MIME part.
+    pub(crate) fn read_with_policy(
+        bytes: &[u8],
+        policy: ResourcePolicy,
+        meter: &mut Meter,
+    ) -> Result<Self, Error> {
+        let calendar = parse_calendar(bytes, policy, meter)?;
+        Self::from_calendar_in(calendar, policy, meter)
+    }
+
+    /// Read a decoded `text/calendar` body part under RFC 6047 section 2.4.
     ///
-    /// `content_type` is the unfolded field value after `Content-Type:`. `decoded_body` must
-    /// already have had its Content-Transfer-Encoding removed by the mail implementation. The
-    /// email envelope's `From` identity is deliberately not accepted here: pass the separately
-    /// authenticated envelope sender as [`Actor`] when reviewing the returned message.
+    /// `content_type` is the unfolded field value after `Content-Type:`.
+    /// Decode the `Content-Transfer-Encoding` before passing `decoded_body`.
+    /// Authenticate the envelope sender and pass its identity as [`Actor`] during review.
     pub fn read_imip(content_type: &[u8], decoded_body: &[u8]) -> Result<Self, Error> {
         let engine = Engine::default();
         let mut session = engine.session();
         Self::read_imip_in(&mut session, content_type, decoded_body)
     }
 
-    /// Read a decoded RFC 6047 MIME part under one aggregate session budget.
-    ///
-    /// The header and decoded calendar body both charge the supplied session.
+    /// Read an RFC 6047 body part and charge its header and decoded body to one session.
     pub fn read_imip_in(
         session: &mut Session<'_>,
         content_type: &[u8],
@@ -84,42 +169,42 @@ impl Message {
         Ok(message)
     }
 
-    /// Build a PUBLISH message, using the caller-supplied DTSTAMP.
+    /// Build a `PUBLISH` with the caller's `DTSTAMP`.
     pub fn publish(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Publish, dtstamp)
     }
 
-    /// Build a REQUEST message, using the caller-supplied DTSTAMP.
+    /// Build a `REQUEST` with the caller's `DTSTAMP`.
     pub fn request(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Request, dtstamp)
     }
 
-    /// Build a REPLY message, using the caller-supplied DTSTAMP.
+    /// Build a `REPLY` with the caller's `DTSTAMP`.
     pub fn reply(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Reply, dtstamp)
     }
 
-    /// Build an ADD message, using the caller-supplied DTSTAMP.
+    /// Build an `ADD` with the caller's `DTSTAMP`.
     pub fn add(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Add, dtstamp)
     }
 
-    /// Build a CANCEL message, using the caller-supplied DTSTAMP.
+    /// Build a `CANCEL` with the caller's `DTSTAMP`.
     pub fn cancel(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Cancel, dtstamp)
     }
 
-    /// Build a REFRESH message, using the caller-supplied DTSTAMP.
+    /// Build a `REFRESH` with the caller's `DTSTAMP`.
     pub fn refresh(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Refresh, dtstamp)
     }
 
-    /// Build a COUNTER message, using the caller-supplied DTSTAMP.
+    /// Build a `COUNTER` with the caller's `DTSTAMP`.
     pub fn counter(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::Counter, dtstamp)
     }
 
-    /// Build a DECLINECOUNTER message, using the caller-supplied DTSTAMP.
+    /// Build a `DECLINECOUNTER` with the caller's `DTSTAMP`.
     pub fn decline_counter(payload: &[u8], dtstamp: Timestamp) -> Result<Self, Error> {
         Self::outbound(payload, Method::DeclineCounter, dtstamp)
     }
@@ -132,8 +217,7 @@ impl Message {
 
     /// A canonical RFC 6047 `Content-Type` value for this message.
     ///
-    /// UTF-8 is stated even for an ASCII-only body, and `method` is derived from the validated
-    /// iTIP object so the emitted envelope cannot disagree with it.
+    /// The header declares `UTF-8` for every body and takes `method` from the validated message.
     #[must_use]
     pub fn imip_content_type(&self) -> String {
         let mut value = String::from("text/calendar; charset=UTF-8; method=");
@@ -153,7 +237,7 @@ impl Message {
         self.calendar.to_bytes()
     }
 
-    /// Review this message against a held calendar on behalf of one actor.
+    /// Review the message for one actor using the stored calendar.
     pub fn review<'a>(
         &'a self,
         current: &'a Calendar,
@@ -166,11 +250,39 @@ impl Message {
         self.review_in(&mut session, current, actor)
     }
 
-    /// Review under an engine session, sharing its aggregate budget and zone database.
+    /// Review the message using the session's shared budget and zone database.
     pub fn review_in<'a>(
         &'a self,
         session: &mut Session<'_>,
         current: &'a Calendar,
+        actor: &Actor,
+    ) -> Result<Review<'a>, Rejection> {
+        self.review_target_in(session, ReviewTarget::Held(current), actor)
+    }
+
+    /// Review creation for an absent destination on behalf of one actor.
+    /// The caller must enforce absence when storing the result.
+    pub fn review_creation(&self, actor: &Actor) -> Result<Review<'_>, Rejection> {
+        let engine = Engine::builder()
+            .resource_policy(self.calendar.policy)
+            .build();
+        let mut session = engine.session();
+        self.review_creation_in(&mut session, actor)
+    }
+
+    /// Review creation using the session's shared budget and zone database.
+    pub fn review_creation_in(
+        &self,
+        session: &mut Session<'_>,
+        actor: &Actor,
+    ) -> Result<Review<'_>, Rejection> {
+        self.review_target_in(session, ReviewTarget::Absent, actor)
+    }
+
+    fn review_target_in<'a>(
+        &'a self,
+        session: &mut Session<'_>,
+        target: ReviewTarget<'a>,
         actor: &Actor,
     ) -> Result<Review<'a>, Rejection> {
         let message_component = root_component(&self.calendar)
@@ -184,12 +296,19 @@ impl Message {
             &mut session.recurrence_diagnostics,
         )
         .map_err(|_| Rejection::new("icalkit.scheduling.message-invalid"))?;
-        let uid = message.uid().as_bytes();
-        let current_components = scheduled_components(current, uid, &message);
-        if current_components.is_empty() {
-            return self.review_creation(current, actor, &message);
+        match target {
+            ReviewTarget::Held(current) => {
+                let uid = message.uid().as_bytes();
+                let current_components =
+                    scheduled_components(current, uid, &message, &mut session.meter)?;
+                if current_components.is_empty() {
+                    self.review_initial(target, actor, &message)
+                } else {
+                    self.review_existing(session, current, actor, &message, &current_components)
+                }
+            },
+            ReviewTarget::Absent => self.review_initial(target, actor, &message),
         }
-        self.review_existing(session, current, actor, &message, &current_components)
     }
 
     /// Map every payload onto an exact component or one recurrence-proven master.
@@ -205,34 +324,37 @@ impl Message {
         if payloads.len() != message.payload_count() {
             return Err(Rejection::new("icalkit.scheduling.message-invalid"));
         }
-        let mut masters = current_components
-            .iter()
-            .copied()
-            .filter(|(_, component)| ScheduledView::of(component).recurrence_id().is_none());
-        let master = masters.next();
-        if masters.next().is_some() {
-            return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
-        }
+        let master = series_master(current_components)?;
         let mut used = Vec::new();
+        let mut master_advanced = false;
+        let mut answered = BTreeSet::new();
         let mut changes = Vec::with_capacity(payloads.len());
         for (payload_index, (source, payload)) in payloads.into_iter().enumerate() {
             let payload_view = ScheduledView::of(payload);
-            let mut exact = None;
-            for (item, current_component) in current_components.iter().copied() {
-                match compare_instances(
-                    payload_view.recurrence_id(),
-                    ScheduledView::of(current_component).recurrence_id(),
-                ) {
-                    InstanceMatch::Same if exact.is_none() => {
-                        exact = Some((item, current_component));
-                    },
-                    InstanceMatch::Same | InstanceMatch::Ambiguous => {
-                        return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
-                    },
-                    InstanceMatch::Different => {},
+            if self.method == Method::Reply
+                && message.kind() == crate::internal::core::ComponentKind::Event
+                && payload_view.recurrence_id().is_some()
+                && let Some((_, base)) = master
+            {
+                let occurrence = reply_occurrence(session, current, &self.calendar, base, payload)?;
+                if !answered.insert(occurrence.key) {
+                    return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
                 }
+                if let Some(change) = review_occurrence(
+                    occurrence,
+                    message,
+                    payload_index,
+                    source,
+                    actor,
+                    &mut session.meter,
+                )? {
+                    changes.push(change);
+                }
+                continue;
             }
-            if let Some((item, current_component)) = exact {
+            if let Some((item, current_component)) =
+                stored_instance(payload_view.recurrence_id(), current_components)?
+            {
                 if used.contains(&item) {
                     return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
                 }
@@ -241,8 +363,15 @@ impl Message {
                 let authorization =
                     evaluate_message(message, &current_view, PartyId::new(actor.as_str()))
                         .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+                if self.method == Method::Request
+                    && message.kind() == crate::internal::core::ComponentKind::Event
+                    && payload_view.recurrence_id().is_none()
+                {
+                    master_advanced = matches!((current_view.sequence().value(), payload_view.sequence().value()),
+                        (Some(previous), Some(offered)) if previous < offered);
+                }
                 changes.push(ReviewedChange {
-                    target: ChangeTarget::Existing { item },
+                    target: ChangeTarget::existing(item),
                     transition: authorization.into_transition(),
                 });
                 continue;
@@ -258,24 +387,20 @@ impl Message {
                 PartyId::new(actor.as_str()),
             )
             .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
-            let zone_source = ZoneAdapter::new(session.engine.zone_database());
-            let zones = Zones::new(&zone_source);
-            let mut budget = Budget::new(session.engine.policy.limits, &mut session.meter);
-            let membership = recurrence_set_contains(
-                master_component,
-                payload,
-                zones,
-                &mut budget,
-                &mut session.recurrence_diagnostics,
-            )
-            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+            let limits = session.engine.policy.limits;
+            let membership = session.with_zone_source(|source, meter, diagnostics| {
+                let zones = Zones::new(source);
+                let mut budget = Budget::new(limits, meter);
+                recurrence_set_contains(master_component, payload, zones, &mut budget, diagnostics)
+                    .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))
+            })?;
             if membership != KernelMatch::Matched {
                 return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
             }
             let no_change = authorization.transition().is_empty();
             changes.push(ReviewedChange {
                 target: if no_change {
-                    ChangeTarget::Existing { item: master_item }
+                    ChangeTarget::existing(master_item)
                 } else {
                     ChangeTarget::Detach {
                         master: master_item,
@@ -287,14 +412,20 @@ impl Message {
         }
         Ok(Review {
             message: self,
-            current,
+            target: ReviewTarget::Held(current),
+            expired_answers: if master_advanced {
+                find_expired_answers(current_components, &mut used, &mut session.meter)
+                    .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))?
+            } else {
+                Vec::new()
+            },
             changes,
         })
     }
 
-    fn review_creation<'a>(
+    fn review_initial<'a>(
         &'a self,
-        current: &'a Calendar,
+        target: ReviewTarget<'a>,
         actor: &Actor,
         message: &ItipMessage<'_>,
     ) -> Result<Review<'a>, Rejection> {
@@ -321,7 +452,8 @@ impl Message {
         }
         Ok(Review {
             message: self,
-            current,
+            target,
+            expired_answers: Vec::new(),
             changes,
         })
     }
@@ -382,9 +514,10 @@ impl Message {
                 .into_iter()
                 .map(Issue::from_diagnostic)
                 .collect();
-            if issues
-                .iter()
-                .any(|issue| issue.is_error() || issue.is_warning())
+            if meter.is_exhausted()
+                || issues
+                    .iter()
+                    .any(|issue| issue.is_error() || issue.is_warning())
             {
                 return Err(Error::new("icalkit.scheduling.message-invalid", issues));
             }
@@ -394,25 +527,23 @@ impl Message {
     }
 }
 
-/// A scheduling identity supplied by the application.
+/// The scheduling identity the caller supplies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Actor {
     address: String,
 }
 
 impl Actor {
-    /// Construct a non-empty CAL-ADDRESS without control or whitespace characters.
+    /// Construct a calendar user address with valid URI syntax.
     #[must_use]
     pub fn new(address: impl Into<String>) -> Option<Self> {
         let address = address.into();
-        (!address.is_empty()
-            && !address
-                .bytes()
-                .any(|octet| octet.is_ascii_control() || octet.is_ascii_whitespace()))
-        .then_some(Self { address })
+        UriValue::decode_value(address.as_bytes())
+            .is_ok()
+            .then_some(Self { address })
     }
 
-    /// The CAL-ADDRESS spelling.
+    /// The `CAL-ADDRESS` spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.address
@@ -423,17 +554,20 @@ impl Actor {
 #[derive(Debug)]
 pub struct Review<'a> {
     message: &'a Message,
-    current: &'a Calendar,
+    target: ReviewTarget<'a>,
     changes: Vec<ReviewedChange>,
+    expired_answers: Vec<(usize, usize)>,
 }
 
 impl<'a> Review<'a> {
     /// How many property occurrences would change.
     #[must_use]
     pub fn change_count(&self) -> usize {
-        self.changes.iter().fold(0, |count, change| {
-            count.saturating_add(change.transition.len())
-        })
+        self.changes
+            .iter()
+            .fold(self.expired_answers.len(), |count, change| {
+                count.saturating_add(change.transition.len())
+            })
     }
 
     /// The message this review describes.
@@ -443,22 +577,25 @@ impl<'a> Review<'a> {
     }
 
     /// Turn this review into a single-use authorization capability.
+    /// For a `COUNTER`, the organizer chooses whether to accept the proposed changes.
     #[must_use]
     pub fn authorize(self) -> AuthorizedChange<'a> {
         AuthorizedChange {
             message: self.message,
-            current: self.current,
+            target: self.target,
             changes: self.changes,
+            expired_answers: self.expired_answers,
         }
     }
 }
 
-/// A single-use authorized transition borrowing the exact inputs that were reviewed.
+/// A single-use authorization that borrows the inputs from its review.
 #[derive(Debug)]
 pub struct AuthorizedChange<'a> {
     message: &'a Message,
-    current: &'a Calendar,
+    target: ReviewTarget<'a>,
     changes: Vec<ReviewedChange>,
+    expired_answers: Vec<(usize, usize)>,
 }
 
 impl AuthorizedChange<'_> {
@@ -469,16 +606,38 @@ impl AuthorizedChange<'_> {
     }
 
     /// Apply to a private clone of the reviewed state, consuming this authorization.
+    /// After accepting a `COUNTER`, the organizer reschedules by sending a `REQUEST`.
     pub fn apply(mut self) -> Result<Calendar, Error> {
-        let mut updated = self.current.clone();
-        let policy = updated.policy;
+        let (mut document, policy) = match self.target {
+            ReviewTarget::Held(current) => (current.document.clone(), current.policy),
+            ReviewTarget::Absent => {
+                let document = creation_document(&self.message.calendar)?;
+                let policy = self.message.calendar.policy;
+                return parse_calendar(
+                    &document.to_bytes(),
+                    policy,
+                    &mut Meter::new(policy.limits),
+                );
+            },
+        };
         self.changes.sort_by_key(|change| change.target.phase());
         {
-            let calendar = updated
-                .document
+            let calendar = document
                 .components_mut()
                 .next()
                 .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+            for (item, line) in self.expired_answers {
+                let attendee = calendar
+                    .items_mut()
+                    .get_mut(item)
+                    .and_then(Item::as_component_mut)
+                    .and_then(|event| event.items_mut().get_mut(line))
+                    .and_then(Item::as_property_mut)
+                    .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                attendee
+                    .edit_parameters()
+                    .retain(|parameter| !parameter.is_named(ANSWERED_AT));
+            }
             for change in self.changes {
                 match change.target {
                     ChangeTarget::Create { source } => {
@@ -489,16 +648,42 @@ impl AuthorizedChange<'_> {
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
                         calendar.items_mut().push(Item::Component(payload));
                     },
-                    ChangeTarget::Existing { item } => {
+                    ChangeTarget::Existing {
+                        item,
+                        inherited_attendees,
+                    } => {
                         let component = calendar
                             .items_mut()
                             .get_mut(item)
                             .and_then(Item::as_component_mut)
                             .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+                        if !inherited_attendees.is_empty() {
+                            component
+                                .items_mut()
+                                .try_reserve_exact(inherited_attendees.len())
+                                .map_err(|_| Error::single("icalkit.scheduling.apply-refused"))?;
+                            let at = component
+                                .items()
+                                .iter()
+                                .position(|item| item.as_component().is_some())
+                                .unwrap_or(component.items().len());
+                            component.items_mut().splice(
+                                at..at,
+                                inherited_attendees.into_iter().map(Item::Property),
+                            );
+                        }
                         apply_to(component, &change.transition, policy)?;
                         if self.message.method == Method::Cancel {
                             mark_cancelled(component)?;
                         }
+                    },
+                    ChangeTarget::ReplyToOccurrence {
+                        mut occurrence,
+                        source,
+                    } => {
+                        apply_to(&mut occurrence, &change.transition, policy)?;
+                        copy_recurrence_id(&mut occurrence, &self.message.calendar, source)?;
+                        calendar.items_mut().push(Item::Component(*occurrence));
                     },
                     ChangeTarget::Detach { master, source } => {
                         let mut detached = calendar
@@ -517,31 +702,51 @@ impl AuthorizedChange<'_> {
                 }
             }
         }
-        let bytes = updated.document.to_bytes();
+        let bytes = document.to_bytes();
         let mut meter = Meter::new(policy.limits);
         let validated = parse_calendar(&bytes, policy, &mut meter)?;
         Ok(validated)
     }
 }
 
-/// Which component an authorized transition writes, including a not-yet-materialized range
-/// anchor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
+enum ReviewTarget<'a> {
+    Held(&'a Calendar),
+    Absent,
+}
+
+/// Which component an authorized transition writes, including a not-yet-materialized range anchor.
+#[derive(Debug)]
 enum ChangeTarget {
-    /// Insert the authorized payload into a calendar that did not hold its identity.
+    /// Insert a payload whose identity is new to the calendar.
     Create { source: usize },
-    /// Mutate the component that was reviewed.
-    Existing { item: usize },
+    /// Update the component at its reviewed position.
+    Existing {
+        item: usize,
+        inherited_attendees: Vec<Property>,
+    },
     /// Clone the reviewed master, apply the property diff, and append a detached instance.
     Detach { master: usize, source: usize },
+    /// Store the reviewed occurrence with the attendee's answer.
+    ReplyToOccurrence {
+        occurrence: Box<Component>,
+        source: usize,
+    },
 }
 
 impl ChangeTarget {
+    fn existing(item: usize) -> Self {
+        Self::Existing {
+            item,
+            inherited_attendees: Vec::new(),
+        }
+    }
+
     /// Apply indexed mutations before appending components, keeping every reviewed index stable.
-    const fn phase(self) -> u8 {
+    const fn phase(&self) -> u8 {
         match self {
             Self::Existing { .. } => 0,
-            Self::Create { .. } | Self::Detach { .. } => 1,
+            Self::Create { .. } | Self::Detach { .. } | Self::ReplyToOccurrence { .. } => 1,
         }
     }
 }
@@ -559,7 +764,7 @@ fn apply_to(
     policy: ResourcePolicy,
 ) -> Result<(), Error> {
     let mut target = ComponentTarget::new(event, policy.limits);
-    for (at, change) in transition.changes() {
+    for (at, change) in transition.writes() {
         target
             .write_change(at, change)
             .map_err(|_| Error::single("icalkit.scheduling.apply-refused"))?;
@@ -595,28 +800,286 @@ impl Display for Rejection {
 
 impl core::error::Error for Rejection {}
 
+fn series_master<'a>(
+    components: &[(usize, &'a Component)],
+) -> Result<Option<(usize, &'a Component)>, Rejection> {
+    let mut masters = components
+        .iter()
+        .copied()
+        .filter(|(_, component)| ScheduledView::of(component).recurrence_id().is_none());
+    let master = masters.next();
+    if masters.next().is_some() {
+        return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+    }
+    Ok(master)
+}
+
+fn stored_instance<'a>(
+    identity: Option<InstanceRef>,
+    components: &[(usize, &'a Component)],
+) -> Result<Option<(usize, &'a Component)>, Rejection> {
+    let mut exact = None;
+    for &(item, component) in components {
+        match compare_instances(identity, ScheduledView::of(component).recurrence_id()) {
+            InstanceMatch::Same if exact.is_none() => exact = Some((item, component)),
+            InstanceMatch::Same | InstanceMatch::Ambiguous => {
+                return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+            },
+            InstanceMatch::Different => {},
+        }
+    }
+    Ok(exact)
+}
+
+/// Find earlier answers on occurrences that still inherit the master's revision after the request.
+fn find_expired_answers(
+    components: &[(usize, &Component)],
+    addressed: &mut [usize],
+    meter: &mut Meter,
+) -> Result<Vec<(usize, usize)>, LimitExceeded> {
+    let units = |size| u64::try_from(size).unwrap_or(u64::MAX);
+    let count = units(addressed.len());
+    meter.try_charge(
+        count.saturating_mul(u64::from(u64::BITS.saturating_sub(count.leading_zeros()))),
+    )?;
+    addressed.sort_unstable();
+    let mut addressed = addressed.iter().copied().peekable();
+    let mut expired = Vec::new();
+    meter.try_charge(units(components.len()))?;
+    for &(item, event) in components {
+        if addressed.next_if_eq(&item).is_some() {
+            continue;
+        }
+        meter.try_charge(units(event.items().len()).saturating_mul(2))?;
+        if event
+            .properties_named(&PropertyId::SEQUENCE)
+            .next()
+            .is_some()
+        {
+            continue;
+        }
+        for (line, entry) in event.items().iter().enumerate() {
+            let Some(attendee) = entry
+                .as_property()
+                .filter(|line| line.has_id(&PropertyId::ATTENDEE))
+            else {
+                continue;
+            };
+            meter.try_charge(units(attendee.parameters().len()).saturating_mul(2))?;
+            if attendee.parameters_named(ANSWERED_AT).next().is_none() {
+                continue;
+            }
+            if expired.len() == expired.capacity() {
+                let extra = expired.len().max(1);
+                let bytes = expired
+                    .len()
+                    .checked_add(extra)
+                    .and_then(|capacity| capacity.checked_mul(size_of::<(usize, usize)>()))
+                    .ok_or_else(|| meter.refuse_limit(LimitExceeded::Budget))?;
+                meter.try_charge_bytes(units(bytes))?;
+                meter.admit(|| {
+                    expired
+                        .try_reserve_exact(extra)
+                        .map_err(|_| LimitExceeded::Budget)
+                })?;
+            }
+            expired.push((item, line));
+        }
+    }
+    Ok(expired)
+}
+
+fn review_occurrence(
+    mut occurrence: ReplyOccurrence<'_>,
+    message: &ItipMessage<'_>,
+    payload_index: usize,
+    source: usize,
+    actor: &Actor,
+    meter: &mut Meter,
+) -> Result<Option<ReviewedChange>, Rejection> {
+    let inherits_attendees = occurrence.stored_item.is_none_or(|(_, stored)| {
+        stored
+            .properties_named(&PropertyId::ATTENDEE)
+            .next()
+            .is_none()
+    });
+    if inherits_attendees {
+        remove_inherited_reply_times(&mut occurrence.event);
+    }
+    let transition = evaluate_new_instance_payload(
+        message,
+        &ScheduledView::of(&occurrence.event),
+        payload_index,
+        PartyId::new(actor.as_str()),
+    )
+    .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?
+    .into_transition();
+    if transition.is_empty() {
+        return Ok(None);
+    }
+    let target = if let Some((item, stored)) = occurrence.stored_item {
+        ChangeTarget::Existing {
+            item,
+            inherited_attendees: if inherits_attendees {
+                take_inherited_attendees(&mut occurrence.event, stored.items().len(), meter)
+                    .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))?
+            } else {
+                Vec::new()
+            },
+        }
+    } else {
+        ChangeTarget::ReplyToOccurrence {
+            occurrence: Box::new(occurrence.event),
+            source,
+        }
+    };
+    Ok(Some(ReviewedChange { target, transition }))
+}
+
+fn remove_inherited_reply_times(event: &mut Component) {
+    for property in event
+        .items_mut()
+        .iter_mut()
+        .filter_map(Item::as_property_mut)
+    {
+        if property.has_id(&PropertyId::ATTENDEE)
+            && property.parameters_named(ANSWERED_AT).next().is_some()
+        {
+            property
+                .edit_parameters()
+                .retain(|parameter| !parameter.is_named(ANSWERED_AT));
+        }
+    }
+}
+
+fn take_inherited_attendees(
+    event: &mut Component,
+    stored_items: usize,
+    meter: &mut Meter,
+) -> Result<Vec<Property>, LimitExceeded> {
+    let mut attendees = Vec::new();
+    let count = event.properties_named(&PropertyId::ATTENDEE).count();
+    charge_attendee_slots(meter, count, stored_items)?;
+    meter.admit(|| {
+        attendees
+            .try_reserve_exact(count)
+            .map_err(|_| LimitExceeded::Budget)
+    })?;
+    attendees.extend(event.items_mut().drain(..).filter_map(|entry| match entry {
+        Item::Property(property) if property.has_id(&PropertyId::ATTENDEE) => Some(property),
+        _ => None,
+    }));
+    Ok(attendees)
+}
+
+/// Charge the review's attendee slots and the full item buffer the stored occurrence may need.
+fn charge_attendee_slots(
+    meter: &mut Meter,
+    count: usize,
+    stored: usize,
+) -> Result<(), LimitExceeded> {
+    let transfer = count.checked_mul(size_of::<Property>());
+    let destination = stored
+        .checked_add(count)
+        .and_then(|slots| slots.checked_mul(size_of::<Item>()));
+    let bytes = transfer
+        .zip(destination)
+        .and_then(|(left, right)| left.checked_add(right))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| meter.refuse_limit(LimitExceeded::Budget))?;
+    meter.try_charge_bytes(bytes)
+}
+
+fn reply_occurrence<'a>(
+    session: &mut Session<'_>,
+    current: &'a Calendar,
+    received: &Calendar,
+    master: &Component,
+    payload: &Component,
+) -> Result<ReplyOccurrence<'a>, Rejection> {
+    let siblings = root_component(current)
+        .ok_or_else(|| Rejection::new("icalkit.scheduling.no-matching-current"))?
+        .items();
+    let limits = session.engine.policy.limits;
+    session.with_zone_source(|external, meter, notes| {
+        let source = ResourceZones::read(Some(current), external, meter, notes)
+            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+        let incoming = ResourceZones::read(Some(received), &source, meter, notes)
+            .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))?;
+        // A floating occurrence keeps its civil time.
+        let civil = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+        let zones = Zones::new(&source).with_query_zone_source(civil.tzid(), &civil);
+        let mut budget = Budget::new(limits, meter);
+        let received_zones = Zones::new(&incoming).with_query_zone_source(civil.tzid(), &civil);
+        event_for_instance_reply(
+            master,
+            siblings,
+            payload,
+            zones,
+            received_zones,
+            &mut budget,
+            notes,
+        )
+        .map_err(|_| Rejection::new("icalkit.scheduling.authorization-denied"))
+    })
+}
+
 fn root_component(calendar: &Calendar) -> Option<&Component> {
     calendar.document.components().next()
+}
+
+fn creation_document(message: &Calendar) -> Result<Document, Error> {
+    let mut document = message.document.clone();
+    let calendar = document
+        .components_mut()
+        .next()
+        .ok_or_else(|| Error::single("icalkit.scheduling.target-moved"))?;
+    calendar.items_mut().retain(|item| {
+        !item
+            .as_property()
+            .is_some_and(|property| property.has_id(&PropertyId::METHOD))
+    });
+    Ok(document)
 }
 
 fn scheduled_components<'a>(
     calendar: &'a Calendar,
     uid: &[u8],
     message: &ItipMessage<'_>,
-) -> Vec<(usize, &'a Component)> {
-    root_component(calendar)
-        .into_iter()
-        .flat_map(|calendar| calendar.items().iter())
+    meter: &mut Meter,
+) -> Result<Vec<(usize, &'a Component)>, Rejection> {
+    let mut matches = Vec::new();
+    let mut charge = |units: usize| {
+        meter
+            .try_charge(u64::try_from(units).unwrap_or(u64::MAX))
+            .map_err(|_| Rejection::new("icalkit.scheduling.review-resource-limit"))
+    };
+    let items = root_component(calendar).map_or(&[][..], Component::items);
+    charge(items.len())?;
+    for (item, component) in items
+        .iter()
         .enumerate()
         .filter_map(|(item, entry)| entry.as_component().map(|component| (item, component)))
-        .filter(|(_, component)| {
-            component.kind() == Some(message.kind())
-                && component
-                    .properties()
-                    .find(|property| property.is_named(b"UID"))
-                    .is_some_and(|property| property.value_text().as_bytes() == uid)
-        })
-        .collect()
+        .filter(|(_, component)| is_scheduling_payload(component))
+    {
+        charge(component.items().len())?;
+        for property in component.properties_named(&PropertyId::UID) {
+            charge(property.value_text().len())?;
+            for parameter in property.parameters() {
+                charge(parameter.name().len())?;
+                charge(parameter.value().len())?;
+            }
+        }
+        let known_uid = decode_single_scalar_text(component, &PropertyId::UID)
+            .ok_or_else(|| Rejection::new("icalkit.scheduling.current-identity-unreadable"))?;
+        if known_uid.as_bytes() == uid {
+            if component.kind() != Some(message.kind()) {
+                return Err(Rejection::new("icalkit.scheduling.authorization-denied"));
+            }
+            matches.push((item, component));
+        }
+    }
+    Ok(matches)
 }
 
 fn message_payloads<'a>(
@@ -725,4 +1188,197 @@ fn format_dtstamp(timestamp: Timestamp) -> Result<Vec<u8>, Error> {
     )
     .map_err(|_| Error::single("icalkit.scheduling.dtstamp-out-of-range"))?;
     Ok(written.into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Actor, Message};
+    use crate::{Calendar, Engine, Meter, ResourcePolicy};
+    use alloc::{format, string::String, vec::Vec};
+
+    #[test]
+    fn a_master_revision_charges_each_expired_attendee_position() {
+        use core::fmt::Write as _;
+
+        let wrapper = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n";
+        let header = "BEGIN:VEVENT\r\nUID:r\r\nDTSTAMP:20260301T120000Z\r\n";
+        let master = format!(
+            "{header}DTSTART:20260310T140000Z\r\nSUMMARY:S\r\n\
+                             ORGANIZER:mailto:c@x\r\nATTENDEE:mailto:a@x\r\n\
+                             RRULE:FREQ=WEEKLY;COUNT=2\r\nSEQUENCE:2\r\nEND:VEVENT\r\n"
+        );
+        let request = format!(
+            "{wrapper}METHOD:REQUEST\r\n{}END:VCALENDAR\r\n",
+            master.replace("SEQUENCE:2", "SEQUENCE:3")
+        );
+        let message = Message::read(request.as_bytes()).unwrap();
+        let actor = Actor::new("mailto:c@x").unwrap();
+        let engine = Engine::default();
+        let count = 12;
+        let held = |parameter: &str| {
+            let mut attendees = String::new();
+            for n in 0..count {
+                write!(
+                    attendees,
+                    "ATTENDEE;{parameter}=20260302T120000Z:mailto:p{n}@x\r\n"
+                )
+                .unwrap();
+            }
+            let text = format!(
+                "{wrapper}{master}{header}RECURRENCE-ID:20260317T140000Z\r\n\
+                               DTSTART:20260317T160000Z\r\n{attendees}END:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            Calendar::parse(text.as_bytes()).unwrap()
+        };
+        let mut session = engine.session();
+        let changes = message
+            .review_in(&mut session, &held("X-ICALKIT-UNRELATED-X"), &actor)
+            .unwrap()
+            .change_count();
+        let slots = u64::try_from(count * size_of::<(usize, usize)>()).unwrap();
+        let budget = session.meter.spent() + slots - 1;
+        let mut session = engine.session();
+        session.meter = Meter::with_budget(ResourcePolicy::secure().limits, budget);
+        let current = held("X-ICALKIT-ANSWERED-AT");
+        assert_eq!(
+            message.review(&current, &actor).unwrap().change_count(),
+            changes + count
+        );
+        let before = current.to_bytes();
+        let error = message
+            .review_in(&mut session, &current, &actor)
+            .expect_err("unpaid positions");
+        assert_eq!(
+            error.code().as_str(),
+            "icalkit.scheduling.review-resource-limit"
+        );
+        assert!(session.meter.is_exhausted());
+        assert_eq!(current.to_bytes(), before);
+    }
+
+    #[test]
+    fn inherited_attendees_require_space_for_review_and_storage() {
+        use crate::internal::core::{Item, Property};
+        use core::fmt::Write as _;
+
+        let calendar = |method: &str, events: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n{method}{events}END:VCALENDAR\r\n"
+            )
+        };
+        let event_start = "BEGIN:VEVENT\r\nUID:s\r\nDTSTAMP:20260301T120000Z\r\n";
+        let organizer = "ORGANIZER:mailto:chair@x\r\n";
+        let count = 128;
+        let mut master = format!(
+            "{event_start}DTSTART:20260310T140000Z\r\nSUMMARY:S\r\n{organizer}RRULE:FREQ=WEEKLY;COUNT=2\r\n"
+        );
+        for index in 0..count {
+            write!(master, "ATTENDEE:mailto:p{index}@x\r\n").unwrap();
+        }
+        master.push_str("END:VEVENT\r\n");
+        let key = "RECURRENCE-ID:20260317T140000Z\r\n";
+        let stored = format!("{event_start}{key}DTSTART:20260317T160000Z\r\nEND:VEVENT\r\n");
+        let held = calendar("", &format!("{master}{stored}"));
+        let current = Calendar::parse(held.as_bytes()).unwrap();
+        let incoming = format!(
+            "{event_start}{key}{organizer}ATTENDEE;PARTSTAT=ACCEPTED:mailto:p1@x\r\nEND:VEVENT\r\n"
+        );
+        let message = Message::read(calendar("METHOD:REPLY\r\n", &incoming).as_bytes()).unwrap();
+        let actor = Actor::new("mailto:p1@x").unwrap();
+        let engine = Engine::default();
+        let mut session = engine.session();
+        message.review_in(&mut session, &current, &actor).unwrap();
+        let total = session.meter.spent();
+        let rows = count * (size_of::<Property>() + size_of::<Item>());
+        for budget in [u64::try_from(rows - 1).unwrap(), total - 1] {
+            let mut session = engine.session();
+            session.meter = Meter::with_budget(ResourcePolicy::secure().limits, budget);
+            let Some(error) = message.review_in(&mut session, &current, &actor).err() else {
+                panic!("review accepted {budget} bytes");
+            };
+            assert_eq!(
+                error.code().as_str(),
+                "icalkit.scheduling.review-resource-limit"
+            );
+            assert!(session.meter.is_exhausted());
+            assert!(message.review_in(&mut session, &current, &actor).is_err());
+            assert_eq!(current.to_bytes(), held.as_bytes());
+        }
+    }
+
+    #[test]
+    fn an_unrepresentable_attendee_allocation_exhausts_the_session() {
+        use crate::internal::core::{Item, LimitExceeded};
+
+        for (count, stored) in [
+            (usize::MAX, 0),
+            (1, usize::MAX),
+            (1, usize::MAX / size_of::<Item>()),
+        ] {
+            let mut meter = Meter::new(ResourcePolicy::secure().limits);
+            assert_eq!(
+                super::charge_attendee_slots(&mut meter, count, stored),
+                Err(LimitExceeded::Budget)
+            );
+            assert!(meter.is_exhausted());
+        }
+    }
+
+    #[test]
+    fn held_identity_review_charges_the_session_for_each_uid() {
+        let event = "BEGIN:VEVENT\r\nUID:event@example.test\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240102T000000Z\r\nSUMMARY:Planning\r\nORGANIZER:mailto:alice@example.test\r\nATTENDEE:mailto:bob@example.test\r\nSEQUENCE:1\r\nEND:VEVENT\r\n";
+        let calendar = |method: &str, components: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit meter//EN\r\n{method}{components}END:VCALENDAR\r\n"
+            )
+        };
+        let incoming = event.replace("SEQUENCE:1", "SEQUENCE:2");
+        let message = Message::read(calendar("METHOD:REQUEST\r\n", &incoming).as_bytes()).unwrap();
+        let actor = Actor::new("mailto:alice@example.test").unwrap();
+        let engine = Engine::default();
+        let mut costs = Vec::new();
+        for extra in [String::new(), event.replace("UID:event", "UID:other")] {
+            let held =
+                Calendar::parse(calendar("", &format!("{event}{extra}")).as_bytes()).unwrap();
+            let mut session = engine.session();
+            message.review_in(&mut session, &held, &actor).unwrap();
+            costs.push(session.meter.spent());
+        }
+        assert!(costs[1] >= costs[0] + u64::try_from("other@example.test".len()).unwrap());
+        let body = format!("{event}{}", event.replace("UID:event", "UID:other"));
+        let held = Calendar::parse(calendar("", &body).as_bytes()).unwrap();
+        let mut session = engine.session();
+        session.meter = Meter::with_budget(ResourcePolicy::secure().limits, costs[0]);
+        let refusal = message.review_in(&mut session, &held, &actor).unwrap_err();
+        assert_eq!(
+            refusal.code().as_str(),
+            "icalkit.scheduling.review-resource-limit"
+        );
+    }
+
+    #[test]
+    fn message_promotion_requires_a_complete_budgeted_inspection() {
+        let bytes = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//icalkit tests//EN\r\n",
+            "METHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example.test\r\n",
+            "DTSTAMP:20240101T000000Z\r\nDTSTART:20240102T000000Z\r\nSUMMARY:Planning\r\n",
+            "ORGANIZER:mailto:alice@example.test\r\nATTENDEE:mailto:bob@example.test\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n",
+        );
+        let calendar = Calendar::parse(bytes.as_bytes()).unwrap();
+        let policy = ResourcePolicy::secure();
+        let mut admitted = 0;
+        for budget in 0..=1024 {
+            let mut meter = Meter::with_budget(policy.limits, budget);
+            if let Ok(message) = Message::from_calendar_in(calendar.clone(), policy, &mut meter) {
+                assert!(
+                    !meter.is_exhausted(),
+                    "promoted an incomplete inspection with budget {budget}"
+                );
+                assert_eq!(message.to_bytes(), bytes.as_bytes());
+                admitted += 1;
+            }
+        }
+        assert!(admitted > 0);
+    }
 }

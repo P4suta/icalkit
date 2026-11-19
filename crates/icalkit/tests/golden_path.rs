@@ -13,6 +13,7 @@ PRODID:-//icalkit tests//EN\r\n\
 BEGIN:VEVENT\r\n\
 UID:one@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
+DTSTART:20260814T090000Z\r\n\
 SUMMARY:before\r\n\
 X-OWNER-COLOR:plum\r\n\
 END:VEVENT\r\n\
@@ -27,7 +28,10 @@ fn root_types_are_the_only_setup_a_normal_consumer_needs() {
     let calendar = session.parse(VALID).unwrap();
 
     assert_eq!(calendar.to_bytes(), VALID);
-    assert_eq!(calendar.events().next().unwrap().uid(), "one@example.test");
+    assert_eq!(
+        calendar.events().next().unwrap().uid().as_deref(),
+        Some("one@example.test")
+    );
     assert_eq!(calendar.issues(), []);
 
     let _: Option<Error> = None;
@@ -115,6 +119,36 @@ fn editor_rolls_back_by_default_and_commit_is_line_local() {
     let written = calendar.to_bytes();
     assert!(written.windows(untouched.len()).any(|run| run == untouched));
     assert!(written.windows(15).any(|run| run == b"SUMMARY:after\r\n"));
+}
+
+#[test]
+fn vendor_property_edits_preserve_the_original_name_case() {
+    let mut calendar = Calendar::parse(VALID).unwrap();
+    let mut edit = calendar.edit();
+    edit.set_vendor_property("one@example.test", "x-review-note", b"first")
+        .unwrap();
+    edit.commit().unwrap();
+
+    let mut edit = calendar.edit();
+    edit.set_vendor_property("one@example.test", "X-REVIEW-NOTE", b"second")
+        .unwrap();
+    edit.commit().unwrap();
+
+    let event = calendar.events().next().unwrap();
+    let property = event.property("X-REVIEW-NOTE").unwrap();
+    assert_eq!(property.name().as_str(), "x-review-note");
+    assert_eq!(property.value(), b"second");
+    assert_eq!(
+        event
+            .as_component()
+            .properties()
+            .filter(|property| property
+                .name()
+                .as_str()
+                .eq_ignore_ascii_case("X-REVIEW-NOTE"))
+            .count(),
+        1
+    );
 }
 
 #[test]

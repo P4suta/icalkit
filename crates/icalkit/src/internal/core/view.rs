@@ -5,14 +5,11 @@
 //! Typed access as a view over preserved text, and the guard a write goes through.
 //!
 //! One shape for every typed accessor, distinguishing three states: absent,
-//! present-but-malformed carrying its diagnostic, and present-and-valid. `dtstart()` may not
-//! differ in shape from `geo()` or from a property added later, and that is enforced by there
-//! being exactly one accessor rather than by review (`docs/adr/0001`).
+//! present-but-malformed carrying its diagnostic, and present-and-valid.
+//! `dtstart()` may not differ in shape from `geo()` or from a property added later, and that is enforced by there being exactly one accessor rather than by review (`docs/adr/0001`).
 //!
-//! Both non-absent arms carry `&'a Property`, so a caller always holds the original text next
-//! to the interpretation. That is the whole answer to `GEO`, where the text is authoritative
-//! and the pair of floats is derived from it; it is also why nothing decoded is cached, since
-//! a second place to keep the answer is a second place for the two to disagree.
+//! Both non-absent arms carry `&'a Property`, so a caller always holds the original text next to the interpretation.
+//! That is the whole answer to `GEO`, where the text is authoritative and the pair of floats is derived from it; it is also why nothing decoded is cached, since a second place to keep the answer is a second place for the two to disagree.
 
 use alloc::vec::Vec;
 use core::error::Error;
@@ -28,9 +25,9 @@ use crate::internal::core::tree::Property;
 
 /// The result of reading one typed value out of a component or a property.
 ///
-/// Malformed is not an error. The property is still there, its octets are still written back,
-/// and the caller is handed both the diagnostic and the text that produced it — which is what
-/// lets an application show the user a meeting whose `DTSTART` it could not parse.
+/// Malformed is not an error.
+/// The property is still there, its octets are still written back,
+/// and the caller is handed both the diagnostic and the text that produced it — which is what lets an application show the user a meeting whose `DTSTART` it could not parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View<'a, T> {
     /// No property of that identity is present.
@@ -94,59 +91,57 @@ impl<'a, T> View<'a, T> {
 
 /// A value type that can be read out of a property's preserved octets.
 ///
-/// The lifetime ties the decoded value to the octets it came from, so a borrowed view such as
-/// [`TextValue`] cannot outlive the property it describes. The failure is a
-/// [`DiagnosticCode`] rather than a message, because the emission site owns the location and
-/// the severity and the decoder owns only what was wrong.
+/// The lifetime ties the decoded value to the octets it came from, so a borrowed view such as [`TextValue`] cannot outlive the property it describes.
+/// The failure is a [`DiagnosticCode`] rather than a message, because the emission site owns the location and the severity and the decoder owns only what was wrong.
 pub trait DecodeValue<'a>: Sized {
     /// Read this type out of `bytes`, or say which diagnostic describes the failure.
     fn decode_value(bytes: &'a [u8]) -> Result<Self, DiagnosticCode>;
 
-    /// Read this type out of a whole property, for a value whose shape its parameters decide.
-    ///
-    /// One value type needs this and the rest must not: RFC 5545 makes a date-time's zone a
-    /// `TZID` parameter rather than part of the value, so a decoder handed only the octets
-    /// cannot tell a floating time from a zoned one — and a caller that read one and wrote it
-    /// back would silently drop the zone. `docs/adr/0001` requires the two to be inseparable,
-    /// which is a requirement about the read side as much as the write side.
-    ///
-    /// The default is the value's own octets and nothing else, so adding this changed no
-    /// existing codec. What an implementation may read is this property's parameters and its
-    /// value; the property's *name* is not a question a value type is allowed to ask, because
-    /// the two accessor levels are named on different axes and a decoder that looked at the
-    /// name would be a property accessor wearing a value type's clothes.
+    /// Read the complete value with its declared type and property parameters.
     fn decode_property(property: &'a Property) -> Result<Self, DiagnosticCode> {
-        Self::decode_value(property.value_text().as_bytes())
+        Self::decode_property_field(property, property.value_text().as_bytes())
+    }
+
+    /// Read one list field with its declared type and property parameters.
+    fn decode_property_field(
+        property: &'a Property,
+        bytes: &'a [u8],
+    ) -> Result<Self, DiagnosticCode> {
+        if let Some(Err(code)) = property.declared_value_type() {
+            return Err(code);
+        }
+        Self::decode_contextual_value(property, bytes)
+    }
+
+    /// Decode a recognized field with its property parameters.
+    fn decode_contextual_value(
+        _property: &'a Property,
+        bytes: &'a [u8],
+    ) -> Result<Self, DiagnosticCode> {
+        Self::decode_value(bytes)
     }
 }
 
 /// A value type that can be written into a property.
 ///
-/// Two methods rather than one, because a value's shape decides some of its parameters. RFC
-/// 5545 makes `VALUE` and `TZID` a function of what a date-time is, so converting a zoned
-/// `DTSTART` to a date has to emit `VALUE=DATE` and drop the stale `TZID` — and a trait that
-/// could only write the value would leave the syntactically invalid pairing behind.
-/// [`EncodeValue::coupled_parameters`] has no default implementation on purpose: a default
-/// would let a value type added later silently emit nothing, which is precisely the
-/// per-property judgment call the transition table exists to replace.
+/// Two methods rather than one, because a value's shape decides some of its parameters.
+/// RFC 5545 makes `VALUE` and `TZID` a function of what a date-time is, so converting a zoned `DTSTART` to a date has to emit `VALUE=DATE` and drop the stale `TZID` — and a trait that could only write the value would leave the syntactically invalid pairing behind.
+/// [`EncodeValue::coupled_parameters`] has no default implementation on purpose: a default would let a value type added later silently emit nothing, which is precisely the per-property judgment call the transition table exists to replace.
 pub trait EncodeValue {
     /// Write this value's octets into `out`.
     fn encode_value(&self, out: &mut ValueBuf) -> Result<(), MutationError>;
 
     /// State the parameters this value's shape implies, as assignments and unassignments.
     ///
-    /// Parameters that are *not* a function of the value — `RANGE`, `FBTYPE`, `X-`
-    /// parameters — must not appear here. They belong to the caller and survive a write
-    /// untouched.
+    /// Parameters that are *not* a function of the value — `RANGE`, `FBTYPE`, `X-` parameters — must not appear here.
+    /// They belong to the caller and survive a write untouched.
     fn coupled_parameters(&self, out: &mut Vec<ParameterEdit>);
 }
 
 /// The buffer a value is encoded into.
 ///
-/// Octet-shaped, with a [`core::fmt::Write`] implementation on top, because `core` has no
-/// `io::Write` and `core::fmt::Write` alone takes `&str` — which is exactly what storage is
-/// not. An encoder that has a formattable value uses `write!`; one that has octets pushes
-/// them.
+/// Octet-shaped, with a [`core::fmt::Write`] implementation on top, because `core` has no `io::Write` and `core::fmt::Write` alone takes `&str` — which is exactly what storage is not.
+/// An encoder that has a formattable value uses `write!`; one that has octets pushes them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueBuf {
     /// The octets written so far.
@@ -224,9 +219,7 @@ pub enum MutationError {
     Absent,
     /// The octets held a control character RFC 5545 section 3.1 excludes from a value.
     ///
-    /// Refused rather than escaped, because a caller that could write a bare `CRLF` into a
-    /// value could write a whole new content line after it: a `SUMMARY` taken from a web form
-    /// becoming a second `ATTENDEE` is a real injection and not a theoretical one.
+    /// Refused rather than escaped, because a caller that could write a bare `CRLF` into a value could write a whole new content line after it: a `SUMMARY` taken from a web form becoming a second `ATTENDEE` is a real injection and not a theoretical one.
     IllegalControlCharacter,
     /// A replacement content line was empty, unparsable, or more than one line.
     MalformedReplacement,
@@ -234,11 +227,8 @@ pub enum MutationError {
     NotRepresentable,
     /// The line the write would author is a component boundary rather than a property.
     ///
-    /// A property named `BEGIN` or `END` is written as a line the next reader opens or closes
-    /// a component on, so a write that produced one would move every line after it into a
-    /// component nobody added. The reader stores such a line — it has to, since the file holds
-    /// one — and this crate declines to author one: a component is built with
-    /// [`Component::create`](crate::internal::core::Component::create), which writes both of its boundaries.
+    /// A property named `BEGIN` or `END` is written as a line the next reader opens or closes a component on, so a write that produced one would move every line after it into a component nobody added.
+    /// The reader stores such a line — it has to, since the file holds one — and this crate declines to author one: a component is built with [`Component::create`](crate::internal::core::Component::create), which writes both of its boundaries.
     ComponentBoundary,
     /// The written value exceeded the caller's per-value bound.
     ValueTooLarge {
@@ -270,10 +260,9 @@ impl Display for MutationError {
 
 impl Error for MutationError {}
 
-/// The value types RFC 5545 section 3.2.20's `VALUE` parameter can name.
+/// Registered value types for RFC 5545 section 3.2.20's `VALUE` parameter.
 ///
-/// `#[non_exhaustive]` because a later RFC may add one, and a `VALUE` this crate does not
-/// know is a diagnostic rather than a refusal: the property keeps its octets either way.
+/// `#[non_exhaustive]` because a later RFC may add one, and a `VALUE` this crate does not know is a diagnostic rather than a refusal: the property keeps its octets either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ValueType {
@@ -295,12 +284,15 @@ pub enum ValueType {
     Integer,
     /// Section 3.3.9.
     Period,
-    /// Section 3.3.10. Its grammar belongs to `ical-recur`; here it names preserved text.
+    /// Section 3.3.10.
+    /// Its grammar belongs to `ical-recur`; here it names preserved text.
     Recur,
     /// Section 3.3.11.
     Text,
     /// Section 3.3.12.
     Time,
+    /// RFC 9253 section 7.
+    Uid,
     /// Section 3.3.13.
     Uri,
     /// Section 3.3.14.
@@ -309,7 +301,7 @@ pub enum ValueType {
 
 impl ValueType {
     /// Every value type this crate knows, paired with the name a `VALUE` parameter spells.
-    const SPELLINGS: [(Self, &'static [u8]); 14] = [
+    const SPELLINGS: [(Self, &'static [u8]); 15] = [
         (Self::Binary, b"BINARY"),
         (Self::Boolean, b"BOOLEAN"),
         (Self::CalAddress, b"CAL-ADDRESS"),
@@ -322,6 +314,7 @@ impl ValueType {
         (Self::Recur, b"RECUR"),
         (Self::Text, b"TEXT"),
         (Self::Time, b"TIME"),
+        (Self::Uid, b"UID"),
         (Self::Uri, b"URI"),
         (Self::UtcOffset, b"UTC-OFFSET"),
     ];
@@ -342,6 +335,7 @@ impl ValueType {
             Self::Recur => b"RECUR",
             Self::Text => b"TEXT",
             Self::Time => b"TIME",
+            Self::Uid => b"UID",
             Self::Uri => b"URI",
             Self::UtcOffset => b"UTC-OFFSET",
         }
@@ -359,10 +353,7 @@ impl ValueType {
 
 /// A borrowed `TEXT` value, before its escapes are resolved.
 ///
-/// Validation comes before unescaping, and that order is the whole defense against a
-/// multi-byte lead octet whose trail was eaten by an escape: every substitution RFC 5545
-/// section 3.3.11 defines is ASCII, so none can satisfy a UTF-8 continuation requirement, and
-/// an orphaned lead octet fails deterministically instead of being completed by accident.
+/// Validation comes before unescaping, and that order is the whole defense against a multi-byte lead octet whose trail was eaten by an escape: every substitution RFC 5545 section 3.3.11 defines is ASCII, so none can satisfy a UTF-8 continuation requirement, and an orphaned lead octet fails deterministically instead of being completed by accident.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TextValue<'a> {
     /// The value's octets, escapes and all.
@@ -372,8 +363,7 @@ pub struct TextValue<'a> {
 impl<'a> TextValue<'a> {
     /// A view over octets that are a `TEXT` value.
     ///
-    /// Public because the escaping lives on the far side of a crate boundary from the storage
-    /// it describes.
+    /// Public because the escaping lives on the far side of a crate boundary from the storage it describes.
     #[must_use]
     pub const fn from_bytes(bytes: &'a [u8]) -> Self {
         Self { bytes }
@@ -388,10 +378,9 @@ impl<'a> TextValue<'a> {
 
 /// A borrowed `BINARY` value, before it is read out of the base 64 it is written in.
 ///
-/// [`TextValue`]'s posture, for [`TextValue`]'s reason. RFC 5545 section 3.3.1 fixes the
-/// alphabet and not the line breaks, the padding a producer chose, or the case of the octets
-/// it padded with, so the written text is authoritative and the decoded octets are derived
-/// from it. Reading is a step a caller asks for and never one storage takes.
+/// [`TextValue`]'s posture, for [`TextValue`]'s reason.
+/// RFC 5545 section 3.3.1 fixes the alphabet and not the line breaks, the padding a producer chose, or the case of the octets it padded with, so the written text is authoritative and the decoded octets are derived from it.
+/// Reading is a step a caller asks for and never one storage takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BinaryValue<'a> {
     /// The base 64 text, exactly as it will be written back.
@@ -414,13 +403,11 @@ impl<'a> BinaryValue<'a> {
 
 /// A borrowed `URI`, as RFC 5545 section 3.3.13 writes one.
 ///
-/// Section 3.3.3's `CAL-ADDRESS` is this type as well: that section defines a calendar address
-/// as a URI and adds no syntax of its own, so a second type would be a second name for one
-/// grammar. What tells them apart is the property, which the caller is holding either way.
+/// Section 3.3.3's `CAL-ADDRESS` is this type as well: that section defines a calendar address as a URI and adds no syntax of its own, so a second type would be a second name for one grammar.
+/// What tells them apart is the property, which the caller is holding either way.
 ///
-/// Borrowed and unresolved. A URI's percent-encoding, its case-insensitive scheme and its
-/// case-sensitive path are all things a normalizer would rewrite, and rewriting one is how a
-/// `mailto:` stops matching the `ATTENDEE` a scheduling reply names.
+/// Borrowed and unresolved.
+/// A URI's percent-encoding, its case-insensitive scheme and its case-sensitive path are all things a normalizer would rewrite, and rewriting one is how a `mailto:` stops matching the `ATTENDEE` a scheduling reply names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UriValue<'a> {
     /// The URI, exactly as it will be written back.
@@ -443,15 +430,11 @@ impl<'a> UriValue<'a> {
 
 /// A span between two points in time, as RFC 5545 section 3.3.9 writes one.
 ///
-/// Two variants because section 3.3.9's ABNF has two productions and they are not
-/// interchangeable: `period-explicit` names an end and `period-start` names a length, and a
-/// producer that wrote one gets it back rather than the other. Which one arrived is therefore
-/// part of the value and not a normalization this crate is free to take.
+/// Two variants because section 3.3.9's ABNF has two productions and they are not interchangeable: `period-explicit` names an end and `period-start` names a length, and a producer that wrote one gets it back rather than the other.
+/// Which one arrived is therefore part of the value and not a normalization this crate is free to take.
 ///
-/// The bounds are [`DateTimeValue`]s so that a `PERIOD` under a `TZID` carries the zone the
-/// property gave it, exactly as a bare `DTSTART` does. Section 3.3.9 permits no `DATE` at
-/// either end; refusing one is the decoder's business rather than this type's, because a value
-/// that cannot be read is still a value that must be written back.
+/// The bounds are [`DateTimeValue`]s so that a `PERIOD` under a `TZID` carries the zone the property gave it, exactly as a bare `DTSTART` does.
+/// Section 3.3.9 permits no `DATE` at either end; refusing one is the decoder's business rather than this type's, because a value that cannot be read is still a value that must be written back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Period<'a> {
     /// `period-explicit`: a start and an end.
@@ -482,10 +465,7 @@ impl<'a> Period<'a> {
 
 /// A latitude and longitude pair, as RFC 5545 section 3.8.1.6 writes one.
 ///
-/// Readable and not writable, which is the honest answer for a value whose text cannot be
-/// reproduced from its parsed form: a `GEO` that arrived as `37.386013` must be written back
-/// as `37.386013` and not as whatever the shortest round-trip formatting of the nearest `f64`
-/// happens to be.
+/// Readable and not writable, which is the honest answer for a value whose text cannot be reproduced from its parsed form: a `GEO` that arrived as `37.386013` must be written back as `37.386013` and not as whatever the shortest round-trip formatting of the nearest `f64` happens to be.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Geo {
     /// Degrees north, negative for south.
@@ -519,18 +499,16 @@ impl Geo {
 
 /// A short-lived handle naming exactly one property, through which a write may happen.
 ///
-/// The guard borrows the whole component mutably and names one property, so reaching another
-/// property's storage requires visibly widening a signature. That is a borrow the compiler
-/// enforces, unlike a returned marker value a caller may simply drop.
+/// The guard borrows the whole component mutably and names one property, so reaching another property's storage requires visibly widening a signature.
+/// That is a borrow the compiler enforces, unlike a returned marker value a caller may simply drop.
 ///
-/// `T` names the typed view a caller writes *through*; it does not bound what the guard
-/// reaches. The unit the guard scopes is the whole property — its name, its parameters and
-/// its value together — because RFC 5545 makes some of those parameters a function of the
-/// value, and a value-only guard would leave an invalid pairing behind.
+/// `T` names the typed view a caller writes *through*; it does not bound what the guard reaches.
+/// The unit the guard scopes is the whole property — its name, its parameters and its value together — because RFC 5545 makes some of those parameters a function of the value, and a value-only guard would leave an invalid pairing behind.
 pub struct PropertyMut<'a, T> {
     /// The one property this guard names.
     property: &'a mut Property,
-    /// The typed view writes go through. Carried for inference only; no value is stored.
+    /// The typed view writes go through.
+    /// Carried for inference only; no value is stored.
     written_as: PhantomData<fn(T)>,
 }
 
@@ -552,11 +530,9 @@ impl<'a, T> PropertyMut<'a, T> {
 
     /// The property as it stands, mutably.
     ///
-    /// This is the guard's whole reach, and it is one property. Every write path is built on
-    /// it, and each one must discard the preserved layout of this property and of nothing
-    /// else. It grants nothing a caller holding `&mut Property` did not already have; what it
-    /// withholds is every *other* property in the component, which stays borrowed for as long
-    /// as this guard lives.
+    /// This is the guard's whole reach, and it is one property.
+    /// Every write path is built on it, and each one must discard the preserved layout of this property and of nothing else.
+    /// It grants nothing a caller holding `&mut Property` did not already have; what it withholds is every *other* property in the component, which stays borrowed for as long as this guard lives.
     pub fn property_mut(&mut self) -> &mut Property {
         self.property
     }

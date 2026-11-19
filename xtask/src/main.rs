@@ -2,192 +2,22 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Repository maintenance tasks for the icalkit workspace.
+//! Repository maintenance commands for the icalkit workspace.
 //!
-//! Run with `cargo run -p xtask -- <task>`, or through the `Justfile` recipes.
-//!
-//! # `purity`
-//!
-//! Purity here means the core runs where calendars are actually rendered: a browser, an
-//! embedded display, a server that already owns its HTTP client and its time zone
-//! database. Declarations carry that promise, and this task reads them for every core
-//! crate: the manifest links no package outside the core set and takes each one from inside
-//! this workspace, and `lib.rs` declares `#![no_std]` and `extern crate alloc;`. No clock
-//! and no network follow from having nothing to call.
-//!
-//! A dependency's key is a nickname its author chose; the name Cargo links is the `package`
-//! field. `ical-dav = { package = "libm", version = "0.2" }` wrote a name from
-//! [`CORE_CRATES`] and linked a third-party crate, and passed every leg of the gate for the
-//! gate's entire life. Entries are therefore read for their linked name in both spellings,
-//! the rename is a violation on its own, and a dependency that resolves from a registry
-//! rather than from `workspace = true` or a path under `crates/` is one too.
-//!
-//! The rule is also only as wide as the list it is applied to, so a crate under a member root
-//! that declares `#![no_std]` without appearing in [`CORE_CRATES`] fails: the exemption
-//! `icalkit-conformance` holds is "private tool", not "not listed". The membership walk covers every
-//! root the workspace declares members under, `gates/` included, while the purity partition
-//! stays over `crates/`: a directory that is not a crate must not be able to become one by
-//! being somewhere this task does not look. The list is written twice, here and as the
-//! `Justfile`'s `core_crates`, and the two are read against each other, because a crate in one
-//! and not the other is either compiled for a bare-metal target with nothing checking what it
-//! depends on or checked here and never compiled for one.
-//!
-//! # `purity`, second rule: the grammar layer
-//!
-//! The private `icalkit` kernel absorbed `ical-grammar` (`docs/adr/0004`, D-0003), and inside
-//! one crate nothing stops a file of `internal/core/grammar/` from naming the model above it.
-//! `gates/grammar-layering`
-//! compiles that directory with no dependencies at all and catches every spelling that names a
-//! model item — `use crate::CivilDate;` fails there with a file and a line. What it cannot
-//! catch is `crate::X` for an `X` the crate root re-exports *from the grammar*, because that
-//! resolves in the gate too, and that is the spelling a contributor reaches for.
-//!
-//! So the remaining half is held here, textually: no path under
-//! `crates/icalkit/src/internal/core/grammar/`
-//! may resolve above the grammar root — in `mod.rs` neither `crate::` nor `super::`, in the
-//! files beside it neither `crate::` nor `super::super::` — and the tree stays flat, because a
-//! subdirectory changes the depth that arithmetic is stated in and a rule that quietly stops
-//! applying is worse than no rule.
-//!
-//! Four spellings were walked around before they were rules. Whitespace: `use crate ::Token;` is
-//! the same import and a substring match does not see it, so every line is read with its
-//! whitespace removed rather than being left to `cargo fmt`. The crate's own name: `extern crate
-//! self as icalkit;` gives the layer a name for the crate root that is neither `crate::` nor
-//! `super::`, so `icalkit::` is refused as a path and `extern crate` is refused outright —
-//! nothing in the layer needs one, since `alloc` is declared by each root that compiles it.
-//! `#[path]`: it maps a module of the layer onto a file this scan never opens, so the layer would
-//! hold code no rule here applies to. And the module tree: the rule reads a directory while the
-//! compiler reads `mod.rs`, so a `.rs` file the module root does not declare is invisible to
-//! `gates/grammar-layering`, and the two sets are held equal in both directions.
-//!
-//! It is still in the same family as the golden-list scan and is still defeated by the same
-//! things: a macro, a generated path, a spelling it was not taught.
-//!
-//! This is hygiene about not routing a lateral import through the parent crate's public
-//! surface. It is not the layering guarantee, and nothing here should be read as saying the
-//! compiler enforces it.
-//!
-//! # `purity`, third rule: the members that make the layers facts
-//!
-//! The compile half of a layering guarantee is a workspace member, and a member is deletable.
-//! Before this rule, a pull request that dropped `gates/grammar-layering` from the member list
-//! and moved its directory away passed every gate in this repository: a stale `--exclude` for a
-//! package that no longer exists is not an error, and the membership walk below only ever
-//! reports a directory that declares `#![no_std]`, which such a member deliberately does not. So
-//! each member is named here — the member line, the package name, `publish = false`, `[lib] doc`
-//! and `test`, and the `#[path]` that reaches the real sources — by string equality, which
-//! `docs/adr/0004` calls narrower than a name scanner and not zero.
-//!
-//! There are two of them now and [`LAYERING_GATES`] is a table rather than a second pair of
-//! constants, because the second layer arrived and copying the rule would have made "what a
-//! layering gate is" a fact stated twice. The second is `gates/xml-layering` over
-//! `crates/icalkit/src/internal/dav/xml/`, which `docs/adr/0012` requires may not name a CalDAV type: that
-//! boundary is what keeps the `webdav-core` extraction that ADR declines to publish a file move
-//! plus a manifest rather than a redesign. Both the textual rule above and the member rule here
-//! are stated over the table, so a third layer is three strings.
-//!
-//! # `purity`, fourth rule: a wildcard arm over `Token`
-//!
-//! `Token` is `#[non_exhaustive]`, which binds outside this workspace and means nothing inside
-//! it, so `unreachable_patterns = "deny"` was written down as what stops a wildcard arm from
-//! being added back. It does not: that lint fires on a catch-all after every variant is already
-//! covered, and a match that omits one variant and adds `_` is a *reachable* wildcard the lint
-//! is silent about. It is also the only shape that loses data, and the only shape a hand
-//! remembering the old cross-crate rule would write. So the arms are read here: a `match` whose
-//! arm patterns name `Token::` may not also carry a `_` arm. `SyncToken::` ends in the same
-//! seven characters and is a different type, so the name is matched at its boundary.
-//!
-//! # `purity`, fifth rule: the crate set's other copies
-//!
-//! `release-plz.toml` is the one file describing this workspace that no gate compiled, ran, or
-//! read, and it named `ical-grammar` for a full landing after the crate ceased to exist. So the
-//! published members are read out of the root manifest and held against it: one `[[package]]`
-//! block each, no block for a package the workspace does not build, and `changelog_include`
-//! naming every published member but the one that carries the changelog.
-//!
-//! The published list is also held against [`PUBLIC_CRATES`]. ADR 0013 makes `icalkit` the
-//! single future registry contract. The six retired implementation package names are rejected,
-//! and the conformance helper must remain explicitly classified and unpublished.
-//!
-//! # `architecture`
-//!
-//! The architecture task gives that release boundary a discoverable name and also freezes the
-//! facade's Cargo feature vocabulary to `std` and `system-tz`, both enabled by default. It
-//! deliberately checks declarations rather than publishability: implementation lives in
-//! private modules, but publishing remains deferred until an explicit release decision.
-//!
-//! `just no-std` and `just wasm` are the compile-time half: they prove the core builds for
-//! `thumbv7em-none-eabi` and for `wasm32-unknown-unknown`. What they cannot express is the
-//! dependency rule, because a `no_std` crate from outside compiles perfectly well while
-//! still binding this core to someone else's MSRV, release cadence, and license. That rule
-//! is a decision rather than a build property, so it needs a gate that reads what the
-//! manifest declares.
-//!
-//! The reasoning is `docs/adr/0004` and `docs/adr/0007`, which the violations cite: the fix
-//! is usually to move the code up a layer, not to add the dependency.
-//!
-//! # `codes`
-//!
-//! `DiagnosticCode` is one vocabulary for the whole workspace and its meanings are frozen as
-//! hard as its names (`docs/adr/0009`), because `docs/adr/0006`'s corpus asserts "this input
-//! produces this code, on this channel" across releases. A meaning that only a doc comment
-//! records is a meaning anybody can edit inside a diff nobody reads, so it is written twice —
-//! once as the variant's first doc paragraph, once as a row of `docs/diagnostic-codes.md` —
-//! and this task fails unless the two agree. Editing a meaning then means editing both files,
-//! which is the review a frozen meaning is owed; improving the prose below a variant's first
-//! paragraph stays free, because that prose is not the meaning.
-//!
-//! Exactly two committed files are read,
-//! `crates/icalkit/src/internal/core/grammar/report.rs` and the golden list, by the same kind of
-//! hand-rolled scan and for the same reason: a gate about
-//! dependencies may not have any. The task fails on a code with no row, on a row no code
-//! declares, on rows out of declaration order, on a meaning that drifted from either side, on
-//! a channel that is not a `Severity` the source declares, and on a milestone `ROADMAP.md`
-//! does not name. An addition that carries a row passes trivially, which is the one edit
-//! `docs/adr/0009` allows without ceremony.
-//!
-//! The milestone column is the part that reads like bookkeeping and is not. `Severity` has a
-//! variant and `Diagnostic` a constructor that no M0 code path reaches, nothing recorded that
-//! they were waiting on M1 and M2 rather than left over from a design that moved, and both
-//! were duly rediscovered as suspected dead API. So a severity that no row carries is a
-//! violation here, and the milestone written against a code names who owes the emitter.
-//!
-//! # `public-api`
-//!
-//! The facade is the workspace's sole future semver contract, so its rustdoc JSON surface is
-//! committed twice: once with default features and once with no features. `cargo-public-api`
-//! generates both lists and this task compares them exactly. An addition, removal, move, or
-//! duplicate canonical path therefore needs an intentional snapshot edit in the same review.
-//!
-//! # `repository`
-//!
-//! Public hosting is part of the product boundary too: a contributor must be able to find the
-//! support and security channels, the release posture, and the exact protection policy before
-//! opening a change. This task holds those repository-owned files and their essential links
-//! together. It deliberately does not call GitHub: remote enforcement is audited against
-//! `docs/repository-policy.md`, while this deterministic half remains runnable offline.
+//! Run `cargo run -p xtask -- <task>` or use the matching `just` recipe.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
-/// The crates that make up the sans-I/O core.
-///
-/// Mirrors `core_crates` in the `Justfile`, and [`recipe_violations`] reads the two against
-/// each other, so a new core crate that reaches only one of them fails here rather than
-/// quietly losing a gate. `icalkit-conformance` is deliberately absent: the conformance runner is
-/// allowed `std` and depends on every crate here, which is what makes it a consumer of the
-/// core rather than part of it.
+/// The `Justfile` uses the same crate list for target builds.
 const CORE_CRATES: &[&str] = &["icalkit"];
 
-/// The sole crate allowed to carry a future registry release contract.
 const PUBLIC_CRATES: &[&str] = &["icalkit"];
 
-/// Temporary implementation crates whose APIs are not production semver contracts.
 const PRIVATE_IMPLEMENTATION: &[&str] = &[];
 
-/// Package boundaries whose sources have moved behind the facade and may not be recreated.
 const RETIRED_IMPLEMENTATION: &[&str] = &[
     "ical-core",
     "ical-dav",
@@ -197,63 +27,33 @@ const RETIRED_IMPLEMENTATION: &[&str] = &[
     "ical-tz",
 ];
 
-/// Narrow third-party boundaries required by the unified public facade.
-///
-/// This is intentionally keyed by both owner and package. Adding an external dependency to
-/// another core crate, or adding another package to `icalkit`, remains a gate failure until
-/// the architecture records the new boundary explicitly.
-const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] =
-    &[("icalkit", "jiff"), ("icalkit", "xmlparser")];
+/// Each pair grants one core crate access to a specific external package.
+const ALLOWED_EXTERNAL_DEPENDENCIES: &[(&str, &str)] = &[
+    ("icalkit", "jiff"),
+    ("icalkit", "xmlparser"),
+    ("icalkit", "icu_calendar"),
+];
 
-/// Private tools isolated from the production API and release graph.
-///
-/// Kept separate from [`PRIVATE_IMPLEMENTATION`] so an isolation helper cannot quietly become
-/// part of the production implementation graph merely because both categories are unpublished.
+/// Private tools can use `std` outside the production dependency graph.
 const PRIVATE_TOOLS: &[&str] = &["icalkit-conformance"];
 
-/// The directories the root manifest declares members under.
-///
-/// The membership walk covers all of them; the purity partition covers `crates/` alone.
 const MEMBER_ROOTS: [&str; 2] = ["crates", "gates"];
 
-/// The recipe file that carries the second copy of [`CORE_CRATES`], relative to the root.
 const JUSTFILE: &str = "Justfile";
 
-/// The grammar layer's root, relative to the workspace root.
-///
-/// Written out rather than derived, because every message below is about positions relative to
-/// this one directory: it is what `gates/grammar-layering` compiles alone.
 const GRAMMAR_ROOT: &str = "crates/icalkit/src/internal/core/grammar";
 
-/// The crate the grammar layer sits in, spelled as a path spells it.
-///
-/// A path may name this crate from inside the layer only by way of `extern crate self as`, which
-/// is why both that declaration and this prefix are refused there.
 const GRAMMAR_OWNER: &str = "icalkit";
 
-/// One member that compiles another crate's layer with nothing above that layer in scope.
-///
-/// A table rather than a second pair of constants. The rule was written for exactly one member
-/// and a second one arrived; copying it would have made "what a layering gate is" a fact stated
-/// twice, and the third would have been stated three times.
+/// Each member compiles the production sources for one layer in isolation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LayeringGate {
-    /// The member directory, relative to the workspace root.
     member: &'static str,
-    /// The package name that member declares.
     package: &'static str,
-    /// The layer root it compiles, relative to the workspace root.
     root: &'static str,
-    /// The crate that layer sits in, spelled as a path spells it.
     owner: &'static str,
 }
 
-/// Every member that makes a layer a fact rather than a directory.
-///
-/// `gates/grammar-layering` compiles `icalkit`'s private content-line grammar with no model in scope
-/// (`docs/adr/0004`, D-0003). `gates/xml-layering` compiles `icalkit`'s private WebDAV XML module with
-/// no CalDAV vocabulary in scope, which is what keeps the extraction `docs/adr/0012` deferred a
-/// file move rather than a redesign.
 const LAYERING_GATES: [LayeringGate; 2] = [
     LayeringGate {
         member: "gates/grammar-layering",
@@ -269,59 +69,52 @@ const LAYERING_GATES: [LayeringGate; 2] = [
     },
 ];
 
-/// The WebDAV XML layer's root, relative to the workspace root.
-///
-/// Written out for the reason [`GRAMMAR_ROOT`] is: it is what `gates/xml-layering` compiles
-/// alone, and every message about it is about a position relative to this one directory.
 const XML_ROOT: &str = "crates/icalkit/src/internal/dav/xml";
 
-/// The crate the WebDAV XML layer sits in, spelled as a path spells it.
 const XML_OWNER: &str = "icalkit";
 
-/// The type a wildcard match arm would silently swallow a variant of.
+/// A wildcard inside the defining crate can hide a new variant of this enum.
 const GUARDED_ENUM: &str = "Token";
 
-/// The root manifest, relative to the workspace root.
 const ROOT_MANIFEST: &str = "Cargo.toml";
 
-/// The release configuration, relative to the workspace root.
 const RELEASE_CONFIG: &str = "release-plz.toml";
 
-/// The published member whose changelog carries the whole stack's history.
 const CHANGELOG_OWNER: &str = "icalkit";
 
-/// The committed golden list of diagnostic codes, relative to the workspace root.
 const GOLDEN_LIST: &str = "docs/diagnostic-codes.md";
 
-/// The declarations the golden list is checked against, relative to the workspace root.
 const DIAGNOSTIC_SOURCE: &str = "crates/icalkit/src/internal/core/grammar/report.rs";
 
-/// The facade's committed public API with default features.
 const PUBLIC_API_DEFAULT: &str = "api/icalkit.default.txt";
 
-/// The facade's committed public API with every default feature disabled.
 const PUBLIC_API_NO_DEFAULT: &str = "api/icalkit.no-default.txt";
 const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
 const CI_POLICY_ACTION: &str =
     "P4suta/project-template/.github/actions/ci-policy@ee6265bd944c53097191f97dcb7a6ac678794b43";
 
-/// The golden list's columns, in the order its cells are read.
 const GOLDEN_COLUMNS: [&str; 4] = ["code", "meaning", "channel", "milestone"];
 
+mod candidate;
 mod ci;
+mod development;
+#[cfg(test)]
+mod hook_scope;
+#[cfg(test)]
+mod nextest_output;
+mod public_api;
 use ci::{
     ALLOCATION_REJECTING_PROBE, ALLOCATION_REQUIRED_PROOFS, CANDIDATE_JOBS, CandidateRevision,
     CiJob, CiPhase, CiResults, JobState, ObservedJob, REJECTING_PROBE, REQUIRED_PROOFS,
-    TrackedSource,
 };
 
 fn ci_results(phase: CiPhase, arguments: &[String]) -> Option<CiResults> {
-    let mut pairs = arguments.chunks_exact(2);
-    if !pairs.remainder().is_empty() || pairs.len() != phase.jobs().len() {
+    let (pairs, remainder) = arguments.as_chunks::<2>();
+    if !remainder.is_empty() || pairs.len() != phase.jobs().len() {
         return None;
     }
     let observations: Option<Vec<_>> = pairs
-        .by_ref()
+        .iter()
         .map(|pair| {
             Some(ObservedJob {
                 job: CiJob::parse(pair.first()?.as_str())?,
@@ -347,65 +140,7 @@ fn candidate_revision(arguments: &[String]) -> io::Result<Vec<String>> {
 }
 
 fn candidate_checkout(workspace: &Path, requested: CandidateRevision) -> io::Result<Vec<String>> {
-    let output = repository_git(workspace)?
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(
-            "git could not identify the candidate checkout",
-        ));
-    }
-    let actual = String::from_utf8(output.stdout)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let actual = CandidateRevision::parse(actual.trim())
-        .ok_or_else(|| io::Error::other("git reported an invalid candidate commit"))?;
-    let source = TrackedSource::from_differences(
-        tracked_difference(workspace, false)?,
-        tracked_difference(workspace, true)?,
-    );
-    if requested.qualifies(actual, source) {
-        return Ok(Vec::new());
-    }
-    Ok(vec![if requested.matches(actual) {
-        "candidate tracked source differs from the requested commit".to_owned()
-    } else {
-        "candidate commit differs from the actual checkout".to_owned()
-    }])
-}
-
-fn tracked_difference(workspace: &Path, index: bool) -> io::Result<bool> {
-    let mut command = repository_git(workspace)?;
-    command.args(["diff", "--quiet", "--no-ext-diff", "--no-textconv"]);
-    if index {
-        command.arg("--cached");
-    }
-    let status = command.args(["HEAD", "--"]).status()?;
-    match status.code() {
-        Some(0) => Ok(false),
-        Some(1) => Ok(true),
-        _ => Err(io::Error::other(
-            "git could not inspect tracked candidate source",
-        )),
-    }
-}
-
-fn repository_git(workspace: &Path) -> io::Result<Command> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--local-env-vars"])
-        .output()?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return Err(io::Error::other(
-            "git could not enumerate its repository-local environment",
-        ));
-    }
-    let variables = String::from_utf8(output.stdout)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let mut command = Command::new("git");
-    command.current_dir(workspace);
-    for variable in variables.lines() {
-        command.env_remove(variable);
-    }
-    Ok(command)
+    candidate::inspect(workspace, requested, &std::env::temp_dir())
 }
 
 fn ci_summary(arguments: &[String]) -> Vec<String> {
@@ -421,10 +156,7 @@ fn ci_summary(arguments: &[String]) -> Vec<String> {
     }
 }
 
-/// The milestones a row may name as owing the emitter. Mirrors `ROADMAP.md`.
-///
-/// A code whose milestone has not shipped has no emitter at all, and that is the honest
-/// reading of the column rather than a defect in it.
+/// The registry names the roadmap milestone for each diagnostic's emitter.
 const MILESTONES: &[&str] = &["M0", "M1", "M2", "M3", "M4", "M5"];
 
 fn main() -> ExitCode {
@@ -454,14 +186,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// Print the available tasks.
 fn print_usage() {
     eprintln!(
         "usage: cargo run -p xtask -- <purity|architecture|codes|public-api|repository|candidate-revision COMMIT|ci-summary PHASE JOB RESULT ...>"
     );
 }
 
-/// Files that make the public repository navigable and its maintenance policy reviewable.
 const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     "README.md",
     "docs/README.md",
@@ -481,10 +211,10 @@ const REQUIRED_REPOSITORY_FILES: &[&str] = &[
     ".github/workflows/ci.yml",
     ".github/workflows/candidate.yml",
     ".github/workflows/codeql.yml",
+    "Justfile",
+    "lefthook.yml",
 ];
 
-/// The documents whose cross-file promises are held by
-/// [`repository_documentation_violations`].
 struct RepositoryDocuments<'a> {
     readme: &'a str,
     contributing: &'a str,
@@ -499,9 +229,13 @@ struct RepositoryDocuments<'a> {
     codeowners: &'a str,
 }
 
-/// Check the repository-owned half of the public hosting policy without requiring a network.
+/// Remote hosting settings have a separate audit in `docs/repository-policy.md`.
 fn collect_repository_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
+    Ok(collect_repository_violations_at(&workspace))
+}
+
+fn collect_repository_violations_at(workspace: &Path) -> Vec<String> {
     let mut violations = Vec::new();
     let mut sources = Vec::new();
 
@@ -517,7 +251,12 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
                 violations.push(format!("{path}: required repository file is missing"));
                 sources.push((*path, String::new()));
             },
-            Err(error) => return Err(error),
+            Err(error) => {
+                violations.push(format!(
+                    "{path}: required repository file could not be read: {error}"
+                ));
+                sources.push((*path, String::new()));
+            },
         }
     }
 
@@ -543,13 +282,18 @@ fn collect_repository_violations() -> io::Result<Vec<String>> {
     violations.extend(ci_source_violations(
         source(".github/workflows/ci.yml"),
         source(".github/workflows/candidate.yml"),
-        &fs::read_to_string(workspace.join(JUSTFILE))?,
-        &fs::read_to_string(workspace.join("lefthook.yml"))?,
+        source(JUSTFILE),
+        source("lefthook.yml"),
     ));
-    Ok(violations)
+    match development::collect(workspace) {
+        Ok(findings) => violations.extend(findings),
+        Err(error) => violations.push(format!(
+            "development configuration could not be checked: {error}"
+        )),
+    }
+    violations
 }
 
-/// Hold the public entry points, release posture, automation, and ownership policy together.
 fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> Vec<String> {
     let mut violations = Vec::new();
 
@@ -637,7 +381,6 @@ fn repository_documentation_violations(documents: &RepositoryDocuments<'_>) -> V
     violations
 }
 
-/// Hold issue routing, CI security analysis, dependency updates, and ownership together.
 fn repository_automation_violations(documents: &RepositoryDocuments<'_>) -> Vec<String> {
     let mut violations = Vec::new();
 
@@ -689,7 +432,6 @@ fn repository_automation_violations(documents: &RepositoryDocuments<'_>) -> Vec<
     violations
 }
 
-/// Require short, stable policy phrases without pretending to parse Markdown or YAML.
 fn require_markers(path: &str, source: &str, markers: &[&str], violations: &mut Vec<String>) {
     for marker in markers {
         if !source.contains(marker) {
@@ -700,7 +442,6 @@ fn require_markers(path: &str, source: &str, markers: &[&str], violations: &mut 
     }
 }
 
-/// Reject public-facing names that would restore a retired canonical path by documentation.
 fn forbid_markers(path: &str, source: &str, markers: &[&str], violations: &mut Vec<String>) {
     for marker in markers {
         if source.contains(marker) {
@@ -711,7 +452,6 @@ fn forbid_markers(path: &str, source: &str, markers: &[&str], violations: &mut V
     }
 }
 
-/// Generate and compare both feature profiles of the sole public crate.
 fn collect_public_api_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
     let profiles = [
@@ -727,18 +467,8 @@ fn collect_public_api_violations() -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// Ask cargo-public-api for one deterministic facade surface.
 fn generate_public_api(workspace: &Path, no_default_features: bool) -> io::Result<String> {
-    let mut command = Command::new("cargo");
-    command.arg(format!("+{PUBLIC_API_TOOLCHAIN}"));
-    command.args(["public-api", "-p", "icalkit", "-sss", "--color", "never"]);
-    if no_default_features {
-        command.arg("--no-default-features");
-    }
-    let output = command
-        .current_dir(workspace)
-        .env("RUSTDOCFLAGS", "-D warnings")
-        .output()?;
+    let output = public_api::command(workspace, no_default_features)?.output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "cargo-public-api failed for {} features: {}",
@@ -759,13 +489,11 @@ fn generate_public_api(workspace: &Path, no_default_features: bool) -> io::Resul
     Ok(normalize_api(&text))
 }
 
-/// Normalize host line endings and keep exactly one final line ending.
 fn normalize_api(text: &str) -> String {
     let unix = text.replace("\r\n", "\n");
     format!("{}\n", unix.trim_end_matches(['\r', '\n']))
 }
 
-/// Compare one generated surface with its committed review boundary.
 fn snapshot_violations(profile: &str, expected: &str, generated: &str) -> Vec<String> {
     if expected == generated {
         return Vec::new();
@@ -790,7 +518,6 @@ fn snapshot_violations(profile: &str, expected: &str, generated: &str) -> Vec<St
     }
 }
 
-/// Check the single-crate release boundary and the facade's fixed feature vocabulary.
 fn collect_architecture_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
     let mut violations = release_config_violations(&workspace)?;
@@ -849,18 +576,67 @@ fn collect_architecture_violations() -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// Keep the snapshot generator on the same pinned nightly that produced the committed API.
+/// The nightly toolchain must match the one that generated the API snapshots.
 fn public_api_workflow_violations(workflow: &str) -> Vec<String> {
     const PINNED_NIGHTLY: &str = "rustup toolchain install nightly-2026-07-02 --profile minimal";
 
     let Some(job) = workflow_job(workflow, "public-api") else {
         return vec![".github/workflows/candidate.yml: missing public-api job".to_owned()];
     };
-    if job.contains(PINNED_NIGHTLY) && job.contains("RUSTUP_TOOLCHAIN: nightly-2026-07-02") {
-        Vec::new()
-    } else {
-        vec![".github/workflows/candidate.yml: public-api job does not install and use nightly-2026-07-02".to_owned()]
+    let mut violations = mise_installation_violations(job);
+    if !job.contains(PINNED_NIGHTLY) || !job.contains("RUSTUP_TOOLCHAIN: nightly-2026-07-02") {
+        violations.push(".github/workflows/candidate.yml: public-api job does not install and use nightly-2026-07-02".to_owned());
     }
+    violations
+}
+
+fn mise_installation_violations(workflow: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut lines = workflow.lines().enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
+        let Some(arguments) = line.trim().strip_prefix("install_args:") else {
+            continue;
+        };
+        let arguments = arguments
+            .split_once('#')
+            .map_or(arguments, |(value, _)| value)
+            .trim();
+        let indentation = line.len().saturating_sub(line.trim_start().len());
+        while lines
+            .peek()
+            .is_some_and(|(_, next)| next.trim().is_empty() || next.trim_start().starts_with('#'))
+        {
+            let _ = lines.next();
+        }
+        let continued = lines.peek().is_some_and(|(_, next)| {
+            next.len().saturating_sub(next.trim_start().len()) > indentation
+        });
+        if arguments.is_empty()
+            || continued
+            || arguments.contains(['\'', '"', '|', '>'])
+            || arguments.starts_with(['[', '{', '&', '*', '!'])
+        {
+            violations.push(format!(
+                "mise install_args requires an unquoted, single-line tool list at line {}",
+                index.saturating_add(1)
+            ));
+            continue;
+        }
+        let tools: Vec<_> = arguments.split_whitespace().collect();
+        if tools.contains(&"actionlint") && !tools.contains(&"shellcheck") {
+            violations.push(format!(
+                "actionlint requires shellcheck in mise install_args at line {}",
+                index.saturating_add(1)
+            ));
+        }
+        if tools.iter().any(|tool| tool.starts_with("cargo:")) && !tools.contains(&"rust") {
+            violations.push(format!(
+                "Cargo tools require configured Rust in mise install_args at line {}",
+                index.saturating_add(1)
+            ));
+        }
+    }
+    violations
 }
 
 fn workflow_job_names(source: &str) -> Vec<&str> {
@@ -894,7 +670,73 @@ fn ci_source_violations(ci: &str, candidate: &str, justfile: &str, hooks: &str) 
     violations.extend(summary_source_violations(ci, candidate, justfile));
     violations.extend(recipe_phase_violations(justfile, hooks));
     violations.extend(public_api_workflow_violations(candidate));
+    violations.extend(mise_installation_violations(ci));
+    violations.extend(mise_installation_violations(candidate));
+    violations.extend(platform_test_tool_violations(candidate));
     violations
+}
+
+fn platform_test_tool_violations(candidate: &str) -> Vec<String> {
+    let Some(platform) = workflow_job(candidate, "platform") else {
+        return Vec::new();
+    };
+    let steps = platform
+        .split_once("    steps:\n")
+        .map_or("", |(_, steps)| steps);
+    let mut tools = Vec::new();
+    let mut reached_tests = false;
+    for step in steps.split("\n      - ") {
+        if workflow_step_runs(step, "mise x -- just test-ci") {
+            reached_tests = true;
+            break;
+        }
+        let mise = step.lines().any(|line| {
+            line.trim()
+                .trim_start_matches("- ")
+                .starts_with("uses: jdx/mise-action@")
+        });
+        if mise {
+            tools.extend(
+                step.lines()
+                    .filter_map(|line| line.trim().strip_prefix("install_args:"))
+                    .map(|arguments| {
+                        arguments
+                            .split_once('#')
+                            .map_or(arguments, |(value, _)| value)
+                    })
+                    .flat_map(str::split_whitespace),
+            );
+        }
+    }
+    let mut violations: Vec<_> = [
+        "rust",
+        "just",
+        "lefthook",
+        "taplo",
+        "typos",
+        "cargo:cargo-nextest",
+    ]
+    .into_iter()
+    .filter(|tool| !tools.contains(tool))
+    .map(|tool| format!("candidate platform tests require {tool}"))
+    .collect();
+    if !reached_tests {
+        violations.push("candidate platform tests require a test-ci step".to_owned());
+    }
+    violations
+}
+
+fn workflow_step_runs(step: &str, command: &str) -> bool {
+    for line in step.lines() {
+        let line = line.trim().trim_start_matches("- ");
+        if let Some(run) = line.strip_prefix("run:") {
+            let run = run.split_once('#').map_or(run, |(value, _)| value).trim();
+            return run == command
+                || (matches!(run, "|" | ">" | "|-" | ">-")
+                    && step.lines().any(|line| line.trim() == command));
+        }
+    }
+    false
 }
 
 fn workflow_phase_violations(ci: &str, candidate: &str) -> Vec<String> {
@@ -1195,9 +1037,8 @@ fn candidate_recipe_violations(justfile: &str, hooks: &str) -> Vec<String> {
     violations
 }
 
-/// Keep current-facing status documents separate from the historical milestone narrative.
 fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) -> Vec<String> {
-    const LEDGER: &str = "## Current closure ledger — 2026-08-15";
+    const STATUS_HEADER: &str = "## Maintained implementation";
     const RETIRED_ROADMAP_PROSE: &[&str] = &[
         "still owed: a hostile input of 200,000",
         "which it currently is not",
@@ -1207,9 +1048,9 @@ fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) ->
     ];
 
     let mut violations = Vec::new();
-    if !roadmap.contains(LEDGER) {
+    if !roadmap.contains(STATUS_HEADER) {
         violations.push(format!(
-            "ROADMAP.md: missing current closure marker `{LEDGER}`"
+            "ROADMAP.md: missing maintained implementation marker `{STATUS_HEADER}`"
         ));
     }
     for stale in RETIRED_ROADMAP_PROSE {
@@ -1241,7 +1082,6 @@ fn closure_status_violations(roadmap: &str, internal: &str, scheduling: &str) ->
     violations
 }
 
-/// Keep DAV request and response grammars on the one stack-balanced XML primitive.
 fn xml_writer_violations(request: &str, response: &str) -> Vec<String> {
     const SHARED_IMPORT: &str = "use crate::internal::dav::writer::XmlWriter;";
     const FORBIDDEN_HELPERS: &[&str] = &[
@@ -1276,8 +1116,6 @@ fn xml_writer_violations(request: &str, response: &str) -> Vec<String> {
     violations
 }
 
-/// Keep the first consumer example at the workflow layer rather than exposing implementation
-/// machinery a normal application never needs to name.
 fn basic_example_violations(example: &str) -> Vec<String> {
     const INTERNAL_VOCABULARY: &[&str] = &[
         "Token",
@@ -1300,15 +1138,14 @@ fn basic_example_violations(example: &str) -> Vec<String> {
         .collect()
 }
 
-/// Hold the public guide to the same typestate and workflow order as the API.
 fn documentation_violations(readme: &str, architecture: &str) -> Vec<String> {
     const GOLDEN_PATH: &[&str] = &[
         "## Strict parsing",
         "## Explicit normalization",
         "## Transactional editing",
-        "## DST-aware recurrence",
+        "## Recurrence across daylight saving time",
         "## iTIP scheduling",
-        "## CalDAV sync and server workflows",
+        "## Calendar synchronization and server workflows",
     ];
     const RETIRED_PROSE: &[&str] = &[
         "one temporary path dependency",
@@ -1343,7 +1180,6 @@ fn documentation_violations(readme: &str, architecture: &str) -> Vec<String> {
     violations
 }
 
-/// References that would recreate a retired implementation package boundary.
 fn retired_crate_violations(root: &str, facade: &str) -> Vec<String> {
     let workspace_members = members(root);
     let dependencies = declared_dependencies(facade);
@@ -1369,7 +1205,6 @@ fn retired_crate_violations(root: &str, facade: &str) -> Vec<String> {
     violations
 }
 
-/// Assignment keys in one top-level TOML table.
 fn table_keys(document: &str, table: &str) -> Vec<String> {
     let wanted = format!("[{table}]");
     let mut inside = false;
@@ -1378,22 +1213,16 @@ fn table_keys(document: &str, table: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == wanted;
-        } else if inside {
-            if let Some((key, _)) = line.split_once('=') {
-                let key = key.trim();
-                if !key.is_empty() {
-                    keys.push(key.to_owned());
-                }
+        } else if inside && let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() {
+                keys.push(key.to_owned());
             }
         }
     }
     keys
 }
 
-/// Turn a task's findings into output and an exit status.
-///
-/// Every violation is printed. A gate that stops at the first one turns a five-minute fix
-/// into five CI rounds.
 fn report(task: &str, outcome: io::Result<Vec<String>>) -> ExitCode {
     match outcome {
         Err(error) => {
@@ -1417,8 +1246,6 @@ fn report(task: &str, outcome: io::Result<Vec<String>>) -> ExitCode {
     }
 }
 
-/// Check that every core crate declares no outside dependency and stays `no_std`, that the
-/// two copies of the core list agree, and that the grammar layer names nothing above itself.
 fn collect_purity_violations() -> io::Result<Vec<String>> {
     let workspace = workspace_root()?;
     let root = workspace.join("crates");
@@ -1468,15 +1295,6 @@ fn collect_purity_violations() -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// What the workspace says about the member that compiles the grammar alone.
-///
-/// That member is the layering guarantee. Deleted, the grammar is a directory inside `ical-core`
-/// again and `use crate::CivilDate;` from inside it compiles; nothing else here would notice,
-/// because every other mention of it is a comment, an `--exclude` that is not an error once the
-/// package is gone, or a membership walk that reports only a directory declaring `#![no_std]`.
-/// So each part the guarantee rests on is named and compared: the member line, the package name,
-/// `publish = false`, the two `[lib]` switches that keep the grammar's tests and docs from being
-/// counted twice, and the `#[path]` that reaches the real sources rather than a copy.
 fn layering_member_violations(workspace: &Path, gate: LayeringGate) -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let directory = workspace.join(gate.member);
@@ -1499,7 +1317,6 @@ fn layering_member_violations(workspace: &Path, gate: LayeringGate) -> io::Resul
     ))
 }
 
-/// The rule itself, over the three files' text rather than over the workspace.
 fn layering_violations(
     gate: LayeringGate,
     root: &str,
@@ -1543,7 +1360,7 @@ fn layering_violations(
         }
     }
 
-    // Three `../`, not two: `#[path]` on a `mod` in `src/lib.rs` resolves relative to `src/`.
+    // Rust resolves the module path from the gate's `src/lib.rs`.
     let expected = format!("#[path = \"../../../{layer}/mod.rs\"]");
     if !declares(lib, &expected) {
         violations.push(format!(
@@ -1554,10 +1371,6 @@ fn layering_violations(
     violations
 }
 
-/// Every wildcard arm over the guarded type, across the crates.
-///
-/// Stated over `crates/` rather than over `ical-core` alone: the type is re-exported at that
-/// crate's root, so any crate that names it can write the arm this rule is about.
 fn guarded_match_violations(workspace: &Path) -> io::Result<Vec<String>> {
     let mut violations = Vec::new();
     let mut sources = Vec::new();
@@ -1574,7 +1387,6 @@ fn guarded_match_violations(workspace: &Path) -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// Every `.rs` file under `root`, at any depth, gathered into `sources`.
 fn collect_rust_sources(root: &Path, sources: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(root)? {
         let path = entry?.path();
@@ -1591,24 +1403,14 @@ fn collect_rust_sources(root: &Path, sources: &mut Vec<PathBuf>) -> io::Result<(
     Ok(())
 }
 
-/// One `match` block whose arms are being read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OpenMatch {
-    /// The brace depth this block's arms sit at.
     arms: usize,
-    /// Whether an arm pattern names the guarded type.
     guarded: bool,
-    /// The lines a wildcard arm was written on.
     wildcards: Vec<usize>,
 }
 
-/// The wildcard arms of every match over the guarded type in one file.
-///
-/// Brace depth is counted over the code with comments and literals already removed, and an arm is
-/// a line that begins at the depth the block's arms sit at. What that costs is a match whose
-/// scrutinee is written across lines, because the rule finds a block by the `match` and the brace
-/// arriving together; what it buys is a rule with no parser and no dependency, which is the trade
-/// every scan in this file makes.
+/// The scanner recognizes a match when its opening brace shares a line with `match`.
 fn match_arm_violations(label: &str, source: &str) -> Vec<String> {
     let mut violations = Vec::new();
     let mut open: Vec<OpenMatch> = Vec::new();
@@ -1621,13 +1423,13 @@ fn match_arm_violations(label: &str, source: &str) -> Vec<String> {
             }
         }
         let line = code.trim();
-        if let Some(block) = open.last_mut() {
-            if depth == block.arms {
-                let pattern = line.split("=>").next().unwrap_or(line).trim();
-                block.guarded |= names_path(pattern, &format!("{GUARDED_ENUM}::"));
-                if is_wildcard(pattern) {
-                    block.wildcards.push(number);
-                }
+        if let Some(block) = open.last_mut()
+            && depth == block.arms
+        {
+            let pattern = line.split("=>").next().unwrap_or(line).trim();
+            block.guarded |= names_path(pattern, &format!("{GUARDED_ENUM}::"));
+            if is_wildcard(pattern) {
+                block.wildcards.push(number);
             }
         }
 
@@ -1651,7 +1453,6 @@ fn match_arm_violations(label: &str, source: &str) -> Vec<String> {
     violations
 }
 
-/// What one finished match block is owed, once every arm of it has been read.
 fn closed_match_violations(label: &str, block: &OpenMatch) -> Vec<String> {
     if !block.guarded {
         return Vec::new();
@@ -1670,7 +1471,6 @@ fn closed_match_violations(label: &str, block: &OpenMatch) -> Vec<String> {
         .collect()
 }
 
-/// Whether a match arm's pattern is a catch-all.
 fn is_wildcard(pattern: &str) -> bool {
     pattern == "_"
         || pattern
@@ -1678,7 +1478,6 @@ fn is_wildcard(pattern: &str) -> bool {
             .is_some_and(|guard| guard.trim_start().starts_with("if "))
 }
 
-/// What `release-plz.toml` and the workspace's own members disagree about.
 fn release_config_violations(workspace: &Path) -> io::Result<Vec<String>> {
     let root = fs::read_to_string(workspace.join(ROOT_MANIFEST))?;
     let mut published = Vec::new();
@@ -1708,7 +1507,6 @@ fn release_config_violations(workspace: &Path) -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// What [`PUBLIC_CRATES`] and the workspace's own published members disagree about.
 fn core_list_violations(published: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     for name in published {
@@ -1729,8 +1527,6 @@ fn core_list_violations(published: &[String]) -> Vec<String> {
     violations
 }
 
-/// What the two explicit private categories and unpublished members under `crates/` disagree
-/// about.
 fn private_crate_violations(private: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     let expected: Vec<&str> = PRIVATE_TOOLS
@@ -1768,11 +1564,6 @@ fn private_crate_violations(private: &[String]) -> Vec<String> {
     violations
 }
 
-/// The rule itself, over the two lists rather than the two files.
-///
-/// The release path is the one path this repository never runs, so its configuration is the one
-/// place a deleted crate can survive a whole landing. Every published member gets one entry and
-/// one line of the changelog list; a package the workspace does not build gets neither.
 fn release_violations(published: &[String], config: &str) -> Vec<String> {
     let released = release_packages(config);
     let included = quoted_values(array_value(config, "changelog_include").unwrap_or_default());
@@ -1819,7 +1610,6 @@ fn release_violations(published: &[String], config: &str) -> Vec<String> {
     violations
 }
 
-/// The packages `release-plz.toml` declares a `[[package]]` block for, in file order.
 fn release_packages(config: &str) -> Vec<String> {
     let mut packages = Vec::new();
     let mut inside = false;
@@ -1827,44 +1617,36 @@ fn release_packages(config: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == "[[package]]";
-        } else if inside {
-            if let Some(name) = quoted_after(line, "name") {
-                packages.push(name.to_owned());
-                inside = false;
-            }
+        } else if inside && let Some(name) = quoted_after(line, "name") {
+            packages.push(name.to_owned());
+            inside = false;
         }
     }
     packages
 }
 
-/// The `name = "..."` a `[package]` table declares.
 fn package_name(manifest: &str) -> Option<String> {
     let mut inside = false;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('[') {
             inside = line == "[package]";
-        } else if inside {
-            if let Some(name) = quoted_after(line, "name") {
-                return Some(name.to_owned());
-            }
+        } else if inside && let Some(name) = quoted_after(line, "name") {
+            return Some(name.to_owned());
         }
     }
     None
 }
 
-/// The value of `key = "..."` on one line, or `None` when the line assigns something else.
 fn quoted_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let (name, value) = line.split_once('=')?;
     (name.trim() == key).then(|| value.trim().trim_matches('"'))
 }
 
-/// The members the root manifest registers.
 fn members(manifest: &str) -> Vec<String> {
     quoted_values(array_value(manifest, "members").unwrap_or_default())
 }
 
-/// The text of a `key = [ ... ]` array, however many lines it is written across.
 fn array_value<'a>(document: &'a str, key: &str) -> Option<&'a str> {
     let at = document.find(&format!("{key} = ["))?;
     let rest = document.get(at..)?;
@@ -1873,7 +1655,6 @@ fn array_value<'a>(document: &'a str, key: &str) -> Option<&'a str> {
     rest.get(open.saturating_add(1)..close)
 }
 
-/// Every double-quoted string in one piece of text.
 fn quoted_values(text: &str) -> Vec<String> {
     text.split('"')
         .skip(1)
@@ -1882,11 +1663,7 @@ fn quoted_values(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the `Justfile`'s `core_crates` and [`CORE_CRATES`] disagree about.
-///
-/// The recipe is what `just no-std`, `just wasm` and the feature powerset are run over; the
-/// constant is what the dependency rule is applied to. One decision, written twice, and neither
-/// copy failing on its own is what would let them drift.
+/// The core target builds and the dependency check must cover the same crates.
 fn recipe_violations(justfile: &str) -> Vec<String> {
     let Some(named) = recipe_core_crates(justfile) else {
         return vec![format!(
@@ -1915,10 +1692,6 @@ fn recipe_violations(justfile: &str) -> Vec<String> {
     violations
 }
 
-/// The crates the `Justfile`'s `core_crates` assignment names.
-///
-/// `None` when there is no such assignment at all, which is the difference between "the two
-/// lists agree" and "one of them could not be found".
 fn recipe_core_crates(justfile: &str) -> Option<Vec<String>> {
     let assignment = justfile
         .lines()
@@ -1937,11 +1710,7 @@ fn recipe_core_crates(justfile: &str) -> Option<Vec<String>> {
     Some(crates)
 }
 
-/// Everything under the grammar layer that reaches out of it.
-///
-/// Textual, and stated over the committed directory rather than over a syntax tree, because a
-/// gate about dependencies may not have any. What it costs is written in this file's header:
-/// a macro, a generated path or a spelling it was not taught goes through.
+/// The source scan covers literal paths in the layer's flat module tree.
 fn layer_root_violations(gate: LayeringGate, root: &Path) -> io::Result<Vec<String>> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -1964,25 +1733,19 @@ fn layer_root_violations(gate: LayeringGate, root: &Path) -> io::Result<Vec<Stri
     Ok(layer_violations(gate, &entries))
 }
 
-/// Whether a directory entry names a Rust source file.
 fn is_rust_source(name: &str) -> bool {
     Path::new(name)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
 }
 
-/// One entry of the grammar directory, as the rule has to see it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LayerEntry {
-    /// The file or directory name, with no path in front of it.
     name: String,
-    /// Whether the entry is a directory, which the flat-tree rule is about.
     directory: bool,
-    /// The source of a `.rs` file, and empty for everything else.
     source: String,
 }
 
-/// The rule itself, over a listing rather than a directory.
 fn layer_violations(gate: LayeringGate, entries: &[LayerEntry]) -> Vec<String> {
     let layer = gate.root;
     let mut violations = Vec::new();
@@ -2024,14 +1787,7 @@ fn layer_violations(gate: LayeringGate, entries: &[LayerEntry]) -> Vec<String> {
     violations
 }
 
-/// What the module root declares against what the directory holds.
-///
-/// Two gates read this layer and they read it differently: `gates/grammar-layering` compiles what
-/// `mod.rs` declares, and the rule above scans what the directory holds. A `.rs` file the module
-/// root never declares is therefore in exactly one of them — the textual half sees it, the
-/// compile half cannot — and a file pulled in from elsewhere by `#[path]` is in the other. Both
-/// are closed by holding the two sets equal in both directions; `#[path]` itself is refused a few
-/// lines below, because it is what lets the equality hold while the layer still gains a file.
+/// The directory scan and the compiler must reach the same source files.
 fn module_tree_violations(layer: &str, root: Option<&str>, beside: &[&str]) -> Vec<String> {
     let Some(source) = root else {
         return vec![format!(
@@ -2063,7 +1819,6 @@ fn module_tree_violations(layer: &str, root: Option<&str>, beside: &[&str]) -> V
     violations
 }
 
-/// The modules one file declares as files of its own directory.
 fn declared_modules(source: &str) -> Vec<String> {
     let mut modules = Vec::new();
     for (_, code) in code_lines(source) {
@@ -2081,19 +1836,6 @@ fn declared_modules(source: &str) -> Vec<String> {
     modules
 }
 
-/// The paths in one file of the layer that resolve above the grammar root.
-///
-/// `mod.rs` *is* the root, so `super::` there names the crate; beside it `super::` names the
-/// root and `super::super::` names the crate. Comments and string literals are removed first,
-/// which is what lets a doc link keep writing `crate::Token`: the rendered documentation is
-/// `ical-core`'s, and that link is how a reader reaches the item.
-///
-/// Each line is then read with the whitespace around its `::` closed up, because `use crate
-/// ::Token;` is the same import as `use crate::Token;` and only `cargo fmt` stood between the two.
-/// The whitespace elsewhere on the line stays, because it is what tells `crate::` apart from the
-/// tail of `subcrate::`. Two declarations are refused outright beside the paths: `extern crate`,
-/// which is how the layer would acquire a name for the crate above it that is spelled like
-/// neither of them, and `#[path]`, which is how it would acquire a file this scan never opens.
 fn file_path_violations(gate: LayeringGate, name: &str, source: &str) -> Vec<String> {
     let LayeringGate {
         root: layer, owner, ..
@@ -2136,27 +1878,15 @@ fn file_path_violations(gate: LayeringGate, name: &str, source: &str) -> Vec<Str
     violations
 }
 
-/// One line with every run of whitespace closed up to a single space.
-///
-/// `extern  crate` is `extern crate`, and a rule that reads the second and not the first is a
-/// rule held by `cargo fmt`.
 fn spaced(code: &str) -> String {
     code.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// One spaced line with the whitespace around each `::` removed.
-///
-/// `use crate ::Token;` compiles and means what `use crate::Token;` means. Only the space beside
-/// the separator goes: the rest is what distinguishes `use crate::x` from `use subcrate::x`, and
-/// removing all of it would make every path the tail of the word in front of it.
 fn tightened(spaced: &str) -> String {
     spaced.replace(" ::", "::").replace(":: ", "::")
 }
 
-/// Whether `needle` occurs in `code` as something other than the tail of a longer name.
-///
-/// `SyncToken::` ends in `Token::` and is a different type. `$crate::` does not end in a name
-/// character, and is the macro spelling of the path being refused rather than a different one.
+/// An identifier boundary distinguishes `Token` from names such as `SyncToken`.
 fn names_path(code: &str, needle: &str) -> bool {
     code.match_indices(needle).any(|(at, _)| {
         code.get(..at)
@@ -2165,12 +1895,7 @@ fn names_path(code: &str, needle: &str) -> bool {
     })
 }
 
-/// One source file with its comments and literals removed, numbered from one.
-///
-/// A hand-rolled scan for the reason [`declared_dependencies`] gives about manifests. It reads
-/// line comments, nested block comments, plain and raw string and byte-string literals, and
-/// character literals — the last because `b'"'` is written in this very tree, and a scan that
-/// took it for the start of a string would read everything after it in the wrong state.
+/// Preserve source line numbers across multiline comments and literals for diagnostics.
 fn code_lines(source: &str) -> Vec<(usize, String)> {
     let chars: Vec<char> = source.chars().collect();
     let mut lines = Vec::new();
@@ -2185,8 +1910,6 @@ fn code_lines(source: &str) -> Vec<(usize, String)> {
             literal = None;
         }
         if character == '\n' {
-            // Checked before every other state, so that a literal or a block comment spanning
-            // lines does not merge the numbers a violation would be reported against.
             lines.push((number, std::mem::take(&mut code)));
             number = number.saturating_add(1);
             at = at.saturating_add(1);
@@ -2217,14 +1940,10 @@ fn code_lines(source: &str) -> Vec<(usize, String)> {
     lines
 }
 
-/// Whether a `/` at `at` is followed by `second`, which is what opens either comment.
 fn opens(chars: &[char], at: usize, second: char) -> bool {
     chars.get(at) == Some(&'/') && chars.get(at.saturating_add(1)) == Some(&second)
 }
 
-/// How far to advance inside a block comment, and the nesting depth after doing so.
-///
-/// Rust's block comments nest, so a `/*` inside one is an opening rather than noise.
 fn block_comment_step(chars: &[char], at: usize, depth: usize) -> (usize, usize) {
     if opens(chars, at, '*') {
         return (2, depth.saturating_add(1));
@@ -2235,7 +1954,6 @@ fn block_comment_step(chars: &[char], at: usize, depth: usize) -> (usize, usize)
     (1, depth)
 }
 
-/// The index just past the literal beginning at `at`, or `None` if none begins there.
 fn literal_end(chars: &[char], at: usize) -> Option<usize> {
     let mut index = at;
     if chars.get(index) == Some(&'b') {
@@ -2252,13 +1970,11 @@ fn literal_end(chars: &[char], at: usize) -> Option<usize> {
     }
     match chars.get(index) {
         Some(&'"') => Some(string_end(chars, index.saturating_add(1), raw, hashes)),
-        // A `'` opens a character literal or a lifetime, and only the first is a literal.
         Some(&'\'') if !raw && hashes == 0 => character_end(chars, index),
         _ => None,
     }
 }
 
-/// The index just past a string literal whose opening quote has already been passed.
 fn string_end(chars: &[char], from: usize, raw: bool, hashes: usize) -> usize {
     let mut index = from;
     while let Some(&character) = chars.get(index) {
@@ -2274,17 +1990,12 @@ fn string_end(chars: &[char], from: usize, raw: bool, hashes: usize) -> usize {
     index
 }
 
-/// Whether `hashes` hash marks follow, which is what closes a raw literal opened with them.
 fn closed_by(chars: &[char], from: usize, hashes: usize) -> bool {
     (0..hashes).all(|offset| chars.get(from.saturating_add(offset)) == Some(&'#'))
 }
 
-/// The index just past a character literal, or `None` when the `'` opened a lifetime.
 fn character_end(chars: &[char], at: usize) -> Option<usize> {
     if chars.get(at.saturating_add(1)) == Some(&'\\') {
-        // The escape's own length varies — `'\n'` against `'\u{1F600}'` — so the quote after
-        // the escaped character is what ends it, and the escaped character is skipped first
-        // because in `'\''` it is a quote.
         let mut index = at.saturating_add(3);
         while let Some(&character) = chars.get(index) {
             index = index.saturating_add(1);
@@ -2297,7 +2008,6 @@ fn character_end(chars: &[char], at: usize) -> Option<usize> {
     (chars.get(at.saturating_add(2)) == Some(&'\'')).then(|| at.saturating_add(3))
 }
 
-/// Everything a core crate's manifest declares that the rule forbids.
 fn manifest_violations(crate_name: &str, manifest: &str) -> Vec<String> {
     let mut violations = Vec::new();
     for dependency in declared_dependencies(manifest) {
@@ -2326,14 +2036,6 @@ fn manifest_violations(crate_name: &str, manifest: &str) -> Vec<String> {
     violations
 }
 
-/// Crates under one member root that declare `#![no_std]` without being named in
-/// [`CORE_CRATES`].
-///
-/// The rule is only as wide as the list it is applied to, so the list must not be able to go
-/// stale behind a crate somebody added (ADR 0004). `icalkit-conformance` is instead admitted by
-/// [`PRIVATE_TOOLS`]; it uses `std` and is not part of the production or release graph.
-/// Called for every root in [`MEMBER_ROOTS`], so that `gates/` is not a place to put one where
-/// nothing looks.
 fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
     let mut violations = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -2355,15 +2057,10 @@ fn unregistered_core_crates(root: &Path) -> io::Result<Vec<String>> {
     Ok(violations)
 }
 
-/// Whether a source file carries `declaration` as a declaration of its own.
-///
-/// Matched as a whole line rather than as a substring, so that naming an attribute in a doc
-/// comment or a string literal does not satisfy the gate.
 fn declares(source: &str, declaration: &str) -> bool {
     source.lines().any(|line| line.trim() == declaration)
 }
 
-/// Locate the workspace root relative to this crate.
 fn workspace_root() -> io::Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -2376,22 +2073,15 @@ fn workspace_root() -> io::Result<PathBuf> {
         })
 }
 
-/// One dependency entry, as the gate has to see it rather than as it was written.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Declared {
-    /// The key to the left of `=`, or the last segment of a sub-table header. A nickname.
     key: String,
-    /// The package Cargo links: the `package = "..."` value when one is given, the key
-    /// otherwise.
     package: String,
-    /// Whether the entry names a package other than its key.
     renamed: bool,
-    /// Whether the entry resolves from inside this workspace rather than from a registry.
     local: bool,
 }
 
 impl Declared {
-    /// Reads one entry from its key and the specification to the right of it.
     fn read(key: &str, spec: &str) -> Self {
         let package = inline_value(spec, "package");
         Self {
@@ -2404,19 +2094,7 @@ impl Declared {
     }
 }
 
-/// Collect the dependencies a manifest declares.
-///
-/// This is a deliberate hand-rolled scan rather than a TOML parser. The tool that enforces
-/// "the core has no outside dependencies" should not itself have any, and it only ever
-/// reads manifests this repository writes in one documented style. It understands both
-/// `[dependencies]` tables and `[dependencies.name]` sub-tables, and treats `dev-` and
-/// `build-` dependencies and `[target.'cfg(..)'.dependencies]` the same way, because a core
-/// crate should not acquire those either.
-///
-/// A key is a nickname its author chose. `ical-dav = { package = "libm", version = "0.2" }`
-/// writes a name from `CORE_CRATES` and links `libm`, so every entry is read for the
-/// `package` field in both spellings — inside the inline table, and as a line of the
-/// sub-table, which is why a sub-table is gathered into one specification before it is read.
+/// Read the workspace's manifest syntax, including package renames in dependency tables.
 fn declared_dependencies(manifest: &str) -> Vec<Declared> {
     let mut declared = Vec::new();
     let mut subtable: Option<(String, Vec<String>)> = None;
@@ -2436,10 +2114,8 @@ fn declared_dependencies(manifest: &str) -> Vec<Declared> {
                 completed_inline_table = true;
             }
         }
-        if completed_inline_table {
-            if let Some((key, spec)) = inline_table.take() {
-                declared.push(Declared::read(&key, &spec));
-            }
+        if completed_inline_table && let Some((key, spec)) = inline_table.take() {
+            declared.push(Declared::read(&key, &spec));
         }
         if continuing_inline_table {
             continue;
@@ -2466,15 +2142,13 @@ fn declared_dependencies(manifest: &str) -> Vec<Declared> {
 
         if let Some((_, body)) = subtable.as_mut() {
             body.push(line.to_owned());
-        } else if inside_dependency_table {
-            if let Some((key, spec)) = line.split_once('=') {
-                let key = key.trim().trim_matches('"');
-                if !key.is_empty() {
-                    if spec.trim_start().starts_with('{') && !inline_table_is_complete(spec) {
-                        inline_table = Some((key.to_owned(), spec.trim().to_owned()));
-                    } else {
-                        declared.push(Declared::read(key, spec));
-                    }
+        } else if inside_dependency_table && let Some((key, spec)) = line.split_once('=') {
+            let key = key.trim().trim_matches('"');
+            if !key.is_empty() {
+                if spec.trim_start().starts_with('{') && !inline_table_is_complete(spec) {
+                    inline_table = Some((key.to_owned(), spec.trim().to_owned()));
+                } else {
+                    declared.push(Declared::read(key, spec));
                 }
             }
         }
@@ -2488,7 +2162,6 @@ fn declared_dependencies(manifest: &str) -> Vec<Declared> {
     declared
 }
 
-/// Whether a possibly wrapped inline TOML table has reached its closing brace.
 fn inline_table_is_complete(spec: &str) -> bool {
     let mut braces = 0usize;
     let mut quoted = false;
@@ -2522,11 +2195,6 @@ fn inline_table_is_complete(spec: &str) -> bool {
     braces == 0
 }
 
-/// Turn a gathered `[dependencies.name]` sub-table into one entry.
-///
-/// The body is rewritten as an inline table so that one reader handles both spellings; a
-/// `package = "..."` line inside a sub-table is the same rename as the inline one, and
-/// reading only the header is how it used to go unseen.
 fn flush_subtable(subtable: &mut Option<(String, Vec<String>)>, declared: &mut Vec<Declared>) {
     let Some((name, body)) = subtable.take() else {
         return;
@@ -2535,9 +2203,6 @@ fn flush_subtable(subtable: &mut Option<(String, Vec<String>)>, declared: &mut V
     declared.push(Declared::read(&name, &spec));
 }
 
-/// The value of `key` in an inline table such as `{ package = "libm", version = "0.2" }`.
-///
-/// `None` for a bare version requirement, which is a specification with no keys at all.
 fn inline_value<'a>(spec: &'a str, key: &str) -> Option<&'a str> {
     let inner = spec.trim().strip_prefix('{')?.strip_suffix('}')?;
     inner.split(',').find_map(|entry| {
@@ -2546,20 +2211,17 @@ fn inline_value<'a>(spec: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
-/// Whether a table header names a dependency table.
 fn is_dependency_table(header: &str) -> bool {
     ["dependencies", "dev-dependencies", "build-dependencies"]
         .iter()
         .any(|kind| header == *kind || header.ends_with(&format!(".{kind}")))
 }
 
-/// Extract `name` from a `[dependencies.name]` style header.
 fn dependency_subtable_name(header: &str) -> Option<&str> {
     let (prefix, name) = header.rsplit_once('.')?;
     is_dependency_table(prefix).then(|| name.trim_matches('"'))
 }
 
-/// Check the committed golden list against the codes the grammar declares.
 fn collect_codes_violations() -> io::Result<Vec<String>> {
     let root = workspace_root()?;
     let declarations = fs::read_to_string(root.join(DIAGNOSTIC_SOURCE))?;
@@ -2567,11 +2229,7 @@ fn collect_codes_violations() -> io::Result<Vec<String>> {
     Ok(codes_violations(&declarations, &golden))
 }
 
-/// Everything the declarations and the golden list disagree about.
-///
-/// The checks are staged, because a later one is only meaningful once the earlier one holds:
-/// comparing meanings across a table whose rows and codes do not line up reports the same
-/// mistake once per row and buries the one line that says what happened.
+/// Compare meanings only after registry rows match variants in declaration order.
 fn codes_violations(declarations: &str, golden: &str) -> Vec<String> {
     let variants = enum_variants(declarations, "DiagnosticCode");
     let arms = as_str_arms(declarations);
@@ -2598,11 +2256,6 @@ fn codes_violations(declarations: &str, golden: &str) -> Vec<String> {
     }
 }
 
-/// What the scan of the declarations found before the golden list is opened at all.
-///
-/// A hand-rolled scan that stops matching reports nothing and passes, which is the failure
-/// mode a gate cannot afford: an empty result here means the source moved out from under the
-/// scan, not that the vocabulary is empty.
 fn declaration_violations(
     variants: &[(String, String)],
     arms: &[(String, String)],
@@ -2631,10 +2284,7 @@ fn declaration_violations(
     violations
 }
 
-/// Pair each declared variant with the key its `as_str` arm gives it.
-///
-/// Total only because [`declaration_violations`] has already established that the two lists
-/// name the same variants in the same order.
+/// The caller verifies variant names and order before pairing them with their keys.
 fn join_codes(variants: &[(String, String)], arms: &[(String, String)]) -> Vec<DeclaredCode> {
     variants
         .iter()
@@ -2646,7 +2296,6 @@ fn join_codes(variants: &[(String, String)], arms: &[(String, String)]) -> Vec<D
         .collect()
 }
 
-/// Which codes have a row, which rows have a code, and whether the two agree on order.
 fn placement_violations(codes: &[DeclaredCode], rows: &[Row]) -> Vec<String> {
     let mut violations = Vec::new();
     for code in codes {
@@ -2682,10 +2331,6 @@ fn placement_violations(codes: &[DeclaredCode], rows: &[Row]) -> Vec<String> {
     violations
 }
 
-/// What the rows claim, checked row by row against the code they are about.
-///
-/// Zipping is total here: [`placement_violations`] came back empty, so the rows are the codes
-/// in the codes' own order.
 fn content_violations(codes: &[DeclaredCode], rows: &[Row], channels: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     for (code, row) in codes.iter().zip(rows) {
@@ -2718,12 +2363,6 @@ fn content_violations(codes: &[DeclaredCode], rows: &[Row], channels: &[String])
     violations
 }
 
-/// Severities that no code travels on.
-///
-/// `Severity::LimitReached` spent the whole of M0 with no emitter and no row saying which
-/// milestone owed it one, which is how it came to be rediscovered as suspected dead API. A
-/// severity nothing carries is either unbuilt work with a milestone against it or a variant
-/// nobody needs, and both answers belong in the table rather than in somebody's memory.
 fn unused_channel_violations(rows: &[Row], channels: &[String]) -> Vec<String> {
     channels
         .iter()
@@ -2738,31 +2377,21 @@ fn unused_channel_violations(rows: &[Row], channels: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// One `DiagnosticCode` as the golden list has to see it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeclaredCode {
-    /// The `as_str` key, which is what the golden list is keyed on and what a conformance
-    /// case names.
     key: String,
-    /// The first paragraph of the variant's doc comment, as one line.
     meaning: String,
 }
 
-/// One row of the committed golden list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
-    /// The `as_str` key this row is about.
     code: String,
-    /// The one-line meaning, which is the variant's first doc paragraph verbatim.
     meaning: String,
-    /// The `Severity` the emitter passes.
     channel: String,
-    /// The milestone that owns the emission site.
     milestone: String,
 }
 
 impl Row {
-    /// Read one row from its cells.
     fn read(cells: &[String]) -> Result<Self, String> {
         let [code, meaning, channel, milestone] = cells else {
             return Err(format!(
@@ -2782,24 +2411,19 @@ impl Row {
     }
 }
 
-/// The rows of the golden list's table.
-///
-/// A hand-rolled scan rather than a Markdown parser, for the reason [`declared_dependencies`]
-/// gives about manifests. The table is the first one in the file, and its header is checked
-/// rather than skipped: the cells are read by position, so swapping two columns would
-/// redefine every row at once and change nothing a reader would notice.
-///
-/// Structure is the error channel and content is the diagnostic one, which is the split the
-/// crates themselves make: a table this cannot read at all is one message about the file
-/// rather than one message per row of it.
 fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
+    let lines = registry_lines(document)?;
     let mut rows = Vec::new();
     let mut header: Option<Vec<String>> = None;
     let mut in_table = false;
-
-    for line in document.lines() {
+    for line in lines {
         match table_cells(line) {
-            None if in_table => break,
+            None if in_table && !line.trim().is_empty() => {
+                return Err(format!(
+                    "{GOLDEN_LIST}: unexpected content in the registry block"
+                ));
+            },
+            None if in_table => {},
             None => header = None,
             Some(cells) if in_table => rows.push(Row::read(&cells)?),
             Some(cells) if is_rule_row(&cells) => {
@@ -2823,7 +2447,88 @@ fn golden_rows(document: &str) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
-/// Check that the header names the columns this scan reads by position.
+#[derive(Clone, Copy)]
+struct CodeFence {
+    marker: u8,
+    width: usize,
+}
+
+impl CodeFence {
+    fn parse(line: &str) -> Option<(Self, &str)> {
+        let trimmed = line.trim_start_matches(' ');
+        if line.len().saturating_sub(trimmed.len()) > 3 {
+            return None;
+        }
+        let marker = *trimmed.as_bytes().first()?;
+        if !matches!(marker, b'`' | b'~') {
+            return None;
+        }
+        let width = trimmed.bytes().take_while(|byte| *byte == marker).count();
+        let info = trimmed.get(width..)?.trim_matches([' ', '\t']);
+        if width < 3 || (marker == b'`' && info.contains('`')) {
+            return None;
+        }
+        Some((Self { marker, width }, info))
+    }
+
+    fn closes(self, line: &str) -> bool {
+        Self::parse(line).is_some_and(|(closing, info)| {
+            closing.marker == self.marker && closing.width >= self.width && info.is_empty()
+        })
+    }
+}
+
+enum RegistryFence<'a> {
+    Example(CodeFence),
+    Registry(CodeFence, Vec<&'a str>),
+}
+
+fn registry_lines(document: &str) -> Result<Vec<&str>, String> {
+    let mut open: Option<RegistryFence<'_>> = None;
+    let mut registry = None;
+    let mut html_comment = false;
+    for line in document.lines() {
+        if let Some(active) = open.as_mut() {
+            let marker = match active {
+                RegistryFence::Example(marker) | RegistryFence::Registry(marker, _) => *marker,
+            };
+            if marker.closes(line) {
+                if let Some(RegistryFence::Registry(_, lines)) = open.take() {
+                    registry = Some(lines);
+                }
+            } else if let RegistryFence::Registry(_, lines) = active {
+                lines.push(line);
+            }
+            continue;
+        }
+        let trimmed = line.trim_start_matches(' ');
+        if html_comment
+            || (line.len().saturating_sub(trimmed.len()) <= 3 && trimmed.starts_with("<!--"))
+        {
+            html_comment = !line.contains("-->");
+            continue;
+        }
+        if let Some((marker, info)) = CodeFence::parse(line) {
+            open = Some(if info == "text" {
+                if registry.is_some() {
+                    return Err(format!(
+                        "{GOLDEN_LIST}: multiple text blocks compete for the registry"
+                    ));
+                }
+                RegistryFence::Registry(marker, Vec::new())
+            } else {
+                RegistryFence::Example(marker)
+            });
+        }
+    }
+    if matches!(open, Some(RegistryFence::Registry(..))) {
+        return Err(format!(
+            "{GOLDEN_LIST}: the registry text block has no closing fence"
+        ));
+    }
+    registry.ok_or_else(|| format!("{GOLDEN_LIST}: no fenced text block contains the registry"))
+}
+
 fn check_columns(header: Option<&[String]>) -> Result<(), String> {
     let Some(cells) = header else {
         return Err(format!(
@@ -2841,7 +2546,6 @@ fn check_columns(header: Option<&[String]>) -> Result<(), String> {
     ))
 }
 
-/// The cells of one Markdown table row, or `None` when the line is not one.
 fn table_cells(line: &str) -> Option<Vec<String>> {
     let inner = line.trim().strip_prefix('|')?.strip_suffix('|')?;
     Some(
@@ -2852,7 +2556,6 @@ fn table_cells(line: &str) -> Option<Vec<String>> {
     )
 }
 
-/// Whether a row is the `| --- | --- |` rule under a header rather than data.
 fn is_rule_row(cells: &[String]) -> bool {
     !cells.is_empty()
         && cells.iter().all(|cell| {
@@ -2863,10 +2566,7 @@ fn is_rule_row(cells: &[String]) -> bool {
         })
 }
 
-/// The variants of one enum body, each with the first paragraph of its doc comment.
-///
-/// Hand-rolled over source this repository writes in one style: the enum bodies it reads hold
-/// no braces of their own, so the first `}` closes the body.
+/// Diagnostic and severity declarations use one fieldless variant per line.
 fn enum_variants(source: &str, name: &str) -> Vec<(String, String)> {
     let header = format!("pub enum {name} {{");
     let mut variants = Vec::new();
@@ -2888,7 +2588,6 @@ fn enum_variants(source: &str, name: &str) -> Vec<(String, String)> {
     variants
 }
 
-/// A fieldless enum variant written as `Name,`.
 fn variant_name(line: &str) -> Option<&str> {
     let name = line.strip_suffix(',')?;
     let plain = !name.is_empty()
@@ -2898,10 +2597,6 @@ fn variant_name(line: &str) -> Option<&str> {
     plain.then_some(name)
 }
 
-/// The `variant -> key` pairs `DiagnosticCode::as_str` declares, in arm order.
-///
-/// Bounded to that one function: the impl block may grow another method with arms of its own,
-/// and those arms are not keys.
 fn as_str_arms(source: &str) -> Vec<(String, String)> {
     let mut arms = Vec::new();
     let mut inside = false;
@@ -2918,7 +2613,6 @@ fn as_str_arms(source: &str) -> Vec<(String, String)> {
     arms
 }
 
-/// Read `Self::Variant => "key",` as the pair it declares.
 fn match_arm(line: &str) -> Option<(String, String)> {
     let (variant, rest) = line.strip_prefix("Self::")?.split_once("=>")?;
     let quoted = rest.trim().strip_suffix(',')?;
@@ -2926,21 +2620,14 @@ fn match_arm(line: &str) -> Option<(String, String)> {
     Some((variant.trim().to_owned(), key.to_owned()))
 }
 
-/// The first paragraph of a doc comment, gathered one `///` line at a time.
+/// ADR 0009 fixes the first documentation paragraph as the diagnostic's meaning.
 #[derive(Debug, Default)]
 struct Paragraph {
-    /// The lines gathered so far.
     text: Vec<String>,
-    /// Whether a blank `///` has closed the paragraph.
     ended: bool,
 }
 
 impl Paragraph {
-    /// Offer one `///` line, with the marker already stripped.
-    ///
-    /// Everything after the first blank line is dropped. A variant's later paragraphs are
-    /// prose that gets improved, and freezing those would make an editorial fix a CI failure
-    /// while doing nothing for the meaning `docs/adr/0009` actually freezes.
     fn push(&mut self, line: &str) {
         if line.is_empty() {
             self.ended = !self.text.is_empty();
@@ -2949,24 +2636,20 @@ impl Paragraph {
         }
     }
 
-    /// The paragraph as one line, leaving an empty one behind for the next variant.
     fn take(&mut self) -> String {
         self.ended = false;
         std::mem::take(&mut self.text).join(" ")
     }
 }
 
-/// The names of a scanned enum body or arm list, in order.
 fn names(entries: &[(String, String)]) -> impl Iterator<Item = &str> {
     entries.iter().map(|(name, _)| name.as_str())
 }
 
-/// The keys of the declared codes, in declaration order.
 fn code_keys(codes: &[DeclaredCode]) -> impl Iterator<Item = &str> {
     codes.iter().map(|code| code.key.as_str())
 }
 
-/// The codes the rows are about, in row order.
 fn row_codes(rows: &[Row]) -> impl Iterator<Item = &str> {
     rows.iter().map(|row| row.code.as_str())
 }
@@ -2986,28 +2669,20 @@ mod tests {
         table_keys, xml_writer_violations,
     };
 
-    /// The grammar layer's gate, which every layer rule below is stated over.
-    ///
-    /// The rule takes the gate rather than reading a constant, so the tests name one: what they
-    /// assert is the rule, and the second gate differs from this one only in its three strings.
     const GATE: LayeringGate = LAYERING_GATES[0];
 
-    /// [`file_path_violations`] over the grammar gate.
     fn file_paths(name: &str, source: &str) -> Vec<String> {
         file_path_violations(GATE, name, source)
     }
 
-    /// [`layer_violations`] over the grammar gate.
     fn layers(entries: &[LayerEntry]) -> Vec<String> {
         layer_violations(GATE, entries)
     }
 
-    /// [`layering_violations`] over the grammar gate.
     fn layering(root: &str, member: Option<(&str, &str)>) -> Vec<String> {
         layering_violations(GATE, root, member)
     }
 
-    /// The packages a manifest links, which is what every rule here is stated over.
     fn packages(manifest: &str) -> Vec<String> {
         declared_dependencies(manifest)
             .into_iter()
@@ -3093,6 +2768,7 @@ name = "icalkit"
 [dependencies]
 jiff = { version = "0.2.35", default-features = false }
 xmlparser = { version = "0.13.6", default-features = false }
+icu_calendar = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 "#;
         assert_eq!(
             manifest_violations("icalkit", manifest),
@@ -3150,6 +2826,19 @@ xmlparser = { version = "0.13.6", default-features = false }
                 .iter()
                 .any(|line| line.contains("xmlparser")),
             "an isolation tool must record its dependency independently"
+        );
+    }
+
+    #[test]
+    fn only_the_facade_may_own_calendar_conversion() {
+        let manifest = r#"
+[dependencies]
+icu_calendar = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+"#;
+        assert!(
+            manifest_violations("icalkit-conformance", manifest)
+                .iter()
+                .any(|line| line.contains("icu_calendar")),
         );
     }
 
@@ -3249,7 +2938,6 @@ extern crate alloc;
         );
     }
 
-    /// One `.rs` file of the grammar layer, as the listing hands it over.
     fn source(name: &str, body: &str) -> LayerEntry {
         LayerEntry {
             name: name.to_owned(),
@@ -3278,8 +2966,6 @@ extern crate alloc;
             "a core crate the recipe never compiles for a bare-metal target"
         );
 
-        // `ical-query` used to be the crate that did not exist here and now does, which is the
-        // drift this leg exists to catch: a name in one copy of the list and not the other.
         let extra = recipe.replace("core_crates := \"", "core_crates := \"-p ical-carddav ");
         assert!(
             recipe_violations(&extra)
@@ -3324,7 +3010,6 @@ extern crate alloc;
         );
     }
 
-    /// Everything the rule is stated to ignore, in the spellings this tree actually writes.
     const LAYER_PROSE: &str = r##"
 // use crate::tree::Component;
 /// A doc link to [`Token`](crate::Token), which is how a reader reaches the item.
@@ -3457,7 +3142,6 @@ const HASHED: &str = r#"crate::Token "quoted" inside"#;
         );
     }
 
-    /// A match over the guarded type, in the shape `parse.rs` and `mutate.rs` write one.
     const EXHAUSTIVE_MATCH: &str = "\
 fn take(token: Token<'_>) -> usize {
     match token {
@@ -3558,7 +3242,6 @@ fn take(token: Token<'_>, kind: Kind) -> usize {
         );
     }
 
-    /// The root manifest, the member's manifest and the member's root file, as committed.
     const LAYERING_ROOT: &str = "\
 [workspace]
 members = [
@@ -3568,7 +3251,6 @@ members = [
 ]
 ";
 
-    /// The member manifest, with everything the rule is stated over.
     const LAYERING_MANIFEST: &str = "\
 [package]
 name = \"ical-grammar-layering\"
@@ -3579,7 +3261,6 @@ doc = false
 test = false
 ";
 
-    /// The member's root file, which reaches the shipped grammar rather than a copy of it.
     const LAYERING_LIB: &str = "\
 #[path = \"../../../crates/icalkit/src/internal/core/grammar/mod.rs\"]
 mod grammar;
@@ -3734,13 +3415,11 @@ ical-tz = { path = "../ical-tz" }
         );
     }
 
-    /// A release configuration for the sole public facade.
     const SAMPLE_RELEASE: &str = "\
 [[package]]
 name = \"icalkit\"
 ";
 
-    /// The members that configuration is owed.
     fn published() -> Vec<String> {
         vec!["icalkit".to_owned()]
     }
@@ -3779,9 +3458,6 @@ name = \"icalkit\"
 
     #[test]
     fn the_committed_tree_passes_every_leg_of_purity() {
-        // The gate's own subject, for the reason the codes task runs against its own files:
-        // the samples prove the scan reads the style they are written in, and only this proves
-        // it reads the style the workspace is.
         assert_eq!(collect_purity_violations().unwrap(), Vec::<String>::new());
     }
 
@@ -3912,6 +3588,193 @@ name = \"icalkit\"
                 .iter()
                 .any(|violation| violation.contains("nightly-2026-07-02"))
         );
+    }
+
+    #[test]
+    fn public_api_cargo_tools_require_the_configured_rust_installation() {
+        for tools in [
+            "just cargo-binstall cargo:cargo-public-api",
+            "just cargo-binstall cargo:cargo-public-api # rust",
+        ] {
+            let workflow = format!(
+                "\njobs:\n  public-api:\n    env:\n      RUSTUP_TOOLCHAIN: nightly-2026-07-02\n    steps:\n      - run: rustup toolchain install nightly-2026-07-02 --profile minimal\n      - uses: jdx/mise-action\n        with:\n          install_args: {tools}\n\n  msrv:\n"
+            );
+            assert!(
+                !public_api_workflow_violations(&workflow).is_empty(),
+                "the dated nightly does not install the configured Rust dependency: {tools}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_cargo_tool_installation_requires_its_compiler() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let broken = ci.replace("install_args: rust just", "install_args: just");
+        assert!(
+            super::ci_source_violations(&broken, &candidate, &justfile, &hooks)
+                .iter()
+                .any(|violation| violation.contains("Cargo tools require configured Rust"))
+        );
+    }
+
+    #[test]
+    fn actionlint_installations_require_the_shellcheck_helper() {
+        for tools in ["actionlint", "actionlint # shellcheck"] {
+            let workflow = format!("install_args: {tools}\n");
+            assert!(
+                super::mise_installation_violations(&workflow)
+                    .iter()
+                    .any(|violation| violation.contains("actionlint requires shellcheck")),
+                "missing shellcheck admitted: {tools}"
+            );
+        }
+        assert_eq!(
+            super::mise_installation_violations("install_args: actionlint shellcheck\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn mise_installation_guards_refuse_unsupported_yaml_scalars() {
+        for arguments in [
+            "'cargo:cargo-deny'",
+            "\"cargo:cargo-deny\"",
+            "|-\n  cargo:cargo-deny",
+            ">-\n  cargo:cargo-deny",
+            "'actionlint'",
+            "\"actionlint\"",
+            ">\n  actionlint",
+            "rust\n  actionlint",
+            "just\n\n  cargo:cargo-deny",
+        ] {
+            assert!(
+                !super::mise_installation_violations(&format!("install_args: {arguments}\n"))
+                    .is_empty(),
+                "unsupported scalar hid an installation dependency: {arguments}"
+            );
+        }
+        assert_eq!(
+            super::mise_installation_violations(
+                "install_args: rust cargo:cargo-deny actionlint shellcheck\n"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn repository_findings_survive_development_configuration_failures() {
+        let fixture = CandidateFixture::init("");
+        let root = super::workspace_root().unwrap();
+        for path in super::REQUIRED_REPOSITORY_FILES.iter().copied().chain([
+            "Justfile",
+            "lefthook.yml",
+            "mise.toml",
+            "rust-toolchain.toml",
+        ]) {
+            let destination = fixture.0.join(path);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(root.join(path), destination).unwrap();
+        }
+        assert_eq!(
+            super::collect_repository_violations_at(&fixture.0),
+            Vec::<String>::new()
+        );
+        std::fs::remove_file(fixture.0.join("SECURITY.md")).unwrap();
+        let path = fixture.0.join("mise.toml");
+        let mise = std::fs::read_to_string(&path).unwrap();
+        assert!(mise.lines().any(|line| line.starts_with("shellcheck =")));
+        std::fs::write(
+            path,
+            mise.lines()
+                .filter(|line| !line.starts_with("shellcheck ="))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let findings = super::collect_repository_violations_at(&fixture.0);
+        assert!(findings.iter().any(|finding| finding.contains("SECURITY.md: required repository file is missing")));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("shellcheck"))
+        );
+        std::fs::remove_file(fixture.0.join("Justfile")).unwrap();
+        let findings = super::collect_repository_violations_at(&fixture.0);
+        assert!(findings.iter().any(|finding| finding.contains("SECURITY.md: required repository file is missing")));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("Justfile: required repository file is missing"))
+        );
+        std::fs::create_dir(fixture.0.join("SECURITY.md")).unwrap();
+        let findings = super::collect_repository_violations_at(&fixture.0);
+        assert!(findings.iter().any(|finding| {
+            finding.contains("SECURITY.md: required repository file could not be read")
+        }));
+    }
+
+    #[test]
+    fn candidate_platform_tests_install_native_hook_helpers() {
+        let root = super::workspace_root().unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        let candidate =
+            std::fs::read_to_string(root.join(".github/workflows/candidate.yml")).unwrap();
+        let justfile = std::fs::read_to_string(root.join(super::JUSTFILE)).unwrap();
+        let hooks = std::fs::read_to_string(root.join("lefthook.yml")).unwrap();
+        let broken = candidate.replace("taplo typos cargo-binstall", "taplo cargo-binstall");
+        assert!(
+            super::ci_source_violations(&ci, &broken, &justfile, &hooks)
+                .iter()
+                .any(|violation| violation.contains("platform tests require typos"))
+        );
+    }
+
+    #[test]
+    fn candidate_platform_tools_must_precede_test_execution() {
+        let candidate = include_str!("../../.github/workflows/candidate.yml");
+        let platform = super::workflow_job(candidate, "platform").unwrap();
+        let setup = platform
+            .lines()
+            .find(|line| line.trim().starts_with("install_args:"))
+            .unwrap();
+        let arguments = setup.trim().strip_prefix("install_args:").unwrap();
+        for tool in [
+            "rust",
+            "just",
+            "lefthook",
+            "taplo",
+            "typos",
+            "cargo:cargo-nextest",
+        ] {
+            let remaining = arguments
+                .split_whitespace()
+                .filter(|held| *held != tool)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let without = platform.replace(setup, &format!("          install_args: {remaining}"));
+            let step = format!(
+                "      - uses: jdx/mise-action@fixture\n        with:\n          install_args: {tool}\n"
+            );
+            let later = format!("{without}{step}");
+            assert!(
+                !super::platform_test_tool_violations(&candidate.replace(platform, &later))
+                    .is_empty(),
+                "a later setup supplied {tool}"
+            );
+            let earlier = without.replace(
+                "      - run: mise x -- just test-ci",
+                &format!("{step}      - run: mise x -- just test-ci"),
+            );
+            assert_eq!(
+                super::platform_test_tool_violations(&candidate.replace(platform, &earlier)),
+                Vec::<String>::new()
+            );
+        }
     }
 
     #[test]
@@ -4047,6 +3910,35 @@ name = \"icalkit\"
         }
     }
 
+    #[test]
+    fn ci_decisions_compile_in_the_standalone_proof_wrapper() {
+        let fixture = CandidateFixture::new();
+        std::fs::write(fixture.0.join("production.rs"), include_str!("ci.rs")).unwrap();
+        let wrapper = fixture.0.join("lib.rs");
+        std::fs::write(&wrapper, b"#[path = \"production.rs\"]\nmod production;\n").unwrap();
+        for edition in ["2015", "2024"] {
+            let output = std::process::Command::new("rustc")
+                .args([
+                    "--crate-type",
+                    "lib",
+                    "--emit",
+                    "metadata",
+                    "--edition",
+                    edition,
+                ])
+                .arg(&wrapper)
+                .arg("-o")
+                .arg(fixture.0.join(format!("proof-{edition}.rmeta")))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "standalone proof source failed in edition {edition}:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     struct CandidateFixture(std::path::PathBuf);
 
     fn isolate_fixture_git_environment(command: &mut std::process::Command) {
@@ -4063,15 +3955,17 @@ name = \"icalkit\"
 
     impl CandidateFixture {
         fn new() -> Self {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let path = std::env::temp_dir()
-                .join(format!("icalkit-candidate-{}-{serial}", std::process::id()));
-            std::fs::create_dir(&path).unwrap();
-            let fixture = Self(path);
-            fixture.git(&["init", "--quiet"]);
-            std::fs::write(fixture.0.join("source.txt"), b"original\n").unwrap();
-            fixture.git(&["add", "source.txt"]);
+            Self::with_files(&[("source.txt", b"original\n")])
+        }
+
+        fn with_files(files: &[(&str, &[u8])]) -> Self {
+            let fixture = Self::init("");
+            for (name, contents) in files {
+                let path = fixture.0.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, contents).unwrap();
+            }
+            fixture.git(&["add", "--all"]);
             let tree = fixture.git(&["write-tree"]);
             let commit = fixture.git(&[
                 "-c",
@@ -4086,6 +3980,30 @@ name = \"icalkit\"
                 "test: candidate fixture",
             ]);
             fixture.git(&["update-ref", "HEAD", &commit]);
+            fixture
+        }
+
+        fn init(configuration: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("icalkit-candidate-{}-{serial}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            let fixture = Self(path);
+            fixture.git(&[
+                "-c",
+                "init.defaultObjectFormat=sha256",
+                "init",
+                "--quiet",
+                "--object-format=sha1",
+            ]);
+            if !configuration.is_empty() {
+                let path = fixture.0.join(".git/config");
+                let mut contents = std::fs::read_to_string(&path).unwrap();
+                contents.push_str(configuration);
+                std::fs::write(path, contents).unwrap();
+            }
+            fixture.git(&["config", "--local", "core.fsmonitor", "false"]);
             fixture
         }
 
@@ -4114,6 +4032,22 @@ name = \"icalkit\"
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn candidate_fixture_turns_off_file_system_monitoring_before_index_creation() {
+        let fixture = CandidateFixture::init("\n[core]\nfsmonitor = true\n");
+        assert_eq!(
+            fixture.git(&["config", "--bool", "core.fsmonitor"]),
+            "false"
+        );
+        assert!(!fixture.0.join(".git/index").exists());
+    }
+
+    #[test]
+    fn candidate_fixture_uses_the_sha1_commit_contract() {
+        let fixture = CandidateFixture::init("");
+        assert_eq!(fixture.git(&["hash-object", "--stdin"]).len(), 40);
     }
 
     #[test]
@@ -4172,6 +4106,234 @@ name = \"icalkit\"
                 .any(|message| message.contains("commit differs")),
             "{refused:?}"
         );
+    }
+
+    fn candidate_flag_preserves_working_file_checks(flag: &str) {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        fixture.git(&["update-index", flag, "source.txt"]);
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        let cases: [Option<&[u8]>; 5] = [
+            Some(b"original\n"),
+            Some(b"changed\n"),
+            Some(b""),
+            None,
+            Some(b"original\n"),
+        ];
+        for contents in cases {
+            let path = fixture.0.join("source.txt");
+            if let Some(contents) = contents {
+                std::fs::write(path, contents).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
+            let result = super::candidate_checkout(&fixture.0, revision).unwrap();
+            assert_eq!(
+                result.is_empty(),
+                contents == Some(b"original\n".as_slice()),
+                "{flag}, {contents:?}: {result:?}"
+            );
+            assert_eq!(
+                std::fs::read(fixture.0.join(".git/index")).unwrap(),
+                index,
+                "changed the caller's index for {flag}",
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_checkout_reads_assumed_unchanged_files() {
+        candidate_flag_preserves_working_file_checks("--assume-unchanged");
+    }
+
+    #[test]
+    fn candidate_checkout_reads_skip_worktree_files() {
+        candidate_flag_preserves_working_file_checks("--skip-worktree");
+    }
+
+    #[test]
+    fn candidate_checkout_reads_content_despite_matching_cached_metadata() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        fixture.git(&["config", "core.trustctime", "false"]);
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        let set_modified = || {
+            std::fs::File::options()
+                .write(true)
+                .open(fixture.0.join("source.txt"))
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        };
+        set_modified();
+        fixture.git(&["add", "source.txt"]);
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        std::fs::write(fixture.0.join("source.txt"), b"modified\n").unwrap();
+        set_modified();
+        let result = super::candidate_checkout(&fixture.0, revision).unwrap();
+        assert!(
+            !result.is_empty(),
+            "accepted content hidden by cached metadata"
+        );
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_handles_flagged_paths_with_spaces_and_unicode() {
+        let names = [
+            "folder/with spaces.txt",
+            "folder/\u{65e5}\u{672c}.txt",
+            #[cfg(unix)]
+            "folder/line\nbreak.txt",
+            #[cfg(unix)]
+            "folder/quote\"name.txt",
+        ];
+        let files: Vec<_> = names
+            .iter()
+            .map(|name| (*name, b"original\n".as_slice()))
+            .collect();
+        let fixture = CandidateFixture::with_files(&files);
+        let revision = fixture.revision();
+        for name in names {
+            fixture.git(&["update-index", "--assume-unchanged", "--", name]);
+            let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+            std::fs::write(fixture.0.join(name), b"changed\n").unwrap();
+            let result = super::candidate_checkout(&fixture.0, revision).unwrap();
+            assert!(!result.is_empty(), "accepted changed path {name:?}");
+            assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+            std::fs::write(fixture.0.join(name), b"original\n").unwrap();
+            assert_eq!(
+                super::candidate_checkout(&fixture.0, revision).unwrap(),
+                Vec::<String>::new()
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_checkout_preserves_linked_worktree_support() {
+        let fixture = CandidateFixture::new();
+        let linked = CandidateFixture(fixture.0.join("linked"));
+        fixture.git(&[
+            "worktree",
+            "add",
+            "--detach",
+            "--quiet",
+            linked.0.to_str().unwrap(),
+        ]);
+        let revision = linked.revision();
+        assert_eq!(
+            super::candidate_checkout(&linked.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        std::fs::write(linked.0.join("source.txt"), b"changed\n").unwrap();
+        assert_ne!(
+            super::candidate_checkout(&linked.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            super::candidate_checkout(&fixture.0, revision).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn candidate_checkout_cleans_scratch_storage_after_success_and_git_failure() {
+        let fixture = CandidateFixture::with_files(&[
+            ("source.txt", b"original\n"),
+            (".gitattributes", b"source.txt filter=broken\n"),
+        ]);
+        let revision = fixture.revision();
+        let scratch = fixture.0.join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        assert_eq!(
+            super::candidate::inspect(&fixture.0, revision, &scratch).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+
+        fixture.git(&["config", "filter.broken.required", "true"]);
+        fixture.git(&[
+            "config",
+            "filter.broken.clean",
+            "git rev-parse --verify refs/icalkit-filter-failure",
+        ]);
+        std::fs::write(fixture.0.join("source.txt"), b"changed\n").unwrap();
+        assert!(super::candidate::inspect(&fixture.0, revision, &scratch).is_err());
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_resolves_relative_scratch_paths_before_changing_repository() {
+        let fixture = CandidateFixture::new();
+        assert_eq!(
+            super::candidate::inspect(&fixture.0, fixture.revision(), std::path::Path::new("."))
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn candidate_checkout_does_not_run_index_hooks_for_its_scratch_index() {
+        let fixture = CandidateFixture::new();
+        let hooks = fixture.0.join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("post-index-change");
+        std::fs::write(&hook, "#!/bin/sh\nprintf 'called\\n' > hook-called\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fixture.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        fixture.git(&["read-tree", "HEAD"]);
+        let marker = fixture.0.join("hook-called");
+        assert!(marker.exists(), "the hook control did not execute");
+        std::fs::remove_file(&marker).unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        assert_eq!(
+            super::candidate::inspect(&fixture.0, fixture.revision(), &fixture.0).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(
+            !marker.exists(),
+            "scratch index creation ran a repository hook"
+        );
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_refuses_unavailable_scratch_storage() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        let scratch = fixture.0.join("scratch");
+        std::fs::write(&scratch, b"not a directory\n").unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        assert!(super::candidate::inspect(&fixture.0, revision, &scratch).is_err());
+        assert_eq!(std::fs::read(&scratch).unwrap(), b"not a directory\n");
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn candidate_checkout_cleans_scratch_storage_when_the_tree_cannot_be_read() {
+        let fixture = CandidateFixture::new();
+        let revision = fixture.revision();
+        let scratch = fixture.0.join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let index = std::fs::read(fixture.0.join(".git/index")).unwrap();
+        let tree = fixture.git(&["rev-parse", "HEAD^{tree}"]);
+        let (prefix, suffix) = tree.split_at(2);
+        std::fs::rename(
+            fixture.0.join(".git/objects").join(prefix).join(suffix),
+            fixture.0.join("hidden-tree"),
+        )
+        .unwrap();
+        let error = super::candidate::inspect(&fixture.0, revision, &scratch).unwrap_err();
+        assert_eq!(error.to_string(), "git could not read the candidate tree");
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(std::fs::read(fixture.0.join(".git/index")).unwrap(), index);
     }
 
     #[test]
@@ -4408,7 +4570,7 @@ name = \"icalkit\"
 
     #[test]
     fn current_status_rejects_historical_debt_as_live_work() {
-        let current_roadmap = "## Current closure ledger — 2026-08-15\n";
+        let current_roadmap = "## Maintained implementation\n";
         assert_eq!(
             closure_status_violations(
                 current_roadmap,
@@ -4426,7 +4588,7 @@ name = \"icalkit\"
         assert!(
             violations
                 .iter()
-                .any(|violation| violation.contains("missing current closure marker"))
+                .any(|violation| violation.contains("missing maintained implementation marker"))
         );
         assert!(
             violations
@@ -4448,8 +4610,8 @@ name = \"icalkit\"
     #[test]
     fn public_guidance_follows_the_typestate_and_workflow_order() {
         let readme = "## Strict parsing\n## Explicit normalization\n## Transactional editing\n\
-                      ## DST-aware recurrence\n## iTIP scheduling\n\
-                      ## CalDAV sync and server workflows\n";
+                      ## Recurrence across daylight saving time\n## iTIP scheduling\n\
+                      ## Calendar synchronization and server workflows\n";
         assert_eq!(
             documentation_violations(readme, "private implementation modules"),
             Vec::<String>::new()
@@ -4504,7 +4666,6 @@ name = \"icalkit\"
         );
     }
 
-    /// A stand-in for `report.rs`: two severities, two codes, one of them a note.
     const SAMPLE_DECLARATIONS: &str = r#"
 pub enum Severity {
     /// Something worth recording that the specification permits.
@@ -4534,7 +4695,6 @@ impl DiagnosticCode {
 }
 "#;
 
-    /// The same stand-in with one code added, which is the edit ADR 0009 allows freely.
     const SAMPLE_ADDED: &str = r#"
 pub enum Severity {
     /// Something worth recording that the specification permits.
@@ -4567,19 +4727,19 @@ impl DiagnosticCode {
 }
 "#;
 
-    /// The golden list those declarations are owed.
     const SAMPLE_GOLDEN: &str = "\
 # Diagnostic codes
 
 Prose, and a `|` in it, above the table.
 
+```text
 | code | meaning | channel | milestone |
 | --- | --- | --- | --- |
 | missing-value-separator | A content line carried no `:`, so it has a name and no value. | Violation | M0 |
 | undefined-caret-escape | A `^` was followed by an octet RFC 6868 gives no meaning. | Note | M0 |
+```
 ";
 
-    /// The sample list with one substring rewritten, which is how a drift case is written.
     fn edited(document: &str, from: &str, to: &str) -> String {
         assert!(
             document.contains(from),
@@ -4588,12 +4748,103 @@ Prose, and a `|` in it, above the table.
         document.replace(from, to)
     }
 
-    /// The sample list with the row an added code would arrive with.
     fn golden_with_added_row() -> String {
         format!(
-            "{SAMPLE_GOLDEN}| unmatched-end | An `END` arrived with no `BEGIN` open. | Violation \
-             | M0 |\n"
+            "{}| unmatched-end | An `END` arrived with no `BEGIN` open. | Violation \
+             | M0 |\n```\n",
+            SAMPLE_GOLDEN.strip_suffix("```\n").unwrap()
         )
+    }
+
+    #[test]
+    fn registry_tables_require_a_closed_literal_block() {
+        let unquoted = SAMPLE_GOLDEN.replace("```text\n", "").replace("```\n", "");
+        assert!(golden_rows(&unquoted).is_err());
+        let unclosed = SAMPLE_GOLDEN.strip_suffix("```\n").unwrap();
+        assert!(golden_rows(unclosed).is_err());
+    }
+
+    #[test]
+    fn registry_tables_ignore_prose_tables_outside_the_literal_block() {
+        let source =
+            format!("| unrelated | table |\n| --- | --- |\n| data | data |\n\n{SAMPLE_GOLDEN}");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &source),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn registry_tables_reject_multiple_authoritative_blocks() {
+        let source = format!("{SAMPLE_GOLDEN}\n{SAMPLE_GOLDEN}");
+        assert!(golden_rows(&source).is_err());
+    }
+
+    #[test]
+    fn registry_tables_ignore_html_comment_blocks() {
+        for opening in ["<!--", " <!-- hidden", "   <!-- hidden"] {
+            let hidden = format!("{opening}\n{SAMPLE_GOLDEN}-->\n");
+            assert!(
+                golden_rows(&hidden).is_err(),
+                "a comment supplied the registry"
+            );
+            assert_eq!(
+                codes_violations(SAMPLE_DECLARATIONS, &format!("{hidden}\n{SAMPLE_GOLDEN}")),
+                Vec::<String>::new()
+            );
+        }
+        let example = format!("````markdown\n<!--\n````\n{SAMPLE_GOLDEN}");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &example),
+            Vec::<String>::new()
+        );
+        let single = format!("<!-- one line -->\n{SAMPLE_GOLDEN}");
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &single),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn registry_tables_ignore_nested_and_quoted_fence_examples() {
+        for (opening, closing) in [
+            ("````markdown", "````"),
+            ("~~~markdown", "~~~"),
+            ("`````rust", "`````"),
+        ] {
+            let example = format!("{opening}\n{SAMPLE_GOLDEN}{closing}\n");
+            assert!(
+                golden_rows(&example).is_err(),
+                "an example became the registry"
+            );
+            assert_eq!(
+                codes_violations(SAMPLE_DECLARATIONS, &format!("{example}\n{SAMPLE_GOLDEN}")),
+                Vec::<String>::new()
+            );
+        }
+        let mut quoted = String::new();
+        for line in SAMPLE_GOLDEN.lines() {
+            quoted.push_str("> ");
+            quoted.push_str(line);
+            quoted.push('\n');
+        }
+        assert!(golden_rows(&quoted).is_err());
+        assert_eq!(
+            codes_violations(SAMPLE_DECLARATIONS, &format!("{quoted}\n{SAMPLE_GOLDEN}")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn registry_tables_follow_fence_markers_and_minimum_closing_lengths() {
+        for (opening, closing) in [("````text", "`````"), ("~~~text", "~~~~")] {
+            let source = SAMPLE_GOLDEN.replace("```text", opening);
+            let source = format!("{}{closing}\n", source.strip_suffix("```\n").unwrap());
+            assert_eq!(
+                codes_violations(SAMPLE_DECLARATIONS, &source),
+                Vec::<String>::new()
+            );
+        }
     }
 
     #[test]
@@ -4606,8 +4857,6 @@ Prose, and a `|` in it, above the table.
 
     #[test]
     fn the_committed_list_matches_the_committed_declarations() {
-        // The gate's own subject. Running it here rather than only in CI is what proves the
-        // scan reads the style `report.rs` is written in, not the style the samples are.
         assert_eq!(collect_codes_violations().unwrap(), Vec::<String>::new());
     }
 
@@ -4749,10 +4998,12 @@ Prose, and a `|` in it, above the table.
     #[test]
     fn rows_out_of_declaration_order_are_a_violation() {
         let golden = "\
+```text
 | code | meaning | channel | milestone |
 | --- | --- | --- | --- |
 | undefined-caret-escape | A `^` was followed by an octet RFC 6868 gives no meaning. | Note | M0 |
 | missing-value-separator | A content line carried no `:`, so it has a name and no value. | Violation | M0 |
+```
 ";
         let violations = codes_violations(SAMPLE_DECLARATIONS, golden);
         assert!(

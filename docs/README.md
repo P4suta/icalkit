@@ -1,6 +1,6 @@
-# icalkit
+# Calendar workflows with icalkit
 
-[![CI](https://github.com/P4suta/icalkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/ci.yml) [![CodeQL](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml) ![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-blue) [![MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../LICENSE)
+[![CI](https://github.com/P4suta/icalkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/ci.yml) [![CodeQL](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/P4suta/icalkit/actions/workflows/codeql.yml)
 
 A pure-Rust, sans-I/O calendaring stack for iCalendar, recurrence, time zones, iTIP scheduling, and CalDAV.
 The stack targets RFC 5545 for iCalendar.
@@ -38,18 +38,23 @@ PRODID:-//example//EN\r\n\
 BEGIN:VEVENT\r\n\
 UID:planning@example.test\r\n\
 DTSTAMP:20260814T000000Z\r\n\
+DTSTART:20260815T090000Z\r\n\
 SUMMARY:Planning\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
 
 let calendar = icalkit::Calendar::parse(bytes)?;
-assert_eq!(calendar.events().next().unwrap().uid(), "planning@example.test");
+assert_eq!(calendar.events().next().unwrap().uid().as_deref(), Some("planning@example.test"));
 # Ok::<(), icalkit::Error>(())
 ```
 
 The complete minimal consumer is runnable with `cargo run -p icalkit --example golden_path`.
 The consumer compiles as an external crate using only the public API.
 It supports builds with and without the default features.
+
+Event identifiers use decoded `TEXT` values.
+The accessor returns `None` for an unknown declared value type.
+Raw property values remain available through `EventRef::property`.
 
 Use `Engine::session()` when two or more operations must share one combined resource budget or a caller-supplied time-zone database.
 
@@ -62,7 +67,7 @@ The original import never changes.
 ```rust
 use icalkit::interop::{Import, RfcRepairV1};
 
-let input = b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//example//EN\nEND:VCALENDAR\n";
+let input = b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//example//EN\nBEGIN:VTODO\nUID:one@example.test\nDTSTAMP:20260814T000000Z\nEND:VTODO\nEND:VCALENDAR\n";
 let imported = Import::read(input)?;
 let normalization = imported.normalize(RfcRepairV1)?;
 
@@ -83,7 +88,7 @@ Dropping the editor rolls back.
 Untouched content lines keep their original octets.
 
 ```rust
-# let bytes = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:planning@example.test\r\nDTSTAMP:20260814T000000Z\r\nSUMMARY:Planning\r\nX-COLOR:plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+# let bytes = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//example//EN\r\nBEGIN:VEVENT\r\nUID:planning@example.test\r\nDTSTAMP:20260814T000000Z\r\nDTSTART:20260815T090000Z\r\nSUMMARY:Planning\r\nX-COLOR:plum\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 let mut calendar = icalkit::Calendar::parse(bytes)?;
 let mut edit = calendar.edit();
 edit.set_summary("planning@example.test", "Revised planning")?;
@@ -92,11 +97,19 @@ assert!(calendar.to_bytes().windows(12).any(|part| part == b"X-COLOR:plum"));
 # Ok::<(), icalkit::Error>(())
 ```
 
-## DST-aware recurrence
+## Recurrence across daylight saving time
 
 Jiff's `Date`, `DateTime`, `Time`, `Weekday`, `Timestamp`, and `SignedDuration` are the public time vocabulary.
 `IcalDateTime` adds the iCalendar-only `DATE`/floating/UTC/zoned distinctions and leap-second evidence.
 Calendar-aware query and scheduling workflows resolve each local wall time through the engine's `ZoneDatabase`, so gaps, folds, provenance, and coverage remain explicit.
+
+`Session::issues()` reports `time-zone-coverage-unasserted` when a workflow uses an answer whose provider doesn't claim complete coverage.
+Local resolution combines its own claim with every offset answer it uses.
+Usable answers keep their results.
+The note stays available after failed operations.
+The session keeps one coverage note across recurrence, queries, projection, and scheduling.
+The note identifies neither a boundary date nor an individual occurrence.
+A fresh session starts without notes.
 
 The standalone recurrence stream is lazy, requires a half-open window, and reports budget exhaustion as an error rather than pretending the stream ended:
 
@@ -119,12 +132,35 @@ while let Some(occurrence) = occurrences.try_next()? {
 For a validated calendar, `Calendar::occurrences` selects a master by `UID` and composes its `RRULE`, `RDATE`, `EXDATE`, and detached overrides.
 It uses the session's zone database and budget, returns effective-start order, and resumes through the same opaque `Cursor` type.
 
+## Embedded time zone rules
+
+CalDAV query timezone payloads accept supported Gregorian `FREQ=YEARLY` rules from one `VTIMEZONE` definition.
+The definition's [`TZID`](https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.3.1) uses decoded `TEXT`, with literal quotes preserved.
+References use parameter quoting, while source calendar bytes stay unchanged.
+The compiler accepts `BYMONTH`, `BYMONTHDAY`, `BYYEARDAY`, `BYDAY`, `BYWEEKNO`, and `BYSETPOS` date selectors.
+Intervals follow the source calendar year, or its week-numbering year with `BYWEEKNO`.
+`WKST` defines the start of numbered weeks.
+Numeric `BYDAY` terms can't combine with `BYWEEKNO`.
+
+`COUNT` bounds all onsets of the rule, including `DTSTART`.
+Explicit `RDATE` onsets keep their independent dates and clocks.
+`UNTIL` must use UTC and name the final generated onset.
+`BYHOUR`, `BYMINUTE`, and `BYSECOND` form complete clock products, with missing fields taken from `DTSTART`.
+`BYSETPOS` selects from complete date-time periods before shared count and end bounds.
+Nonannual frequencies remain unsupported.
+Unsupported query timezone rules return `icalkit.caldav.query-timezone-unsupported`.
+The [specification validation guide](specification-validation.md) records the supported combinations, resource charges, and bounded lookup behavior.
+
 ## iTIP scheduling
 
 Inbound messages pass through a borrowed `read`-`review`-`authorize`-`apply` flow.
 `Review::authorize` binds a single-use capability to the exact message and calendar from the review.
 `AuthorizedChange::apply` consumes the capability.
 Outbound builders cover every iTIP method and require the caller to supply `DTSTAMP` rather than reading a clock.
+
+Use `Message::review_creation` when the destination is absent.
+Use `Message::review` when a stored `Calendar` exists.
+Enforce absence when storing a creation result, including races after review.
 A first `PUBLISH` or `REQUEST` can create state.
 The review checks all payload components before `apply` inserts any master or detached instance.
 A multi-component update also uses one capability.
@@ -148,7 +184,7 @@ It doesn't trust email `From` as a calendar identity.
 Authenticate the envelope sender independently of the email `From` field.
 Pass only the authenticated envelope sender as `Actor` when reviewing the message.
 
-## CalDAV sync and server workflows
+## Calendar synchronization and server workflows
 
 CalDAV is a state machine, not an HTTP client.
 A client `Operation<T>` yields an owned `WireRequest`, accepts a `WireResponse`, and finishes as a typed result.
@@ -170,6 +206,16 @@ assert_eq!(request.uri(), "/calendars/alice/work/");
 The caller sends the request through its chosen async or synchronous HTTP stack, then feeds the response back with `accept`.
 Server code follows the mirror sequence: `handle -> next_need -> supply -> finish`.
 Discovery, incremental sync, conditional writes, MKCALENDAR, calendar-query, and scheduling outbox POST use the same wire vocabulary.
+`Client::schedule` submits a `VFREEBUSY` request through the scheduling Outbox defined by [RFC 6638 section 5](https://www.rfc-editor.org/rfc/rfc6638.html#section-5).
+It takes the Outbox URI and a validated `Message` with `METHOD:REQUEST`.
+The message's `ORGANIZER` and `ATTENDEE` properties determine delivery addresses.
+Server authorization receives the message and derived addresses before delivery.
+The caller checks the Outbox principal, organizer mapping, and privileges.
+Successful recipient outcomes require a validated `VFREEBUSY` reply in `ScheduleDelivery::new`.
+`calendar_data` exposes the reply as a `Message` with CRLF line endings.
+`calendar_data_bytes` preserves the original calendar octets decoded from XML.
+Client and server correlate the decoded `UID`, organizer, and recipient with the request.
+`ScheduleResponse::no_content` represents HTTP 204, and `is_no_content` distinguishes absent data from a reply with no busy periods.
 
 ## Architecture
 
@@ -214,5 +260,6 @@ Contributors must reduce and anonymize real-client captures before adding them t
 
 ## License
 
-Dual-licensed under the [MIT License](../LICENSES/MIT.txt) or the [Apache License, Version 2.0](../LICENSES/Apache-2.0.txt), at your option.
-The repository is [REUSE](https://reuse.software/)-compliant.
+The license expression is `MIT OR Apache-2.0`.
+The [license texts](../LICENSES/) describe both choices.
+The repository also checks [copyright and licensing information](https://reuse.software/spec/).

@@ -2,43 +2,36 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The protocol's own values: what an `href`, a status, an `ETag`, a sync token and a depth
-//! are, apart from the bodies and the headers they travel in.
+//! The protocol's own values: what an `href`, a status, an `ETag`, a sync token and a depth are, apart from the bodies and the headers they travel in.
 //!
 //! ## Where this crate stops, and why the line is here
 //!
-//! `docs/adr/0004` says this crate produces requests and interprets responses while the caller
-//! moves the octets. That leaves a boundary to state rather than to discover, and it runs
-//! between a header that *is* the protocol and a header that is the transport carrying it.
+//! `docs/adr/0004` says this crate produces requests and interprets responses while the caller moves the octets.
+//! That leaves a boundary to state rather than to discover, and it runs between a header that *is* the protocol and a header that is the transport carrying it.
 //!
-//! Protocol semantics, modeled here: `If-Match` and `If-None-Match`, because a conditional
-//! write that compares wrongly overwrites somebody else's edit; `Depth`, because it changes
-//! which resources a `PROPFIND` is about; `Prefer`, because `return=minimal` changes what the
-//! response body contains; and the `ETag`, `Schedule-Tag` and `DAV:sync-token` values those
-//! three carry. Each of them is a value this crate renders and reads.
+//! Protocol semantics, modeled here: `If-Match` and `If-None-Match`, because a conditional write that compares wrongly overwrites somebody else's edit; `Depth`, because it changes which resources a `PROPFIND` is about; `Prefer`, because `return=minimal` changes what the response body contains; and the `ETag`, `Schedule-Tag` and `DAV:sync-token` values those three carry.
+//! Each of them is a value this crate renders and reads.
 //!
 //! Transport, modeled nowhere: `Host`, `Content-Length`, `Content-Type`, `Connection`,
-//! `Authorization` and every other credential, redirects, retries, and the request method and
-//! URL themselves. This crate has no request type, no header map, and no HTTP model, and
-//! inventing one would make the choice `docs/adr/0004` exists to leave open.
+//! `Authorization` and every other credential, redirects, retries, and the request method and URL themselves.
+//! This crate has no request type, no header map, and no HTTP model, and inventing one would make the choice `docs/adr/0004` exists to leave open.
 //!
 //! The rendering doors below take a [`ByteSink`] and write a header *value* — never a name,
-//! never a `CRLF`, never a whole header line — because framing is the caller's client's job
-//! and a value is the part the protocol defines.
+//! never a `CRLF`, never a whole header line — because framing is the caller's client's job and a value is the part the protocol defines.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::internal::core::{LimitExceeded, Limits, Meter};
 
+use crate::internal::dav::element::{Namespace, QName};
 use crate::internal::dav::failure::{DavError, ValueError};
 use crate::internal::dav::sink::ByteSink;
 
 /// A resource path or URI, as octets.
 ///
-/// Byte-shaped rather than `String`: a server is free to emit octets that are not UTF-8 in a
-/// path, and a type that cannot model a response one can read is the failure this workspace
-/// exists to prevent. [`Href::as_str`] is the fallible view.
+/// Byte-shaped rather than `String`: a server is free to emit octets that are not UTF-8 in a path, and a type that cannot model a response one can read is the failure this workspace exists to prevent.
+/// [`Href::as_str`] is the fallible view.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Href {
     /// The octets, exactly as they arrived or were handed in.
@@ -48,13 +41,11 @@ pub struct Href {
 impl Href {
     /// An `href` over `octets`, charged and bounded.
     pub fn new(octets: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
-        let length = u32::try_from(octets.len()).map_err(|_| LimitExceeded::Href)?;
-        if length > limits.max_href_bytes() {
-            return Err(DavError::Limit(LimitExceeded::Href));
-        }
+        let length =
+            meter.check_width(octets.len(), limits.max_href_bytes(), LimitExceeded::Href)?;
         meter.try_charge_bytes(u64::from(length))?;
         Ok(Self {
-            octets: copy(octets)?,
+            octets: meter.admit(|| copy(octets))?,
         })
     }
 
@@ -72,9 +63,7 @@ impl Href {
 
 /// An HTTP status code, in the range a status line may carry.
 ///
-/// Held as a number rather than as a reason phrase: RFC 4918 section 14.28 puts a whole status
-/// line inside a `DAV:status` element and only the code carries meaning, so the phrase is read
-/// and discarded rather than modeled as though a caller should branch on it.
+/// Held as a number rather than as a reason phrase: RFC 4918 section 14.28 puts a whole status line inside a `DAV:status` element and only the code carries meaning, so the phrase is read and discarded rather than modeled as though a caller should branch on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Status {
     /// The code, always in `100..600`.
@@ -113,14 +102,11 @@ impl Status {
 
     /// Read the status line RFC 4918 section 14.28 puts inside a `DAV:status`.
     ///
-    /// The grammar is RFC 9110 section 15's: a version, a space, three digits, a space, and a
-    /// reason phrase that may be empty. Only the digits are kept.
+    /// The grammar is RFC 9110 section 15's: a version, a space, three digits, a space, and a reason phrase that may be empty.
+    /// Only the digits are kept.
     ///
-    /// `status-code` is *exactly* three digits, so what follows them must end the line or be
-    /// the space that begins the reason phrase. A reader that took the first three octets and
-    /// looked no further read `HTTP/1.1 2000 OK` as a `200` the server never stated and
-    /// `HTTP/1.1 4045` as a `404`, which promotes a malformed group inside a `DAV:propstat`
-    /// into a success — the outcome [`crate::internal::dav::UNREADABLE_STATUS`] exists to prevent.
+    /// `status-code` is *exactly* three digits, so what follows them must end the line or be the space that begins the reason phrase.
+    /// A reader that took the first three octets and looked no further read `HTTP/1.1 2000 OK` as a `200` the server never stated and `HTTP/1.1 4045` as a `404`, which promotes a malformed group inside a `DAV:propstat` into a success — the outcome [`crate::internal::dav::UNREADABLE_STATUS`] exists to prevent.
     pub fn parse_status_line(line: &[u8]) -> Result<Self, DavError> {
         let trimmed = trim_ascii(line);
         let after_version = trimmed
@@ -149,8 +135,8 @@ impl Status {
 
     /// Write the status line a `DAV:status` element carries.
     ///
-    /// The reason phrase is omitted rather than invented. RFC 9110 section 15 permits an empty
-    /// one, and a phrase this crate made up would be a claim about a code the peer chose.
+    /// The reason phrase is omitted rather than invented.
+    /// RFC 9110 section 15 permits an empty one, and a phrase this crate made up would be a claim about a code the peer chose.
     pub fn write_status_line(self, out: &mut dyn ByteSink) -> Result<(), DavError> {
         out.write(b"HTTP/1.1 ")?;
         out.write(&decimal(u32::from(self.code)))?;
@@ -161,11 +147,9 @@ impl Status {
 
 /// An entity tag, as RFC 9110 section 8.8.3 defines one.
 ///
-/// The weakness flag travels with the tag because the two comparison functions RFC 9110
-/// section 8.8.3.2 defines differ on it, and a conditional write that used the wrong one
-/// silently overwrites another client's edit. There is no `Eq` shortcut for that reason:
-/// [`ETag::strongly_matches`] and [`ETag::weakly_matches`] are separate questions and a
-/// derived equality would answer whichever one the caller did not mean.
+/// The weakness flag travels with the tag because the two comparison functions RFC 9110 section 8.8.3.2 defines differ on it, and a conditional write that used the wrong one silently overwrites another client's edit.
+/// There is no `Eq` shortcut for that reason:
+/// [`ETag::strongly_matches`] and [`ETag::weakly_matches`] are separate questions and a derived equality would answer whichever one the caller did not mean.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ETag {
     /// The opaque octets between the quotes, without them.
@@ -177,19 +161,13 @@ pub struct ETag {
 impl ETag {
     /// Read an `ETag` header value, or the content of a `DAV:getetag` element.
     ///
-    /// Refuses anything that is not a quoted string, optionally prefixed by `W/`. An unquoted
-    /// tag is a real server bug and reading one leniently means this crate cannot tell a tag
-    /// from a tag with quotes in it.
+    /// Refuses anything that is not a quoted string, optionally prefixed by `W/`.
+    /// An unquoted tag is a real server bug and reading one leniently means this crate cannot tell a tag from a tag with quotes in it.
     ///
     /// Every octet between the quotes is held to RFC 9110 section 8.8.3's `etagc` production —
     /// `"!" / %x23-7E / obs-text` — and that is a security bound rather than pedantry.
-    /// [`ETag::write_value`] renders an accepted tag straight into an `If-Match` header
-    /// *value* for a caller to frame, so an octet a header field value may not carry is an
-    /// octet a server could otherwise use to choose the caller's other headers: a `getetag`
-    /// spelling `&#13;&#10;If-Match: *` would turn the caller's conditional write into an
-    /// unconditional one and silently replace whatever another client had stored. `SP`, every
-    /// control character including `CR` and `LF`, and `DEL` are outside the production and are
-    /// refused here, where the octets first become a value.
+    /// [`ETag::write_value`] renders an accepted tag straight into an `If-Match` header *value* for a caller to frame, so an octet a header field value may not carry is an octet a server could otherwise use to choose the caller's other headers: a `getetag` spelling `&#13;&#10;If-Match: *` would turn the caller's conditional write into an unconditional one and silently replace whatever another client had stored.
+    /// `SP`, every control character including `CR` and `LF`, and `DEL` are outside the production and are refused here, where the octets first become a value.
     pub fn parse(value: &[u8]) -> Result<Self, DavError> {
         let trimmed = trim_ascii(value);
         let (weak, rest) = match trimmed.strip_prefix(b"W/".as_slice()) {
@@ -223,9 +201,7 @@ impl ETag {
 
     /// RFC 9110 section 8.8.3.2 strong comparison: both strong, and the same octets.
     ///
-    /// This is the one `If-Match` uses, and it is the one a conditional `PUT` needs: a weak
-    /// tag says two representations are equivalent, which is not the same claim as their
-    /// being the octets this client read.
+    /// This is the one `If-Match` uses, and it is the one a conditional `PUT` needs: a weak tag says two representations are equivalent, which is not the same claim as their being the octets this client read.
     #[must_use]
     pub fn strongly_matches(&self, other: &Self) -> bool {
         !self.weak && !other.weak && self.tag == other.tag
@@ -253,24 +229,19 @@ impl ETag {
 
 /// Whether an octet may appear between an entity tag's quotes, RFC 9110 section 8.8.3.
 ///
-/// `etagc = "!" / %x23-7E / obs-text`. The exclusions are the octets that would end or extend a
-/// header field: `SP`, the C0 controls, `DEL`, and the double quote that closes the tag.
+/// `etagc = "!" / %x23-7E / obs-text`.
+/// The exclusions are the octets that would end or extend a header field: `SP`, the C0 controls, `DEL`, and the double quote that closes the tag.
 const fn is_etagc(byte: u8) -> bool {
     byte == 0x21 || (byte >= 0x23 && byte <= 0x7e) || byte >= 0x80
 }
 
 /// An `If-Match` or `If-None-Match` header value, as the server on the other end reads it.
 ///
-/// The reading door for the header [`Precondition`] renders. Without one a server assembled
-/// from this crate has no way to separate `If-Match: *` — replace whatever is stored — from a
-/// header value it could not parse, and the two demand opposite outcomes on a write: the first
-/// must land and the second must be refused with `400`, because treating an unreadable
-/// precondition as an absent one overwrites the edit the header existed to protect.
+/// The reading door for the header [`Precondition`] renders.
+/// Without one a server assembled from this crate has no way to separate `If-Match: *` — replace whatever is stored — from a header value it could not parse, and the two demand opposite outcomes on a write: the first must land and the second must be refused with `400`, because treating an unreadable precondition as an absent one overwrites the edit the header existed to protect.
 ///
-/// The list form is here because RFC 9110 section 13.1.1 defines it (`If-Match: "v1", "v2"`)
-/// and a server that refused it would fail a conformant client. `Precondition` stays the
-/// writing shape: a client this crate builds sends one tag, and reading is where the whole
-/// grammar has to be met.
+/// The list form is here because RFC 9110 section 13.1.1 defines it (`If-Match: "v1", "v2"`) and a server that refused it would fail a conformant client.
+/// `Precondition` stays the writing shape: a client this crate builds sends one tag, and reading is where the whole grammar has to be met.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MatchHeader {
     /// `*` — the header is about the existence of a stored copy and not about its revision.
@@ -282,8 +253,7 @@ pub enum MatchHeader {
 impl MatchHeader {
     /// Read an `If-Match` or `If-None-Match` header value.
     ///
-    /// Charged and bounded like every other reading door: a header is octets a peer chose, and
-    /// a list of them is a collection whose length the peer picks.
+    /// Charged and bounded like every other reading door: a header is octets a peer chose, and a list of them is a collection whose length the peer picks.
     pub fn parse(value: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
         let trimmed = trim_ascii(value);
         if trimmed == b"*" {
@@ -307,9 +277,7 @@ impl MatchHeader {
 
     /// Whether a stored revision satisfies this header read as `If-Match`.
     ///
-    /// RFC 9110 section 13.1.1: the wildcard needs a stored copy of any revision, and a list
-    /// is satisfied by a *strong* match against any member — which is the comparison that
-    /// keeps a conditional `PUT` from landing on a revision the client never read.
+    /// RFC 9110 section 13.1.1: the wildcard needs a stored copy of any revision, and a list is satisfied by a *strong* match against any member — which is the comparison that keeps a conditional `PUT` from landing on a revision the client never read.
     #[must_use]
     pub fn if_match_is_satisfied_by(&self, stored: Option<&ETag>) -> bool {
         match (self, stored) {
@@ -323,8 +291,7 @@ impl MatchHeader {
 
     /// Whether a stored revision satisfies this header read as `If-None-Match`.
     ///
-    /// RFC 9110 section 13.1.2 uses the weak comparison and inverts the outcome: the wildcard
-    /// requires that nothing is stored, and a list is satisfied when no member matches.
+    /// RFC 9110 section 13.1.2 uses the weak comparison and inverts the outcome: the wildcard requires that nothing is stored, and a list is satisfied when no member matches.
     #[must_use]
     pub fn if_none_match_is_satisfied_by(&self, stored: Option<&ETag>) -> bool {
         match (self, stored) {
@@ -344,10 +311,8 @@ fn split_list(value: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 /// An RFC 6578 synchronization token, which is opaque and stays opaque.
 ///
-/// No accessor parses it, compares it for ordering, or reads a number out of it. RFC 6578
-/// section 3 makes the token the server's own private state that round-trips through the
-/// client untouched, and an implementation that interprets one has invented a coupling to a
-/// particular server that will break on the next.
+/// No accessor parses it, compares it for ordering, or reads a number out of it.
+/// RFC 6578 section 3 makes the token the server's own private state that round-trips through the client untouched, and an implementation that interprets one has invented a coupling to a particular server that will break on the next.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SyncToken {
     /// The octets the server chose.
@@ -357,16 +322,13 @@ pub struct SyncToken {
 impl SyncToken {
     /// A token over the octets a server sent, charged and bounded.
     ///
-    /// Bounded by `max_href_bytes` because a token is a URI in every implementation that
-    /// writes one and there is no separate dimension worth inventing for it.
+    /// Bounded by `max_href_bytes` because a token is a URI in every implementation that writes one and there is no separate dimension worth inventing for it.
     pub fn new(octets: &[u8], limits: Limits, meter: &mut Meter) -> Result<Self, DavError> {
-        let length = u32::try_from(octets.len()).map_err(|_| LimitExceeded::Href)?;
-        if length > limits.max_href_bytes() {
-            return Err(DavError::Limit(LimitExceeded::Href));
-        }
+        let length =
+            meter.check_width(octets.len(), limits.max_href_bytes(), LimitExceeded::Href)?;
         meter.try_charge_bytes(u64::from(length))?;
         Ok(Self {
-            octets: copy(octets)?,
+            octets: meter.admit(|| copy(octets))?,
         })
     }
 
@@ -387,8 +349,7 @@ pub enum Depth {
     One,
     /// The resource and every member below it.
     ///
-    /// A server is permitted to refuse this, and a client asking for it on a calendar home is
-    /// asking for every event the user has.
+    /// A server is permitted to refuse this, and a client asking for it on a calendar home is asking for every event the user has.
     Infinity,
 }
 
@@ -416,11 +377,8 @@ impl Depth {
 
 /// What a conditional write requires of the copy the server holds.
 ///
-/// The three states a calendar client actually needs, named for what they mean rather than for
-/// the header that carries them: replace this exact revision, replace whatever is there, or
-/// create only if nothing is. A caller renders one into `If-Match` or `If-None-Match` and the
-/// comparison rules that decide the outcome are [`ETag::strongly_matches`] and
-/// [`ETag::weakly_matches`].
+/// The three states a calendar client actually needs, named for what they mean rather than for the header that carries them: replace this exact revision, replace whatever is there, or create only if nothing is.
+/// A caller renders one into `If-Match` or `If-None-Match` and the comparison rules that decide the outcome are [`ETag::strongly_matches`] and [`ETag::weakly_matches`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Precondition<'a> {
     /// `If-Match: "..."` — the stored copy must be this revision.
@@ -451,9 +409,8 @@ impl Precondition<'_> {
 
     /// Whether a stored revision satisfies this precondition.
     ///
-    /// `None` is "nothing is stored". The comparison is RFC 9110 section 8.8.3.2's, strong for
-    /// `If-Match` and weak for `If-None-Match`, which is the difference that decides whether a
-    /// write lands on the revision the caller read.
+    /// `None` is "nothing is stored".
+    /// The comparison is RFC 9110 section 8.8.3.2's, strong for `If-Match` and weak for `If-None-Match`, which is the difference that decides whether a write lands on the revision the caller read.
     #[must_use]
     pub fn is_satisfied_by(self, stored: Option<&ETag>) -> bool {
         match (self, stored) {
@@ -466,9 +423,7 @@ impl Precondition<'_> {
 
 /// What `Prefer` asks a server to put in the response body, RFC 8144 section 2.
 ///
-/// Modeled because it changes the body this crate then has to read: under `return=minimal` a
-/// `PROPFIND` answers with the properties that failed and omits the ones that succeeded, and a
-/// reader expecting every requested property would report absences the server did not mean.
+/// Modeled because it changes the body this crate then has to read: under `return=minimal` a `PROPFIND` answers with the properties that failed and omits the ones that succeeded, and a reader expecting every requested property would report absences the server did not mean.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Prefer {
     /// Say nothing; take whatever the server sends.
@@ -494,9 +449,7 @@ impl Prefer {
 
 /// Which of the `DAV:resourcetype` values a resource claims.
 ///
-/// The two that decide how a client walks a server are named fields; anything else is kept
-/// rather than dropped, because a resource type this crate has no row for is still a claim the
-/// server made about the resource.
+/// The two that decide how a client walks a server are named fields; anything else is kept rather than dropped, because a resource type this crate has no row for is still a claim the server made about the resource.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceType {
     /// `DAV:collection`.
@@ -538,9 +491,8 @@ impl ResourceType {
 
 /// The name of an element outside the closed vocabulary, kept whole.
 ///
-/// A namespace URI and a local name, owned, because a foreign property's *name* is the part a
-/// caller needs in order to ask a human what it was. Never a prefix: the prefix was the
-/// document's own choice and means nothing outside it.
+/// A namespace URI and a local name, owned, because a foreign property's *name* is the part a caller needs in order to ask a human what it was.
+/// Never a prefix: the prefix was the document's own choice and means nothing outside it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExtensionName {
     /// The resolved namespace URI.
@@ -552,11 +504,37 @@ pub struct ExtensionName {
 impl ExtensionName {
     /// A name outside the vocabulary, charged against the caller's ledger.
     pub fn new(namespace: &[u8], local_name: &[u8], meter: &mut Meter) -> Result<Self, DavError> {
-        let length = namespace.len().saturating_add(local_name.len());
+        Self::from_qname(
+            QName::new(Namespace::from_uri(namespace), local_name),
+            meter,
+        )
+    }
+
+    pub(crate) fn from_qname(name: QName<'_>, meter: &mut Meter) -> Result<Self, DavError> {
+        let uri = name.namespace.uri();
+        let length = meter.admit(|| {
+            uri.len()
+                .checked_add(name.local_name.len())
+                .ok_or(LimitExceeded::Budget)
+        })?;
         meter.try_charge_bytes(u64::try_from(length).unwrap_or(u64::MAX))?;
+        let namespace = if let Some(bytes) = uri.contiguous() {
+            meter.admit(|| copy(bytes))?
+        } else {
+            let mut decoded = Vec::new();
+            meter.admit(|| {
+                decoded
+                    .try_reserve_exact(uri.len())
+                    .map_err(|_| LimitExceeded::Budget)
+            })?;
+            for byte in uri.octets() {
+                decoded.push(byte?);
+            }
+            decoded.into_boxed_slice()
+        };
         Ok(Self {
-            namespace: copy(namespace)?,
-            local_name: copy(local_name)?,
+            namespace,
+            local_name: meter.admit(|| copy(name.local_name))?,
         })
     }
 
@@ -579,10 +557,10 @@ pub(crate) fn bounded_cap(bound: u32) -> usize {
 }
 
 /// Copy octets into an owned box through a fallible allocation.
-pub(crate) fn copy(octets: &[u8]) -> Result<Box<[u8]>, DavError> {
+pub(crate) fn copy(octets: &[u8]) -> Result<Box<[u8]>, LimitExceeded> {
     let mut owned = Vec::new();
     owned
-        .try_reserve(octets.len())
+        .try_reserve_exact(octets.len())
         .map_err(|_| LimitExceeded::Budget)?;
     owned.extend_from_slice(octets);
     Ok(owned.into_boxed_slice())
@@ -620,16 +598,15 @@ fn decimal(mut value: u32) -> Vec<u8> {
 mod tests {
     use alloc::vec::Vec;
 
-    use crate::internal::core::{Limits, Meter};
+    use crate::internal::core::{LimitExceeded, Limits, Meter};
 
     use super::{Depth, ETag, Href, MatchHeader, Precondition, Status, SyncToken, is_etagc};
     use crate::internal::dav::failure::{DavError, ValueError};
 
     #[test]
     fn a_status_code_is_three_digits_and_a_fourth_is_not_a_status_line() {
-        // RFC 9110 section 15: `status-code` is exactly three digits, so what follows them
-        // ends the line or begins the reason phrase. Reading the first three and looking no
-        // further promoted a malformed group inside a `propstat` into a success.
+        // RFC 9110 section 15: `status-code` is exactly three digits, so what follows them ends the line or begins the reason phrase.
+        // Reading the first three and looking no further promoted a malformed group inside a `propstat` into a success.
         assert_eq!(
             Status::parse_status_line(b"HTTP/1.1 2000 OK"),
             Err(DavError::Invalid(ValueError::StatusLine))
@@ -646,10 +623,8 @@ mod tests {
 
     #[test]
     fn an_entity_tag_holds_only_the_octets_a_header_value_may_hold() {
-        // RFC 9110 section 8.8.3's `etagc`. The exclusions are what makes `ETag::write_value`
-        // safe to frame as a header: a server that could put a `CRLF` inside a `getetag` could
-        // choose the caller's other headers, and an `If-Match: *` it chose turns a conditional
-        // write into an unconditional one.
+        // RFC 9110 section 8.8.3's `etagc`.
+        // The exclusions are what makes `ETag::write_value` safe to frame as a header: a server that could put a `CRLF` inside a `getetag` could choose the caller's other headers, and an `If-Match: *` it chose turns a conditional write into an unconditional one.
         for byte in 0_u8..=255 {
             let read = ETag::parse(&[b'"', b'a', byte, b'"']).is_ok();
             assert_eq!(read, is_etagc(byte), "octet {byte}");
@@ -709,8 +684,7 @@ mod tests {
     fn the_two_etag_comparisons_are_different_questions() {
         let strong = ETag::parse(b"\"abc\"").unwrap();
         let weak = ETag::parse(b"W/\"abc\"").unwrap();
-        // RFC 9110 section 8.8.3.2: a weak tag never satisfies a strong comparison, which is
-        // what keeps a conditional PUT from landing on a revision the client never read.
+        // RFC 9110 section 8.8.3.2: a weak tag never satisfies a strong comparison, which is what keeps a conditional PUT from landing on a revision the client never read.
         assert!(!strong.strongly_matches(&weak));
         assert!(strong.strongly_matches(&strong.clone()));
         assert!(strong.weakly_matches(&weak));
@@ -751,7 +725,16 @@ mod tests {
     fn an_href_past_the_bound_is_refused_and_a_sync_token_stays_opaque() {
         let limits = Limits::DEFAULT.with_max_href_bytes(8);
         let mut meter = Meter::new(limits);
-        assert!(Href::new(b"/calendars/ann/work/1.ics", limits, &mut meter).is_err());
+        assert_eq!(
+            Href::new(b"/calendars/ann/work/1.ics", limits, &mut meter),
+            Err(DavError::Limit(LimitExceeded::Href))
+        );
+        assert!(meter.is_exhausted());
+        assert_eq!(
+            SyncToken::new(b"http://x/ns/sync/42", Limits::DEFAULT, &mut meter),
+            Err(DavError::Limit(LimitExceeded::Exhausted))
+        );
+        let mut meter = Meter::new(Limits::DEFAULT);
         let token = SyncToken::new(b"http://x/ns/sync/42", Limits::DEFAULT, &mut meter).unwrap();
         assert_eq!(token.as_bytes(), b"http://x/ns/sync/42");
     }

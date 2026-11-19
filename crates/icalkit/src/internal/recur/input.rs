@@ -4,27 +4,20 @@
 
 //! What a caller offers a search: the rule, the additions, the exclusions, and the overrides.
 //!
-//! An override is a **diff**, never a replacement component. RFC 5545 section 3.8.4.4 places
-//! no restriction on which properties a `RANGE=THISANDFUTURE` override may change, so an
-//! organizer moving a recurring meeting to a new room without moving its time is ordinary
-//! input — and a scalar time delta, which is the shape most implementations reach for, cannot
-//! represent it. That is data loss on a file half the clients in the world can produce, and it
-//! is why [`PropertyDiff`] exists (`docs/adr/0002`).
+//! An override is a **diff**, never a replacement component.
+//! RFC 5545 section 3.8.4.4 places no restriction on which properties a `RANGE=THISANDFUTURE` override may change, so an organizer moving a recurring meeting to a new room without moving its time is ordinary input — and a scalar time delta, which is the shape most implementations reach for, cannot represent it.
+//! That is data loss on a file half the clients in the world can produce, and it is why [`PropertyDiff`] exists (`docs/adr/0002`).
 //!
-//! Anchors compose. A series edited "this and following" twice — a March anchor changing
-//! `LOCATION`, a June anchor changing `SUMMARY` and restating nothing else — must not revert
-//! the March change in July, so [`OverrideSet::anchors_before`] yields *every* anchor at or
-//! before a key rather than the nearest one. Omission means no opinion, never revert-to-base.
+//! Anchors compose.
+//! A series edited "this and following" twice — a March anchor changing `LOCATION`, a June anchor changing `SUMMARY` and restating nothing else — must not revert the March change in July, so [`OverrideSet::anchors_before`] yields *every* anchor at or before a key rather than the nearest one.
+//! Omission means no opinion, never revert-to-base.
 //!
-//! Everything here is borrowed and `Copy`. A caller holding a parsed document already owns
-//! these slices, and a search that copied them would be hiding an allocation inside a call
-//! advertised as a linear merge. Sortedness is required rather than repaired for the same
-//! reason: a constructor that quietly sorted would hide both the allocation and an
-//! `O(n log n)`.
+//! Everything here is borrowed and `Copy`.
+//! A caller holding a parsed document already owns these slices, and a search that copied them would be hiding an allocation inside a call advertised as a linear merge.
+//! Sortedness is required rather than repaired for the same reason: a constructor that quietly sorted would hide both the allocation and an `O(n log n)`.
 //!
-//! Each list is charged to the caller's meter as it is admitted. `docs/adr/0010`'s own
-//! argument — bounded per call, unbounded in aggregate — applies to these three lists exactly
-//! as it applies to a parse, and a bound nobody charges is decoration.
+//! Each list is charged to the caller's meter as it is admitted.
+//! `docs/adr/0010`'s own argument — bounded per call, unbounded in aggregate — applies to these three lists exactly as it applies to a parse, and a bound nobody charges is decoration.
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -35,10 +28,8 @@ use crate::internal::recur::rule::{RecurrenceRule, RuleLimit, ValueKind};
 /// One property an override states something about.
 ///
 /// Two arms because a diff can say two things, and RFC 5545 has syntax for only one of them.
-/// [`PropertyChange::Set`] carries the property the override wrote. [`PropertyChange::Removed`]
-/// carries a name and nothing else, for a caller that determined the override dropped a
-/// property the base component had — a determination this crate does not make and does not
-/// forbid.
+/// [`PropertyChange::Set`] carries the property the override wrote.
+/// [`PropertyChange::Removed`] carries a name and nothing else, for a caller that determined the override dropped a property the base component had — a determination this crate does not make and does not forbid.
 #[derive(Clone, Copy, Debug)]
 pub enum PropertyChange<'a> {
     /// The override states this property.
@@ -66,9 +57,8 @@ impl<'a> PropertyChange<'a> {
 
 /// What one override changed, and nothing about what it left alone.
 ///
-/// Borrowed rather than owned so that composing three anchors costs three slice walks and no
-/// allocation at all. The order of `changes` is the order the caller supplied; a later change
-/// with the same name wins, which is the same rule anchor composition uses one level up.
+/// Borrowed rather than owned so that composing three anchors costs three slice walks and no allocation at all.
+/// The order of `changes` is the order the caller supplied; a later change with the same name wins, which is the same rule anchor composition uses one level up.
 #[derive(Clone, Copy, Debug)]
 pub struct PropertyDiff<'a> {
     /// The changes, in the order the caller stated them.
@@ -96,8 +86,7 @@ impl<'a> PropertyDiff<'a> {
 
     /// The last change this diff states about `id`, if it states one.
     ///
-    /// Last rather than first, so that a caller restating a property within one diff gets the
-    /// same "later wins" answer it gets from a later anchor.
+    /// Last rather than first, so that a caller restating a property within one diff gets the same "later wins" answer it gets from a later anchor.
     #[must_use]
     pub fn get(self, id: &PropertyId) -> Option<&'a PropertyChange<'a>> {
         self.changes.iter().rev().find(|change| change.has_id(id))
@@ -121,7 +110,7 @@ pub struct Override<'a> {
     recurrence_id: Instant,
     /// Whether it reaches later instances too.
     range: OverrideRange,
-    /// Where the instance moved to, absent when the override moved nothing.
+    /// The stated start, absent when the override omits it.
     moved_to: Option<Instant>,
     /// What it changed.
     diff: PropertyDiff<'a>,
@@ -156,7 +145,7 @@ impl<'a> Override<'a> {
         self.range
     }
 
-    /// Where the instance moved to, absent when it did not move.
+    /// The start stated by the override, including a start equal to its recurrence key.
     #[must_use]
     pub const fn moved_to(self) -> Option<Instant> {
         self.moved_to
@@ -174,17 +163,14 @@ impl<'a> Override<'a> {
         matches!(self.range, OverrideRange::ThisAndFuture)
     }
 
-    /// The time shift this override implies, derived rather than stored.
+    /// The stated start's shift from the recurrence key, including an explicit zero.
     ///
-    /// `moved_to − recurrence_id`, checked. The shift is a *consequence* of the diff and never
-    /// the diff itself: an override that changes only `LOCATION` has no shift, and one that
-    /// changes only the time has a shift and an empty diff. Storing the number instead of
-    /// deriving it is exactly the scalar-delta design `docs/adr/0002` overruled.
+    /// `moved_to − recurrence_id`, checked.
+    /// The shift is a *consequence* of the diff and never the diff itself: an override that changes only `LOCATION` has no shift, and one that changes only the time has a shift and an empty diff.
+    /// Storing the number instead of deriving it is exactly the scalar-delta design `docs/adr/0002` overruled.
     #[must_use]
     pub fn shift_seconds(self) -> Option<i64> {
-        self.recurrence_id
-            .checked_seconds_until(self.moved_to?)
-            .filter(|shift| *shift != 0)
+        self.recurrence_id.checked_seconds_until(self.moved_to?)
     }
 }
 
@@ -203,6 +189,8 @@ pub enum InputList {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum InputError {
+    /// A prior resource refusal prevented this list's admission.
+    Exhausted(InputList),
     /// A list was not in ascending order, so the merge's advertised linear cost is not true.
     NotAscending(InputList),
     /// A list named one instant twice, which gives two entries one undefined precedence.
@@ -212,20 +200,37 @@ pub enum InputError {
 }
 
 impl InputError {
+    fn charge_error(list: InputList, breach: LimitExceeded) -> Self {
+        match breach {
+            LimitExceeded::Exhausted => Self::Exhausted(list),
+            _ => Self::TooMany(list, breach),
+        }
+    }
+    /// The refusal that prevented admission of the recurrence input.
+    pub(crate) const fn limit(self) -> Option<LimitExceeded> {
+        match self {
+            Self::Exhausted(_) => Some(LimitExceeded::Exhausted),
+            Self::TooMany(_, exceeded) => Some(exceeded),
+            Self::NotAscending(_) | Self::Duplicated(_) => None,
+        }
+    }
+
     /// Which list the complaint is about.
     #[must_use]
     pub const fn list(self) -> InputList {
         match self {
-            Self::NotAscending(list) | Self::Duplicated(list) | Self::TooMany(list, _) => list,
+            Self::Exhausted(list)
+            | Self::NotAscending(list)
+            | Self::Duplicated(list)
+            | Self::TooMany(list, _) => list,
         }
     }
 }
 
 /// The `RECURRENCE-ID` overrides for one series, exact matches and anchors in one slice.
 ///
-/// One slice rather than two. Two parallel slices would let a caller desynchronize them with
-/// nothing able to check it, and the same override is an exact match for its own key and an
-/// anchor for every later one, so splitting them would also duplicate half the entries.
+/// One slice rather than two.
+/// Two parallel slices would let a caller desynchronize them with nothing able to check it, and the same override is an exact match for its own key and an anchor for every later one, so splitting them would also duplicate half the entries.
 #[derive(Clone, Copy, Debug)]
 pub struct OverrideSet<'a> {
     /// The overrides, ascending by `RECURRENCE-ID`.
@@ -241,29 +246,21 @@ impl<'a> OverrideSet<'a> {
 
     /// A set over `entries`, charged to `meter`.
     ///
-    /// Ascending `RECURRENCE-ID`s are required and equal ones are admitted, which is the
-    /// correction M2 made here. Descending entries are still refused, because the merge's
-    /// advertised linear cost is not true over them.
+    /// Ascending `RECURRENCE-ID`s are required and equal ones are admitted, which is the correction M2 made here.
+    /// Descending entries are still refused, because the merge's advertised linear cost is not true over them.
     ///
-    /// Two overrides on one cadence key had been [`InputError::Duplicated`] — refused input for
-    /// the whole series, so a component whose only fault was naming one key twice lost every
-    /// occurrence it had. A zoned series produces that shape without anybody making a mistake:
-    /// `crate::internal::tz::seam` walks the series' own wall clock, and the two halves of the hour a zone
-    /// repeats are one wall clock, so `RECURRENCE-ID:20261101T053000Z` and
-    /// `RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants that project
-    /// onto one key. Refusing the series is a worse answer than applying one of them.
+    /// Two overrides on one cadence key had been [`InputError::Duplicated`] — refused input for the whole series, so a component whose only fault was naming one key twice lost every occurrence it had.
+    /// A zoned series produces that shape without anybody making a mistake:
+    /// `crate::internal::tz::seam` walks the series' own wall clock, and the two halves of the hour a zone repeats are one wall clock, so `RECURRENCE-ID:20261101T053000Z` and `RECURRENCE-ID:20261101T063000Z` in `America/New_York` are two real instants that project onto one key.
+    /// Refusing the series is a worse answer than applying one of them.
     ///
-    /// So the earlier entry of a collision is the one [`OverrideSet::exact_match`] answers with
-    /// — file order, which for a fold is the earlier of the two instants — and the later one is
-    /// inert. That is a preference, and a preference nobody stated is the thing this crate is
-    /// arranged against, so it is *counted*: [`OverrideSet::collisions`] reports how many
-    /// entries were shadowed, and a caller that wants to tell a person reads it. This
-    /// constructor takes no sink and cannot report it itself.
+    /// [`OverrideSet::exact_match`] selects the first entry in file order for each key.
+    /// Later range entries can still affect subsequent instances.
     pub fn new(entries: &'a [Override<'a>], meter: &mut Meter) -> Result<Self, InputError> {
         let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
         meter
             .try_charge_override_entries(count)
-            .map_err(|breach| InputError::TooMany(InputList::Override, breach))?;
+            .map_err(|breach| InputError::charge_error(InputList::Override, breach))?;
         let keys = entries.iter().map(|entry| entry.recurrence_id());
         check_ascending(keys, InputList::Override)?;
         Ok(Self { entries })
@@ -277,10 +274,8 @@ impl<'a> OverrideSet<'a> {
 
     /// How many entries name a `RECURRENCE-ID` an earlier entry already named.
     ///
-    /// Zero for every set whose identifiers are distinct, which is every set a floating or UTC
-    /// series produces. A non-zero count means the projection onto this series' timeline was
-    /// not injective — the fold in [`OverrideSet::new`]'s note — and that exactly this many
-    /// overrides modify nothing.
+    /// Zero for every set whose identifiers are distinct, which is every set a floating or UTC series produces.
+    /// Each collision counts one later entry that shares an earlier entry's exact-match key.
     #[must_use]
     pub fn collisions(self) -> usize {
         self.entries
@@ -294,8 +289,7 @@ impl<'a> OverrideSet<'a> {
 
     /// The override addressing exactly `key`, if there is one.
     ///
-    /// The first of them where several name one key, which is the preference
-    /// [`OverrideSet::new`] documents and [`OverrideSet::collisions`] counts.
+    /// The first of them where several name one key, which is the preference [`OverrideSet::new`] documents and [`OverrideSet::collisions`] counts.
     #[must_use]
     pub fn exact_match(self, key: Instant) -> Option<&'a Override<'a>> {
         let found = self
@@ -313,8 +307,8 @@ impl<'a> OverrideSet<'a> {
 
     /// Every `RANGE=THISANDFUTURE` anchor at or before `key`, oldest first.
     ///
-    /// Every, not the nearest. A series edited "this and following" twice has two anchors in
-    /// force, and the later edit is under no obligation to restate what the earlier changed.
+    /// Every, not the nearest.
+    /// A series edited "this and following" twice has two anchors in force, and the later edit is under no obligation to restate what the earlier changed.
     #[must_use]
     pub const fn anchors_before(self, key: Instant) -> AppliedDiffs<'a> {
         AppliedDiffs {
@@ -327,9 +321,7 @@ impl<'a> OverrideSet<'a> {
 
 /// The anchors in force at one cadence key, oldest first.
 ///
-/// `Clone` but deliberately not `Copy`: an iterator that copies on use is an iterator a caller
-/// can advance twice by accident, and half the point of this type is that a caller walks the
-/// composed anchors exactly once per occurrence.
+/// `Clone` but deliberately not `Copy`: an iterator that copies on use is an iterator a caller can advance twice by accident, and half the point of this type is that a caller walks the composed anchors exactly once per occurrence.
 #[derive(Clone, Debug)]
 pub struct AppliedDiffs<'a> {
     /// The whole override table.
@@ -380,8 +372,8 @@ pub struct RecurrenceInput<'a> {
 }
 
 impl Debug for RecurrenceInput<'_> {
-    /// Written by hand because a gate is a function and functions are not [`Debug`]. Whether
-    /// one is present is the fact a reader of a dump needs, and it is the fact printed.
+    /// Written by hand because a gate is a function and functions are not [`Debug`].
+    /// Whether one is present is the fact a reader of a dump needs, and it is the fact printed.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RecurrenceInput")
@@ -399,9 +391,7 @@ impl Debug for RecurrenceInput<'_> {
 impl<'a> RecurrenceInput<'a> {
     /// Assemble an input, checking each list and charging it to `meter`.
     ///
-    /// Six arguments rather than a builder because none of them has a default: a component
-    /// either has an `RDATE` list or has an empty one, and there is no third answer for a
-    /// builder to express.
+    /// Six arguments rather than a builder because none of them has a default: a component either has an `RDATE` list or has an empty one, and there is no third answer for a builder to express.
     pub fn new(
         dtstart: Instant,
         dtstart_kind: ValueKind,
@@ -428,22 +418,16 @@ impl<'a> RecurrenceInput<'a> {
 
     /// The same input, with a second gate the caller states on every rule instance.
     ///
-    /// `docs/adr/0011` puts two gates on an instance — a date that exists, and a local time
-    /// that exists — and says an instance is admitted only when both pass, while `COUNT`
-    /// "counts emitted instances only". This crate owns the first gate and has no zone, so it
-    /// cannot own the second; before this existed there was no order in which the two could be
-    /// composed. A caller applying the zone afterwards was applying it *after* `COUNT`, so a
-    /// `COUNT=5` series with one instance in an hour its zone never showed delivered four.
+    /// `docs/adr/0011` puts two gates on an instance — a date that exists, and a local time that exists — and says an instance is admitted only when both pass, while `COUNT` "counts emitted instances only".
+    /// This crate owns the first gate and has no zone, so it cannot own the second; before this existed there was no order in which the two could be composed.
+    /// A caller applying the zone afterwards was applying it *after* `COUNT`, so a `COUNT=5` series with one instance in an hour its zone never showed delivered four.
     ///
-    /// `gate` is asked about each cadence key the rule produces, after the window has been
-    /// tested and before the key is counted, so a rejected key costs the series nothing and the
-    /// count is over what survives. It is asked once per key, is not asked about an `RDATE` —
-    /// which is an instance the file states outright rather than one the rule produced — and
-    /// gets no meter and no sink, because it is the caller's own predicate and the caller
-    /// already holds both. `crate::internal::tz::ZonedSeries::admits` is the one this workspace supplies.
+    /// `gate` is asked about each cadence key the rule produces, after the window has been tested and before the key is counted, so a rejected key costs the series nothing and the count is over what survives.
+    /// It is asked once per key, is not asked about an `RDATE` —
+    /// which is an instance the file states outright rather than one the rule produced — and gets no meter and no sink, because it is the caller's own predicate and the caller already holds both.
+    /// `crate::internal::tz::ZonedSeries::admits` is the one this workspace supplies.
     ///
-    /// A gate that rejects everything terminates: the window is tested first, so generation
-    /// still stops at the window's edge rather than searching for a key the gate will take.
+    /// A gate that rejects everything terminates: the window is tested first, so generation still stops at the window's edge rather than searching for a key the gate will take.
     #[must_use]
     pub fn admitting(self, gate: &'a dyn Fn(Instant) -> bool) -> Self {
         Self {
@@ -454,8 +438,7 @@ impl<'a> RecurrenceInput<'a> {
 
     /// Whether the caller's own gate takes the cadence key `key`.
     ///
-    /// `true` when no gate was stated, which is what makes the gate's absence the identity
-    /// rather than a second code path.
+    /// `true` when no gate was stated, which is what makes the gate's absence the identity rather than a second code path.
     #[must_use]
     pub fn admits(self, key: Instant) -> bool {
         self.admission.is_none_or(|gate| gate(key))
@@ -499,10 +482,9 @@ impl<'a> RecurrenceInput<'a> {
 
     /// Whether `UNTIL` and `DTSTART` agree about `DATE` versus `DATE-TIME`.
     ///
-    /// A predicate rather than a constructor check. Disagreement violates RFC 5545 section
-    /// 3.3.10 and is emitted by half the clients in the corpus — Google has shipped a floating
-    /// `UNTIL` against a zoned `DTSTART` — and refusing the component over it would discard a
-    /// file, which `docs/adr/0001` forbids. A rule with no `UNTIL` agrees vacuously.
+    /// A predicate rather than a constructor check.
+    /// Disagreement violates RFC 5545 section 3.3.10 and is emitted by half the clients in the corpus — Google has shipped a floating `UNTIL` against a zoned `DTSTART` — and refusing the component over it would discard a file, which `docs/adr/0001` forbids.
+    /// A rule with no `UNTIL` agrees vacuously.
     #[must_use]
     pub fn until_value_type_agrees(self) -> bool {
         match self.rule.map(RecurrenceRule::limit) {
@@ -524,14 +506,12 @@ fn charge_instants(
         InputList::Exdate => meter.try_charge_exdate_entries(count),
         InputList::Override => meter.try_charge_override_entries(count),
     };
-    charged.map_err(|breach| InputError::TooMany(list, breach))
+    charged.map_err(|breach| InputError::charge_error(list, breach))
 }
 
 /// Whether `keys` ascends with no repeats, saying which failure it was.
 ///
-/// One walk answering both questions, because "not sorted" and "sorted with a duplicate" are
-/// detected by the same comparison and reporting them from two passes would let the two
-/// disagree about a list that is both.
+/// One walk answering both questions, because "not sorted" and "sorted with a duplicate" are detected by the same comparison and reporting them from two passes would let the two disagree about a list that is both.
 fn check_strictly_ascending<I>(keys: I, list: InputList) -> Result<(), InputError>
 where
     I: IntoIterator<Item = Instant>,
@@ -553,9 +533,9 @@ where
 
 /// Whether `keys` ascend, with equal keys admitted.
 ///
-/// The override list's check. A repeated instant is a preference to state rather than input to
-/// refuse; see [`OverrideSet::new`]. A descending one is still refused, because that is the
-/// claim the merge's single pass rests on.
+/// The override list's check.
+/// A repeated instant is a preference to state rather than input to refuse; see [`OverrideSet::new`].
+/// A descending one is still refused, because that is the claim the merge's single pass rests on.
 fn check_ascending<I>(keys: I, list: InputList) -> Result<(), InputError>
 where
     I: IntoIterator<Item = Instant>,

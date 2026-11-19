@@ -4,13 +4,14 @@
 
 //! CalDAV server workflows with ACL and storage kept outside the crate.
 
+#![cfg(test)]
+
 use icalkit::Calendar;
 use icalkit::caldav::{
     Client, Discovery, Header, Revision, ScheduleDelivery, ScheduleResponse, Server, ServerAnswer,
     StoredResource, SyncChange, SyncResult, SyncToken, WireRequest,
 };
 use icalkit::scheduling::Message;
-use icalkit::time::Timestamp;
 
 const MATCHING: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
@@ -18,6 +19,7 @@ PRODID:-//icalkit server tests//EN\r\n\
 BEGIN:VEVENT\r\n\
 UID:one@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
+DTSTART:20260814T090000Z\r\n\
 SUMMARY:Planning\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
@@ -28,6 +30,7 @@ PRODID:-//icalkit server tests//EN\r\n\
 BEGIN:VEVENT\r\n\
 UID:two@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
+DTSTART:20260814T090000Z\r\n\
 SUMMARY:Finance\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
@@ -35,16 +38,16 @@ END:VCALENDAR\r\n";
 const SCHEDULING_PAYLOAD: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit server tests//EN\r\n\
-BEGIN:VEVENT\r\n\
+METHOD:REQUEST\r\n\
+BEGIN:VFREEBUSY\r\n\
 UID:scheduled@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
 DTSTART:20260814T090000Z\r\n\
-SUMMARY:Planning\r\n\
+DTEND:20260814T100000Z\r\n\
 ORGANIZER:mailto:alice@example.test\r\n\
 ATTENDEE:mailto:bob@example.test\r\n\
 ATTENDEE:mailto:carol@example.test\r\n\
-SEQUENCE:1\r\n\
-END:VEVENT\r\n\
+END:VFREEBUSY\r\n\
 END:VCALENDAR\r\n";
 
 const QUERY: &[u8] = br#"<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -91,15 +94,8 @@ fn mkcalendar(body: &[u8]) -> WireRequest {
 }
 
 fn schedule_operation() -> Option<(icalkit::caldav::Operation<ScheduleResponse>, WireRequest)> {
-    let message = Message::request(SCHEDULING_PAYLOAD, Timestamp::constant(0, 0)).ok()?;
-    let operation = Client::new()
-        .schedule(
-            "/outbox/alice/",
-            "mailto:alice@example.test",
-            &["mailto:bob@example.test", "mailto:carol@example.test"],
-            &message,
-        )
-        .ok()?;
+    let message = Message::read(SCHEDULING_PAYLOAD).ok()?;
+    let operation = Client::new().schedule("/outbox/alice/", &message).ok()?;
     let request = operation.next_request()?.clone();
     Some((operation, request))
 }
@@ -253,6 +249,15 @@ fn server_rejects_malformed_mkcalendar_before_asking_for_acl() {
 
 #[test]
 fn server_outbox_post_round_trips_typed_delivery_results() {
+    assert_server_outbox_round_trip("3.7;Invalid <calendar> & user", "2.0;Success");
+}
+
+#[test]
+fn server_outbox_post_round_trips_structured_delivery_statuses() {
+    assert_server_outbox_round_trip("3.7.1;Invalid\\;user\\,value;detail", "02.0.1;Success \t");
+}
+
+fn assert_server_outbox_round_trip(failure: &str, success: &str) {
     let (mut client_operation, request) = schedule_operation().unwrap();
     let mut server_operation = Server::new().handle(request).unwrap();
 
@@ -276,10 +281,14 @@ fn server_outbox_post_round_trips_typed_delivery_results() {
         ]
     );
 
+    let reply = core::str::from_utf8(SCHEDULING_PAYLOAD)
+        .unwrap()
+        .replace("METHOD:REQUEST", "METHOD:REPLY")
+        .replace("ATTENDEE:mailto:carol@example.test\r\n", "");
+    let reply = Message::read(reply.as_bytes()).unwrap();
     let outcomes = ScheduleResponse::new(vec![
-        ScheduleDelivery::new("mailto:carol@example.test", "3.7;Invalid <calendar> & user")
-            .unwrap(),
-        ScheduleDelivery::new("mailto:bob@example.test", "2.0;Success").unwrap(),
+        ScheduleDelivery::new("mailto:carol@example.test", failure, None).unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", success, Some(reply)).unwrap(),
     ])
     .unwrap();
     server_operation
@@ -295,11 +304,10 @@ fn server_outbox_post_round_trips_typed_delivery_results() {
         decoded.deliveries()[0].recipient(),
         "mailto:carol@example.test"
     );
-    assert_eq!(
-        decoded.deliveries()[0].request_status(),
-        "3.7;Invalid <calendar> & user"
-    );
-    assert_eq!(decoded.deliveries()[1].request_status(), "2.0;Success");
+    assert_eq!(decoded.deliveries()[0].request_status(), failure);
+    assert!(!decoded.deliveries()[0].is_success());
+    assert_eq!(decoded.deliveries()[1].request_status(), success);
+    assert!(decoded.deliveries()[1].is_success());
 }
 
 #[test]
@@ -352,7 +360,8 @@ fn server_refuses_incomplete_delivery_results() {
     let mut operation = Server::new().handle(request).unwrap();
     operation.supply(ServerAnswer::authorized(true)).unwrap();
     let incomplete = ScheduleResponse::new(vec![
-        ScheduleDelivery::new("mailto:bob@example.test", "2.0;Success").unwrap(),
+        ScheduleDelivery::new("mailto:bob@example.test", "3.7;Invalid calendar user", None)
+            .unwrap(),
     ])
     .unwrap();
 

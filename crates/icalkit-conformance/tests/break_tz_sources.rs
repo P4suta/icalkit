@@ -4,43 +4,30 @@
 
 //! Where a zone answer came from, and what it is worth — `docs/adr/0003` attacked at its center.
 //!
-//! `break_zones.rs` asks whether `ical-tz` reads real transition rules correctly. This file asks
-//! the other question the ADR turns on: when an answer reaches a caller, does the caller learn
-//! **which source produced it** and **how much that source actually knew**? Every case below is
-//! about provenance rather than about arithmetic, and each one is addressed to a claim somebody
-//! wrote down:
+//! `break_zones.rs` asks whether `ical-tz` reads real transition rules correctly.
+//! This file asks the other question the ADR turns on: when an answer reaches a caller, does the caller learn **which source produced it** and **how much that source actually knew**?
+//! Every case below is about provenance rather than about arithmetic, and each one is addressed to a claim somebody wrote down:
 //!
-//! - **`docs/adr/0003`, "Every result says which source produced it."** — an embedded
-//!   `VTIMEZONE` and a caller-supplied database that disagree, with both answers reachable and
-//!   each naming itself.
-//! - **`docs/adr/0003` Mechanism, "A source that does not recognize an identifier returns
-//!   `None`. That is what the `Option` is for."** — restated by `ical-tz`'s own `answer` module
-//!   as "`None` for exactly one condition: this source does not recognize this `TZID`". A
-//!   definition that exists and carries no observance is not that condition.
-//! - **`docs/adr/0003` amendment 5 and `AnswerBasis`** — a table whose data runs out answers by
-//!   continuing its final observance and says so. The claim is symmetric in nothing: it is
-//!   stated for the future end of a table only, and a table has two ends.
-//! - **RFC 5545 section 3.6.5** — a `VTIMEZONE` with neither `STANDARD` nor `DAYLIGHT`, and one
-//!   identifier declared twice in one file.
-//! - **RFC 5545 section 3.2.19** — identifiers that are not IANA names: a Windows zone name, a
-//!   Lightning prefix, a name a user typed, and one carrying a colon.
+//! - **`docs/adr/0003`, "Every result says which source produced it."** — an embedded `VTIMEZONE` and a caller-supplied database that disagree, with both answers reachable and each naming itself.
+//! - **`docs/adr/0003` Mechanism, "A source that does not recognize an identifier returns `None`.
+//!   That is what the `Option` is for."** — restated by `ical-tz`'s own `answer` module as "`None` for exactly one condition: this source does not recognize this `TZID`".
+//!   A definition that exists and carries no observance is not that condition.
+//! - **`docs/adr/0003` amendment 5 and `AnswerBasis`** — a table whose data runs out answers by continuing its final observance and says so.
+//!   The claim is symmetric in nothing: it is stated for the future end of a table only, and a table has two ends.
+//! - **RFC 5545 section 3.6.5** — a `VTIMEZONE` with neither `STANDARD` nor `DAYLIGHT`, and one identifier declared twice in one file.
+//! - **RFC 5545 section 3.2.19** — identifiers that are not IANA names: a Windows zone name, a Lightning prefix, a name a user typed, and one carrying a colon.
 //!
 //! # Writing a caller-supplied source by hand
 //!
-//! [`CallerZoneinfo`] below is what `docs/adr/0003` asks every caller to supply, written from a
-//! published transition list rather than from anything this workspace computed. Two things about
-//! writing it are findings in their own right and are recorded here rather than in a comment
-//! nobody reads. First, [`icalkit_conformance::internal::tz::VtimezoneSet`] is not a [`ZoneSource`], so wiring "the file's
-//! own definitions" as the embedded half of a pair needs the [`FileZones`] adapter below —
-//! twelve lines every caller writes identically, and the place each of them independently
-//! decides what an empty definition means. Second, building a
-//! [`LocalResolution::Nonexistent`] by hand means re-deriving `gap_start`, `gap_end` and
-//! `shifted` and the invariants tying them together, with no constructor or helper in the crate
-//! to do it: the type states the invariants in prose and checks none of them.
+//! [`CallerZoneinfo`] below is what `docs/adr/0003` asks every caller to supply, written from a published transition list rather than from anything this workspace computed.
+//! Two things about writing it are findings in their own right and are recorded here rather than in a comment nobody reads.
+//! First, [`icalkit_conformance::internal::tz::VtimezoneSet`] is not a [`ZoneSource`], so wiring "the file's own definitions" as the embedded half of a pair needs the [`FileZones`] adapter below —
+//! twelve lines every caller writes identically, and the place each of them independently decides what an empty definition means.
+//! Second, building a [`LocalResolution::Nonexistent`] by hand means re-deriving `gap_start`, `gap_end` and `shifted` and the invariants tying them together, with no constructor or helper in the crate to do it: the type states the invariants in prose and checks none of them.
 
 use icalkit_conformance::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, Diagnostic, DiagnosticCode, Document,
-    IgnoreDiagnostics, Instant, Limits, Meter, UtcOffset,
+    IgnoreDiagnostics, Instant, Limits, Meter, Subject, UtcOffset,
 };
 use icalkit_conformance::internal::tz::{
     AnswerBasis, CombinedZoneSource, LocalResolution, OffsetAnswer, PolicyOutcome, Reading, Tzid,
@@ -79,12 +66,11 @@ const NEW_YORK_TODAY: &[u8] =
 const PUNCTUATED_IDENTIFIERS: &[u8] =
     include_bytes!("fixtures/break_tz_sources/identifiers_with_punctuation.ics");
 
-/// One identifier declared twice, differing only in a `DQUOTE` pair the file wrote.
+/// Two identifiers distinguished by literal quotes in a `TEXT` property.
 const BERLIN_QUOTED_AND_NOT: &[u8] =
     include_bytes!("fixtures/break_tz_sources/berlin_quoted_and_unquoted_identifier.ics");
 
-/// An identifier written with a `TEXT` escape, which the two sides of the file spell alike as
-/// octets and differently as values.
+/// An identifier written with a `TEXT` escape, which the two sides of the file spell alike as octets and differently as values.
 const IDENTIFIER_WITH_ESCAPE: &[u8] =
     include_bytes!("fixtures/break_tz_sources/identifier_with_an_escaped_newline.ics");
 
@@ -145,8 +131,8 @@ impl CallerZoneinfo {
 
     /// Every reading of `local` this database admits, earliest first.
     ///
-    /// A candidate offset names a real instant only where the offset in force at that instant is
-    /// the candidate itself. None is a gap, one is an ordinary day, two is a fold.
+    /// A candidate offset names a real instant only where the offset in force at that instant is the candidate itself.
+    /// None is a gap, one is an ordinary day, two is a fold.
     fn readings(&self, local: CivilDateTime) -> Vec<Reading> {
         let mut candidates = vec![(self.standing, false)];
         candidates.extend(
@@ -231,9 +217,8 @@ impl ZoneSource for CallerZoneinfo {
 
 /// A caller-supplied source that recognizes no identifier at all.
 ///
-/// The wiring of a caller that has no database, which `docs/adr/0003` names as the ordinary
-/// `no_std` case. It is here because it is the only way to ask what the pair does when exactly
-/// one half can answer.
+/// The wiring of a caller that has no database, which `docs/adr/0003` names as the ordinary `no_std` case.
+/// It is here because it is the only way to ask what the pair does when exactly one half can answer.
 #[derive(Clone, Copy, Debug)]
 struct NoZonesAtAll;
 
@@ -249,8 +234,7 @@ impl ZoneSource for NoZonesAtAll {
 
 /// The file's own definitions, wired in as one source.
 ///
-/// `ical-tz` ships no adapter from a [`VtimezoneSet`] to a [`ZoneSource`], so this is what every
-/// caller writes to put "what the calendar carries" on one side of a [`CombinedZoneSource`].
+/// `ical-tz` ships no adapter from a [`VtimezoneSet`] to a [`ZoneSource`], so this is what every caller writes to put "what the calendar carries" on one side of a [`CombinedZoneSource`].
 #[derive(Clone, Copy, Debug)]
 struct FileZones<'a> {
     /// The definitions the calendar carried.
@@ -267,8 +251,7 @@ impl ZoneSource for FileZones<'_> {
     }
 }
 
-/// Europe/Berlin's 2026 transitions, from the European Union's published rule: the last Sunday
-/// in March and the last Sunday in October, both at 01:00 UTC.
+/// Europe/Berlin's 2026 transitions, from the European Union's published rule: the last Sunday in March and the last Sunday in October, both at 01:00 UTC.
 fn berlin_2026() -> Option<CallerZoneinfo> {
     let winter = UtcOffset::from_seconds(3_600)?;
     let summer = UtcOffset::from_seconds(7_200)?;
@@ -313,8 +296,7 @@ fn calendar(document: &Document) -> Option<&Component> {
 
 /// The zone definitions a fixture carries, and what reading them said.
 ///
-/// The parse has its own sink, so that what comes back is what `read_calendar_zones` reported
-/// and nothing the grammar said on the way past.
+/// The parse has its own sink, so that what comes back is what `read_calendar_zones` reported and nothing the grammar said on the way past.
 fn zones_of(octets: &[u8]) -> Option<(VtimezoneSet, Vec<DiagnosticCode>)> {
     let document = Document::parse(octets, Limits::DEFAULT, &mut IgnoreDiagnostics).ok()?;
     let mut meter = Meter::new(Limits::DEFAULT);
@@ -337,8 +319,7 @@ enum Shape {
     OnlyFallback,
     /// Neither recognized the identifier.
     Neither,
-    /// A variant a later version of `ical-tz` added, which `#[non_exhaustive]` requires an arm
-    /// for and this corpus has nothing to say about.
+    /// A variant a later version of `ical-tz` added, which `#[non_exhaustive]` requires an arm for and this corpus has nothing to say about.
     Unnamed,
 }
 
@@ -356,9 +337,8 @@ fn shape<A: Copy>(outcome: PolicyOutcome<A>) -> Shape {
 
 /// What one calendar, wired against one caller database, tells a caller about `BERLIN`.
 ///
-/// The whole of what reaches a caller: what reading the file said, which outcome the pair
-/// formed, and what reporting the outcome put on the sink. Two calendars stating different
-/// things must not produce the same tuple.
+/// The whole of what reaches a caller: what reading the file said, which outcome the pair formed, and what reporting the outcome put on the sink.
+/// Two calendars stating different things must not produce the same tuple.
 fn what_a_caller_learns(
     octets: &[u8],
 ) -> Option<(Vec<DiagnosticCode>, Shape, Vec<DiagnosticCode>)> {
@@ -380,14 +360,7 @@ fn what_a_caller_learns(
 // The cases.
 // ---------------------------------------------------------------------------------------------
 
-/// RFC 5545 section 3.6.5 requires an observance and files without one exist. `ical-tz`'s own
-/// `answer` module says `resolve` returns `None` "for exactly one condition: this source does not
-/// recognize this `TZID`" — so a definition that is present and empty must not answer `None`.
-///
-/// What a caller can see: a calendar declaring `Europe/Berlin` with no observance and a calendar
-/// declaring nothing at all produce the same outcome variant and the same diagnostics, so
-/// "the file says nothing about this zone" and "the file has no definition for this zone" arrive
-/// as one fact.
+/// The embedded source recognizes a declared zone with no observances.
 #[test]
 fn a_definition_with_no_observance_is_not_an_unrecognized_identifier() {
     let (zones, declared) = zones_of(BERLIN_WITHOUT_OBSERVANCE).unwrap();
@@ -406,14 +379,12 @@ fn a_definition_with_no_observance_is_not_an_unrecognized_identifier() {
     );
 }
 
-/// The same collapse as it reaches a caller through the pair: an empty definition and no
-/// definition at all produce the same outcome variant and the same reported codes, so the two
-/// facts a reader would act on differently arrive as one.
+/// The resolver distinguishes an undetermined local reading from an absent zone.
 #[test]
 fn an_empty_definition_and_a_missing_definition_are_two_different_facts() {
     let declared = what_a_caller_learns(BERLIN_WITHOUT_OBSERVANCE).unwrap();
     let absent = what_a_caller_learns(BERLIN_WITHOUT_DEFINITION).unwrap();
-    // Reading the file distinguishes them; resolving against a source does not.
+    // The reader and the resolver both distinguish the inputs.
     assert_eq!(declared.0, vec![DiagnosticCode::VtimezoneWithoutObservance]);
     assert_eq!(absent.0, vec![DiagnosticCode::MissingTimeZoneDefinition]);
     assert_ne!(
@@ -423,9 +394,7 @@ fn an_empty_definition_and_a_missing_definition_are_two_different_facts() {
     );
 }
 
-/// The same collapse from the other side: with no caller database wired in, an empty definition
-/// is reported as `unknown-time-zone` — a violation asserting that nobody supplied this zone,
-/// about a zone the file supplies.
+/// The combined source reports an unknown zone only when neither source recognizes its identifier.
 #[test]
 fn an_empty_definition_is_not_reported_as_a_zone_nobody_supplied() {
     let (zones, _) = zones_of(BERLIN_WITHOUT_OBSERVANCE).unwrap();
@@ -447,15 +416,7 @@ fn an_empty_definition_is_not_reported_as_a_zone_nobody_supplied() {
     );
 }
 
-/// `docs/adr/0003` amendment 5: a table whose transitions run out answers by continuing its final
-/// observance and says so on `AnswerBasis`. A table has two ends, and the claim is made about one.
-///
-/// The `RDATE` table here runs 2027 through 2029. Asked about 2035 it says
-/// `BeyondKnownTransitions`, which is the ADR working. Asked about July 2020 — seven years before
-/// its earliest transition — it answers `-05:00`, standard, `Computed`: the offset that
-/// observance's `TZOFFSETFROM` states, extended backwards forever. New York was on `-04:00` that
-/// July, so the answer is wrong, and nothing in it is distinguishable from an answer the table
-/// had data for.
+/// The table extrapolates its earliest offset for July 2020 and marks the reading as preceding known transitions.
 #[test]
 fn an_answer_from_before_a_tables_first_transition_says_so_too() {
     let (zones, codes) = zones_of(NEW_YORK_DATED).unwrap();
@@ -493,21 +454,13 @@ fn reading_offset(resolution: LocalResolution) -> Option<i32> {
     }
 }
 
-/// RFC 5545 section 3.6.5 with `docs/adr/0003`: one identifier, two definitions, and the ADR's
-/// whole subject is that a disagreement is reported and both readings stay reachable.
-///
-/// `VtimezoneSet::insert` does hand the refused table back — its own doc says "so a caller that
-/// wants the later of two definitions can take it" — but `read_calendar_zones`, the only
-/// whole-calendar entry point, drops it on the floor after reading its code. What reaches a
-/// caller is one definition, a code that names neither the identifier nor which definition was
-/// lost, and no route to the other reading at all.
+/// Both definitions remain accessible under the identifier named in the duplicate diagnostic.
 #[test]
 fn two_definitions_of_one_identifier_both_stay_reachable() {
     let (zones, codes) = zones_of(NEW_YORK_TWICE).unwrap();
     assert_eq!(codes, vec![DiagnosticCode::DuplicateTimeZoneIdentifier]);
     let table = zones.table(NEW_YORK).unwrap();
-    // The 15th of March 2026 is EST under the pre-2007 rules and EDT under today's: the two
-    // definitions are an hour apart on this wall clock, which is what makes them two answers.
+    // The 15th of March 2026 is EST under the pre-2007 rules and EDT under today's: the two definitions are an hour apart on this wall clock, which is what makes them two answers.
     let local = stamp(2026, 3, 15, 12, 0).unwrap();
     let kept = table.resolve(NEW_YORK, local).unwrap();
     assert_eq!(
@@ -526,11 +479,7 @@ fn two_definitions_of_one_identifier_both_stay_reachable() {
     );
 }
 
-/// The same loss with the stakes visible: a placeholder `VTIMEZONE` declared before the real one.
-///
-/// The empty definition is admitted first, the real definition is refused as a duplicate and
-/// dropped, and the zone the file fully defines now answers nothing. A caller wiring the file's
-/// zones against nothing is told `unknown-time-zone` about a zone the file defines with rules.
+/// Lookup prefers the first nonempty Berlin definition and retains the empty placeholder.
 #[test]
 fn a_placeholder_definition_does_not_swallow_the_real_one() {
     let (zones, codes) = zones_of(BERLIN_PLACEHOLDER_FIRST).unwrap();
@@ -544,8 +493,7 @@ fn a_placeholder_definition_does_not_swallow_the_real_one() {
     );
     let table = zones.table(BERLIN).unwrap();
     let local = stamp(2026, 7, 1, 12, 0).unwrap();
-    // Berlin is on CEST, +02:00, at noon on the first of July: the real definition says so and
-    // the placeholder says nothing.
+    // Berlin is on CEST, +02:00, at noon on the first of July: the real definition says so and the placeholder says nothing.
     assert_eq!(
         table
             .resolve(BERLIN, local)
@@ -555,14 +503,7 @@ fn a_placeholder_definition_does_not_swallow_the_real_one() {
     );
 }
 
-/// `docs/adr/0003`: "Every result says which source produced it."
-///
-/// The ordinary server wiring is an embedded `VTIMEZONE` against a database the caller holds —
-/// and a caller's database of zones is very often itself a set of `VTIMEZONE` definitions, which
-/// is what RFC 7808's time zone service distributes and what every CalDAV server stores.
-/// `TransitionTable`'s `ZoneSource` impl writes `ZoneProvenance::EmbeddedVtimezone` into every
-/// answer unconditionally, so wiring one as the caller's half produces a `Disagreed` whose two
-/// answers name the same source, and the fallback's answer names a source it did not come from.
+/// The combined source assigns caller database provenance to the fallback table's answer.
 #[test]
 fn a_table_wired_in_as_the_callers_database_does_not_claim_to_be_the_file_s_own() {
     let (file, _) = zones_of(NEW_YORK_OLD).unwrap();
@@ -592,9 +533,7 @@ fn a_table_wired_in_as_the_callers_database_does_not_claim_to_be_the_file_s_own(
     );
 }
 
-/// The disagreement `docs/adr/0003` exists for, with the embedded half read from a file and the
-/// caller half written by hand: both answers reachable, each naming itself, and the fact
-/// reported once where the caller asked for it.
+/// The disagreement `docs/adr/0003` exists for, with the embedded half read from a file and the caller half written by hand: both answers reachable, each naming itself, and the fact reported once where the caller asked for it.
 #[test]
 fn an_embedded_definition_and_a_caller_database_that_disagree_keep_both_answers() {
     let (zones, _) = zones_of(NEW_YORK_OLD).unwrap();
@@ -640,8 +579,7 @@ fn an_embedded_definition_and_a_caller_database_that_disagree_keep_both_answers(
     assert_eq!(codes, vec![DiagnosticCode::TimeZoneSourceDisagreement]);
 }
 
-/// A source that returns nothing for an identifier is one source, not a hole: the pair says
-/// `OnlyEmbedded` and reports nothing, and the answer that exists still names its own source.
+/// A source that returns nothing for an identifier is one source, not a hole: the pair says `OnlyEmbedded` and reports nothing, and the answer that exists still names its own source.
 #[test]
 fn a_caller_database_that_knows_nothing_leaves_the_file_s_answer_naming_itself() {
     let (zones, _) = zones_of(NEW_YORK_OLD).unwrap();
@@ -672,9 +610,8 @@ fn a_caller_database_that_knows_nothing_leaves_the_file_s_answer_naming_itself()
     );
 }
 
-/// RFC 5545 section 3.2.19: a `TZID` is an identifier, not a path and not an IANA key. One
-/// carrying a colon has to be quoted where it is written as a parameter and not where it is
-/// written as a property value, and both spellings must reach the same definition.
+/// RFC 5545 section 3.2.19: a `TZID` is an identifier, not a path and not an IANA key.
+/// One carrying a colon has to be quoted where it is written as a parameter and not where it is written as a property value, and both spellings must reach the same definition.
 #[test]
 fn an_identifier_carrying_a_colon_is_still_one_identifier() {
     let (zones, codes) = zones_of(PUNCTUATED_IDENTIFIERS).unwrap();
@@ -697,44 +634,27 @@ fn an_identifier_carrying_a_colon_is_still_one_identifier() {
     );
 }
 
-/// RFC 5545 section 3.2's `DQUOTE` rule is stated over *parameter* values; a `TZID` property's
-/// value is `TEXT`, where a `DQUOTE` is an ordinary character. `ical-tz`'s reader strips a
-/// matched pair from the property value anyway, so that a producer that quoted one side is still
-/// reachable from the other — a defensible interoperability choice with a cost this case records
-/// rather than asserts against: a file declaring both spellings declares one identifier, and one
-/// of its two definitions is refused as a duplicate.
+/// RFC 5545 section 3.8.3.1 gives `TZID` the `TEXT` type, whose literal quotes distinguish names.
 #[test]
-fn a_quoted_identifier_and_an_unquoted_one_are_read_as_one_zone() {
+fn literal_quotes_distinguish_time_zone_definition_names() {
     let (zones, codes) = zones_of(BERLIN_QUOTED_AND_NOT).unwrap();
-    assert_eq!(codes, vec![DiagnosticCode::DuplicateTimeZoneIdentifier]);
-    assert_eq!(zones.len(), 1);
-    assert!(
-        zones.table("\"Europe/Berlin\"").is_none(),
-        "the quotes are gone from the key, which is what makes the two spellings one zone"
-    );
+    assert_eq!(codes, Vec::new());
+    assert_eq!(zones.len(), 2);
+    assert_eq!(zones.definitions(BERLIN).len(), 1);
+    assert_eq!(zones.definitions("\"Europe/Berlin\"").len(), 1);
 }
 
-/// RFC 5545 section 3.8.3.1 gives the `TZID` property the `TEXT` value type, where `\n` is an
-/// escape, and section 3.2 gives a parameter value no escapes at all. So a file writing the same
-/// two octets on both sides has written one name as octets and two names as values. `ical-tz`
-/// compares the octets on both sides, which is the reading that makes the file self-consistent
-/// and the one this case records: the definition is reachable and nothing is reported missing.
+/// RFC 5545 sections 3.3.11 and 3.2 give different meanings to a backslash in property text and parameter text.
 #[test]
-fn an_identifier_carrying_a_text_escape_is_compared_as_the_octets_both_sides_wrote() {
+fn a_text_escape_does_not_alias_literal_parameter_backslashes() {
     let (zones, codes) = zones_of(IDENTIFIER_WITH_ESCAPE).unwrap();
     assert_eq!(zones.len(), 1);
-    assert!(zones.table("Europe\\nBerlin").is_some(), "filed as written");
-    assert!(
-        zones.table("Europe\nBerlin").is_none(),
-        "no TEXT unescaping happens on either side, so the escape stays two octets"
-    );
-    assert_eq!(codes, Vec::new());
+    assert!(zones.table("Europe\\nBerlin").is_none());
+    assert!(zones.table("Europe\nBerlin").is_some());
+    assert_eq!(codes, vec![DiagnosticCode::MissingTimeZoneDefinition]);
 }
 
-/// `docs/adr/0010` bounds how many zones one calendar may declare, and `docs/adr/0003` amendment
-/// 6 records that the refusal carries no code. What it does carry is a *different* code, about a
-/// different fact, that is false: the zones the bound refused are then reported as identifiers
-/// no `VTIMEZONE` defines. The file defines them. The caller's own policy dropped them.
+/// The zone-count limit reports the refused definition under the truncation diagnostic.
 #[test]
 fn a_zone_the_limit_refused_is_not_reported_as_one_the_file_never_defined() {
     let limits = Limits::DEFAULT.with_max_vtimezone_components(1);
@@ -743,16 +663,14 @@ fn a_zone_the_limit_refused_is_not_reported_as_one_the_file_never_defined() {
     let mut told: Vec<Diagnostic> = Vec::new();
     let zones = read_calendar_zones(calendar(&document).unwrap(), &mut meter, &mut told);
     assert_eq!(zones.len(), 1, "the policy admitted one of the two");
-    let codes: Vec<DiagnosticCode> = told.iter().copied().map(Diagnostic::code).collect();
-    assert!(
-        !codes.contains(&DiagnosticCode::MissingTimeZoneDefinition),
-        "this calendar defines both zones it references; what refused one was the limit"
-    );
+    let [refused] = told.as_slice() else {
+        panic!("expected one refused zone, got {told:?}");
+    };
+    assert_eq!(refused.code(), DiagnosticCode::VtimezoneComponentsTruncated);
+    assert_eq!(refused.subject(), Some(Subject::new(NEW_YORK.as_bytes())));
 }
 
-/// A `TZID` a calendar references and no `VTIMEZONE` defines is reported — and the report names
-/// neither the identifier nor anything else that tells one of them from another. Three undefined
-/// zones arrive as three diagnostics that are equal as values.
+/// Each undefined reference has the same diagnostic code and a distinct identifier as its subject.
 #[test]
 fn an_identifier_nothing_defines_is_reported_by_name() {
     let document =
@@ -761,18 +679,16 @@ fn an_identifier_nothing_defines_is_reported_by_name() {
     let mut told: Vec<Diagnostic> = Vec::new();
     let zones = read_calendar_zones(calendar(&document).unwrap(), &mut meter, &mut told);
     assert!(zones.is_empty());
+    let mut reports: Vec<_> = told
+        .iter()
+        .map(|entry| (entry.code(), entry.subject()))
+        .collect();
+    reports.sort_unstable();
     assert_eq!(
-        told.iter()
-            .copied()
-            .map(Diagnostic::code)
-            .collect::<Vec<_>>(),
-        vec![DiagnosticCode::MissingTimeZoneDefinition; 3],
-        "one report per identifier, which is the half that works"
-    );
-    let first = *told.first().unwrap();
-    assert!(
-        told.iter().any(|entry| *entry != first),
-        "three different missing zones may not arrive as three identical values: a caller \
-         cannot say which zone it must go and find"
+        reports,
+        ["America/Denver", "Asia/Kolkata", "Pacific/Kiritimati"].map(|name| (
+            DiagnosticCode::MissingTimeZoneDefinition,
+            Some(Subject::new(name.as_bytes()))
+        ))
     );
 }

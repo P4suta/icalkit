@@ -4,76 +4,44 @@
 
 //! Which instance a message names, once a zone has been asked.
 //!
-//! Specification: RFC 5545 section 3.8.4.4 (`RECURRENCE-ID`), section 3.2.13 (`RANGE`) and
-//! section 3.6.5 (`VTIMEZONE`); RFC 5546 section 3.7.1 for what a `RECURRENCE-ID` addresses in
-//! a scheduling message. Every instant crossing into or out of this module does so under the
-//! contract [`crate::internal::tz::seam`] states, and this module may not restate or reinterpret it.
+//! Specification: RFC 5545 section 3.8.4.4 (`RECURRENCE-ID`), section 3.2.13 (`RANGE`) and section 3.6.5 (`VTIMEZONE`); RFC 5546 section 3.7.1 for what a `RECURRENCE-ID` addresses in a scheduling message.
+//! Every instant crossing into or out of this module does so under the contract [`crate::internal::tz::seam`] states, and this module may not restate or reinterpret it.
 //!
-//! This is the only place `ical-itip` asks a zone anything. The gate holds no zone by design —
-//! [`crate::internal::itip::evaluate_message`] takes a message, a state and a party, and nothing else — so
-//! everything a zone decides is decided here, before the gate runs, and is carried into it on
-//! the values the caller already passes.
+//! This is the only place `ical-itip` asks a zone anything.
+//! The gate holds no zone by design — [`crate::internal::itip::evaluate_message`] takes a message, a state and a party, and nothing else — so everything a zone decides is decided here, before the gate runs, and is carried into it on the values the caller already passes.
 //!
 //! # Which half of a repeated hour, which closes agenda item 1
 //!
-//! The two halves of an hour a zone falls back through are **one cadence key** on the nominal
-//! timeline, so `20261101T053000Z` and `20261101T063000Z` in `America/New_York` are two
-//! meetings and one key. [`FoldSide`] is which of them an identity means, and
-//! [`resolve_instance`] is what derives one from the zone the series actually runs on.
+//! The two halves of an hour a zone falls back through are **one cadence key** on the nominal timeline, so `20261101T053000Z` and `20261101T063000Z` in `America/New_York` are two meetings and one key.
+//! [`FoldSide`] is which of them an identity means, and [`resolve_instance`] is what derives one from the zone the series actually runs on.
 //!
-//! What it can and cannot recover is worth stating plainly, because the limit is the file's and
-//! not this code's. A `RECURRENCE-ID` written with a trailing `Z` names a real instant, so it
-//! picks its own half and resolves to [`FoldSide::Earlier`] or [`FoldSide::Later`]. One written
-//! as a wall clock — with a `TZID` or with nothing — names *both* halves, so nothing here can
-//! pick between them and the answer stays [`FoldSide::Unresolved`]. That is reported as
-//! `scheduling-instance-ambiguous` and it stays a denial: [`crate::internal::itip::InstanceRef::compare`]
-//! answers [`crate::internal::itip::InstanceMatch::Ambiguous`], [`crate::internal::itip::evaluate_message`] refuses it as
-//! [`crate::internal::itip::AuthorizationDenied::AmbiguousInstance`], and a guess between the two halves
-//! cancels somebody else's meeting.
+//! What it can and cannot recover is worth stating plainly, because the limit is the file's and not this code's.
+//! A `RECURRENCE-ID` written with a trailing `Z` names a real instant, so it picks its own half and resolves to [`FoldSide::Earlier`] or [`FoldSide::Later`].
+//! One written as a wall clock — with a `TZID` or with nothing — names *both* halves, so nothing here can pick between them and the answer stays [`FoldSide::Unresolved`].
+//! That is reported as `scheduling-instance-ambiguous` and it stays a denial: [`crate::internal::itip::InstanceRef::compare`] answers [`crate::internal::itip::InstanceMatch::Ambiguous`], [`crate::internal::itip::evaluate_message`] refuses it as [`crate::internal::itip::AuthorizationDenied::AmbiguousInstance`], and a guess between the two halves cancels somebody else's meeting.
 //!
 //! # The hour that happened to nobody, which is the caller's reading and not this crate's
 //!
-//! The other side of a fold is a gap, and it is a different question with a different owner. A
-//! wall clock a zone sprang over names *no* instant until a reading says otherwise, and which
-//! reading applies is [`crate::internal::tz::GapPolicy`] — the same policy the caller's own expansion is
-//! gated by, so an identity resolved under any other rule would name a meeting the caller's
-//! series does not deliver. [`resolve_instance`] therefore asks the series, and the two
-//! permitted readings answer differently: under [`crate::internal::tz::GapPolicy::ShiftForward`] the
-//! identity is [`FoldSide::Once`] at the instant section 3.3.5 reads it as, and under
-//! [`crate::internal::tz::GapPolicy::Skip`] it is [`FoldSide::Nowhere`] and
-//! `scheduling-instance-nonexistent` travels.
+//! The other side of a fold is a gap, and it is a different question with a different owner.
+//! A wall clock a zone sprang over names *no* instant until a reading says otherwise, and which reading applies is [`crate::internal::tz::GapPolicy`] — the same policy the caller's own expansion is gated by, so an identity resolved under any other rule would name a meeting the caller's series does not deliver.
+//! [`resolve_instance`] therefore asks the series, and the two permitted readings answer differently: under [`crate::internal::tz::GapPolicy::ShiftForward`] the identity is [`FoldSide::Once`] at the instant section 3.3.5 reads it as, and under [`crate::internal::tz::GapPolicy::Skip`] it is [`FoldSide::Nowhere`] and `scheduling-instance-nonexistent` travels.
 //!
-//! [`FoldSide::Nowhere`] is not [`FoldSide::Unresolved`], and the difference is what a caller
-//! is told: an identity nothing could tell from its neighbor is *ambiguous*, and one that names
-//! no instant is *different from everything* — so the gate refuses it as
-//! [`crate::internal::itip::AuthorizationDenied::NoMatchingInstance`], which is what naming an instance the
-//! state does not have actually is. A gap has no neighbor and must never be reported as though
-//! it had one.
+//! [`FoldSide::Nowhere`] is not [`FoldSide::Unresolved`], and the difference is what a caller is told: an identity nothing could tell from its neighbor is *ambiguous*, and one that names no instant is *different from everything* — so the gate refuses it as [`crate::internal::itip::AuthorizationDenied::NoMatchingInstance`], which is what naming an instance the state does not have actually is.
+//! A gap has no neighbor and must never be reported as though it had one.
 //!
 //! # A continuation is made visible and is not decided, which closes agenda item 4
 //!
-//! A source asked past either end of its transition table continues the observance at that end
-//! and says so through [`AnswerBasis`]. When such an answer decided *identity* rather than
-//! merely rendered a time, `scheduling-zone-continued` travels and
-//! [`ResolvedInstance::nearest_known`] carries the edge of the source's knowledge, so a
-//! scheduler deciding whether to send can see whether the continuation reached one day or six
-//! years. Which of those is acceptable is the caller's policy and is not encoded here: this
-//! unit's job is to make the distance visible, not to take the decision.
+//! A source asked past either end of its transition table continues the observance at that end and says so through [`AnswerBasis`].
+//! When such an answer decided *identity* rather than merely rendered a time, `scheduling-zone-continued` travels and [`ResolvedInstance::nearest_known`] carries the edge of the source's knowledge, so a scheduler deciding whether to send can see whether the continuation reached one day or six years.
+//! Which of those is acceptable is the caller's policy and is not encoded here: this unit's job is to make the distance visible, not to take the decision.
 //!
 //! # An exclusion no zone could place, which closes agenda item 3
 //!
-//! A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes names a real instant
-//! that nothing can put on the series' own wall clock; `ical-tz` keeps it in
-//! [`crate::internal::tz::ResolvedExclusions::unplaced`] rather than dropping it. Which instances such a
-//! series has is then not decidable, so an instance-addressed `CANCEL` or `COUNTER` against it
-//! is a **refusal and not a guess**: ignoring the exclusion reinstates a meeting the user
-//! cancelled, and guessing cancels a different one.
+//! A `Z`-terminated `EXDATE` on a series whose `TZID` no source recognizes names a real instant that nothing can put on the series' own wall clock; `ical-tz` keeps it in [`crate::internal::tz::ResolvedExclusions::unplaced`] rather than dropping it.
+//! Which instances such a series has is then not decidable, so an instance-addressed `CANCEL` or `COUNTER` against it is a **refusal and not a guess**: ignoring the exclusion reinstates a meeting the user cancelled, and guessing cancels a different one.
 //!
-//! [`exclusions_are_placeable`] is that precondition and
-//! [`check_exclusions_are_placeable`] is it with the report attached. It is wired **before**
-//! [`crate::internal::itip::evaluate_message`] and not inside it, because the gate is handed no zone and no
-//! exclusion list and inventing a parameter for one would put a zone inside the authorization
-//! decision:
+//! [`exclusions_are_placeable`] is that precondition and [`check_exclusions_are_placeable`] is it with the report attached.
+//! It is wired **before** [`crate::internal::itip::evaluate_message`] and not inside it, because the gate is handed no zone and no exclusion list and inventing a parameter for one would put a zone inside the authorization decision:
 //!
 //! ```text
 //! let exclusions = ResolvedExclusions::read(&series, kind, &exdates, &mut meter, &mut sink);
@@ -85,28 +53,19 @@
 //!
 //! # What is emitted here, and what is deliberately not
 //!
-//! Four codes and no others: `scheduling-instance-ambiguous`,
-//! `scheduling-instance-nonexistent`, `scheduling-zone-continued` and
-//! `scheduling-exclusion-unplaced`. `ambiguous-local-time`, `nonexistent-local-time`,
-//! `time-zone-coverage-exhausted` and `exdate-zone-unknown` are `ical-tz`'s own, emitted where
-//! that crate resolves an occurrence or reads an exclusion list, and reporting one of them a
-//! second time here would make one defect look like two.
+//! Instance identity reports `scheduling-instance-ambiguous`, `scheduling-instance-nonexistent`, `scheduling-zone-continued`, and `scheduling-exclusion-unplaced`.
+//! An unasserted coverage claim reports `time-zone-coverage-unasserted` without implying a continuation.
+//! `ambiguous-local-time`, `nonexistent-local-time`, `time-zone-coverage-exhausted` and `exdate-zone-unknown` are `ical-tz`'s own, emitted where that crate resolves an occurrence or reads an exclusion list, and reporting one of them a second time here would make one defect look like two.
 //!
-//! `scheduling-instance-nonexistent` is not a rename of `nonexistent-local-time` for the same
-//! reason `scheduling-zone-continued` is not one of `time-zone-coverage-exhausted`: that code
-//! says a time could not be rendered, and this one says an *identity* named nothing, so a
-//! message addressed to it is about no meeting the caller has.
+//! `scheduling-instance-nonexistent` is not a rename of `nonexistent-local-time` for the same reason `scheduling-zone-continued` is not one of `time-zone-coverage-exhausted`: that code says a time could not be rendered, and this one says an *identity* named nothing, so a message addressed to it is about no meeting the caller has.
 //!
-//! `scheduling-zone-continued` in particular is not a rename of
-//! `time-zone-coverage-exhausted`. That code says a rendered time rested on a continuation;
-//! this one says an *identity* did — which meeting a message is about — and the two are read by
-//! different people for different decisions.
+//! `scheduling-zone-continued` in particular is not a rename of `time-zone-coverage-exhausted`.
+//! That code says a rendered time rested on a continuation;
+//! this one says an *identity* did — which meeting a message is about — and the two are read by different people for different decisions.
 //!
-//! A local time the zone never showed used to be reported by neither, on the reading that "the
-//! refusal is the report". It was not: the refusal that followed was `AmbiguousInstance`, which
-//! claims two meetings could not be told apart about an hour in which the zone showed none, and
-//! it was the same refusal under both readings of the gap. The identity now says which reading
-//! placed it and the code above says when nothing did.
+//! A local time the zone never showed used to be reported by neither, on the reading that "the refusal is the report".
+//! It was not: the refusal that followed was `AmbiguousInstance`, which claims two meetings could not be told apart about an hour in which the zone showed none, and it was the same refusal under both readings of the gap.
+//! The identity now says which reading placed it and the code above says when nothing did.
 
 use crate::internal::core::{
     CivilDate, Diagnostic, DiagnosticCode, DiagnosticSink, Instant, Meter, Severity,
@@ -118,13 +77,7 @@ use crate::internal::itip::identity::{FoldSide, InstanceClock, InstanceRef};
 
 /// What a zone said about one instance identity, and how much of the zone stood behind it.
 ///
-/// [`resolve_instance`]'s answer. It is an [`InstanceRef`] carrying the side that was resolved,
-/// plus the one fact an `InstanceRef` has nowhere to keep: which end of a source's transition
-/// table the answer came from. The brief for this unit spelled the return type as a bare
-/// `InstanceRef`; that type is frozen and holds no [`AnswerBasis`], so carrying the basis in a
-/// wrapper is how [`ResolvedInstance::nearest_known`] exists at all. The
-/// `From<ResolvedInstance>` implementation and [`ResolvedInstance::reference`] hand back exactly
-/// the value the brief named, so nothing above has to know this type to use one.
+/// [`resolve_instance`]'s answer keeps the resolved reference and the source's coverage claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResolvedInstance {
     /// The reference, carrying whatever side the zone resolved.
@@ -148,8 +101,7 @@ impl ResolvedInstance {
 
     /// Whether a zone told this identity from its neighbor.
     ///
-    /// `false` means the comparison below it answers [`crate::internal::itip::InstanceMatch::Ambiguous`] and
-    /// the gate refuses, which is the conservative direction and the intended one.
+    /// `false` means the comparison below it answers [`crate::internal::itip::InstanceMatch::Ambiguous`] and the gate refuses, which is the conservative direction and the intended one.
     #[must_use]
     pub const fn is_resolved(self) -> bool {
         self.reference.side().is_resolved()
@@ -157,9 +109,7 @@ impl ResolvedInstance {
 
     /// How much of the source's data stood behind the answer, absent when nothing answered.
     ///
-    /// `None` means the source did not recognize this series' identifier at all — the one
-    /// condition [`crate::internal::tz::ZoneSource::resolve`] reserves its own `None` for — and never that
-    /// the zone had no data for the question, which is [`AnswerBasis`]' own business.
+    /// `None` means the source did not recognize this series' identifier at all — the one condition [`crate::internal::tz::ZoneSource::resolve`] reserves its own `None` for — and never that the zone had no data for the question, which is [`AnswerBasis`]' own business.
     #[must_use]
     pub const fn basis(self) -> Option<AnswerBasis> {
         self.basis
@@ -169,17 +119,14 @@ impl ResolvedInstance {
     #[must_use]
     pub const fn is_continued(self) -> bool {
         match self.basis {
-            Some(basis) => !basis.is_computed(),
+            Some(basis) => {
+                basis.is_before_known_transitions() || basis.is_beyond_known_transitions()
+            },
             None => false,
         }
     }
 
-    /// The nearest date the source has real data for, absent when it had data for the question.
-    ///
-    /// Agenda item 4's whole point. A source that continued one day and one that continued six
-    /// years are the same variant of [`AnswerBasis`], and this date is what tells them apart —
-    /// so a scheduler deciding whether to send can weigh the distance itself rather than have
-    /// this crate weigh it for every caller at once.
+    /// The nearest stated boundary date, absent when no boundary is known.
     #[must_use]
     pub const fn nearest_known(self) -> Option<CivilDate> {
         match self.basis {
@@ -190,8 +137,7 @@ impl ResolvedInstance {
 }
 
 impl From<ResolvedInstance> for InstanceRef {
-    /// The reference alone, for a caller that wants the value the identity vocabulary is
-    /// written in and has already read whatever it needed from the basis.
+    /// The reference alone, for a caller that wants the value the identity vocabulary is written in and has already read whatever it needed from the basis.
     fn from(resolved: ResolvedInstance) -> Self {
         resolved.reference
     }
@@ -199,22 +145,16 @@ impl From<ResolvedInstance> for InstanceRef {
 
 /// Resolve `reference`'s wall clock through `series`' zone and attach the side it names.
 ///
-/// The three shapes a `RECURRENCE-ID` takes are three different questions, and only one of them
-/// has an answer that can pick a side:
+/// The three shapes a `RECURRENCE-ID` takes are three different questions, and only one of them has an answer that can pick a side:
 ///
-/// - Written with a trailing `Z`, it names a real instant. That instant is projected onto the
-///   series' own timeline, the wall clock there is resolved, and the instant is compared
-///   against the two readings of a fold — so it picks its own half.
-/// - Written with a `TZID`, it is already a wall clock on that timeline (`crate::internal::tz::seam`), so
-///   it is resolved as written and names *both* halves of a fold, which is
-///   [`FoldSide::Unresolved`] and a reported ambiguity.
-/// - Written with neither, it is a wall clock with no zone of its own. It is read on the
-///   series' clock, which is the reading a client that ignores zones performs and is at least a
-///   reading; it can no more pick a half than a zoned one can.
+/// - Written with a trailing `Z`, it names a real instant.
+///   That instant is projected onto the series' own timeline, the wall clock there is resolved, and the instant is compared against the two readings of a fold — so it picks its own half.
+/// - Written with a `TZID`, it is already a wall clock on that timeline (`crate::internal::tz::seam`), so it is resolved as written and names *both* halves of a fold, which is [`FoldSide::Unresolved`] and a reported ambiguity.
+/// - Written with neither, it is a wall clock with no zone of its own.
+///   It is read on the series' clock, which is the reading a client that ignores zones performs and is at least a reading; it can no more pick a half than a zoned one can.
 ///
-/// A source that does not recognize this series' identifier answers nothing, and nothing is
-/// reported: no zone said this wall clock repeats, so there is no ambiguity to claim. The side
-/// stays [`FoldSide::Unresolved`], which is what a caller with no zone would have had anyway.
+/// A source that does not recognize this series' identifier answers nothing, and nothing is reported: no zone said this wall clock repeats, so there is no ambiguity to claim.
+/// The side stays [`FoldSide::Unresolved`], which is what a caller with no zone would have had anyway.
 #[must_use]
 pub fn resolve_instance<S, D>(
     series: &ZonedSeries<'_, S>,
@@ -233,9 +173,7 @@ where
         };
     };
     let side = side_of(series, answer, reference);
-    // The ambiguity first and the continuation second, for the reason `crate::internal::tz::series` orders
-    // its two the same way: the fact about this identity's own wall clock is the one a reader
-    // is looking for, and the fact about the table behind it is the qualification.
+    // The ambiguity first and the continuation second, for the reason `crate::internal::tz::series` orders its two the same way: the fact about this identity's own wall clock is the one a reader is looking for, and the fact about the table behind it is the qualification.
     if answer.resolution.is_ambiguous() && !side.is_resolved() {
         report_at(
             DiagnosticCode::SchedulingInstanceAmbiguous,
@@ -252,13 +190,15 @@ where
             sink,
         );
     }
-    if !answer.basis.is_computed() {
-        report_at(
-            DiagnosticCode::SchedulingZoneContinued,
-            reference.named(),
-            meter,
-            sink,
-        );
+    let coverage_code = match answer.basis {
+        AnswerBasis::Computed => None,
+        AnswerBasis::CoverageUnasserted => Some(DiagnosticCode::TimeZoneCoverageUnasserted),
+        AnswerBasis::BeforeKnownTransitions(_) | AnswerBasis::BeyondKnownTransitions(_) => {
+            Some(DiagnosticCode::SchedulingZoneContinued)
+        },
+    };
+    if let Some(code) = coverage_code {
+        report_at(code, reference.named(), meter, sink);
     }
     ResolvedInstance {
         reference: reference.with_side(side),
@@ -268,12 +208,10 @@ where
 
 /// Whether every exclusion on this series could be placed on its timeline.
 ///
-/// The precondition an instance-addressed message is judged behind. `false` means the series
-/// carries an exclusion no zone could place, so which instances it has is not decidable and a
-/// `CANCEL` or `COUNTER` naming one of them must be refused rather than guessed at.
+/// The precondition an instance-addressed message is judged behind.
+/// `false` means the series carries an exclusion no zone could place, so which instances it has is not decidable and a `CANCEL` or `COUNTER` naming one of them must be refused rather than guessed at.
 ///
-/// Pure, so a caller that has already reported the condition can ask again without reporting it
-/// twice; [`check_exclusions_are_placeable`] is the same question with the report attached.
+/// Pure, so a caller that has already reported the condition can ask again without reporting it twice; [`check_exclusions_are_placeable`] is the same question with the report attached.
 #[must_use]
 pub fn exclusions_are_placeable(exclusions: &ResolvedExclusions) -> bool {
     exclusions.unplaced().is_empty()
@@ -281,12 +219,11 @@ pub fn exclusions_are_placeable(exclusions: &ResolvedExclusions) -> bool {
 
 /// Answer [`exclusions_are_placeable`], reporting each exclusion that could not be placed.
 ///
-/// One `scheduling-exclusion-unplaced` per unplaced instant, at that instant. The count is
-/// bounded by whoever read the `EXDATE` list against `Limits::exdate_entries`, which is where
-/// ADR-0010 charges it; charging it again here would bill one calendar twice.
+/// One `scheduling-exclusion-unplaced` per unplaced instant, at that instant.
+/// The count is bounded by whoever read the `EXDATE` list against `Limits::exdate_entries`, which is where ADR-0010 charges it; charging it again here would bill one calendar twice.
 ///
-/// The answer must be read. Ignoring it is exactly the failure this function exists to prevent
-/// — the message gets judged against a series whose instances nobody could enumerate.
+/// The answer must be read.
+/// Ignoring it is exactly the failure this function exists to prevent — the message gets judged against a series whose instances nobody could enumerate.
 #[must_use]
 pub fn check_exclusions_are_placeable<D>(
     exclusions: &ResolvedExclusions,
@@ -309,19 +246,12 @@ where
 
 /// Which side of `answer` the identity `reference` names, under `series`' own reading.
 ///
-/// A fold and a gap are the two halves of this question and only one of them is settled by the
-/// octets. A repeated wall clock names two instants and nothing but a `Z` in the file picks
-/// between them, so a caller's [`crate::internal::tz::FoldPolicy`] is deliberately **not** read here: that
-/// policy exists to render a time and picking a half of a fold to decide *identity* cancels
-/// somebody else's meeting.
+/// A fold and a gap are the two halves of this question and only one of them is settled by the octets.
+/// A repeated wall clock names two instants and nothing but a `Z` in the file picks between them, so a caller's [`crate::internal::tz::FoldPolicy`] is deliberately **not** read here: that policy exists to render a time and picking a half of a fold to decide *identity* cancels somebody else's meeting.
 ///
-/// A gap is the opposite. It names no instant at all until a reading says otherwise, and which
-/// reading is the caller's [`crate::internal::tz::GapPolicy`] — RFC 5545 permits the gated and the ungated
-/// reading both, `crate::internal::tz::ZonedSeries::admits` applies it to decide whether the series even
-/// has that occurrence, and an identity resolved by any other rule than the one the series was
-/// built with would be a different meeting from the one the caller's own expansion delivers. So
-/// the policy is asked, through the same door the expansion asks it through, and the answer is
-/// [`FoldSide::Once`] where it places the clock and [`FoldSide::Nowhere`] where it does not.
+/// A gap is the opposite.
+/// It names no instant at all until a reading says otherwise, and which reading is the caller's [`crate::internal::tz::GapPolicy`] — RFC 5545 permits the gated and the ungated reading both, `crate::internal::tz::ZonedSeries::admits` applies it to decide whether the series even has that occurrence, and an identity resolved by any other rule than the one the series was built with would be a different meeting from the one the caller's own expansion delivers.
+/// So the policy is asked, through the same door the expansion asks it through, and the answer is [`FoldSide::Once`] where it places the clock and [`FoldSide::Nowhere`] where it does not.
 fn side_of<S>(series: &ZonedSeries<'_, S>, answer: ZoneAnswer, reference: InstanceRef) -> FoldSide
 where
     S: ZoneSource + ?Sized,
@@ -338,8 +268,7 @@ where
 
 /// The cadence key `reference` stands for on `series`' own timeline.
 ///
-/// The same projection [`ask_zone`] performs, kept beside it so the policy is applied to the
-/// key the zone was asked about rather than to a second reading of the same value.
+/// The same projection [`ask_zone`] performs, kept beside it so the policy is applied to the key the zone was asked about rather than to a second reading of the same value.
 fn clock_key<S>(series: &ZonedSeries<'_, S>, reference: InstanceRef) -> Instant
 where
     S: ZoneSource + ?Sized,
@@ -355,9 +284,7 @@ where
 /// What `series`' zone says about the wall clock `reference` stands for.
 ///
 /// The two directions of `crate::internal::tz::seam`, and the whole of this module's dependence on a zone.
-/// A `Z`-terminated value names a real instant and has to be projected onto the series'
-/// timeline before the zone can be asked about the clock it shows there; every other value is
-/// already on that timeline and is asked about as written.
+/// A `Z`-terminated value names a real instant and has to be projected onto the series' timeline before the zone can be asked about the clock it shows there; every other value is already on that timeline and is asked about as written.
 fn ask_zone<S>(series: &ZonedSeries<'_, S>, reference: InstanceRef) -> Option<ZoneAnswer>
 where
     S: ZoneSource + ?Sized,
@@ -370,9 +297,8 @@ where
 
 /// The real instant `reference` names, present only when the value named one.
 ///
-/// What [`FoldSide::from_resolution`] compares against the two readings of a fold. A wall clock
-/// names both of them and therefore names neither, so it is `None` here rather than an
-/// arithmetic coincidence that would pick a half nobody wrote.
+/// What [`FoldSide::from_resolution`] compares against the two readings of a fold.
+/// A wall clock names both of them and therefore names neither, so it is `None` here rather than an arithmetic coincidence that would pick a half nobody wrote.
 const fn real_instant(reference: InstanceRef) -> Option<Instant> {
     match reference.clock() {
         InstanceClock::Utc => Some(reference.named()),
@@ -392,19 +318,11 @@ where
     );
 }
 
-/// The channel a code emitted here travels on, as `docs/diagnostic-codes.md` fixes it.
-///
-/// A continued zone answer is a `Note` for the reason `time-zone-coverage-exhausted` is one:
-/// the file is legal and continuing is the defensible answer. The other two are `Violation`,
-/// because an identity nothing could resolve and a series nobody could enumerate are both
-/// states in which a message must not be applied.
-///
-/// The last arm is required rather than chosen, since [`DiagnosticCode`] is
-/// `#[non_exhaustive]`, and it lands on `Violation` because under-stating a claim is the
-/// failure that hides.
 fn channel_for(code: DiagnosticCode) -> Severity {
     match code {
-        DiagnosticCode::SchedulingZoneContinued => Severity::Note,
+        DiagnosticCode::SchedulingZoneContinued | DiagnosticCode::TimeZoneCoverageUnasserted => {
+            Severity::Note
+        },
         _ => Severity::Violation,
     }
 }
@@ -433,8 +351,7 @@ mod tests {
 
     /// One transition of a real zone: when the clock moved, and what it moved between.
     ///
-    /// Every value below is transcribed from the rules the zone actually ran, never read off
-    /// this crate's answers.
+    /// Every value below is transcribed from the rules the zone actually ran, never read off this crate's answers.
     #[derive(Clone, Copy, Debug)]
     struct Shift {
         /// The instant the offset changed.
@@ -449,9 +366,7 @@ mod tests {
 
     /// A zone source built from published transitions, standing in for a read `VTIMEZONE`.
     ///
-    /// Written here rather than reached for from the unit that owns the real source, for the
-    /// reason every other test module in this workspace gives: what is under test is this
-    /// unit, and a test leaning on another unit's file would be testing that unit too.
+    /// Written here rather than reached for from the unit that owns the real source, for the reason every other test module in this workspace gives: what is under test is this unit, and a test leaning on another unit's file would be testing that unit too.
     #[derive(Clone, Debug)]
     struct TestZone {
         /// The identifier this source answers to, compared by exact bytes.
@@ -620,11 +535,9 @@ mod tests {
         }
     }
 
-    /// `America/New_York` in 2026: forward at 07:00Z on March 8th, back at 06:00Z on November
-    /// 1st, between EST at -05:00 and EDT at -04:00.
+    /// `America/New_York` in 2026: forward at 07:00Z on March 8th, back at 06:00Z on November 1st, between EST at -05:00 and EDT at -04:00.
     ///
-    /// So local 01:30 on November 1st happens twice — 05:30Z under EDT and 06:30Z under EST —
-    /// and local 02:30 on March 8th happens never.
+    /// So local 01:30 on November 1st happens twice — 05:30Z under EDT and 06:30Z under EST — and local 02:30 on March 8th happens never.
     fn new_york() -> TestZone {
         TestZone {
             tzid: "America/New_York",
@@ -638,11 +551,9 @@ mod tests {
         }
     }
 
-    /// Berlin's rules written out as explicit dates for 2027 through 2029 and stopping at both
-    /// ends, which is what an `RDATE`-driven `VTIMEZONE` from Exchange is.
+    /// Berlin's rules written out as explicit dates for 2027 through 2029 and stopping at both ends, which is what an `RDATE`-driven `VTIMEZONE` from Exchange is.
     ///
-    /// A question about 2035 continues the final observance and a question about 2020 continues
-    /// the first one backwards; both are answers, and both say what they rest on.
+    /// A question about 2035 continues the final observance and a question about 2020 continues the first one backwards; both are answers, and both say what they rest on.
     fn finite_table() -> TestZone {
         TestZone {
             tzid: "W. Europe Standard Time",
@@ -670,8 +581,7 @@ mod tests {
         reported.iter().map(|entry| entry.code()).collect()
     }
 
-    /// A `RECURRENCE-ID` naming `at`, written in the clock `written` says, addressing that
-    /// instance alone.
+    /// A `RECURRENCE-ID` naming `at`, written in the clock `written` says, addressing that instance alone.
     fn reference(at: Instant, written: InstanceClock) -> InstanceRef {
         InstanceRef::new(at, written, OverrideRange::ThisOnly)
     }
@@ -688,12 +598,10 @@ mod tests {
         resolve_instance(&series, named, &mut meter, reported)
     }
 
-    /// What a caller must do with a message, in the gate's own order: identity first, revision
-    /// second (RFC 5546 sections 2.1.4 and 2.1.5).
+    /// What a caller must do with a message, in the gate's own order: identity first, revision second (RFC 5546 sections 2.1.4 and 2.1.5).
     ///
-    /// Not the gate itself, which is `authorize.rs`'s and holds no zone. This is the shape of
-    /// the composition this unit exists to feed, written out so the table below can state an
-    /// outcome a user could be shown.
+    /// Not the gate itself, which is `authorize.rs`'s and holds no zone.
+    /// This is the shape of the composition this unit exists to feed, written out so the table below can state an outcome a user could be shown.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Verdict {
         /// The caller may act on the message.
@@ -730,12 +638,10 @@ mod tests {
         Verdict::DtstampStale
     }
 
-    /// Agenda item 1, from both directions. A `Z`-terminated `RECURRENCE-ID` names a real
-    /// instant and picks its half of the repeated hour; a wall clock names both halves, picks
-    /// neither, and says so rather than guessing.
+    /// Agenda item 1, from both directions.
+    /// A `Z`-terminated `RECURRENCE-ID` names a real instant and picks its half of the repeated hour; a wall clock names both halves, picks neither, and says so rather than guessing.
     ///
-    /// Every instant here is New York's published 2026 rule, not this crate's answer: EDT is
-    /// four hours west, EST five, so local 01:30 on November 1st is 05:30Z and then 06:30Z.
+    /// Every instant here is New York's published 2026 rule, not this crate's answer: EDT is four hours west, EST five, so local 01:30 on November 1st is 05:30Z and then 06:30Z.
     #[test]
     fn a_z_terminated_recurrence_id_picks_its_half_of_a_repeated_hour() {
         let zone = new_york();
@@ -793,17 +699,12 @@ mod tests {
         assert_eq!(reported[0].instant(), Some(key(2026, 11, 1, 1, 30)));
     }
 
-    /// An hour the zone sprang over is an instance the caller's own reading either has or does
-    /// not, and which of those it is comes back in the answer rather than being the same
-    /// silence under both.
+    /// An hour the zone sprang over is an instance the caller's own reading either has or does not, and which of those it is comes back in the answer rather than being the same silence under both.
     ///
-    /// Under the default gated reading the series has no such occurrence, so the identity names
-    /// nothing and says so; under `GapPolicy::ShiftForward` the caller's own expansion delivers
-    /// that instance and the identity resolves to it. Both readings are ones RFC 5545 permits,
-    /// which is exactly why the answer may not be the same value with the same empty sink.
+    /// Under the default gated reading the series has no such occurrence, so the identity names nothing and says so; under `GapPolicy::ShiftForward` the caller's own expansion delivers that instance and the identity resolves to it.
+    /// Both readings are ones RFC 5545 permits, which is exactly why the answer may not be the same value with the same empty sink.
     ///
-    /// An identifier nothing recognizes is a third thing and stays unreported: no zone said
-    /// this wall clock repeats or vanishes, so there is nothing here to claim about it.
+    /// An identifier nothing recognizes is a third thing and stays unreported: no zone said this wall clock repeats or vanishes, so there is nothing here to claim about it.
     #[test]
     fn an_hour_the_zone_sprang_over_resolves_by_the_reading_the_caller_stated() {
         let zone = new_york();
@@ -848,13 +749,11 @@ mod tests {
         );
     }
 
-    /// Agenda item 4: a continued answer still answers, says that it was continued, and hands
-    /// over how far the continuation reached — without deciding what to do about it.
+    /// Agenda item 4: a continued answer still answers, says that it was continued, and hands over how far the continuation reached — without deciding what to do about it.
     ///
-    /// The last transition the table holds is 2029-10-28 and the first is 2027-03-28. The two
-    /// continuations below are one day and roughly six years wide, they report the same code,
-    /// and the date is the only thing that tells them apart. That is the decision this unit
-    /// deliberately leaves to a scheduler.
+    /// The last transition the table holds is 2029-10-28 and the first is 2027-03-28.
+    /// The two continuations below are one day and roughly six years wide, they report the same code, and the date is the only thing that tells them apart.
+    /// That is the decision this unit deliberately leaves to a scheduler.
     #[test]
     fn a_continued_zone_answer_is_visible_and_the_distance_stays_the_caller_s() {
         let zone = finite_table();
@@ -915,8 +814,7 @@ mod tests {
         );
     }
 
-    /// Agenda item 3: an exclusion no zone could place makes the series undecidable, and the
-    /// caller is told before it asks the gate anything.
+    /// Agenda item 3: an exclusion no zone could place makes the series undecidable, and the caller is told before it asks the gate anything.
     #[test]
     fn an_exclusion_no_zone_could_place_makes_the_series_undecidable() {
         let zone = new_york();
@@ -966,14 +864,12 @@ mod tests {
         assert_eq!(quiet.as_slice(), []);
     }
 
-    /// The composition this unit feeds, as the table the milestone asks for: prior state,
-    /// incoming message and applying party reduced to what a zone actually decides — which
-    /// instance each side names — and then RFC 5546's own revision rules on top.
+    /// The composition this unit feeds, as the table the milestone asks for: prior state, incoming message and applying party reduced to what a zone actually decides — which instance each side names — and then RFC 5546's own revision rules on top.
     ///
-    /// Every expectation is the RFC's text. Section 2.1.4: an older `SEQUENCE` never overwrites
-    /// a newer state. Section 2.1.5: at an equal `SEQUENCE` the older `DTSTAMP` loses. Section
-    /// 3.7.1 and ADR-0005 amendment 3: an instance nothing could tell from its neighbor is
-    /// refused rather than guessed at, and an instance the state does not have is refused too.
+    /// Every expectation is the RFC's text.
+    /// Section 2.1.4: an older `SEQUENCE` never overwrites a newer state.
+    /// Section 2.1.5: at an equal `SEQUENCE` the older `DTSTAMP` loses.
+    /// Section 3.7.1 and ADR-0005 amendment 3: an instance nothing could tell from its neighbor is refused rather than guessed at, and an instance the state does not have is refused too.
     #[test]
     fn the_gate_reads_identity_before_revision_and_refuses_both_kinds_of_doubt() {
         let zone = new_york();
@@ -1030,8 +926,8 @@ mod tests {
             );
         }
 
-        // Both sides written as wall clocks is the case a zone cannot rescue: one key, two
-        // meetings, and nothing in either file says which. It stays a refusal.
+        // Both sides written as wall clocks is the case a zone cannot rescue: one key, two meetings, and nothing in either file says which.
+        // It stays a refusal.
         assert_eq!(
             verdict(wall_clock_only, wall_clock_only, newer, current),
             Verdict::AmbiguousInstance
@@ -1043,8 +939,7 @@ mod tests {
         );
     }
 
-    /// An absent `SEQUENCE` is zero and not "unknown", so a message carrying none is judged
-    /// against what the caller holds rather than waved through.
+    /// An absent `SEQUENCE` is zero and not "unknown", so a message carrying none is judged against what the caller holds rather than waved through.
     #[test]
     fn an_absent_sequence_is_zero_at_a_resolved_instance() {
         let zone = new_york();

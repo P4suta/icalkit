@@ -4,48 +4,35 @@
 
 //! The client direction: every request body of [`crate::internal::dav::request`], as octets.
 //!
-//! Nothing here is a client type. These are [`crate::internal::dav::WriteXml`] implementations on the values
-//! `read_request.rs` reads back, which is DP-15's structural test made mechanical: a field
-//! meaningful in only one direction would have to appear on one side of this seam and not the
-//! other, and there is no such field. A client encodes a `calendar-query` and a server decodes
-//! it; a server encodes the multistatus that answers it and a client decodes that. The
-//! direction shows up in which trait is called and in the `Limits` the caller passes.
+//! Nothing here is a client type.
+//! These are [`crate::internal::dav::WriteXml`] implementations on the values `read_request.rs` reads back, which is DP-15's structural test made mechanical: a field meaningful in only one direction would have to appear on one side of this seam and not the other, and there is no such field.
+//! A client encodes a `calendar-query` and a server decodes it; a server encodes the multistatus that answers it and a client decodes that.
+//! The direction shows up in which trait is called and in the `Limits` the caller passes.
 //!
 //! # What a body looks like
 //!
 //! Compact: the XML declaration, then elements with no insignificant whitespace between them.
-//! Servers do not read indentation and a client that sends it pays for it on every request; a
-//! deterministic byte string is also what makes the wire column of a test table an assertion
-//! rather than an approximation.
+//! Servers do not read indentation and a client that sends it pays for it on every request; a deterministic byte string is also what makes the wire column of a test table an assertion rather than an approximation.
 //!
-//! The prefixes are this crate's own fixed `D:`, `C:` and `CS:`, all declared on every root
-//! element by the shared stack-balanced writer. That
-//! they are an output choice and never an input assumption is `element.rs`'s subject: a peer
-//! writing `d:`, or a default declaration, or a different prefix per element, is read
-//! correctly by this crate's own reader. A fixed preamble makes request and response output
-//! canonical and keeps namespace selection out of the individual body encoders.
+//! The prefixes are this crate's own fixed `D:`, `C:` and `CS:`, all declared on every root element by the shared stack-balanced writer.
+//! That they are an output choice and never an input assumption is `element.rs`'s subject: a peer writing `d:`, or a default declaration, or a different prefix per element, is read correctly by this crate's own reader.
+//! A fixed preamble makes request and response output canonical and keeps namespace selection out of the individual body encoders.
 //!
 //! A property outside the closed vocabulary is written under the writer's scoped `X:` prefix,
-//! declared on that element alone. Two adjacent extension properties may therefore use
-//! unrelated namespaces without changing any fixed binding.
+//! declared on that element alone.
+//! Two adjacent extension properties may therefore use unrelated namespaces without changing any fixed binding.
 //!
 //! # What this unit owns that nothing else does
 //!
 //! The `YYYYMMDDTHHMMSSZ` an RFC 4791 section 9.9 `time-range` attribute carries.
-//! [`crate::internal::core::Instant`] is a bare timeline point with no civil spelling of its own, so
-//! [`write_utc_date_time`] asks `ical-core` for the arithmetic and reports an instant that has
-//! no such spelling as [`ValueError::TimeUnrepresentable`]. It never clamps to one that does:
-//! a `time-range` silently moved to a year that fits is a query returning the wrong events and
-//! saying nothing about it.
+//! [`crate::internal::core::Instant`] is a bare timeline point with no civil spelling of its own, so [`write_utc_date_time`] asks `ical-core` for the arithmetic and reports an instant that has no such spelling as [`ValueError::TimeUnrepresentable`].
+//! It never clamps to one that does:
+//! a `time-range` silently moved to a year that fits is a query returning the wrong events and saying nothing about it.
 //!
 //! # What is charged
 //!
-//! One element for every element opened, and the octets of every variable-length payload — a
-//! component name, an `href`, a `text-match` value, a sync token — against the shared ledger.
-//! Nesting is bounded against `Limits::max_xml_depth` by the encoder itself rather than by the
-//! value: [`CompFilter::push_comp`] refuses a tree past that bound at construction and
-//! [`CompSelection::push_comp`] takes no bounds at all, so this recursion is the only thing
-//! between a caller's own deeply nested selection and a blown stack.
+//! One element for every element opened, and the octets of every variable-length payload — a component name, an `href`, a `text-match` value, a sync token — against the shared ledger.
+//! Nesting is bounded against `Limits::max_xml_depth` by the encoder itself rather than by the value: [`CompFilter::push_comp`] refuses a tree past that bound at construction and [`CompSelection::push_comp`] takes no bounds at all, so this recursion is the only thing between a caller's own deeply nested selection and a blown stack.
 
 use crate::internal::core::{
     CivilDateTime, DateTimeValue, EncodeValue, Instant, Limits, Meter, UtcOffset, ValueBuf,
@@ -65,11 +52,9 @@ use crate::internal::dav::writer::XmlWriter;
 
 /// Write the `YYYYMMDDTHHMMSSZ` an RFC 4791 section 9.9 `time-range` attribute carries.
 ///
-/// The one civil rendering this crate performs. An [`Instant`] is a point on the timeline with
-/// no spelling of its own, and the years RFC 5545 section 3.3.4 can write are four digits, so
-/// an instant outside them is refused as [`ValueError::TimeUnrepresentable`] rather than moved
-/// to one that fits. Nothing is written on that path: the octets are rendered before the sink
-/// is touched, so a refusal leaves the caller's buffer as it was.
+/// The one civil rendering this crate performs.
+/// An [`Instant`] is a point on the timeline with no spelling of its own, and the years RFC 5545 section 3.3.4 can write are four digits, so an instant outside them is refused as [`ValueError::TimeUnrepresentable`] rather than moved to one that fits.
+/// Nothing is written on that path: the octets are rendered before the sink is touched, so a refusal leaves the caller's buffer as it was.
 pub fn write_utc_date_time(out: &mut dyn ByteSink, at: Instant) -> Result<(), DavError> {
     let rendered = utc_date_time_bytes(at)?;
     out.write(rendered.as_bytes())?;
@@ -78,8 +63,7 @@ pub fn write_utc_date_time(out: &mut dyn ByteSink, at: Instant) -> Result<(), Da
 
 /// The `YYYYMMDDTHHMMSSZ` octets of an instant, or the refusal that it has none.
 fn utc_date_time_bytes(at: Instant) -> Result<ValueBuf, DavError> {
-    // UTC rather than a caller-chosen offset: section 9.9 admits only the `Z` form, and an
-    // offset would be a second way to write one instant that a server would normalize back.
+    // UTC rather than a caller-chosen offset: section 9.9 admits only the `Z` form, and an offset would be a second way to write one instant that a server would normalize back.
     let stamp =
         CivilDateTime::from_instant(at, UtcOffset::UTC).ok_or(ValueError::TimeUnrepresentable)?;
     let mut rendered = ValueBuf::new();
@@ -112,9 +96,7 @@ fn selects_inside(selection: &CompSelection) -> bool {
 
 /// The octets an encoder writes into, and the bounds it writes under.
 ///
-/// Two lifetimes rather than one because the sink and the ledger belong to the caller
-/// separately: draining many bodies into one buffer under one meter, which is the aggregate
-/// shape `docs/adr/0010` exists for, does not make them agree.
+/// Two lifetimes rather than one because the sink and the ledger belong to the caller separately: draining many bodies into one buffer under one meter, which is the aggregate shape `docs/adr/0010` exists for, does not make them agree.
 struct Encoder<'out, 'ledger> {
     /// The one stack-balanced writer used by every DAV body encoder.
     writer: XmlWriter<'out>,
@@ -163,8 +145,7 @@ impl Encoder<'_, '_> {
 
     /// Write one attribute of the start tag that is open.
     ///
-    /// The value goes through the shared writer's escaping, which preserves what XML 1.0
-    /// section 3.3.3's attribute-value normalization would otherwise replace with a space.
+    /// The value goes through the shared writer's escaping, which preserves what XML 1.0 section 3.3.3's attribute-value normalization would otherwise replace with a space.
     fn attribute(&mut self, name: &[u8], value: &[u8]) -> Result<(), DavError> {
         self.writer.attribute(name, value, self.meter)
     }
@@ -187,12 +168,10 @@ impl Encoder<'_, '_> {
 
     /// An element whose content is a decimal count.
     ///
-    /// A fixed buffer rather than an allocation: ten digits hold every `u32`, and an encoder
-    /// that allocated to write a number would allocate on the path a caller chose a
-    /// [`crate::internal::dav::SliceSink`] to avoid.
+    /// A fixed buffer rather than an allocation: ten digits hold every `u32`, and an encoder that allocated to write a number would allocate on the path a caller chose a [`crate::internal::dav::SliceSink`] to avoid.
     ///
-    /// Compiled with the feature that needs it. `DAV:nresults` is the only count any request
-    /// body of this crate carries, and an uncalled helper is a warning under `-D warnings`.
+    /// Compiled with the feature that needs it.
+    /// `DAV:nresults` is the only count any request body of this crate carries, and an uncalled helper is a warning under `-D warnings`.
     fn count_element(&mut self, name: ElementName, count: u32) -> Result<(), DavError> {
         let mut buffer = [b'0'; 10];
         let mut at = buffer.len();
@@ -230,9 +209,8 @@ impl Encoder<'_, '_> {
         self.open(name)?;
         self.begin_content()?;
         for asked in wanted.names() {
-            // The structured request supersedes the bare name. A caller that both pushed
-            // `CALDAV:calendar-data` and set `calendar_data` asked for one element, and
-            // RFC 4791 section 9.6's grammar admits it once.
+            // The structured request supersedes the bare name.
+            // A caller that both pushed `CALDAV:calendar-data` and set `calendar_data` asked for one element, and RFC 4791 section 9.6's grammar admits it once.
             let superseded = wanted.calendar_data.is_some()
                 && *asked == PropName::Known(ElementName::CalendarData);
             if !superseded {
@@ -245,16 +223,17 @@ impl Encoder<'_, '_> {
         self.close(name)
     }
 
-    /// A window, as the empty element and two optional attributes RFC 4791 section 9.9 gives.
+    /// A window with the bounds required by its element's grammar.
     ///
-    /// The element name is a parameter because four elements carry this shape: `time-range`
-    /// itself, and `expand`, `limit-recurrence-set` and `limit-freebusy-set` beside a
-    /// `calendar-data` request.
+    /// The element name is a parameter because four elements carry this shape: `time-range` itself, and `expand`, `limit-recurrence-set` and `limit-freebusy-set` beside a `calendar-data` request.
     fn range(&mut self, name: ElementName, window: TimeRange) -> Result<(), DavError> {
+        if matches!(
+            name,
+            ElementName::Expand | ElementName::LimitRecurrenceSet | ElementName::LimitFreebusySet
+        ) {
+            window.require_bounded()?;
+        }
         self.open(name)?;
-        // Independently optional, because section 9.9 permits an open start and an open end.
-        // The constructor already refused the range that states neither, so an absent bound
-        // here is a bound the caller meant to leave open rather than one nobody supplied.
         if let Some(from) = window.start() {
             let rendered = utc_date_time_bytes(from)?;
             self.attribute(b"start", rendered.as_bytes())?;
@@ -269,8 +248,7 @@ impl Encoder<'_, '_> {
     /// A substring test, RFC 4791 section 9.7.5.
     fn text_match(&mut self, test: &TextMatch) -> Result<(), DavError> {
         self.open(ElementName::TextMatch)?;
-        // RFC 4791 section 7.5 states `i;ascii-casemap` as the default, so writing it tells a
-        // server nothing it did not already assume and costs every request the octets.
+        // RFC 4791 section 7.5 states `i;ascii-casemap` as the default, so writing it tells a server nothing it did not already assume and costs every request the octets.
         if !matches!(test.collation, Collation::AsciiCasemap) {
             self.attribute(b"collation", test.collation.as_bytes())?;
         }
@@ -335,9 +313,7 @@ impl Encoder<'_, '_> {
 
     /// A component filter and everything under it, RFC 4791 section 9.7.1.
     ///
-    /// Recursive over a tree [`CompFilter::push_comp`] already bounded at construction, and
-    /// bounded again here, because the bound a value carries and the bound an encoder observes
-    /// are the caller's one number read from two ends.
+    /// Recursive over a tree [`CompFilter::push_comp`] already bounded at construction, and bounded again here, because the bound a value carries and the bound an encoder observes are the caller's one number read from two ends.
     fn comp_filter(&mut self, filter: &CompFilter) -> Result<(), DavError> {
         if filter.is_contradictory() {
             return Err(ValueError::FilterContradiction.into());
@@ -369,17 +345,10 @@ impl Encoder<'_, '_> {
 
     /// A component selection and everything under it, RFC 4791 section 9.6.1.
     ///
-    /// This is the recursion with no bound in the value: [`CompSelection::push_comp`] takes no
-    /// `Limits` and refuses no depth, so [`Encoder::enter`] is what stands between a caller's
-    /// own selection tree and a blown stack.
+    /// This is the recursion with no bound in the value: [`CompSelection::push_comp`] takes no `Limits` and refuses no depth, so [`Encoder::enter`] is what stands between a caller's own selection tree and a blown stack.
     fn comp_selection(&mut self, selection: &CompSelection) -> Result<(), DavError> {
-        // RFC 4791 section 9.6.1's grammar is `comp ((allprop | prop*), (allcomp | comp*))`, so
-        // "every property" and "these properties" are alternatives and a value stating both is
-        // one no body can express. The crate's own precedent for an inexpressible value is a
-        // refusal — a `CompFilter` that states a condition and its own negation is
-        // `ValueError::FilterContradiction` — and the third answer, writing `allprop` and
-        // dropping the named properties, sends a request the client never wrote and never
-        // tells it so.
+        // RFC 4791 section 9.6.1's grammar is `comp ((allprop | prop*), (allcomp | comp*))`, so "every property" and "these properties" are alternatives and a value stating both is one no body can express.
+        // The crate's own precedent for an inexpressible value is a refusal — a `CompFilter` that states a condition and its own negation is `ValueError::FilterContradiction` — and the third answer, writing `allprop` and dropping the named properties, sends a request the client never wrote and never tells it so.
         if (selection.all_props && !selection.props().is_empty())
             || (selection.all_comps && !selection.comps().is_empty())
         {
@@ -412,6 +381,9 @@ impl Encoder<'_, '_> {
 
     /// What shape a `calendar-data` payload should come back in, RFC 4791 section 9.6.
     fn calendar_data(&mut self, request: &CalendarDataRequest) -> Result<(), DavError> {
+        if request.expand.is_some() && request.limit_recurrence_set.is_some() {
+            return Err(DavError::Unexpected(ElementName::LimitRecurrenceSet));
+        }
         self.open(ElementName::CalendarData)?;
         if !asks_for_a_shape(request) {
             return self.close_empty();
@@ -420,11 +392,6 @@ impl Encoder<'_, '_> {
         if let Some(selection) = request.comp.as_ref() {
             self.comp_selection(selection)?;
         }
-        // Section 9.6's grammar reads `(comp?, (expand | limit-recurrence-set)?,
-        // limit-freebusy-set?)`, so the middle two are alternatives there and independent
-        // fields here. A value carrying both is written as it stands rather than quietly
-        // reduced to one: a caller that set two windows asked two questions, and choosing one
-        // on their behalf would send a query nobody wrote.
         if let Some(window) = request.expand {
             self.range(ElementName::Expand, window)?;
         }
@@ -450,8 +417,7 @@ impl WriteXml for PropFind {
         match self {
             Self::AllProp(wanted) => {
                 encoder.empty_element(ElementName::Allprop)?;
-                // RFC 4918 section 14.8 makes `include` optional, and one naming nothing asks
-                // for nothing — so an empty request writes no element rather than an empty one.
+                // RFC 4918 section 14.8 makes `include` optional, and one naming nothing asks for nothing — so an empty request writes no element rather than an empty one.
                 if asks_for_a_property(wanted) {
                     encoder.prop_list(ElementName::Include, wanted)?;
                 }
@@ -482,18 +448,14 @@ impl WriteXml for CalendarQuery {
             },
         }
         // An absent filter asks for every resource, which is what the field says it does.
-        // RFC 4791 section 9.5's grammar requires the element, so a strict server refuses a
-        // query built that way — and writing an empty `filter` instead would be this crate
-        // answering a question the caller did not, with a body that reads back as a value
-        // nobody wrote.
+        // RFC 4791 section 9.5's grammar requires the element, so a strict server refuses a query built that way — and writing an empty `filter` instead would be this crate answering a question the caller did not, with a body that reads back as a value nobody wrote.
         if let Some(filter) = self.filter.as_ref() {
             encoder.open(ElementName::Filter)?;
             encoder.begin_content()?;
             encoder.comp_filter(filter)?;
             encoder.close(ElementName::Filter)?;
         }
-        // Section 9.5 puts the zone after the filter, which is also where a reader of this
-        // body needs it: it says what a floating window in that filter is resolved against.
+        // Section 9.5 puts the zone after the filter, which is also where a reader of this body needs it: it says what a floating window in that filter is resolved against.
         if let Some(zone) = self.timezone.as_ref() {
             encoder.text_element(ElementName::Timezone, zone.as_bytes())?;
         }
@@ -545,9 +507,8 @@ impl WriteXml for crate::internal::dav::request::SyncCollection {
         encoder.open_root(ElementName::SyncCollection)?;
         match self.token.as_ref() {
             Some(token) => encoder.text_element(ElementName::SyncToken, token.as_bytes())?,
-            // RFC 6578 section 3 requires the element and makes an empty one the request for
-            // an initial enumeration, so an absent token is written rather than omitted. The
-            // octets are the server's own and travel back through here uninterpreted.
+            // RFC 6578 section 3 requires the element and makes an empty one the request for an initial enumeration, so an absent token is written rather than omitted.
+            // The octets are the server's own and travel back through here uninterpreted.
             None => encoder.empty_element(ElementName::SyncToken)?,
         }
         encoder.text_element(ElementName::SyncLevel, self.level.as_bytes())?;
@@ -563,8 +524,7 @@ impl WriteXml for crate::internal::dav::request::SyncCollection {
 }
 
 impl WriteXml for PropRequest {
-    /// Written as `DAV:prop`, which is where a request's property list lives everywhere except
-    /// beside an `allprop`; that one place writes `DAV:include` through the same code.
+    /// Written as `DAV:prop`, which is where a request's property list lives everywhere except beside an `allprop`; that one place writes `DAV:include` through the same code.
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
@@ -620,9 +580,9 @@ impl WriteXml for TextMatch {
 }
 
 impl WriteXml for TimeRange {
-    /// Written as `CALDAV:time-range`. The three other elements carrying this shape —
-    /// `expand`, `limit-recurrence-set` and `limit-freebusy-set` — belong to the
-    /// `calendar-data` request that holds them and are written there.
+    /// Written as `CALDAV:time-range`.
+    /// The three other elements carrying this shape —
+    /// `expand`, `limit-recurrence-set` and `limit-freebusy-set` — belong to the `calendar-data` request that holds them and are written there.
     fn write_xml(
         &self,
         out: &mut dyn ByteSink,
@@ -740,9 +700,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">"
         calendar.push_comp(events, limits, &mut meter).unwrap();
         query.filter = Some(calendar);
 
-        // The example of RFC 4791 section 7.8.1 with its indentation removed: the element
-        // names, the attribute names, the nesting and the `YYYYMMDDTHHMMSSZ` spelling are the
-        // RFC's own, not this writer's habits written down twice.
+        // The example of RFC 4791 section 7.8.1 with its indentation removed: the element names, the attribute names, the nesting and the `YYYYMMDDTHHMMSSZ` spelling are the RFC's own, not this writer's habits written down twice.
         let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 <C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
 xmlns:CS=\"http://calendarserver.org/ns/\">\
@@ -815,8 +773,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
             joined(PROPFIND_ROOT, b"<D:propname/></D:propfind>")
         );
 
-        // An `allprop` that includes nothing writes no `include`: RFC 4918 section 14.8 makes
-        // the element optional and one naming nothing asks for nothing.
+        // An `allprop` that includes nothing writes no `include`: RFC 4918 section 14.8 makes the element optional and one naming nothing asks for nothing.
         assert_eq!(
             wire(&PropFind::AllProp(PropRequest::new(limits))),
             joined(PROPFIND_ROOT, b"<D:allprop/></D:propfind>")
@@ -832,8 +789,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
             .push(PropName::Known(ElementName::Getctag), &mut meter)
             .unwrap();
 
-        // `getctag` is the property every widely deployed client polls a collection with, and
-        // it lives in `http://calendarserver.org/ns/` rather than in `DAV:`.
+        // `getctag` is the property every widely deployed client polls a collection with, and it lives in `http://calendarserver.org/ns/` rather than in `DAV:`.
         let expected: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 <D:propfind xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
 xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
@@ -884,8 +840,8 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
     fn both_time_range_bounds_are_independently_optional_on_the_way_out() {
         let early = Instant::from_unix_seconds(JANUARY_4);
         let late = Instant::from_unix_seconds(JANUARY_5);
-        // RFC 4791 section 9.9 permits an open start and an open end. The attribute a bound
-        // does not have is absent rather than written as an extreme that means something else.
+        // RFC 4791 section 9.9 permits an open start and an open end.
+        // The attribute a bound does not have is absent rather than written as an extreme that means something else.
         assert_eq!(
             wire(&TimeRange::starting_at(early)),
             b"<C:time-range start=\"20060104T000000Z\"/>"
@@ -927,8 +883,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let mut test = TextMatch::new(b"Ann", &mut meter).unwrap();
-        // RFC 4791 section 7.5 states `i;ascii-casemap` as the default, so writing it says
-        // nothing a server did not already assume and costs every request the octets.
+        // RFC 4791 section 7.5 states `i;ascii-casemap` as the default, so writing it says nothing a server did not already assume and costs every request the octets.
         assert_eq!(wire(&test), b"<C:text-match>Ann</C:text-match>");
 
         test.collation = Collation::Octet;
@@ -949,9 +904,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
         let limits = Limits::DEFAULT;
         let mut meter = Meter::new(limits);
         let test = TextMatch::new(b"a<b&c\r\n]]>", &mut meter).unwrap();
-        // `>` is escaped unconditionally, so a `]]>` a caller took out of a `DESCRIPTION`
-        // cannot close a section this crate never opens; a `CR` becomes `&#13;` because a
-        // literal one is folded away by XML 1.0 section 2.11 before any reader sees it.
+        // `>` is escaped unconditionally, so a `]]>` a caller took out of a `DESCRIPTION` cannot close a section this crate never opens; a `CR` becomes `&#13;` because a literal one is folded away by XML 1.0 section 2.11 before any reader sees it.
         assert_eq!(
             wire(&test),
             b"<C:text-match>a&lt;b&amp;c&#13;\n]]&gt;</C:text-match>"
@@ -970,8 +923,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
             Err(DavError::Invalid(ValueError::FilterContradiction))
         );
 
-        // The same rule one layer down, where RFC 4791 section 9.7.2's grammar makes
-        // `is-not-defined` exclusive with everything beside it.
+        // The same rule one layer down, where RFC 4791 section 9.7.2's grammar makes `is-not-defined` exclusive with everything beside it.
         let mut summary = PropFilter::new(b"SUMMARY", limits, &mut meter).unwrap();
         summary.is_not_defined = true;
         summary.text_match = Some(TextMatch::new(b"Ann", &mut meter).unwrap());
@@ -1003,9 +955,8 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
         partstat.text_match = Some(TextMatch::new(b"NEEDS-ACTION", &mut meter).unwrap());
         attendee.push_param(partstat, &mut meter).unwrap();
 
-        // The nesting of RFC 4791 section 9.7.2's own example: an `ATTENDEE` whose value
-        // matches, with a `PARTSTAT` test under it. The RFC's example spells the default
-        // collation out on both `text-match` elements and this writer leaves it unwritten,
+        // The nesting of RFC 4791 section 9.7.2's own example: an `ATTENDEE` whose value matches, with a `PARTSTAT` test under it.
+        // The RFC's example spells the default collation out on both `text-match` elements and this writer leaves it unwritten,
         // which section 7.5 permits and which is the one deliberate difference.
         let expected: &[u8] = b"<C:prop-filter name=\"ATTENDEE\">\
 <C:text-match>mailto:ann@example.invalid</C:text-match>\
@@ -1052,8 +1003,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\"><D:allprop/>\
             .unwrap();
         assert_eq!(wire(&named), b"<D:prop><C:calendar-data/></D:prop>");
 
-        // Both together are one request and not two: RFC 4791 section 9.6's grammar admits
-        // the element once, and a body naming it twice is one a server may refuse outright.
+        // Both together are one request and not two: RFC 4791 section 9.6's grammar admits the element once, and a body naming it twice is one a server may refuse outright.
         let mut layered = PropRequest::new(limits);
         layered
             .push(PropName::Known(ElementName::Getetag), &mut meter)
@@ -1096,8 +1046,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
 <D:prop><D:getetag/></D:prop></D:sync-collection>";
         assert_eq!(encode(&request, limits, &mut meter).unwrap(), expected);
 
-        // No token is the initial enumeration, and RFC 6578 section 3 spells that as the empty
-        // element rather than as an absent one.
+        // No token is the initial enumeration, and RFC 6578 section 3 spells that as the empty element rather than as an absent one.
         let initial = SyncCollection::new(limits);
         let written = encode(&initial, limits, &mut meter).unwrap();
         assert!(
@@ -1108,8 +1057,8 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
 
     #[test]
     fn a_selection_deeper_than_the_caller_admits_is_refused_rather_than_recursed_over() {
-        // `CompSelection::push_comp` takes no bounds, so a tree can be built to whatever depth
-        // the heap allows. The encoder is the only thing that refuses to walk it.
+        // `CompSelection::push_comp` takes no bounds, so a tree can be built to whatever depth the heap allows.
+        // The encoder is the only thing that refuses to walk it.
         let limits = Limits::DEFAULT.with_max_xml_depth(3);
         let mut meter = Meter::new(limits);
         let mut nested = CompSelection::new(b"VALARM", limits, &mut meter).unwrap();
@@ -1147,9 +1096,8 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
         let href = Href::new(b"/calendars/ann/work/1.ics", limits, &mut building).unwrap();
         multiget.push_href(href, &mut building).unwrap();
 
-        // Four octets of budget will not carry a twenty-five octet `href`, whatever the caps
-        // on the collections holding it say. One ledger across many bodies is the whole of
-        // `docs/adr/0010`'s aggregate argument.
+        // Four octets of budget will not carry a twenty-five octet `href`, whatever the caps on the collections holding it say.
+        // One ledger across many bodies is the whole of `docs/adr/0010`'s aggregate argument.
         let mut writing = Meter::with_budget(limits, 4);
         assert_eq!(
             encode(&multiget, limits, &mut writing),
@@ -1168,8 +1116,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
             query.write_xml(&mut sink, limits, &mut meter),
             Err(DavError::Output(SinkFull))
         );
-        // The declaration alone is thirty-eight octets, so nothing at all fitted and the sink
-        // still holds nothing rather than half a document.
+        // The declaration alone is thirty-eight octets, so nothing at all fitted and the sink still holds nothing rather than half a document.
         assert!(sink.is_empty());
     }
 }

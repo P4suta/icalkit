@@ -4,19 +4,23 @@
 
 //! Bounded recurrence workflows over the public Jiff time boundary.
 
+mod calendar;
+
+pub use calendar::{CalendarDate, CalendarMonth, CalendarScale};
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::internal::core::{Component, Diagnostic, Instant, Item, Meter};
+use crate::internal::core::{Component, ComponentKind, Diagnostic, Instant, Item, Meter};
 use crate::internal::dav::TimeRange;
-use crate::internal::query::{Budget, QueryError, Undecided, Zones, expand_component};
+use crate::internal::query::{Budget, QueryError, Undecided, Zones, decoded_uid, expand_component};
 use crate::internal::recur::{
-    OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, SearchCursor, SearchStep,
-    ValueKind,
+    OverrideSet, RecurrenceInput, RecurrenceRule, RecurrenceSearch, RuleCheckpoint, RuleLimit,
+    SearchStep, UntilClock, ValueKind,
 };
 
 use crate::failure::Issue;
-use crate::time::{Timestamp, ZoneAdapter};
+use crate::time::Timestamp;
 use crate::{Calendar, Error, ResourcePolicy, Session};
 
 /// A strictly parsed recurrence rule.
@@ -27,18 +31,27 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Parse and validate an RFC 5545 recurrence rule.
+    /// Parse and validate a recurrence rule supported by the native engine.
     pub fn parse(value: &str) -> Result<Self, Error> {
         let policy = ResourcePolicy::secure();
+        let octets = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        if octets > u64::from(policy.limits.max_value_bytes()) {
+            return Err(Error::single("icalkit.recurrence.resource-limit"));
+        }
         let mut meter = Meter::new(policy.limits);
+        meter
+            .try_charge_bytes(octets)
+            .map_err(|_| Error::single("icalkit.recurrence.resource-limit"))?;
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let inner =
-            crate::internal::recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics)
-                .map_err(|_| Error::single("icalkit.recurrence.invalid-rule"))?;
+        let parsed =
+            crate::internal::recur::parse_recur(value.as_bytes(), &mut meter, &mut diagnostics);
         let issues: Vec<Issue> = diagnostics
             .into_iter()
             .map(Issue::from_diagnostic)
             .collect();
+        let Ok(inner) = parsed else {
+            return Err(Error::new("icalkit.recurrence.invalid-rule", issues));
+        };
         if issues
             .iter()
             .any(|issue| issue.is_error() || issue.is_warning())
@@ -83,10 +96,19 @@ impl Rule {
         session: &'a mut Session<'_>,
         dtstart: Timestamp,
         window: Window,
-        cursor: Option<SearchCursor>,
+        cursor: Option<RuleCheckpoint>,
     ) -> Result<Occurrences<'a>, Error> {
         let start = instant(dtstart)
             .ok_or_else(|| Error::single("icalkit.recurrence.fractional-dtstart"))?;
+        let valid_until = match self.inner.limit() {
+            RuleLimit::Until {
+                value_kind, clock, ..
+            } => value_kind == ValueKind::DateTime && clock == UntilClock::Utc,
+            RuleLimit::Infinite | RuleLimit::Count(_) => true,
+        };
+        if !valid_until {
+            return Err(Error::single("icalkit.recurrence.invalid-input"));
+        }
         let input = RecurrenceInput::new(
             start,
             ValueKind::DateTime,
@@ -96,11 +118,17 @@ impl Rule {
             OverrideSet::empty(),
             &mut session.meter,
         )
-        .map_err(|_| Error::single("icalkit.recurrence.invalid-input"))?;
+        .map_err(|error| {
+            Error::single(if error.limit().is_some() {
+                "icalkit.recurrence.budget-exhausted"
+            } else {
+                "icalkit.recurrence.invalid-input"
+            })
+        })?;
         session.recurrence_diagnostics.clear();
         let search = match cursor {
             Some(cursor) => input.resume(
-                cursor,
+                cursor.into(),
                 window.inner,
                 &mut session.meter,
                 &mut session.recurrence_diagnostics,
@@ -181,8 +209,8 @@ pub struct Cursor {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CursorInner {
-    Rule(SearchCursor),
-    Calendar { position: usize },
+    Rule(RuleCheckpoint),
+    Calendar { after: Option<Occurrence> },
 }
 
 /// A fallible lazy occurrence stream.
@@ -195,12 +223,14 @@ enum OccurrenceSource<'a> {
     Calendar {
         occurrences: Vec<Occurrence>,
         position: usize,
+        after: Option<Occurrence>,
         terminal_error: Option<&'static str>,
     },
 }
 
 impl Occurrences<'_> {
-    /// Pull one occurrence. Budget exhaustion is an error and never an end marker.
+    /// Pull one occurrence.
+    /// Budget exhaustion is an error and never an end marker.
     pub fn try_next(&mut self) -> Result<Option<Occurrence>, Error> {
         match &mut self.source {
             OccurrenceSource::Rule(search) => match search.next() {
@@ -212,15 +242,20 @@ impl Occurrences<'_> {
                 Some(SearchStep::BudgetExhausted(_)) => {
                     Err(Error::single("icalkit.recurrence.budget-exhausted"))
                 },
+                Some(SearchStep::CalendarArithmeticFailed) => {
+                    Err(Error::single("icalkit.recurrence.calendar-arithmetic"))
+                },
                 None => Ok(None),
             },
             OccurrenceSource::Calendar {
                 occurrences,
                 position,
+                after,
                 terminal_error,
             } => {
                 if let Some(occurrence) = occurrences.get(*position).copied() {
                     *position = position.saturating_add(1);
+                    *after = Some(occurrence);
                     return Ok(Some(occurrence));
                 }
                 if let Some(code) = terminal_error.take() {
@@ -235,10 +270,8 @@ impl Occurrences<'_> {
     #[must_use]
     pub fn cursor(&self) -> Cursor {
         let inner = match &self.source {
-            OccurrenceSource::Rule(search) => CursorInner::Rule(search.cursor()),
-            OccurrenceSource::Calendar { position, .. } => CursorInner::Calendar {
-                position: *position,
-            },
+            OccurrenceSource::Rule(search) => CursorInner::Rule(search.rule_checkpoint()),
+            OccurrenceSource::Calendar { after, .. } => CursorInner::Calendar { after: *after },
         };
         Cursor { inner }
     }
@@ -269,10 +302,10 @@ pub(crate) fn resume_calendar_occurrences<'a>(
     window: Window,
     cursor: Cursor,
 ) -> Result<Occurrences<'a>, Error> {
-    let CursorInner::Calendar { position } = cursor.inner else {
+    let CursorInner::Calendar { after } = cursor.inner else {
         return Err(Error::single("icalkit.recurrence.cursor-mismatch"));
     };
-    start_calendar_occurrences(calendar, session, uid, window, Some(position))
+    start_calendar_occurrences(calendar, session, uid, window, after)
 }
 
 fn start_calendar_occurrences<'a>(
@@ -280,21 +313,21 @@ fn start_calendar_occurrences<'a>(
     session: &'a mut Session<'_>,
     uid: &str,
     window: Window,
-    position: Option<usize>,
+    after: Option<Occurrence>,
 ) -> Result<Occurrences<'a>, Error> {
-    let (master, siblings) = recurrence_master(calendar, uid.as_bytes())?;
+    let (master, siblings) = recurrence_master(calendar, uid.as_bytes(), &mut session.meter)?;
     let range = TimeRange::new(Some(window.inner.start()), Some(window.inner.end()))
         .map_err(|_| Error::single("icalkit.recurrence.invalid-window"))?;
-    let engine = session.engine;
-    let source = ZoneAdapter::new(engine.zone_database());
-    let zones = Zones::new(&source);
-    let mut budget = Budget::new(engine.policy.limits, &mut session.meter);
-    let expansion = expand_component(master, siblings, range, zones, &mut budget)
-        .map_err(recurrence_query_error)?;
+    let limits = session.engine.policy.limits;
+    let expansion = session.with_zone_source(|source, meter, _| {
+        let zones = Zones::new(source);
+        let mut budget = Budget::new(limits, meter);
+        expand_component(master, siblings, range, zones, &mut budget)
+            .map_err(recurrence_query_error)
+    })?;
     let terminal_error = expansion.incomplete().map(recurrence_incomplete);
     let mut occurrences: Vec<Occurrence> = expansion
-        .instances()
-        .iter()
+        .resumable_instances()
         .map(|instance| {
             Ok(Occurrence {
                 key: timestamp(instance.recurrence_id())?,
@@ -303,14 +336,14 @@ fn start_calendar_occurrences<'a>(
         })
         .collect::<Result<_, Error>>()?;
     occurrences.sort_by_key(|occurrence| (occurrence.start, occurrence.key));
-    let position = position.unwrap_or(0);
-    if position > occurrences.len() {
-        return Err(Error::single("icalkit.recurrence.cursor-mismatch"));
-    }
+    let position = after.map_or(0, |last| {
+        occurrences.partition_point(|entry| (entry.start, entry.key) <= (last.start, last.key))
+    });
     Ok(Occurrences {
         source: OccurrenceSource::Calendar {
             occurrences,
             position,
+            after,
             terminal_error,
         },
     })
@@ -319,31 +352,55 @@ fn start_calendar_occurrences<'a>(
 fn recurrence_master<'a>(
     calendar: &'a Calendar,
     uid: &[u8],
+    meter: &mut Meter,
 ) -> Result<(&'a Component, &'a [Item]), Error> {
+    let exhausted = |_| Error::single("icalkit.recurrence.budget-exhausted");
+    let size = |len| u64::try_from(len).unwrap_or(u64::MAX);
+    meter
+        .try_charge(size(calendar.document.items().len()))
+        .map_err(exhausted)?;
     let root = calendar
         .document
         .components()
         .next()
         .ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
-    let mut masters = root
-        .items()
-        .iter()
-        .filter_map(Item::as_component)
-        .filter(|component| {
-            component
-                .properties()
-                .find(|property| property.is_named(b"UID"))
-                .is_some_and(|property| property.value_text().as_bytes() == uid)
-                && !component
-                    .properties()
-                    .any(|property| property.is_named(b"RECURRENCE-ID"))
-        });
-    let master = masters
-        .next()
-        .ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
-    if masters.next().is_some() {
+    let mut selected = None;
+    let mut ambiguous = false;
+    meter
+        .try_charge(size(root.items().len()))
+        .map_err(exhausted)?;
+    for component in root.components() {
+        if !matches!(
+            component.kind(),
+            Some(
+                ComponentKind::Event
+                    | ComponentKind::Todo
+                    | ComponentKind::Journal
+                    | ComponentKind::FreeBusy
+            )
+        ) {
+            continue;
+        }
+        meter
+            .try_charge(size(component.items().len()))
+            .map_err(exhausted)?;
+        if component
+            .properties()
+            .any(|property| property.is_named(b"RECURRENCE-ID"))
+        {
+            continue;
+        }
+        let known_uid = decoded_uid(component, meter)
+            .map_err(exhausted)?
+            .ok_or_else(|| Error::single("icalkit.recurrence.identity-unreadable"))?;
+        if known_uid.as_bytes() == uid && selected.replace(component).is_some() {
+            ambiguous = true;
+        }
+    }
+    if ambiguous {
         return Err(Error::single("icalkit.recurrence.component-ambiguous"));
     }
+    let master = selected.ok_or_else(|| Error::single("icalkit.recurrence.component-not-found"))?;
     Ok((master, root.items()))
 }
 
@@ -357,6 +414,7 @@ fn recurrence_query_error(error: QueryError) -> Error {
 const fn recurrence_incomplete(reason: Undecided) -> &'static str {
     match reason {
         Undecided::SearchExhausted => "icalkit.recurrence.budget-exhausted",
+        Undecided::ZoneAnswerUnreadable => "icalkit.recurrence.zone-answer-unreadable",
         Undecided::ZoneUnstated | Undecided::ZoneUnknown | Undecided::ZoneAmbiguous => {
             "icalkit.recurrence.zone-unresolved"
         },

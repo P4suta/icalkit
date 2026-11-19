@@ -7,8 +7,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 export RUSTDOCFLAGS := "-D warnings"
 
-# The sans-I/O core: no std, no clock, no network, no bundled time zone database
-# (docs/adr/0003, docs/adr/0004).
+# The core has no clock, network, or bundled time zone database (docs/adr/0003 and docs/adr/0004).
 core_crates := "-p icalkit"
 
 # List the available development commands.
@@ -27,91 +26,73 @@ fmt-check:
 toml-check:
     taplo fmt --check --diff
 
-# Run Clippy with and without default features across every target.
+# Lint all workspace features and the standalone core without default features.
 lint:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
-    cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+    cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --locked -p icalkit --all-targets --no-default-features -- -D warnings
 
-# Run the workspace suite. Nextest runs normal tests process-per-test; Cargo
-# separately runs doctests, which nextest does not currently support.
-#
-# The two layering gates are excluded from the doctests and only from them. Each compiles
-# another crate's layer a second time, so the doc examples on those items would be compiled
-# inside a crate that declares almost no dependencies and would fail there. `[lib] doctest =
-# false` reads like the fix and is not one: cargo reports the member's doctests disabled and the
-# merged doctest runner runs them anyway (docs/adr/0004, amendment 17).
-test:
-    cargo nextest run --workspace --all-features
-    cargo test --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
+# Run workspace tests and doctests, including standalone core coverage.
+test: test-core
+    cargo nextest run --locked --status-level leak --workspace --all-features
+    cargo test --locked --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
 
-# Run the complete test suite with the non-fail-fast CI profile.
-test-ci:
-    cargo nextest run --profile ci --workspace --all-features
-    cargo test --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
+# Exercise the standalone core without workspace feature unification.
+test-core:
+    cargo nextest run --locked --status-level leak --profile ci -p icalkit --no-default-features
+    cargo test --locked -p icalkit --doc --no-default-features
 
-# Measure peak and retained allocations in a dedicated process so unrelated test-runner
-# allocations cannot move the cardinality ceilings (docs/adr/0007 and docs/adr/0010).
+# Run CI-profile suites after the standalone prerequisites pass.
+test-ci: test-core
+    cargo nextest run --locked --status-level leak --profile ci --workspace --all-features
+    cargo test --locked --workspace --doc --all-features --exclude ical-grammar-layering --exclude ical-xml-layering
+
+# Check allocation ceilings in a dedicated process.
 allocation:
-    cargo run --quiet -p icalkit-conformance --bin allocation_gate
+    cargo run --locked --quiet -p icalkit-conformance --bin allocation_gate
 
 # Build public documentation with warnings denied.
 doc:
-    cargo doc --workspace --all-features --no-deps
+    cargo doc --locked --workspace --all-features --no-deps
 
 # Compile no-default, every individual feature, and representative feature pairs.
 feature-matrix:
-    cargo hack check --workspace --all-targets --each-feature
-    cargo hack check {{ core_crates }} --feature-powerset --depth 2
+    cargo hack check --locked --workspace --all-targets --each-feature
+    cargo hack check --locked {{ core_crates }} --feature-powerset --depth 2
 
-# Prove the core stays no_std. A calendar library that needs an OS cannot run in the
-# places calendars are actually rendered (docs/adr/0004).
+# Build the core for bare-metal ARM without default features.
 no-std:
     rustup target add thumbv7em-none-eabi
-    cargo build {{ core_crates }} --target thumbv7em-none-eabi --no-default-features
+    cargo build --locked {{ core_crates }} --target thumbv7em-none-eabi --no-default-features
 
-# The same core has to work in a browser, which is where most calendar UIs live.
+# Check the core for WebAssembly without default features.
 wasm:
     rustup target add wasm32-unknown-unknown
-    cargo check {{ core_crates }} --target wasm32-unknown-unknown --no-default-features
+    cargo check --locked {{ core_crates }} --target wasm32-unknown-unknown --no-default-features
 
-# Five rules, one task, because it already walks this tree and already holds docs/adr/0004's
-# structural rules. First: reject std, clock, network, and bundled-tzdb dependencies in the
-# core, and hold this file's core_crates and xtask's CORE_CRATES to each other. Second: reject
-# a path inside icalkit's private grammar layer that resolves above the layer's root, a subdirectory
-# under it, an `extern crate` or `#[path]` inside it, and a file the layer's mod.rs does not
-# declare. Third: hold gates/grammar-layering to what the ADR says that member must be, since
-# deleting it deletes the compile half of the layering guarantee and nothing else noticed.
-# Fourth: reject a wildcard match arm over `Token`, which the lint that claimed to do it cannot
-# see. Fifth: hold release-plz.toml to the workspace's published members. A contributor grepping
-# for a gate called "layering" finds nothing, which is the price of not adding four more recipes
-# and eight CI lines to read files that are already open (docs/adr/0004, amendment 18).
+# Check core dependencies and private implementation boundaries.
 purity:
-    cargo run --quiet -p xtask -- purity
+    cargo run --locked --quiet -p xtask -- purity
 
-# Hold the single public crate boundary, the facade's two-feature vocabulary, shared DAV XML
-# writer, external-consumer example, and current closure ledger (docs/adr/0013 and 0014).
+# Check the public crate, feature vocabulary, and private implementation boundaries.
 architecture:
-    cargo run --quiet -p xtask -- architecture
+    cargo run --locked --quiet -p xtask -- architecture
 
-# Hold the public repository's support, security, contribution, release, and hosting policy
-# entry points together. The deterministic gate is local; docs/repository-policy.md records
-# the corresponding GitHub settings for remote audit.
+# Check repository policy, toolchain pins, and verification recipes.
 repository:
-    cargo run --quiet -p xtask -- repository
+    cargo run --locked --quiet -p xtask -- repository
 
 # Freeze the sole production crate's canonical API with default and no default features.
 public-api:
-    cargo run --quiet -p xtask -- public-api
+    cargo run --locked --quiet -p xtask -- public-api
 
 # Verify the actual CI and allocation arithmetic cores with their declared harnesses.
 prove-ci:
     ci-policy prove-source --source xtask/src/ci.rs --require-json '["production::proofs::candidate_identity_is_complete_and_exact","production::proofs::phase_inventory_is_complete_and_ordered","production::proofs::summaries_require_every_job_to_succeed"]' --counterexample production::proofs::counterexample_skipped_candidate_is_successful
     ci-policy prove-source --source crates/icalkit-conformance/src/bin/allocation_gate/arithmetic.rs --require-json '["production::proofs::released_count_is_saturating"]' --counterexample production::proofs::counterexample_release_underflows
 
-# Hold every diagnostic code's meaning, channel, and owing milestone to the committed
-# golden list docs/adr/0009 requires.
+# Check diagnostic codes against their committed meanings and channels.
 codes:
-    cargo run --quiet -p xtask -- codes
+    cargo run --locked --quiet -p xtask -- codes
 
 # Spell-check the repository.
 typos:
@@ -133,8 +114,7 @@ reuse:
 actionlint:
     actionlint -color
 
-# Reject high-severity GitHub Actions and Dependabot security findings without
-# granting the auditor network or repository credentials.
+# Check high-severity GitHub Actions security findings without network access.
 zizmor:
     zizmor --offline --persona regular --min-severity high .
 

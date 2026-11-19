@@ -4,9 +4,13 @@
 
 //! Validated, read-only views over the lossless calendar CST.
 
+use alloc::borrow::Cow;
 use core::str;
 
-use crate::internal::core::{Component, DateTimeValue, DecodeValue as _, Item, Property};
+use crate::internal::core::codec::decode_single_scalar_text;
+use crate::internal::core::{
+    Component, DateTimeValue, DecodeValue as _, Item, Property, PropertyId, is_iana_token,
+};
 
 use crate::time::IcalDateTime;
 
@@ -18,11 +22,7 @@ impl<'a> Name<'a> {
     /// Validate a component or property name.
     #[must_use]
     pub fn new(name: &'a str) -> Option<Self> {
-        (!name.is_empty()
-            && name
-                .bytes()
-                .all(|octet| octet.is_ascii_alphanumeric() || octet == b'-'))
-        .then_some(Self(name))
+        is_iana_token(name.as_bytes()).then_some(Self(name))
     }
 
     /// The spelling retained by the calendar.
@@ -90,15 +90,13 @@ impl<'a> EventRef<'a> {
         Self { component }
     }
 
-    /// The required UID, validated during calendar promotion.
+    /// The decoded `UID`, or `None` for an unreadable identity.
+    ///
+    /// Text without escapes borrows calendar storage.
+    /// Use [`Self::property`] to inspect the original value.
     #[must_use]
-    pub fn uid(self) -> &'a str {
-        let bytes = self
-            .component
-            .properties()
-            .find(|property| property.is_named(b"UID"))
-            .map_or(&[][..], |property| property.value_text().as_bytes());
-        str::from_utf8(bytes).unwrap_or_default()
+    pub fn uid(self) -> Option<Cow<'a, str>> {
+        decode_single_scalar_text(self.component, &PropertyId::UID)
     }
 
     /// Find one direct property by case-insensitive name.

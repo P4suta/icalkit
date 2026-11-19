@@ -2,133 +2,72 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 4 — reading a `VTIMEZONE` out of `crate::internal::core::Component`.
+//! Read time zone definitions under RFC 5545 section 3.6.5.
 //!
-//! Specification: RFC 5545 section 3.6.5, with section 3.8.3.3 and section 3.8.3.4 for the
-//! offsets and section 3.8.5.2 and section 3.8.5.3 for the two transition forms.
+//! A `STANDARD` or `DAYLIGHT` component supplies its `DTSTART` anchor and explicit `RDATE` transitions.
+//! RFC 5545 sections 3.8.3.3 and 3.8.3.4 define the offsets.
+//! Sections 3.8.5.2 and 3.8.5.3 define recurrence dates and rules.
+//! An annual clock can use up to 366 calendar patterns or 372 week patterns.
+//! Explicit dates and computed onsets contribute to the same transition set.
 //!
-//! Owed by this unit and by nothing else. The trait impl needs no re-export line; the free
-//! function needs one appended to the crate root's block:
+//! Definition identifiers use decoded `TEXT` values and preserve literal quotes.
+//! Lookup preserves case and vendor prefixes as `docs/adr/0003` requires.
+//! A definition needs one nonempty identifier in valid UTF-8.
 //!
-//! ```text
-//! impl ObservanceReader for crate::internal::core::Component { .. }
-//! pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
-//!     calendar: &Component, meter: &mut Meter, sink: &mut S,
-//! ) -> VtimezoneSet;
-//! ```
+//! [`Component::audit`] reports absent required properties.
+//! An observance with all required properties but no usable transition produces `vtimezone-observance-unreadable`.
+//! An unsupported rule leaves its anchor and explicit dates available.
+//! A zone without observance subcomponents keeps its identifier but has no transition data.
 //!
-//! The one place untrusted zone text becomes a model, and therefore the only place in this
-//! crate that charges a meter. Each `STANDARD` and `DAYLIGHT` subcomponent becomes one
-//! `Observance` for its own `DTSTART`, one more for each `RDATE` value it carries, and a
-//! `YearlyRule` where its `RRULE` matches a `RuleDay` form. A definition carrying both forms
-//! carries both, which is ordinary rather than a conflict: the rule states the cadence and the
-//! dates state the exceptions to it.
-//!
-//! The `TZID` is taken as written, `DQUOTE`s removed and nothing else — no case folding, no
-//! prefix stripping, no alias lookup. `docs/adr/0003` makes mapping a vendor identifier onto an
-//! IANA one the caller's visible step, and a reader that quietly normalized here would take it
-//! back.
-//!
-//! Codes this unit owns, and no other unit may emit:
-//!
-//! - `vtimezone-without-observance` — section 3.6.5 requires at least one and this file has
-//!   none. The component is kept and the zone answers nothing.
-//! - `vtimezone-rule-unsupported` — an observance `RRULE` outside the closed-form vocabulary. A
-//!   note, because the file is legal and what is missing is here: the observance's own
-//!   `DTSTART` still stands as one transition, so the answer is smaller rather than wrong.
-//! - `missing-time-zone-definition` — a `TZID` parameter naming no `VTIMEZONE` in the same
-//!   calendar, named by the identifier it is about.
-//! - `duplicate-time-zone-identifier` — read off `ZoneAdmission::diagnostic_code` when
-//!   `VtimezoneSet::insert` takes a second definition of one identifier beside the first.
-//! - `vtimezone-components-truncated` — read off `ZoneSetError::diagnostic_code` when the
-//!   caller's own zone-count bound turns a definition back. `docs/adr/0003` amendment 6 said
-//!   that refusal carried no code; the identifiers such a definition declares then looked
-//!   exactly like identifiers the calendar never wrote, which is a claim about the file that
-//!   the caller's policy made false.
-//! - `vtimezone-observance-unreadable` — a `STANDARD` or `DAYLIGHT` subcomponent stating every
-//!   property section 3.6.5 requires and yielding no transition at all.
-//!
-//! `vtimezone-observances-truncated` is emitted by `TransitionTable::new`, which this unit
-//! calls and does not reimplement. That is deliberate: the truncation point and the code
-//! reporting it are one decision, and two callers deciding it separately is how they drift.
-//!
-//! # What a value this unit cannot read costs
-//!
-//! A required property that is *absent* is [`Component::audit`]'s finding under
-//! `missing-required-property`, and a second reading of it written here would be a second place
-//! for that answer to live and a second place for the two to disagree.
-//!
-//! A required property that is *present and unusable* is nobody else's. That is the division M2
-//! corrected: `TZOFFSETTO:+9999` is a value the decoder refuses and the audit counts as there,
-//! and `DTSTART;VALUE=DATE` on an observance carries no hour for a transition to happen at, so
-//! both left a `VTIMEZONE` in the set holding nothing, answering nothing, with no code from
-//! anybody — a definition the file wrote in full, indistinguishable from one it never wrote.
-//! `vtimezone-observance-unreadable` is what this unit says about it, and it is emitted only
-//! where every property section 3.6.5 requires is present, so one fault never earns two codes.
-//!
-//! A `VTIMEZONE` whose `TZID` is absent, empty, declared twice or not UTF-8 still contributes
-//! nothing and no code of its own: there is no identifier to file it under and none to name in
-//! a report.
-//!
-//! # Bounds
-//!
-//! Two dimensions, charged where `docs/adr/0010` puts them and nowhere else: the observances by
-//! [`TransitionTable::new`], the zone count by [`VtimezoneSet::insert`]. The list handed to the
-//! former is built whole first, and that is bounded rather than unbounded — an observance costs
-//! at least sixteen octets of input, and those octets were charged against this same ledger by
-//! the parse that produced the tree being read. Cutting the list short before the table sees it
-//! would move the truncation point off the sorted order the table truncates in, which is how a
-//! table acquires a hole in the middle instead of an earlier end.
-//!
-//! The walk looking for identifiers nothing defines keeps its own worklist rather than
-//! recursing, so a calendar nested as deeply as the parse admits costs heap rather than stack.
+//! The caller's limits bound zone definitions and observances.
+//! Staging keeps the earliest patterns within the remaining budget and one overflow witness.
+//! [`TransitionTable::new`] charges admitted observances and reports truncation.
+//! The reader uses an explicit worklist to find undefined identifiers throughout nested components.
 //!
 //! [`Component::audit`]: crate::internal::core::Component::audit
+//!
 //! [`TransitionTable::new`]: crate::internal::tz::TransitionTable::new
-//! [`VtimezoneSet::insert`]: crate::internal::tz::VtimezoneSet::insert
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::num::{NonZeroU8, NonZeroU32};
 use core::str;
 
+use crate::internal::core::codec::decode_single_scalar_text;
 use crate::internal::core::{
-    CivilDate, CivilDateTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
+    CivilDate, CivilDateTime, CivilTime, Component, DateTimeValue, DecodeValue as _, Diagnostic,
     DiagnosticCode, DiagnosticSink, Location, Meter, PropertyId, Severity, Subject, UtcOffset,
-    Weekday, report_diagnostic,
+    ValueType, Weekday, report_diagnostic,
 };
 
+use crate::internal::tz::annual_clocks::{
+    self, ClockLimit, ClockRules, ClockSet, read_clock_field,
+};
+use crate::internal::tz::annual_counts::{CountEnd, counted_end};
+use crate::internal::tz::annual_dates::{DateSelectors, MonthSet, YearDateMasks};
+use crate::internal::tz::annual_positions::AnnualPositions;
+use crate::internal::tz::earliest_observances::EarliestObservances;
 use crate::internal::tz::model::{
-    NthWeek, Observance, ObservanceReader, RuleDay, TransitionTable, VtimezoneSet, YearlyRule,
+    NthWeek, Observance, ObservanceReader, RuleDay, StagedDefinition, TransitionTable,
+    VtimezoneSet, YearlyRule, ZoneSetError,
 };
+use crate::internal::tz::month_days::MonthDaySet;
+use crate::internal::tz::week_years::{WeekNumbers, WeekYearMasks};
+use crate::internal::tz::weekdays::{WeekdayScope, WeekdaySet, WeekdayTerm};
+use crate::internal::tz::year_intervals::YearInterval;
 
-/// The most `BYMONTHDAY` values a day form is read from, which is a month's length.
-///
-/// A rule naming more days than a month has is outside this vocabulary whatever else it says,
-/// so the ceiling doubles as the refusal and no buffer on this path ever grows.
-const MAX_MONTH_DAYS: usize = 31;
+/// A weekday window spans seven consecutive `BYMONTHDAY` values.
+const RUN_LENGTH: u32 = 7;
 
-/// How many `BYMONTHDAY` values the window forms are written with.
+/// Read the calendar's `VTIMEZONE` definitions and report undefined identifiers.
 ///
-/// Seven, because the shape means "whichever day of one week falls in this window" and a week
-/// is seven days long. A shorter or longer run says something else, and this crate does not
-/// guess what.
-const RUN_LENGTH: usize = 7;
-
-/// Read every `VTIMEZONE` a calendar carries, and report the identifiers nothing defines.
+/// The set compares identifiers by their exact bytes.
+/// [`VtimezoneSet::definitions`] exposes duplicate definitions, and the reader reports [`DiagnosticCode::DuplicateTimeZoneIdentifier`].
+/// The reader reports each undefined identifier once.
 ///
-/// The zones come back in a set keyed by exact bytes. A second definition of one identifier is
-/// kept beside the first and reported under [`DiagnosticCode::DuplicateTimeZoneIdentifier`] —
-/// both readings stay reachable through [`VtimezoneSet::definitions`], which is what
-/// `docs/adr/0003` requires of a file with two answers — and a `TZID` parameter anywhere in the
-/// calendar naming no definition here is reported once under
-/// [`DiagnosticCode::MissingTimeZoneDefinition`], naming the identifier it is about.
-///
-/// Both bounds `docs/adr/0010` gives a zone are charged against `meter` on the way through. A
-/// calendar declaring more zones than the caller's policy admits keeps the ones that fit and
-/// says so under [`DiagnosticCode::VtimezoneComponentsTruncated`], naming each definition the
-/// bound turned back — and the identifiers those definitions declare are not then reported as
-/// identifiers the calendar never defined, because the calendar did define them.
+/// The meter bounds both zone and observance counts.
+/// A zone-count refusal names the definition and prevents a second diagnostic for an undefined identifier.
 ///
 /// [`VtimezoneSet::definitions`]: crate::internal::tz::VtimezoneSet::definitions
 #[must_use]
@@ -143,34 +82,32 @@ pub fn read_calendar_zones<S: DiagnosticSink + ?Sized>(
         if !component.is_named(b"VTIMEZONE") {
             continue;
         }
-        let mut observances = Vec::new();
-        let Some(tzid) = read_definition(component, meter, sink, &mut observances) else {
+        let Some(tzid) = identifier(component) else {
             continue;
         };
-        let table = TransitionTable::new(tzid, observances, meter, sink);
-        // Taken before the table is moved into the set, so that every code below can name the
-        // zone it is about. A diagnostic saying a definition was refused and not which one is
-        // a diagnostic a caller cannot act on.
-        let named = Subject::new(table.tzid().as_str().as_bytes());
-        match zones.insert(table, meter) {
-            Ok(admission) => {
-                if let Some(code) = admission.diagnostic_code() {
-                    report(sink, meter, code, Severity::Violation, Some(named));
-                }
-            },
-            Err(turned_back) => {
-                // The identifier is remembered rather than the definition, because what the
-                // refusal costs downstream is the walk below deciding that this calendar never
-                // defined a zone that the caller's own policy refused.
-                refused.insert(Box::from(turned_back.table().tzid().as_str()));
+        let reservation = match VtimezoneSet::reserve(meter) {
+            Ok(reservation) => reservation,
+            Err(breach) => {
+                let named = Subject::new(tzid.as_bytes());
+                refused.insert(tzid);
                 report(
                     sink,
                     meter,
-                    turned_back.diagnostic_code(),
+                    ZoneSetError::code_for_limit(breach),
                     Severity::LimitReached,
                     Some(named),
                 );
+                continue;
             },
+        };
+        let mut observances = Vec::new();
+        read_observances(component, meter, sink, &mut observances, &tzid);
+        let table = TransitionTable::new(tzid, observances, meter, sink);
+        // Capture the identifier before transferring the table to the set.
+        let named = Subject::new(table.tzid().as_str().as_bytes());
+        let admission = zones.insert_reserved(table, reservation);
+        if let Some(code) = admission.diagnostic_code() {
+            report(sink, meter, code, Severity::Violation, Some(named));
         }
     }
     report_undefined(calendar, &zones, &refused, meter, sink);
@@ -183,35 +120,43 @@ impl ObservanceReader for Component {
         meter: &mut Meter,
         sink: &mut dyn DiagnosticSink,
         out: &mut Vec<Observance>,
-    ) -> Option<Box<str>> {
+    ) -> Option<StagedDefinition> {
         read_definition(self, meter, sink, out)
     }
 }
 
-/// Read one `VTIMEZONE` into `out`, answering with its identifier.
-///
-/// Generic over the sink rather than taking the trait object [`ObservanceReader`] declares, so
-/// that the free function above does not pay for an erasure it has no use for. `dyn
-/// DiagnosticSink` is itself a legal `S`, which is what lets the trait impl be one call.
+/// Append one definition's staged observances and return its identifier and overflow status.
 fn read_definition<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
     sink: &mut S,
     out: &mut Vec<Observance>,
-) -> Option<Box<str>> {
+) -> Option<StagedDefinition> {
     let tzid = identifier(component)?;
+    let exceeds_limit = read_observances(component, meter, sink, out, &tzid);
+    Some(StagedDefinition {
+        tzid,
+        exceeds_limit,
+    })
+}
+
+fn read_observances<S: DiagnosticSink + ?Sized>(
+    component: &Component,
+    meter: &mut Meter,
+    sink: &mut S,
+    out: &mut Vec<Observance>,
+    tzid: &str,
+) -> bool {
+    let mut staged = EarliestObservances::new(meter);
     let mut declared = 0_usize;
     for inner in component.components() {
         if !inner.is_named(b"STANDARD") && !inner.is_named(b"DAYLIGHT") {
             continue;
         }
         declared = declared.saturating_add(1);
-        read_observance(inner, meter, sink, out);
+        read_observance(inner, meter, sink, &mut staged);
     }
-    // Counted over the subcomponents rather than over what they yielded. The code says "carried
-    // neither a STANDARD nor a DAYLIGHT subcomponent"; a definition whose one observance was
-    // unreadable did carry one, and reporting that under this code would put a second meaning
-    // on a frozen one.
+    // Count declared subcomponents, including those with unreadable values.
     if declared == 0 {
         report(
             sink,
@@ -221,58 +166,26 @@ fn read_definition<S: DiagnosticSink + ?Sized>(
             Some(Subject::new(tzid.as_bytes())),
         );
     }
-    Some(tzid)
+    let exceeds_limit = staged.has_overflow_witness();
+    out.extend(staged.into_observances());
+    exceeds_limit
 }
 
-/// The identifier a `VTIMEZONE` answers to, or `None` when it has none this crate can file.
-///
-/// `None` for an absent, empty, repeated or non-UTF-8 `TZID`. The last is forced rather than
-/// chosen: [`ObservanceReader::read_vtimezone`] answers with a `Box<str>`, and octets that are
-/// not text cannot become one. The repeated case is `None` for the reason
-/// [`crate::internal::core::Component::get`] refuses a duplicate — two identities is not one of them, and
-/// picking the first would file a zone under a name the file does not unambiguously give it.
+/// The definition's nonempty scalar `TEXT` identifier, decoded once.
 fn identifier(component: &Component) -> Option<Box<str>> {
-    let wanted = PropertyId::TZID;
-    let mut written = component.properties_named(&wanted);
-    let first = written.next()?;
-    if written.next().is_some() {
-        return None;
-    }
-    let text = str::from_utf8(unquoted(first.value_text().as_bytes())).ok()?;
-    (!text.is_empty()).then(|| Box::from(text))
+    let text = decode_single_scalar_text(component, &PropertyId::TZID)?;
+    (!text.is_empty()).then(|| text.into_owned().into_boxed_str())
 }
 
-/// `text` with a matched RFC 5545 section 3.2 `DQUOTE` pair removed, and nothing else done.
-///
-/// The rule [`crate::internal::core::Parameter::unquoted`] applies on the other side of the comparison. The
-/// two sides have to strip alike, or a producer that quoted one of them would declare a zone
-/// that no lookup could ever reach.
-fn unquoted(text: &[u8]) -> &[u8] {
-    text.strip_prefix(b"\"")
-        .and_then(|inside| inside.strip_suffix(b"\""))
-        .unwrap_or(text)
-}
-
-/// Read one `STANDARD` or `DAYLIGHT` subcomponent into `out`, reporting one that yields nothing.
-///
-/// An observance contributing no transition at all is reported here under
-/// [`DiagnosticCode::VtimezoneObservanceUnreadable`], and that is a correction M2 made. This
-/// unit used to delegate every unreadable required value to [`Component::audit`]'s reading of
-/// section 3.6 — which is right for a property that is *absent* and answers nothing about one
-/// that is present and cannot be used. `TZOFFSETTO:+9999` is a property the audit counts and
-/// the value decoder refuses, and `DTSTART;VALUE=DATE` on an observance is a value that carries
-/// no hour for a transition to happen at. Both left a `VTIMEZONE` in the set carrying no
-/// observance, answering nothing, with no code emitted on either side — a definition the file
-/// wrote and nothing anywhere could tell from one it never wrote.
+/// Stage one `STANDARD` or `DAYLIGHT` observance.
+/// Report [`DiagnosticCode::VtimezoneObservanceUnreadable`] when every required property exists but none supplies a usable transition.
 fn read_observance<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
     sink: &mut S,
-    out: &mut Vec<Observance>,
+    out: &mut EarliestObservances,
 ) {
-    let before = out.len();
-    read_transitions(component, meter, sink, out);
-    if out.len() == before && states_every_required_property(component) {
+    if !read_transitions(component, meter, sink, out) && states_every_required_property(component) {
         report(
             sink,
             meter,
@@ -283,13 +196,8 @@ fn read_observance<S: DiagnosticSink + ?Sized>(
     }
 }
 
-/// Whether this observance carries each property RFC 5545 section 3.6.5 requires of one.
-///
-/// Presence only, never readability, and that is the whole of the division of labor: an
-/// *absent* required property is [`Component::audit`]'s finding under
-/// `missing-required-property`, and reporting it here as well would put two codes on one fault
-/// and make one defect look like two. What is left over — every required property present and
-/// the observance still stating no transition — is what nobody else can see.
+/// Whether the observance has every property RFC 5545 section 3.6.5 requires.
+/// [`Component::audit`] reports missing properties.
 fn states_every_required_property(component: &Component) -> bool {
     [
         PropertyId::DTSTART,
@@ -305,53 +213,67 @@ fn read_transitions<S: DiagnosticSink + ?Sized>(
     component: &Component,
     meter: &mut Meter,
     sink: &mut S,
-    out: &mut Vec<Observance>,
-) {
-    // The classification is the subcomponent's own name, per RFC 5545 section 3.6.5, and never
-    // a comparison of the two offsets: a zone whose daylight offset is the smaller of the pair
-    // exists, and inferring the flag from arithmetic gets it backwards there.
+    out: &mut EarliestObservances,
+) -> bool {
+    // The subcomponent name determines daylight status even where daylight time has the smaller offset.
     let daylight = component.is_named(b"DAYLIGHT");
     let Some(offset_from) = component
         .get::<UtcOffset>(&PropertyId::TZOFFSETFROM)
         .value()
     else {
-        return;
+        return false;
     };
     let Some(offset_to) = component.get::<UtcOffset>(&PropertyId::TZOFFSETTO).value() else {
-        return;
+        return false;
     };
-    // The rule rides on the `DTSTART` observance and on no other: an `RDATE` names one
-    // transition and states no cadence, and repeating the rule on each explicit date would
-    // declare the same yearly series once per date.
-    if let Some(start) = component
+    // Only `DTSTART` anchors the rule.
+    // Each `RDATE` contributes a single transition.
+    let start = component
         .dtstart()
         .value()
-        .and_then(|value| wall_clock(value, offset_from))
-    {
-        let rule = read_rule(component, start, offset_from, meter, sink);
-        out.push(Observance::new(
-            start,
-            offset_from,
-            offset_to,
-            daylight,
+        .and_then(|value| wall_clock(value, offset_from));
+    if let Some(start) = start {
+        let rule = read_rule(component, start, offset_from, meter, sink, out.capacity());
+        let continues = matches!(
             rule,
-        ));
+            Some(YearlyRules {
+                patterns: YearlyPatterns::Clocks(ClockRules::NoRemainingCivilOnsets),
+                ..
+            })
+        );
+        let mut rules = rule
+            .into_iter()
+            .flat_map(YearlyRules::into_rules)
+            .peekable();
+        if rules.peek().is_some() {
+            out.extend(
+                rules.map(|rule| {
+                    Observance::new(start, offset_from, offset_to, daylight, Some(rule))
+                }),
+            );
+        } else {
+            let anchor = Observance::new(start, offset_from, offset_to, daylight, None);
+            out.push(if continues {
+                anchor.with_count_beyond_civil_range()
+            } else {
+                anchor
+            });
+        }
     }
-    push_dated_transitions(component, offset_from, offset_to, daylight, out);
+    let dated = push_dated_transitions(component, offset_from, offset_to, daylight, out);
+    start.is_some() || dated
 }
 
-/// Append one observance per `RDATE` value of `component`.
-///
-/// An `RDATE` is a list per line and may arrive on several lines, and RFC 5545 section 3.8.5.2
-/// puts no order on either, which is why [`TransitionTable::new`] sorts what it is handed.
-/// Entries this crate cannot read as a wall clock yield nothing; see the module note.
+/// Append one transition per readable `RDATE` field across all property lines.
+/// [`TransitionTable::new`] orders the result.
 fn push_dated_transitions(
     component: &Component,
     offset_from: UtcOffset,
     offset_to: UtcOffset,
     daylight: bool,
-    out: &mut Vec<Observance>,
-) {
+    out: &mut EarliestObservances,
+) -> bool {
+    let mut readable = false;
     let wanted = PropertyId::RDATE;
     for property in component.properties_named(&wanted) {
         for field in property
@@ -359,12 +281,13 @@ fn push_dated_transitions(
             .as_bytes()
             .split(|octet| *octet == b',')
         {
-            let Ok(value) = DateTimeValue::decode_value(field) else {
+            let Ok(value) = DateTimeValue::decode_property_field(property, field) else {
                 continue;
             };
             let Some(start) = wall_clock(value, offset_from) else {
                 continue;
             };
+            readable = true;
             out.push(Observance::new(
                 start,
                 offset_from,
@@ -374,16 +297,13 @@ fn push_dated_transitions(
             ));
         }
     }
+    readable
 }
 
-/// The wall clock `value` names on the clock running before a transition.
-///
-/// RFC 5545 section 3.6.5 writes an observance's `DTSTART` and `RDATE` as local times read
-/// against `TZOFFSETFROM`, so the ordinary case is the value's own fields taken as written. A
-/// value carrying `Z` violates that and still names a real instant, and the reading that
-/// recovers the producer's intent is that instant on this observance's own clock. A `DATE`
-/// carries no clock at all, and there is no hour to read out of one for a transition to happen
-/// at.
+/// Read a transition on the clock in effect before the change.
+/// For a local time, use its written fields.
+/// For a UTC value, convert its instant using `TZOFFSETFROM`.
+/// A date alone supplies no transition time.
 fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilDateTime> {
     match value {
         DateTimeValue::Local(stamp) | DateTimeValue::Zoned { stamp, .. } => Some(stamp),
@@ -395,30 +315,107 @@ fn wall_clock(value: DateTimeValue<'_>, offset_from: UtcOffset) -> Option<CivilD
     }
 }
 
-/// The rule repeating an observance, reporting the ones this crate declines to evaluate.
-///
-/// A second `RRULE` on one observance is outside the vocabulary rather than a rule to choose
-/// between: RFC 5545 section 3.6.5 gives an observance one cadence, and deciding which of two
-/// it is would be exactly the silent choice this crate is arranged against.
+#[derive(Debug)]
+struct YearlyRules {
+    patterns: YearlyPatterns,
+    interval: YearInterval,
+}
+
+impl YearlyRules {
+    fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
+        let Self { patterns, interval } = self;
+        patterns
+            .into_rules()
+            .map(move |rule| rule.with_year_interval(interval))
+    }
+}
+
+#[derive(Debug)]
+enum YearlyPatterns {
+    Clocks(ClockRules),
+    Single(YearlyRule),
+    Months {
+        months: Option<MonthSet>,
+        day: RuleDay,
+        at: CivilTime,
+        through: Option<CivilDate>,
+    },
+    DaySets {
+        dates: Box<YearDateMasks>,
+        at: CivilTime,
+        through: Option<CivilDate>,
+    },
+    WeekDates {
+        dates: Box<WeekYearMasks>,
+        at: CivilTime,
+        through: Option<CivilDate>,
+    },
+}
+
+impl YearlyPatterns {
+    fn into_rules(self) -> impl Iterator<Item = YearlyRule> {
+        let (single, monthly, compiled, weeks, clocks) = match self {
+            Self::Clocks(ClockRules::Patterns(rules)) => (None, None, None, None, Some(rules)),
+            Self::Clocks(ClockRules::NoRemainingCivilOnsets) => (None, None, None, None, None),
+            Self::Single(rule) => (Some(rule), None, None, None, None),
+            Self::Months {
+                months,
+                day,
+                at,
+                through,
+            } => (None, Some((months, day, at, through)), None, None, None),
+            Self::DaySets { dates, at, through } => {
+                (None, None, Some((dates, at, through)), None, None)
+            },
+            Self::WeekDates { dates, at, through } => {
+                (None, None, None, Some((dates, at, through)), None)
+            },
+        };
+        single
+            .into_iter()
+            .chain(clocks.into_iter().flatten())
+            .chain(monthly.into_iter().flat_map(|(months, day, at, through)| {
+                (1..=12)
+                    .filter(move |month| months.is_none_or(|selected| selected.contains(*month)))
+                    .filter_map(move |month| YearlyRule::new(month, day, at, through))
+            }))
+            .chain(
+                compiled
+                    .into_iter()
+                    .flat_map(|(dates, at, through)| dates.into_rules(at, through)),
+            )
+            .chain(
+                weeks
+                    .into_iter()
+                    .flat_map(|(dates, at, through)| dates.into_rules(at, through)),
+            )
+    }
+}
+
+/// Compile the observance rule or report an unsupported recurrence.
+/// More than one `RRULE` property leaves no unique cadence.
 fn read_rule<S: DiagnosticSink + ?Sized>(
     component: &Component,
     start: CivilDateTime,
     offset_from: UtcOffset,
     meter: &mut Meter,
     sink: &mut S,
-) -> Option<YearlyRule> {
+    capacity: usize,
+) -> Option<YearlyRules> {
     let wanted = PropertyId::RRULE;
     let mut written = component.properties_named(&wanted);
     let first = written.next()?;
-    let rule = if written.next().is_some() {
+    let rule = if written.next().is_some()
+        || !matches!(
+            first.declared_value_type(),
+            None | Some(Ok(ValueType::Recur))
+        ) {
         None
     } else {
-        parse_rule(first.value_text().as_bytes(), start, offset_from)
+        parse_rule(first.value_text().as_bytes(), start, offset_from, capacity)
     };
     if rule.is_none() {
-        // No subject: what this is about is one observance of a zone, and an observance has no
-        // name of its own to carry. The identifier alone would say less than it appears to,
-        // because a definition states several observances and only one of them was refused.
+        // The diagnostic applies to one unnamed observance within the zone.
         report(
             sink,
             meter,
@@ -430,263 +427,630 @@ fn read_rule<S: DiagnosticSink + ?Sized>(
     rule
 }
 
-/// One observance `RRULE`, read as the closed form or not at all.
+/// Compile an observance `RRULE` into annual patterns.
 ///
-/// The month and the day fall back to `DTSTART`'s own, which is what RFC 5545 section 3.3.10
-/// says an unstated `BYMONTH` or `BYMONTHDAY` means, and the transition time is `DTSTART`'s
-/// because section 3.6.5 gives an observance no other place to write one.
-fn parse_rule(text: &[u8], start: CivilDateTime, offset_from: UtcOffset) -> Option<YearlyRule> {
+/// Numeric `BYDAY` selects positions within a month or year.
+/// `BYWEEKNO` accepts weekdays without ordinals.
+/// A supported `BYMONTHDAY` without `BYMONTH` selects across all months.
+/// Default day selection uses the anchor's weekday for `BYWEEKNO` and its month day otherwise.
+/// Missing clock fields use `DTSTART` under RFC 5545 section 3.3.10.
+fn parse_rule(
+    text: &[u8],
+    start: CivilDateTime,
+    offset_from: UtcOffset,
+    capacity: usize,
+) -> Option<YearlyRules> {
     let parts = collect_parts(text, offset_from)?;
-    let month = match parts.month {
-        Some(stated) => stated,
-        None => start.date().month(),
+    if parts.has_clocks() {
+        let clocks = ClockSet::new(parts.hours, parts.minutes, parts.seconds, start.time());
+        let unpositioned = RuleParts {
+            set_positions: None,
+            ..parts
+        };
+        let end = match parts.end {
+            RuleEnd::Unlimited => ClockLimit::Unlimited,
+            RuleEnd::Until(last) => ClockLimit::Until(last),
+            RuleEnd::Count(count) => ClockLimit::Count(count),
+        };
+        let compiled = if parts.week_numbers.is_some() {
+            annual_clocks::compile(
+                &compile_week_masks(&unpositioned, start)?,
+                clocks,
+                parts.set_positions,
+                start,
+                parts.interval,
+                end,
+                capacity,
+            )?
+        } else {
+            annual_clocks::compile(
+                &compile_date_masks(&unpositioned, start)?,
+                clocks,
+                parts.set_positions,
+                start,
+                parts.interval,
+                end,
+                capacity,
+            )?
+        };
+        return Some(YearlyRules {
+            patterns: YearlyPatterns::Clocks(compiled),
+            interval: parts.interval,
+        });
+    }
+    validate_until(&parts, start, offset_from)?;
+    Some(YearlyRules {
+        patterns: compile_patterns(&parts, start)?,
+        interval: parts.interval,
+    })
+}
+
+/// Require `UNTIL` to name a generated onset, per RFC 5545 section 3.6.5.
+fn validate_until(parts: &RuleParts, start: CivilDateTime, offset_from: UtcOffset) -> Option<()> {
+    let RuleEnd::Until(last) = parts.end else {
+        return Some(());
     };
-    let day = day_form(parts, start.date())?;
-    YearlyRule::new(month, day, start.time(), parts.until)
+    let expected = CivilDateTime::new(last.date(), start.time());
+    if expected < start || expected.at_offset(offset_from)? != last.at_offset(offset_from)? {
+        return None;
+    }
+    if parts.week_numbers.is_some() {
+        let dates = compile_week_masks(parts, start)?;
+        return (parts.interval.contains(
+            dates.period_year(start.date())?,
+            dates.period_year(last.date())?,
+        ) && dates.contains(last.date())?)
+        .then_some(());
+    }
+    if !parts
+        .interval
+        .contains(start.date().year(), last.date().year())
+    {
+        return None;
+    }
+    let dates = compile_date_masks(parts, start)?;
+    let position = dates.count_through(last.date())?;
+    (dates.date_at(last.date().year(), position) == Some(last.date())).then_some(())
+}
+
+fn compile_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    if parts.week_numbers.is_some() {
+        return compile_week_patterns(parts, start);
+    }
+    if let RuleEnd::Count(count) = parts.end {
+        return compile_counted(parts, start, count);
+    }
+    if parts.year_days.is_some() || parts.set_positions.is_some() {
+        return compile_date_sets(parts, start);
+    }
+    if parts.month.is_none()
+        && parts.month_days.is_none()
+        && let Some(term) = parts.weekdays.and_then(WeekdaySet::single)
+        && let Some(ordinal) = term.ordinal()
+    {
+        return Some(YearlyPatterns::Single(YearlyRule::for_year_weekday(
+            term.weekday(),
+            ordinal,
+            start.time(),
+            parts.end.until(),
+        )));
+    }
+    let day = day_form(parts, start.date());
+    if day.is_none() {
+        return compile_date_sets(parts, start);
+    }
+    let day = day?;
+    if parts.month.is_some() || parts.month_days.is_some() {
+        return Some(YearlyPatterns::Months {
+            months: parts.month,
+            day,
+            at: start.time(),
+            through: parts.end.until(),
+        });
+    }
+    YearlyRule::new(start.date().month(), day, start.time(), parts.end.until())
+        .map(YearlyPatterns::Single)
+}
+
+fn compile_week_patterns(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    let mut dates = compile_week_masks(parts, start)?;
+    let through = if let RuleEnd::Count(count) = parts.end {
+        match counted_end(&dates, start.date(), parts.interval, count)? {
+            CountEnd::Within(last) => {
+                dates.retain_after(start.date(), last, parts.interval)?;
+                Some(last)
+            },
+            CountEnd::BeyondCivilRange => None,
+        }
+    } else {
+        parts.end.until()
+    };
+    Some(YearlyPatterns::WeekDates {
+        dates: Box::new(dates),
+        at: start.time(),
+        through,
+    })
+}
+
+fn compile_week_masks(parts: &RuleParts, start: CivilDateTime) -> Option<WeekYearMasks> {
+    if parts.numeric_weekdays {
+        return None;
+    }
+    let default = DateSelectors::Weekdays(WeekdaySet::singleton(WeekdayTerm::new(
+        start.date().weekday()?,
+        None,
+    )?)?);
+    let selectors = date_selectors(parts, default);
+    let scope = if parts.month.is_some() {
+        WeekdayScope::Month
+    } else {
+        WeekdayScope::Year
+    };
+    let filters = YearDateMasks::compile(parts.month, selectors, scope, None)?;
+    WeekYearMasks::compile(
+        &filters,
+        parts.week_numbers?,
+        parts.week_start,
+        parts.set_positions,
+    )
+}
+
+fn compile_counted(
+    parts: &RuleParts,
+    start: CivilDateTime,
+    count: NonZeroU32,
+) -> Option<YearlyPatterns> {
+    let mut dates = compile_date_masks(parts, start)?;
+    let through = match counted_end(&dates, start.date(), parts.interval, count)? {
+        CountEnd::Within(last) => {
+            dates.retain_after(start.date(), last, parts.interval)?;
+            Some(last)
+        },
+        CountEnd::BeyondCivilRange => None,
+    };
+    Some(YearlyPatterns::DaySets {
+        dates: Box::new(dates),
+        at: start.time(),
+        through,
+    })
+}
+
+fn compile_date_sets(parts: &RuleParts, start: CivilDateTime) -> Option<YearlyPatterns> {
+    Some(YearlyPatterns::DaySets {
+        dates: Box::new(compile_date_masks(parts, start)?),
+        at: start.time(),
+        through: parts.end.until(),
+    })
+}
+
+fn compile_date_masks(parts: &RuleParts, start: CivilDateTime) -> Option<YearDateMasks> {
+    let default_day =
+        parts.year_days.is_none() && parts.month_days.is_none() && parts.weekdays.is_none();
+    if default_day && parts.month.is_none() && parts.set_positions.is_some() && !parts.has_clocks()
+    {
+        return None;
+    }
+    let months = if default_day && parts.month.is_none() {
+        Some(MonthSet::singleton(start.date().month())?)
+    } else {
+        parts.month
+    };
+    let default = DateSelectors::MonthDays {
+        days: MonthDaySet::singleton(i8::try_from(start.date().day()).ok()?)?,
+        weekdays: None,
+    };
+    let selectors = date_selectors(parts, default);
+    let scope = if parts.month.is_some() {
+        WeekdayScope::Month
+    } else {
+        WeekdayScope::Year
+    };
+    YearDateMasks::compile(months, selectors, scope, parts.set_positions)
+}
+
+fn date_selectors(parts: &RuleParts, default: DateSelectors) -> DateSelectors {
+    if let Some(days) = parts.year_days {
+        DateSelectors::YearDays {
+            days,
+            month_days: parts.month_days,
+            weekdays: parts.weekdays,
+        }
+    } else {
+        match (parts.month_days, parts.weekdays) {
+            (Some(days), weekdays) => DateSelectors::MonthDays { days, weekdays },
+            (None, Some(weekdays)) => DateSelectors::Weekdays(weekdays),
+            (None, None) => default,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RuleEnd {
+    Unlimited,
+    Until(CivilDateTime),
+    Count(NonZeroU32),
+}
+
+impl RuleEnd {
+    const fn until(self) -> Option<CivilDate> {
+        match self {
+            Self::Until(stamp) => Some(stamp.date()),
+            Self::Unlimited | Self::Count(_) => None,
+        }
+    }
+
+    fn take(&mut self, end: Option<Self>) -> bool {
+        if !matches!(self, Self::Unlimited) {
+            return false;
+        }
+        match end {
+            Some(end) => {
+                *self = end;
+                true
+            },
+            None => false,
+        }
+    }
 }
 
 /// What a `RECUR` value said, as far as this crate reads one.
 #[derive(Clone, Copy, Debug)]
 struct RuleParts {
-    /// Whether `FREQ=YEARLY` was stated. Nothing else is a transition rule.
+    /// Whether the rule specifies `FREQ=YEARLY`.
     yearly: bool,
-    /// The one `BYMONTH` value, absent when the rule states none.
-    month: Option<u8>,
-    /// The one `BYDAY` entry, absent when the rule states none.
-    weekday: Option<WeekdayTerm>,
-    /// The `BYMONTHDAY` values, in the order they were written.
-    month_days: MonthDays,
-    /// The last date the rule applies to, from `UNTIL`.
-    until: Option<CivilDate>,
+    interval: YearInterval,
+    week_start: Weekday,
+    week_numbers: Option<WeekNumbers>,
+    /// The explicit `BYMONTH` set, absent when the rule states none.
+    month: Option<MonthSet>,
+    /// The nonempty `BYDAY` set, absent when the rule states none.
+    weekdays: Option<WeekdaySet>,
+    numeric_weekdays: bool,
+    /// The nonempty `BYMONTHDAY` set, absent when the rule states none.
+    month_days: Option<MonthDaySet>,
+    /// The nonempty `BYYEARDAY` set, absent when the rule states none.
+    year_days: Option<AnnualPositions>,
+    /// Positions within the complete yearly candidate set.
+    set_positions: Option<AnnualPositions>,
+    hours: Option<u64>,
+    minutes: Option<u64>,
+    seconds: Option<u64>,
+    end: RuleEnd,
 }
 
 impl RuleParts {
     /// A reading with nothing in it yet.
     const EMPTY: Self = Self {
         yearly: false,
+        interval: YearInterval::YEARLY,
+        week_start: Weekday::Monday,
+        week_numbers: None,
         month: None,
-        weekday: None,
-        month_days: MonthDays::EMPTY,
-        until: None,
-    };
-}
-
-/// One `BYDAY` entry: an optional ordinal and the weekday it counts.
-#[derive(Clone, Copy, Debug)]
-struct WeekdayTerm {
-    /// Which occurrence, as `2SU` and `-1SU` write one; absent for a bare `SU`.
-    ordinal: Option<i8>,
-    /// The weekday.
-    weekday: Weekday,
-}
-
-/// The `BYMONTHDAY` values of one rule, in a buffer that cannot grow.
-#[derive(Clone, Copy, Debug)]
-struct MonthDays {
-    /// The values as written, of which the first `count` are live.
-    values: [i8; MAX_MONTH_DAYS],
-    /// How many are live.
-    count: usize,
-}
-
-impl MonthDays {
-    /// No values at all.
-    const EMPTY: Self = Self {
-        values: [0; MAX_MONTH_DAYS],
-        count: 0,
+        weekdays: None,
+        numeric_weekdays: false,
+        month_days: None,
+        year_days: None,
+        set_positions: None,
+        hours: None,
+        minutes: None,
+        seconds: None,
+        end: RuleEnd::Unlimited,
     };
 
-    /// Keep `day`, or answer `false` because there is no room and therefore no reading.
-    fn push(&mut self, day: i8) -> bool {
-        let Some(slot) = self.values.get_mut(self.count) else {
-            return false;
-        };
-        *slot = day;
-        self.count = self.count.saturating_add(1);
-        true
+    const fn has_clocks(self) -> bool {
+        self.hours.is_some() || self.minutes.is_some() || self.seconds.is_some()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RulePartName {
+    Frequency,
+    Interval,
+    WeekStart,
+    WeekNumber,
+    Month,
+    Weekday,
+    MonthDay,
+    YearDay,
+    SetPosition,
+    Hour,
+    Minute,
+    Second,
+    Count,
+    Until,
+}
+
+impl RulePartName {
+    const ALL: [Self; 14] = [
+        Self::Frequency,
+        Self::Interval,
+        Self::WeekStart,
+        Self::WeekNumber,
+        Self::Month,
+        Self::Weekday,
+        Self::MonthDay,
+        Self::YearDay,
+        Self::SetPosition,
+        Self::Hour,
+        Self::Minute,
+        Self::Second,
+        Self::Count,
+        Self::Until,
+    ];
+
+    fn read(name: &[u8]) -> Option<(usize, Self)> {
+        Self::ALL
+            .into_iter()
+            .enumerate()
+            .find(|(_, part)| part.as_bytes().eq_ignore_ascii_case(name))
     }
 
-    /// The lowest and highest value, present only when they and everything between are here.
-    ///
-    /// Sorted rather than assumed sorted: a producer writing `31,25,26,27,28,29,30` wrote the
-    /// same set as one writing them in order, and what the window forms name is the set.
-    fn contiguous_run(mut self) -> Option<(i8, i8)> {
-        let used = self.values.get_mut(..self.count)?;
-        used.sort_unstable();
-        let low = *used.first()?;
-        let mut highest = low;
-        for value in used.iter().skip(1) {
-            if *value != highest.checked_add(1)? {
-                return None;
-            }
-            highest = *value;
+    const fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Frequency => b"FREQ",
+            Self::Interval => b"INTERVAL",
+            Self::WeekStart => b"WKST",
+            Self::WeekNumber => b"BYWEEKNO",
+            Self::Month => b"BYMONTH",
+            Self::Weekday => b"BYDAY",
+            Self::MonthDay => b"BYMONTHDAY",
+            Self::YearDay => b"BYYEARDAY",
+            Self::SetPosition => b"BYSETPOS",
+            Self::Hour => b"BYHOUR",
+            Self::Minute => b"BYMINUTE",
+            Self::Second => b"BYSECOND",
+            Self::Count => b"COUNT",
+            Self::Until => b"UNTIL",
         }
-        Some((low, highest))
     }
 }
 
-/// Read every `name=value` term of a `RECUR` value, or refuse the whole of it.
-///
-/// Refusing at the first unrecognized term rather than reading around it is the difference
-/// between a rule this crate evaluates and one it half evaluates: a `BYSETPOS` nobody read
-/// changes which day the rule names, and a transition on the wrong day is worse than none.
+/// Refuse unknown parts rather than evaluating only part of a recurrence rule.
 fn collect_parts(text: &[u8], offset_from: UtcOffset) -> Option<RuleParts> {
     let mut parts = RuleParts::EMPTY;
-    for term in text.split(|octet| *octet == b';') {
-        let equals = term.iter().position(|octet| *octet == b'=')?;
-        let (name, rest) = term.split_at_checked(equals)?;
-        let value = rest.get(1..)?;
-        if !take_part(&mut parts, name, value, offset_from) {
+    let mut seen = [false; RulePartName::ALL.len()];
+    for term in crate::internal::recur::parts(text) {
+        let (index, name) = RulePartName::read(term.name())?;
+        let slot = seen.get_mut(index)?;
+        if *slot {
+            return None;
+        }
+        *slot = true;
+        if !take_part(&mut parts, name, term.value(), offset_from) {
             return None;
         }
     }
     parts.yearly.then_some(parts)
 }
 
-/// Read one `RECUR` term into `parts`, answering whether it is one this crate evaluates.
-///
-/// `WKST` is accepted and ignored because it can only change a `BYWEEKNO` reading, and a rule
-/// carrying `BYWEEKNO` falls off the end of this function anyway.
-fn take_part(parts: &mut RuleParts, name: &[u8], value: &[u8], offset_from: UtcOffset) -> bool {
-    if name.eq_ignore_ascii_case(b"FREQ") {
-        parts.yearly = value.eq_ignore_ascii_case(b"YEARLY");
-        return parts.yearly;
+/// Validate one unique supported part before compiling any transition.
+fn take_part(
+    parts: &mut RuleParts,
+    name: RulePartName,
+    value: &[u8],
+    offset_from: UtcOffset,
+) -> bool {
+    match name {
+        RulePartName::Frequency => {
+            parts.yearly = value.eq_ignore_ascii_case(b"YEARLY");
+            parts.yearly
+        },
+        RulePartName::Interval => match crate::internal::recur::decode_positive_decimal(value) {
+            Ok(interval) => {
+                parts.interval = YearInterval::new(interval);
+                true
+            },
+            Err(_) => false,
+        },
+        RulePartName::WeekStart => match weekday_of(value) {
+            Some(start) => {
+                parts.week_start = start;
+                true
+            },
+            None => false,
+        },
+        RulePartName::WeekNumber => {
+            parts.week_numbers = read_week_numbers(value);
+            parts.week_numbers.is_some()
+        },
+        RulePartName::Month => {
+            parts.month = read_months(value);
+            parts.month.is_some()
+        },
+        RulePartName::Weekday => match read_weekdays(value) {
+            Some(reading) => {
+                parts.weekdays = Some(reading.days);
+                parts.numeric_weekdays = reading.numeric;
+                true
+            },
+            None => false,
+        },
+        RulePartName::MonthDay => {
+            parts.month_days = read_month_days(value);
+            parts.month_days.is_some()
+        },
+        RulePartName::YearDay => {
+            parts.year_days = read_annual_positions(value);
+            parts.year_days.is_some()
+        },
+        RulePartName::SetPosition => {
+            parts.set_positions = read_annual_positions(value);
+            parts.set_positions.is_some()
+        },
+        RulePartName::Hour => {
+            parts.hours = read_clock_field(value, 23);
+            parts.hours.is_some()
+        },
+        RulePartName::Minute => {
+            parts.minutes = read_clock_field(value, 59);
+            parts.minutes.is_some()
+        },
+        RulePartName::Second => {
+            parts.seconds = read_clock_field(value, 60);
+            parts.seconds.is_some()
+        },
+        RulePartName::Count => parts.end.take(
+            crate::internal::recur::decode_positive_decimal(value)
+                .ok()
+                .map(RuleEnd::Count),
+        ),
+        RulePartName::Until => parts
+            .end
+            .take(until_clock(value, offset_from).map(RuleEnd::Until)),
     }
-    if name.eq_ignore_ascii_case(b"INTERVAL") {
-        return value == b"1";
-    }
-    if name.eq_ignore_ascii_case(b"WKST") {
-        return true;
-    }
-    if name.eq_ignore_ascii_case(b"BYMONTH") {
-        parts.month = month_number(value);
-        return parts.month.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"BYDAY") {
-        parts.weekday = weekday_term(value);
-        return parts.weekday.is_some();
-    }
-    if name.eq_ignore_ascii_case(b"BYMONTHDAY") {
-        return read_month_days(value, &mut parts.month_days);
-    }
-    if name.eq_ignore_ascii_case(b"UNTIL") {
-        parts.until = until_date(value, offset_from);
-        return parts.until.is_some();
-    }
-    false
 }
 
-/// Read a `BYMONTHDAY` list into `out`.
-fn read_month_days(value: &[u8], out: &mut MonthDays) -> bool {
+fn read_months(value: &[u8]) -> Option<MonthSet> {
+    let mut months: Option<MonthSet> = None;
     for field in value.split(|octet| *octet == b',') {
-        let Some(day) = month_day_number(field) else {
-            return false;
-        };
-        if !out.push(day) {
-            return false;
-        }
+        let month = month_number(field)?;
+        months = Some(match months {
+            None => MonthSet::singleton(month)?,
+            Some(months) => months.with_month(month)?,
+        });
     }
-    out.count != 0
+    months
 }
 
-/// Which day of its month a rule names, or `None` for a shape this crate does not evaluate.
-fn day_form(parts: RuleParts, start: CivilDate) -> Option<RuleDay> {
-    match (parts.weekday, parts.month_days.count) {
-        (Some(term), 0) => nth_form(term),
-        (Some(term), _) => window_form(term, parts.month_days),
-        // No day part at all: RFC 5545 section 3.3.10 takes the day from `DTSTART`. A rule
-        // anchored on the 29th of February names nothing in three years of four, which the
-        // evaluation answers `None` to rather than moving to a nearby date.
-        (None, 0) => Some(RuleDay::DayOfMonth(start.day())),
-        (None, 1) => fixed_form(parts.month_days),
-        (None, _) => None,
+fn read_annual_positions(value: &[u8]) -> Option<AnnualPositions> {
+    let mut positions: Option<AnnualPositions> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let number = signed_number::<3>(field)?;
+        positions = Some(match positions {
+            None => AnnualPositions::singleton(number)?,
+            Some(positions) => positions.with_position(number)?,
+        });
+    }
+    positions
+}
+
+/// Read a nonempty `BYMONTHDAY` set without retaining repeated spellings.
+fn read_month_days(value: &[u8]) -> Option<MonthDaySet> {
+    let mut days: Option<MonthDaySet> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let day = month_day_number(field)?;
+        days = Some(match days {
+            Some(selected) => selected.with_day(day)?,
+            None => MonthDaySet::singleton(day)?,
+        });
+    }
+    days
+}
+
+fn read_week_numbers(value: &[u8]) -> Option<WeekNumbers> {
+    let mut weeks: Option<WeekNumbers> = None;
+    for field in value.split(|octet| *octet == b',') {
+        let number = signed_number::<2>(field)?;
+        weeks = Some(match weeks {
+            None => WeekNumbers::singleton(number)?,
+            Some(weeks) => weeks.with_number(number)?,
+        });
+    }
+    weeks
+}
+
+struct WeekdayReading {
+    days: WeekdaySet,
+    numeric: bool,
+}
+
+fn read_weekdays(value: &[u8]) -> Option<WeekdayReading> {
+    let mut weekdays: Option<WeekdaySet> = None;
+    let mut numeric = false;
+    for field in value.split(|octet| *octet == b',') {
+        let term = weekday_term(field)?;
+        numeric |= term.ordinal().is_some();
+        weekdays = Some(match weekdays {
+            None => WeekdaySet::singleton(term)?,
+            Some(weekdays) => weekdays.with_term(term)?,
+        });
+    }
+    Some(WeekdayReading {
+        days: weekdays?,
+        numeric,
+    })
+}
+
+/// Determine the day selector for one month, or return `None` for an unsupported form.
+fn day_form(parts: &RuleParts, start: CivilDate) -> Option<RuleDay> {
+    if let Some(weekdays) = parts.weekdays {
+        let term = weekdays.single()?;
+        return match parts.month_days {
+            None => nth_form(term),
+            Some(days) => window_form(term, days),
+        };
+    }
+    match parts.month_days {
+        // RFC 5545 section 3.3.10 supplies the month day from `DTSTART`.
+        // A February 29 anchor can leave common years without an onset.
+        None => Some(RuleDay::DayOfMonth(start.day())),
+        Some(days) if days.len() == 1 => fixed_form(days),
+        Some(_) => None,
     }
 }
 
 /// `BYDAY=2SU` and `BYDAY=-1SU`, which name one weekday of the month outright.
 fn nth_form(term: WeekdayTerm) -> Option<RuleDay> {
-    let week = match term.ordinal? {
-        1 => NthWeek::First,
-        2 => NthWeek::Second,
-        3 => NthWeek::Third,
-        4 => NthWeek::Fourth,
-        5 => NthWeek::Fifth,
-        -1 => NthWeek::Last,
-        // `-2SU` and the rest are legal `RECUR` and name no transition any zone database
-        // generates, so they are a reported gap rather than a form guessed at.
-        _ => return None,
-    };
+    let week = term.ordinal()?;
     Some(RuleDay::Nth {
-        weekday: term.weekday,
+        weekday: term.weekday(),
         week,
     })
 }
 
-/// `BYDAY=SU;BYMONTHDAY=8,..,14` and its two siblings, a weekday inside a window of a week.
+/// One weekday inside a contiguous seven-day month-day window.
 ///
-/// A window of seven consecutive days holds exactly one of each weekday, so the pair names one
-/// date. A window ending at the last day a month can have is read as [`RuleDay::OnOrBefore`]
-/// rather than [`RuleDay::OnOrAfter`], which is the spelling the model documents for it; the
-/// two agree in every month, because a window a short month clips is clipped at that same end
-/// either way. A window of negative days ending at `-1` is the last such weekday, which
-/// [`NthWeek::Last`] already says exactly and in every month length.
-fn window_form(term: WeekdayTerm, month_days: MonthDays) -> Option<RuleDay> {
-    if term.ordinal.is_some() || month_days.count != RUN_LENGTH {
+/// Positive windows keep their lower bound through [`RuleDay::OnOrAfter`].
+/// Its weekday shift is at most six days, and date construction rejects results outside the month.
+/// Negative days `-7` through `-1` select the month's last matching weekday.
+fn window_form(term: WeekdayTerm, month_days: MonthDaySet) -> Option<RuleDay> {
+    if term.ordinal().is_some() || month_days.len() != RUN_LENGTH {
         return None;
     }
     let (low, highest) = month_days.contiguous_run()?;
     if highest == -1 {
         return Some(RuleDay::Nth {
-            weekday: term.weekday,
+            weekday: term.weekday(),
             week: NthWeek::Last,
         });
     }
     if low < 1 {
         return None;
     }
-    if highest == 31 {
-        return Some(RuleDay::OnOrBefore {
-            weekday: term.weekday,
-            day: 31,
-        });
-    }
     Some(RuleDay::OnOrAfter {
-        weekday: term.weekday,
+        weekday: term.weekday(),
         day: u8::try_from(low).ok()?,
     })
 }
 
-/// `BYMONTHDAY=15` and `BYMONTHDAY=-1` with no `BYDAY` beside them.
-fn fixed_form(month_days: MonthDays) -> Option<RuleDay> {
+/// One positive or negative `BYMONTHDAY` position with no `BYDAY` beside it.
+fn fixed_form(month_days: MonthDaySet) -> Option<RuleDay> {
     let (day, _) = month_days.contiguous_run()?;
     if day == -1 {
         return Some(RuleDay::LastDayOfMonth);
     }
-    // Only the last day counts backwards. `-2` names the day before the last one, which the
-    // model has no form for and which no zone definition writes.
+    if day.is_negative() {
+        return NonZeroU8::new(day.unsigned_abs()).map(RuleDay::FromMonthEnd);
+    }
     u8::try_from(day).ok().map(RuleDay::DayOfMonth)
 }
 
-/// The last date an `UNTIL` keeps a rule alive, on the observance's own clock.
-///
-/// RFC 5545 section 3.3.10 requires `UNTIL` to be UTC and section 3.6.5 evaluates an observance
-/// in wall-clock terms, so the two have to be reconciled somewhere. Here, once, against
-/// `TZOFFSETFROM` — the clock still running when the transition arrives. A rule whose end
-/// cannot be placed on that clock is one this crate does not evaluate, rather than one whose
-/// end is quietly dropped and which therefore runs forever.
-fn until_date(value: &[u8], offset_from: UtcOffset) -> Option<CivilDate> {
+/// Read the UTC bound on the clock in use before the transition.
+/// Reject bounds outside the civil range.
+fn until_clock(value: &[u8], offset_from: UtcOffset) -> Option<CivilDateTime> {
     let written = DateTimeValue::decode_value(value).ok()?;
     match written {
-        DateTimeValue::Date(date) => Some(date),
-        DateTimeValue::Local(_) | DateTimeValue::Utc(_) | DateTimeValue::Zoned { .. } => {
-            wall_clock(written, offset_from).map(CivilDateTime::date)
-        },
+        DateTimeValue::Utc(_) => wall_clock(written, offset_from),
+        DateTimeValue::Date(_) | DateTimeValue::Local(_) | DateTimeValue::Zoned { .. } => None,
     }
 }
 
-/// One `BYMONTH` value, `1` through `12`.
+/// One unsigned `BYMONTH` value, `1` through `12`.
 fn month_number(value: &[u8]) -> Option<u8> {
-    let number = signed_number(value)?;
+    if !value.first().is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+    let number = signed_number::<2>(value)?;
     if !(1..=12).contains(&number) {
         return None;
     }
@@ -695,28 +1059,25 @@ fn month_number(value: &[u8]) -> Option<u8> {
 
 /// One `BYMONTHDAY` value, `1` through `31` or `-31` through `-1`.
 fn month_day_number(value: &[u8]) -> Option<i8> {
-    let number = signed_number(value)?;
-    (-31..=31).contains(&number).then_some(number)
+    let number = signed_number::<2>(value)?;
+    if !(-31..=31).contains(&number) {
+        return None;
+    }
+    i8::try_from(number).ok()
 }
 
-/// One `BYDAY` entry.
-///
-/// A list — `BYDAY=SA,SU` — is refused here rather than by a check of its own: whatever precedes
-/// the two-letter name has to be a number, and `SA,` is not one.
+/// One optional ordinal and its two-letter weekday.
 fn weekday_term(value: &[u8]) -> Option<WeekdayTerm> {
     let split = value.len().checked_sub(2)?;
     let (prefix, name) = value.split_at_checked(split)?;
     let weekday = weekday_of(name)?;
     if prefix.is_empty() {
-        return Some(WeekdayTerm {
-            ordinal: None,
-            weekday,
-        });
+        return WeekdayTerm::new(weekday, None);
     }
-    Some(WeekdayTerm {
-        ordinal: Some(signed_number(prefix)?),
+    WeekdayTerm::new(
         weekday,
-    })
+        Some(i8::try_from(signed_number::<2>(prefix)?).ok()?),
+    )
 }
 
 /// The weekday RFC 5545 section 3.3.10 spells `name`, compared as that section compares one.
@@ -726,22 +1087,19 @@ fn weekday_of(name: &[u8]) -> Option<Weekday> {
         .find(|day| name.eq_ignore_ascii_case(day.as_bytes()))
 }
 
-/// One optionally signed one- or two-digit number, never zero.
-///
-/// Zero is refused because every part this reads for excludes it: RFC 5545 section 3.3.10 has
-/// no month zero, no month day zero and no `0SU`.
-fn signed_number(bytes: &[u8]) -> Option<i8> {
+/// One optionally signed nonzero decimal within the declared digit width.
+fn signed_number<const DIGITS: usize>(bytes: &[u8]) -> Option<i16> {
     let (negative, digits) = match bytes.split_first() {
         Some((&b'-', tail)) => (true, tail),
         Some((&b'+', tail)) => (false, tail),
         _ => (false, bytes),
     };
-    if digits.is_empty() || digits.len() > 2 || !digits.iter().all(u8::is_ascii_digit) {
+    if digits.is_empty() || digits.len() > DIGITS || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let mut total: i8 = 0;
+    let mut total: i16 = 0;
     for octet in digits {
-        let place = i8::try_from(octet.wrapping_sub(b'0')).ok()?;
+        let place = i16::from(octet.wrapping_sub(b'0'));
         total = total.checked_mul(10)?.checked_add(place)?;
     }
     if total == 0 {
@@ -754,18 +1112,8 @@ fn signed_number(bytes: &[u8]) -> Option<i8> {
     }
 }
 
-/// Report each identifier a `TZID` parameter names that no definition in `zones` backs.
-///
-/// Once per identifier rather than once per property, and each report *names* the identifier.
-/// A [`Location`] cannot: an [`crate::internal::core::Property`] owns fresh unfolded octets rather than the
-/// offsets they were read from, so any span this produced would address a buffer the caller
-/// never handed in. Without the name three undefined zones arrived as three diagnostics that
-/// were equal as values, which told a caller that something was missing and not what to find.
-///
-/// An identifier the caller's own zone-count bound refused is not reported here. The calendar
-/// defines it; what dropped it is in `refused`, and it was reported there under
-/// [`DiagnosticCode::VtimezoneComponentsTruncated`]. Saying instead that the file never defined
-/// it would attribute the caller's policy to the file.
+/// Report each undefined `TZID` once with the identifier as its subject.
+/// Traverse nested components with an explicit worklist.
 fn report_undefined<S: DiagnosticSink + ?Sized>(
     calendar: &Component,
     zones: &VtimezoneSet,
@@ -779,9 +1127,8 @@ fn report_undefined<S: DiagnosticSink + ?Sized>(
     while let Some(component) = pending.pop() {
         for property in component.properties() {
             for parameter in property.parameters_named(b"TZID") {
-                let named = parameter.unquoted();
-                // An empty `TZID` names no zone, which is the reading `ical-core` already gives
-                // it when it declines to make such a value a zoned one.
+                let named = parameter.zone_identifier();
+                // An empty `TZID` names no zone, which is the reading `ical-core` already gives it when it declines to make such a value a zoned one.
                 if !named.is_empty() && !is_defined(zones, refused, named) {
                     undefined.insert(named);
                 }
@@ -800,23 +1147,13 @@ fn report_undefined<S: DiagnosticSink + ?Sized>(
     }
 }
 
-/// Whether `named` is an identifier this calendar defined, compared by exact bytes.
-///
-/// Defined covers both the definitions that were admitted and the ones the caller's bound
-/// turned back, because both are definitions the file wrote.
-///
-/// Octets that are not UTF-8 match nothing, because a definition's identifier is text. That is
-/// the refusal [`identifier`] makes at the other end, and for the same reason.
+/// Whether the calendar defines the exact identifier, including a definition that exceeded the zone limit.
 fn is_defined(zones: &VtimezoneSet, refused: &BTreeSet<Box<str>>, named: &[u8]) -> bool {
     str::from_utf8(named).is_ok_and(|text| zones.table(text).is_some() || refused.contains(text))
 }
 
-/// Offer one diagnostic about this calendar, charging a refusal to `meter`.
-///
-/// The location is [`Location::NOWHERE`] throughout, and that is a statement rather than an
-/// omission: what this unit reads is a tree of properties owning fresh octets, so any span it
-/// produced would address a buffer the caller never handed in. What a report can carry instead
-/// is the name of the zone it is about, which is `subject`.
+/// Report a diagnostic with an optional subject and charge any sink refusal.
+/// The component tree has no input spans, so the diagnostic uses [`Location::NOWHERE`].
 fn report<S: DiagnosticSink + ?Sized>(
     sink: &mut S,
     meter: &mut Meter,
@@ -873,8 +1210,7 @@ END:STANDARD
 END:VTIMEZONE
 ";
 
-    /// Europe/Berlin, whose two transitions both happen at 01:00 UTC and are written at
-    /// different local hours because of it.
+    /// Both Berlin transitions occur at 01:00 UTC and have different local times.
     const BERLIN: &str = "\
 BEGIN:VTIMEZONE
 TZID:Europe/Berlin
@@ -914,10 +1250,7 @@ END:DAYLIGHT
 END:VTIMEZONE
 ";
 
-    /// `America/New_York` written as an explicit table of dates that stops at the end of 2029.
-    ///
-    /// The dates are the ones the United States rule actually produces: the second Sunday in
-    /// March and the first Sunday in November of 2027, 2028 and 2029.
+    /// Explicit New York transitions cover the second Sunday in March and the first Sunday in November from 2027 through 2029.
     const NEW_YORK_DATED: &str = "\
 BEGIN:VTIMEZONE
 TZID:America/New_York
@@ -936,8 +1269,7 @@ END:STANDARD
 END:VTIMEZONE
 ";
 
-    /// `America/New_York` with the rules from before the 2007 change beside the ones after it,
-    /// which is the shape Lightning and libical write for a zone whose government moved it.
+    /// New York rules on both sides of the 2007 change.
     const NEW_YORK_BOTH_RULES: &str = "\
 BEGIN:VTIMEZONE
 TZID:America/New_York
@@ -971,7 +1303,7 @@ END:VTIMEZONE
     /// One observance as the real zone's published rules describe it.
     #[derive(Clone, Copy, Debug)]
     struct Expected {
-        /// The wall clock the transition begins at, read against `offset_from`.
+        /// The local transition time under `offset_from`.
         start: CivilDateTime,
         /// Seconds east of UTC before it.
         offset_from: i32,
@@ -983,10 +1315,7 @@ END:VTIMEZONE
         day: RuleDay,
     }
 
-    /// The fixture text with the terminators RFC 5545 section 3.1 requires.
-    ///
-    /// The fixtures are written with bare line feeds above so they read as the files they were
-    /// copied from, and converted here so the reader is handed conforming octets.
+    /// Convert the fixture's line endings to RFC 5545 section 3.1 terminators.
     fn crlf(text: &str) -> String {
         let mut out = String::new();
         for line in text.lines() {
@@ -1007,7 +1336,7 @@ END:VTIMEZONE
         out
     }
 
-    /// Read `body` as a calendar under `limits`, answering with the zones and what was said.
+    /// Read the fixture under the supplied limits and return its definitions and diagnostics.
     fn read_under(body: &str, limits: Limits) -> (VtimezoneSet, Vec<Diagnostic>) {
         let text = calendar_text(body);
         let document = Document::parse(text.as_bytes(), limits, &mut IgnoreDiagnostics).unwrap();
@@ -1052,7 +1381,7 @@ END:VTIMEZONE
         reported.first().copied().map(Diagnostic::severity)
     }
 
-    /// The `BYDAY` form every one of these zones is written with.
+    /// The Sunday selector used by the zone fixtures.
     fn sunday(week: NthWeek) -> RuleDay {
         RuleDay::Nth {
             weekday: Weekday::Sunday,
@@ -1068,7 +1397,7 @@ END:VTIMEZONE
         )
     }
 
-    /// A definition whose one observance starts on 25 March 2007 at 02:00 and carries `rule`.
+    /// The fixture anchors its rule at `20070325T020000`.
     fn ruled(rule: &str) -> String {
         format!(
             "BEGIN:VTIMEZONE\nTZID:Z\nBEGIN:DAYLIGHT\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0200\n\
@@ -1103,12 +1432,7 @@ END:VTIMEZONE
         }
     }
 
-    /// How many instants `local` names across `transition`, counted the way a resolver must.
-    ///
-    /// A reading under an offset counts only where it lands on the side of the transition that
-    /// offset actually governs. Unit 2 owns the real one; the definition is restated here so
-    /// that what these tests assert is the model this unit built out of a real zone's published
-    /// rules, rather than the resolver agreeing with itself.
+    /// Count the readings for which the candidate offset governs the resulting instant.
     fn readings_of(transition: Observance, local: CivilDateTime) -> usize {
         let Some(moment) = transition.start().at_offset(transition.offset_from()) else {
             return 0;
@@ -1170,8 +1494,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A zone whose daylight saving is half an hour, which a reader that assumed an hour reads
-    /// as an offset nobody wrote.
+    /// A zone whose daylight saving is half an hour, which a reader that assumed an hour reads as an offset nobody wrote.
     #[test]
     fn a_zone_whose_daylight_saving_is_half_an_hour_reads_as_half_an_hour() {
         assert_reads_as(
@@ -1196,8 +1519,7 @@ END:VTIMEZONE
         );
     }
 
-    /// Europe/Berlin moves at 01:00 UTC in both directions and writes two different local hours
-    /// to say so, which is the pair a reader that mixed up the two offsets gets wrong.
+    /// The two local transition hours map to the same UTC hour.
     #[test]
     fn a_zone_that_transitions_at_one_utc_hour_reads_back_as_that_hour() {
         for observance in observances_of(BERLIN, "Europe/Berlin") {
@@ -1211,8 +1533,7 @@ END:VTIMEZONE
         }
     }
 
-    /// The hour that repeats and the hour that does not exist, both derived from what was read
-    /// and both taken from real transitions rather than from this crate's own answer.
+    /// Real transitions supply independent expectations for the gap and fold.
     #[test]
     fn an_hour_that_repeats_and_an_hour_that_does_not_are_both_in_what_was_read() {
         let eastern = observances_of(NEW_YORK_DATED, "America/New_York");
@@ -1234,8 +1555,7 @@ END:VTIMEZONE
         assert_eq!(readings_of(fall, stamp(2027, 11, 7, 3, 30)), 1);
     }
 
-    /// Lord Howe's fold is thirty minutes wide, so an hour-wide reading of it reports an
-    /// ambiguity at 01:15 where the zone has none.
+    /// Lord Howe's fold is thirty minutes wide, so an hour-wide reading of it reports an ambiguity at 01:15 where the zone has none.
     #[test]
     fn a_half_hour_fold_is_half_an_hour_wide_and_not_an_hour() {
         let howe = observances_of(LORD_HOWE, "Australia/Lord_Howe");
@@ -1286,8 +1606,7 @@ END:VTIMEZONE
         assert!(table.coverage_end() < Some(date(2035, 6, 1)));
     }
 
-    /// A zone whose government moved its rules after 2007 keeps both, and each `UNTIL` is dated
-    /// on the observance's own clock rather than on the UTC one it was written in.
+    /// Each historical rule uses its observance's offset to interpret the UTC `UNTIL`.
     #[test]
     fn a_zone_that_changed_its_rules_keeps_both_and_dates_each_on_its_own_clock() {
         let (zones, reported) = read(NEW_YORK_BOTH_RULES);
@@ -1311,9 +1630,9 @@ END:VTIMEZONE
         );
     }
 
-    /// A `TZID` is not an IANA identifier and this reader does not pretend otherwise.
+    /// Calendar identifiers can include vendor prefixes.
     #[test]
-    fn an_identifier_is_filed_exactly_as_it_was_written() {
+    fn an_identifier_keeps_its_literal_characters() {
         let written = [
             "America/New_York",
             "W. Europe Standard Time",
@@ -1325,7 +1644,7 @@ END:VTIMEZONE
         for tzid in written {
             let (zones, reported) = read(&definition(tzid));
             assert!(codes(&reported).is_empty(), "{tzid}");
-            let filed = tzid.trim_matches('"');
+            let filed = tzid;
             assert!(
                 zones.table(filed).is_some(),
                 "{tzid} should be filed under {filed}"
@@ -1344,8 +1663,7 @@ END:VTIMEZONE
         );
     }
 
-    /// Section 3.6.5 requires an observance and files without one exist, so the zone is
-    /// declared, reported, and answers nothing rather than answering UTC.
+    /// A definition without observances keeps its identifier and supplies no offset.
     #[test]
     fn a_definition_with_no_observance_is_reported_and_still_a_zone() {
         let (zones, reported) = read("BEGIN:VTIMEZONE\nTZID:Europe/Berlin\nEND:VTIMEZONE\n");
@@ -1364,14 +1682,14 @@ END:VTIMEZONE
     fn a_rule_this_crate_does_not_evaluate_is_a_note_and_the_dtstart_still_stands() {
         let refused = [
             "FREQ=MONTHLY;BYMONTHDAY=1",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=1",
-            "FREQ=YEARLY;BYMONTH=3,10;BYDAY=-1SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=5",
-            "FREQ=YEARLY;INTERVAL=2;BYMONTH=3;BYDAY=2SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU",
-            "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,10",
-            "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=13",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=SUX",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;BYSETPOS=0",
+            "FREQ=YEARLY;BYMONTH=3,13;BYDAY=-1SU",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU;COUNT=0",
+            "FREQ=YEARLY;INTERVAL=0;BYMONTH=3;BYDAY=2SU",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=-2SU,-54SU",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=SU;BYMONTHDAY=8,9,32",
+            "FREQ=YEARLY;BYMONTH=3;BYWEEKNO=0",
             "BYMONTH=3;BYDAY=2SU",
         ];
         for rule in refused {
@@ -1395,17 +1713,16 @@ END:VTIMEZONE
         }
     }
 
-    /// The day forms the corpus actually writes, including the two window shapes Exchange and
-    /// older tz database releases emit instead of a `BYDAY` ordinal.
+    /// The day forms the corpus actually writes, including the two window shapes Exchange and older tz database releases emit instead of a `BYDAY` ordinal.
     #[test]
     fn every_day_form_the_corpus_writes_reads_as_the_one_it_names() {
         let cases = [
             (
                 "FREQ=YEARLY;BYMONTH=10;BYDAY=SU;BYMONTHDAY=25,26,27,28,29,30,31",
                 10_u8,
-                RuleDay::OnOrBefore {
+                RuleDay::OnOrAfter {
                     weekday: Weekday::Sunday,
-                    day: 31,
+                    day: 25,
                 },
             ),
             (
@@ -1432,8 +1749,7 @@ END:VTIMEZONE
                 RuleDay::DayOfMonth(15),
             ),
             ("freq=yearly;bymonth=3;byday=5su", 3, sunday(NthWeek::Fifth)),
-            // Neither a BYMONTH nor a day part: RFC 5545 section 3.3.10 takes both from
-            // DTSTART, which in this fixture is the 25th of March.
+            // The anchor supplies both the month and month day.
             ("FREQ=YEARLY", 3, RuleDay::DayOfMonth(25)),
         ];
         for (written, month, expected) in cases {
@@ -1442,7 +1758,7 @@ END:VTIMEZONE
             let observance = *zones.table("Z").unwrap().observances().first().unwrap();
             let rule = observance.rule().unwrap();
             assert_eq!(rule.day(), expected, "{written}");
-            assert_eq!(rule.month(), month, "{written}");
+            assert_eq!(rule.month(), Some(month), "{written}");
             assert_eq!(
                 rule.at(),
                 CivilTime::from_hms(2, 0, 0).unwrap(),
@@ -1452,8 +1768,7 @@ END:VTIMEZONE
         }
     }
 
-    /// A `TZID` parameter naming nothing is reported once for the identifier, not once for
-    /// every property that used it.
+    /// Two or more references can name the same identifier.
     #[test]
     fn an_identifier_no_definition_backs_is_reported_once() {
         let mut body = String::from(BERLIN);
@@ -1474,8 +1789,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A calendar declaring one zone twice reports it and keeps the first, rather than
-    /// preferring the later definition out of sight.
+    /// A calendar declaring one zone twice reports it and keeps the first, rather than preferring the later definition out of sight.
     #[test]
     fn a_second_definition_of_one_zone_is_reported_and_not_chosen_between() {
         let mut body = String::from(BERLIN);
@@ -1494,8 +1808,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A bound nobody charges is decoration: the table that owns the truncation decision is the
-    /// one that reports it, and this unit calls it rather than repeating it.
+    /// A bound nobody charges is decoration: the table that owns the truncation decision is the one that reports it, and this unit calls it rather than repeating it.
     #[test]
     fn observances_past_the_bound_are_dropped_by_the_table_that_owns_the_decision() {
         let limits = Limits::DEFAULT.with_max_vtimezone_observances(4);
@@ -1514,8 +1827,7 @@ END:VTIMEZONE
         );
     }
 
-    /// The zone-count bound is charged too, and the definitions past it are refused rather than
-    /// admitted.
+    /// The zone count limit applies to the full calendar.
     #[test]
     fn a_calendar_declaring_more_zones_than_the_policy_admits_keeps_the_ones_that_fit() {
         let limits = Limits::DEFAULT.with_max_vtimezone_components(1);
@@ -1554,7 +1866,9 @@ END:VTIMEZONE
         let mut reported: Vec<Diagnostic> = Vec::new();
         let mut out = Vec::new();
         let tzid = vtimezone.read_vtimezone(&mut meter, &mut reported, &mut out);
-        assert_eq!(tzid, Some(Box::from("America/New_York")));
+        let staged = tzid.unwrap();
+        assert_eq!(staged.tzid.as_ref(), "America/New_York");
+        assert!(!staged.exceeds_limit);
         assert_eq!(out.len(), 2);
         assert_eq!(reported.as_slice(), []);
         assert_eq!(
@@ -1564,8 +1878,7 @@ END:VTIMEZONE
         );
     }
 
-    /// A definition this crate cannot file anywhere is `None` rather than a zone filed under a
-    /// name nobody wrote.
+    /// A definition needs a usable identifier before it can enter the set.
     #[test]
     fn a_definition_with_no_usable_identifier_is_filed_nowhere() {
         let bodies = [
@@ -1583,8 +1896,8 @@ END:VTIMEZONE
         }
     }
 
-    /// An observance with no readable offset contributes nothing and no code of its own, and
-    /// the definition around it is still a zone that carried a subcomponent.
+    /// An unreadable offset yields no transition.
+    /// The definition still contains an observance subcomponent.
     #[test]
     fn an_observance_with_no_readable_offset_yields_nothing_and_no_code_here() {
         let (zones, reported) = read(
@@ -1598,11 +1911,7 @@ END:VTIMEZONE
         assert!(zones.table("Europe/Berlin").unwrap().is_empty());
     }
 
-    /// The two dimensions this unit charges, and the only two a zone definition has.
-    ///
-    /// Pinned before the reader existed because `docs/adr/0010`'s argument is that a bound
-    /// nobody charges is decoration: these fields sat in `Limits` through two milestones with
-    /// no charge site at all, and this is the milestone that owes them one.
+    /// The meter tracks zone definitions and observances as separate dimensions.
     #[test]
     fn the_bounds_this_unit_charges_are_the_two_a_zone_definition_has() {
         let limits = Limits::DEFAULT;

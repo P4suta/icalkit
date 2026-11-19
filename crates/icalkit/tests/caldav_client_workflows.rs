@@ -4,10 +4,11 @@
 
 //! Stateful CalDAV client workflows through the public sans-I/O API.
 
+#![cfg(test)]
+
 use icalkit::Calendar;
 use icalkit::caldav::{Client, Header, Revision, SyncToken, WireResponse};
 use icalkit::scheduling::Message;
-use icalkit::time::Timestamp;
 
 const CALENDAR: &[u8] = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
@@ -25,6 +26,40 @@ fn header<'a>(headers: &'a [Header], name: &str) -> Option<&'a [u8]> {
         .iter()
         .find(|header| header.name().eq_ignore_ascii_case(name))
         .map(Header::value)
+}
+
+#[test]
+fn a_collection_storage_status_requires_a_resume_token_and_is_not_a_member() {
+    for (href, token, expected_changes) in [
+        ("/%63al/", "", None),
+        (
+            "/%63al/",
+            "<d:sync-token>data:,next</d:sync-token>",
+            Some(1),
+        ),
+        ("/cal/b.ics", "", Some(2)),
+    ] {
+        let body = format!(
+            r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/a.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response><d:response><d:href>{href}</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status></d:response>{token}</d:multistatus>"#
+        );
+        let mut sync = Client::new().sync("/cal/", None).unwrap();
+        sync.accept(WireResponse::new(207, Vec::new(), body.into_bytes()))
+            .unwrap();
+        if let Some(count) = expected_changes {
+            let page = sync.finish().unwrap();
+            assert_eq!(page.changes().len(), count);
+            assert_eq!(page.changes()[0].href(), "/cal/a.ics");
+            assert_eq!(
+                page.token().map(SyncToken::as_bytes),
+                (!token.is_empty()).then_some(b"data:,next".as_slice())
+            );
+        } else {
+            assert_eq!(
+                sync.finish().unwrap_err().code().as_str(),
+                "icalkit.caldav.response-truncated"
+            );
+        }
+    }
 }
 
 #[test]
@@ -204,42 +239,39 @@ fn mkcalendar_escapes_properties_and_accepts_only_a_creation_response() {
     operation.finish().unwrap();
 }
 
-#[test]
-fn outbox_post_returns_one_typed_delivery_per_recipient() {
+fn scheduling_message() -> Message {
     let payload = b"BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//icalkit client tests//EN\r\n\
-BEGIN:VEVENT\r\n\
+METHOD:REQUEST\r\n\
+BEGIN:VFREEBUSY\r\n\
 UID:one@example.test\r\n\
 DTSTAMP:20260813T120000Z\r\n\
 DTSTART:20260814T090000Z\r\n\
-SUMMARY:Planning\r\n\
+DTEND:20260814T100000Z\r\n\
 ORGANIZER:mailto:alice@example.test\r\n\
 ATTENDEE:mailto:bob@example.test\r\n\
-SEQUENCE:1\r\n\
-END:VEVENT\r\n\
+END:VFREEBUSY\r\n\
 END:VCALENDAR\r\n";
-    let message = Message::request(payload, Timestamp::constant(0, 0)).unwrap();
+    Message::read(payload).unwrap()
+}
+
+fn scheduling_reply() -> String {
+    String::from_utf8(scheduling_message().to_bytes())
+        .unwrap()
+        .replace("METHOD:REQUEST", "METHOD:REPLY")
+}
+
+#[test]
+fn outbox_post_returns_one_typed_delivery_per_recipient() {
+    let message = scheduling_message();
     let client = Client::new();
-    let mut operation = client
-        .schedule(
-            "/outbox/alice/",
-            "mailto:alice@example.test",
-            &["mailto:bob@example.test"],
-            &message,
-        )
-        .unwrap();
+    let mut operation = client.schedule("/outbox/alice/", &message).unwrap();
 
     let request = operation.next_request().unwrap();
     assert_eq!(request.method(), "POST");
-    assert_eq!(
-        header(request.headers(), "Originator"),
-        Some(b"mailto:alice@example.test".as_slice())
-    );
-    assert_eq!(
-        header(request.headers(), "Recipient"),
-        Some(b"mailto:bob@example.test".as_slice())
-    );
+    assert_eq!(header(request.headers(), "Originator"), None);
+    assert_eq!(header(request.headers(), "Recipient"), None);
     assert_eq!(
         header(request.headers(), "Content-Type"),
         Some(message.imip_content_type().as_bytes())
@@ -250,14 +282,18 @@ END:VCALENDAR\r\n";
         .accept(WireResponse::new(
             200,
             Vec::new(),
-            br#"<?xml version="1.0" encoding="utf-8"?>
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
 <C:schedule-response xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
  <C:response>
   <C:recipient><D:href>mailto:bob@example.test</D:href></C:recipient>
   <C:request-status>2.0;Success</C:request-status>
+  <C:calendar-data>{}</C:calendar-data>
  </C:response>
-</C:schedule-response>"#
-                .to_vec(),
+</C:schedule-response>"#,
+                scheduling_reply()
+            )
+            .into_bytes(),
         ))
         .unwrap();
 
@@ -269,4 +305,34 @@ END:VCALENDAR\r\n";
     );
     assert_eq!(response.deliveries()[0].request_status(), "2.0;Success");
     assert!(response.deliveries()[0].is_success());
+}
+
+#[test]
+fn outbox_post_rejects_malformed_delivery_status_values() {
+    let message = scheduling_message();
+    for value in [
+        "2.0",
+        "not-a-status",
+        " 2.0;Success",
+        "2.0.1.2;Invalid depth",
+        "2.0;bad\\q",
+        "2.0;bad,comma",
+        "2.0;one;two;three",
+    ] {
+        let client = Client::new();
+        let mut operation = client.schedule("/outbox/alice/", &message).unwrap();
+        operation.next_request().unwrap();
+        let body = format!(
+            "<C:schedule-response xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+             <C:response><C:recipient><D:href>mailto:bob@example.test</D:href></C:recipient>\
+             <C:request-status>{value}</C:request-status><C:calendar-data>{}</C:calendar-data>\
+             </C:response></C:schedule-response>",
+            scheduling_reply()
+        );
+        let response = WireResponse::new(200, Vec::new(), body.into_bytes());
+        let Err(error) = operation.accept(response).and_then(|()| operation.finish()) else {
+            panic!("accepted malformed scheduling response: {value:?}");
+        };
+        assert_eq!(error.code().as_str(), "icalkit.caldav.schedule-invalid");
+    }
 }

@@ -11,11 +11,17 @@ pub fn icalkit::caldav::Client::discover(&self, &str) -> core::result::Result<ic
 pub fn icalkit::caldav::Client::mkcalendar(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<icalkit::caldav::Operation<()>, icalkit::Error>
 pub const fn icalkit::caldav::Client::new() -> Self
 pub fn icalkit::caldav::Client::operation<T>(&self, icalkit::caldav::WireRequest, impl core::ops::function::FnOnce(icalkit::caldav::WireResponse) -> core::result::Result<T, icalkit::Error> + 'static) -> icalkit::caldav::Operation<T>
-pub fn icalkit::caldav::Client::schedule(&self, &str, &str, &[&str], &icalkit::scheduling::Message) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::ScheduleResponse>, icalkit::Error>
+pub fn icalkit::caldav::Client::schedule(&self, &str, &icalkit::scheduling::Message) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::ScheduleResponse>, icalkit::Error>
 pub fn icalkit::caldav::Client::sync(&self, &str, core::option::Option<&icalkit::caldav::SyncToken>) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::SyncResult>, icalkit::Error>
+impl icalkit::caldav::Client
+pub fn icalkit::caldav::Client::conditional_write_with_rscales(&self, &str, &icalkit::caldav::Revision, &icalkit::Calendar) -> core::result::Result<icalkit::caldav::Operation<icalkit::caldav::Revision>, icalkit::Error>
+pub fn icalkit::caldav::Client::supported_rscales(&self, &str) -> core::result::Result<icalkit::caldav::Operation<core::option::Option<alloc::vec::Vec<alloc::string::String>>>, icalkit::Error>
 impl core::default::Default for icalkit::caldav::Client
 pub fn icalkit::caldav::Client::default() -> Self
 pub struct icalkit::caldav::Discovery
+impl icalkit::caldav::Discovery
+pub fn icalkit::caldav::Discovery::advertised_rscales(&self) -> core::option::Option<&[alloc::string::String]>
+pub fn icalkit::caldav::Discovery::with_supported_rscales(self, &[&str]) -> core::result::Result<Self, icalkit::Error>
 impl icalkit::caldav::Discovery
 pub fn icalkit::caldav::Discovery::calendar_home_uri(&self) -> &str
 pub fn icalkit::caldav::Discovery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> core::result::Result<Self, icalkit::Error>
@@ -51,14 +57,18 @@ pub fn icalkit::caldav::Revision::stored(impl core::convert::Into<alloc::string:
 pub fn icalkit::caldav::Revision::uri(&self) -> &str
 pub struct icalkit::caldav::ScheduleDelivery
 impl icalkit::caldav::ScheduleDelivery
+pub const fn icalkit::caldav::ScheduleDelivery::calendar_data(&self) -> core::option::Option<&icalkit::scheduling::Message>
+pub fn icalkit::caldav::ScheduleDelivery::calendar_data_bytes(&self) -> core::option::Option<&[u8]>
 pub fn icalkit::caldav::ScheduleDelivery::is_success(&self) -> bool
-pub fn icalkit::caldav::ScheduleDelivery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::caldav::ScheduleDelivery::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<icalkit::scheduling::Message>) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::caldav::ScheduleDelivery::recipient(&self) -> &str
 pub fn icalkit::caldav::ScheduleDelivery::request_status(&self) -> &str
 pub struct icalkit::caldav::ScheduleResponse
 impl icalkit::caldav::ScheduleResponse
 pub fn icalkit::caldav::ScheduleResponse::deliveries(&self) -> &[icalkit::caldav::ScheduleDelivery]
+pub const fn icalkit::caldav::ScheduleResponse::is_no_content(&self) -> bool
 pub fn icalkit::caldav::ScheduleResponse::new(alloc::vec::Vec<icalkit::caldav::ScheduleDelivery>) -> core::result::Result<Self, icalkit::Error>
+pub const fn icalkit::caldav::ScheduleResponse::no_content() -> Self
 pub struct icalkit::caldav::Server
 impl icalkit::caldav::Server
 pub fn icalkit::caldav::Server::handle(&self, icalkit::caldav::WireRequest) -> core::result::Result<icalkit::caldav::ServerOperation, icalkit::Error>
@@ -172,7 +182,7 @@ pub const fn icalkit::model::EventRef<'a>::as_component(self) -> icalkit::model:
 pub fn icalkit::model::EventRef<'a>::components(self) -> impl core::iter::traits::iterator::Iterator<Item = icalkit::model::ComponentRef<'a>>
 pub fn icalkit::model::EventRef<'a>::dtstart(self) -> core::option::Option<icalkit::time::IcalDateTime>
 pub fn icalkit::model::EventRef<'a>::property(self, &str) -> core::option::Option<icalkit::model::PropertyRef<'a>>
-pub fn icalkit::model::EventRef<'a>::uid(self) -> &'a str
+pub fn icalkit::model::EventRef<'a>::uid(self) -> core::option::Option<alloc::borrow::Cow<'a, str>>
 pub struct icalkit::model::Name<'a>(_)
 impl<'a> icalkit::model::Name<'a>
 pub const fn icalkit::model::Name<'a>::as_str(self) -> &'a str
@@ -182,6 +192,43 @@ impl<'a> icalkit::model::PropertyRef<'a>
 pub fn icalkit::model::PropertyRef<'a>::name(self) -> icalkit::model::Name<'a>
 pub fn icalkit::model::PropertyRef<'a>::value(self) -> &'a [u8]
 pub mod icalkit::recurrence
+pub enum icalkit::recurrence::CalendarScale
+pub icalkit::recurrence::CalendarScale::Buddhist
+pub icalkit::recurrence::CalendarScale::Chinese
+pub icalkit::recurrence::CalendarScale::Coptic
+pub icalkit::recurrence::CalendarScale::Dangi
+pub icalkit::recurrence::CalendarScale::Ethiopic
+pub icalkit::recurrence::CalendarScale::EthiopicAmeteAlem
+pub icalkit::recurrence::CalendarScale::Gregorian
+pub icalkit::recurrence::CalendarScale::Hebrew
+pub icalkit::recurrence::CalendarScale::Indian
+pub icalkit::recurrence::CalendarScale::IslamicCivil
+pub icalkit::recurrence::CalendarScale::IslamicTabular
+pub icalkit::recurrence::CalendarScale::IslamicUmmAlQura
+pub icalkit::recurrence::CalendarScale::Iso8601
+pub icalkit::recurrence::CalendarScale::Japanese
+pub icalkit::recurrence::CalendarScale::Persian
+pub icalkit::recurrence::CalendarScale::Roc
+impl icalkit::recurrence::CalendarScale
+pub const fn icalkit::recurrence::CalendarScale::name(self) -> &'static str
+impl icalkit::recurrence::CalendarScale
+pub fn icalkit::recurrence::CalendarScale::parse(&str) -> core::result::Result<Self, icalkit::Error>
+pub struct icalkit::recurrence::CalendarDate
+impl icalkit::recurrence::CalendarDate
+pub const fn icalkit::recurrence::CalendarDate::day(self) -> u8
+pub fn icalkit::recurrence::CalendarDate::from_gregorian(icalkit::recurrence::CalendarScale, jiff::civil::date::Date) -> core::result::Result<Self, icalkit::Error>
+pub const fn icalkit::recurrence::CalendarDate::month(self) -> icalkit::recurrence::CalendarMonth
+pub fn icalkit::recurrence::CalendarDate::new(icalkit::recurrence::CalendarScale, i32, icalkit::recurrence::CalendarMonth, u8) -> core::result::Result<Self, icalkit::Error>
+pub const fn icalkit::recurrence::CalendarDate::scale(self) -> icalkit::recurrence::CalendarScale
+pub const fn icalkit::recurrence::CalendarDate::to_gregorian(self) -> jiff::civil::date::Date
+pub const fn icalkit::recurrence::CalendarDate::year(self) -> i32
+pub struct icalkit::recurrence::CalendarMonth
+impl icalkit::recurrence::CalendarMonth
+pub const fn icalkit::recurrence::CalendarMonth::is_leap(self) -> bool
+pub const fn icalkit::recurrence::CalendarMonth::number(self) -> u8
+impl icalkit::recurrence::CalendarMonth
+pub fn icalkit::recurrence::CalendarMonth::leap(u8) -> core::result::Result<Self, icalkit::Error>
+pub fn icalkit::recurrence::CalendarMonth::regular(u8) -> core::result::Result<Self, icalkit::Error>
 pub struct icalkit::recurrence::Cursor
 pub struct icalkit::recurrence::Occurrence
 impl icalkit::recurrence::Occurrence
@@ -232,6 +279,8 @@ pub fn icalkit::scheduling::Message::refresh(&[u8], jiff::timestamp::Timestamp) 
 pub fn icalkit::scheduling::Message::reply(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::request(&[u8], jiff::timestamp::Timestamp) -> core::result::Result<Self, icalkit::Error>
 pub fn icalkit::scheduling::Message::review<'a>(&'a self, &'a icalkit::Calendar, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'a>, icalkit::scheduling::Rejection>
+pub fn icalkit::scheduling::Message::review_creation(&self, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'_>, icalkit::scheduling::Rejection>
+pub fn icalkit::scheduling::Message::review_creation_in(&self, &mut icalkit::Session<'_>, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'_>, icalkit::scheduling::Rejection>
 pub fn icalkit::scheduling::Message::review_in<'a>(&'a self, &mut icalkit::Session<'_>, &'a icalkit::Calendar, &icalkit::scheduling::Actor) -> core::result::Result<icalkit::scheduling::Review<'a>, icalkit::scheduling::Rejection>
 pub fn icalkit::scheduling::Message::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub struct icalkit::scheduling::Rejection
@@ -347,6 +396,7 @@ pub fn icalkit::ResourcePolicy::default() -> Self
 pub struct icalkit::Session<'a>
 impl icalkit::Session<'_>
 pub fn icalkit::Session<'_>::import(&mut self, &[u8]) -> core::result::Result<icalkit::interop::Import, icalkit::Error>
+pub fn icalkit::Session<'_>::issues(&self) -> &[icalkit::Issue]
 pub fn icalkit::Session<'_>::parse(&mut self, &[u8]) -> core::result::Result<icalkit::Calendar, icalkit::Error>
 pub fn icalkit::Session<'_>::query(&mut self, &[u8]) -> core::result::Result<icalkit::caldav::Query, icalkit::Error>
 pub fn icalkit::Session<'_>::validate(&mut self, &icalkit::interop::Import) -> core::result::Result<icalkit::Calendar, icalkit::Error>

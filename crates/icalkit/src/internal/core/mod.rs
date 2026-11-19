@@ -6,12 +6,15 @@
 
 pub(crate) mod access;
 pub(crate) mod arith;
+pub(crate) mod calendar;
 pub(crate) mod change;
 pub(crate) mod codec;
 pub(crate) mod emit;
 pub(crate) mod grammar;
 pub(crate) mod gregorian;
 pub(crate) mod ident;
+pub(crate) mod language;
+pub(crate) mod mailto;
 pub(crate) mod mutate;
 pub(crate) mod octets;
 pub(crate) mod output;
@@ -20,6 +23,8 @@ pub(crate) mod schema;
 pub(crate) mod tree;
 pub(crate) mod view;
 
+pub(crate) use self::calendar::CalendarCoordinates;
+pub use self::calendar::{CalendarMonth, CalendarScale};
 pub use self::change::{ParameterEdit, ProposedChange};
 pub use self::grammar::*;
 pub use self::gregorian::{

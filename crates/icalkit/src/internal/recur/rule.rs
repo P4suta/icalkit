@@ -4,35 +4,29 @@
 
 //! The `RECUR` value type of RFC 5545 section 3.3.10, as a type rather than as text.
 //!
-//! Every invariant this file can establish is established once, at construction, and never
-//! revisited by anything downstream. `INTERVAL` is non-zero because [`NonZeroU32`] is the
-//! type. A `BYDAY` ordinal is within ±53 and never zero, because [`WeekdayNum::new`] refuses
-//! the first and [`NonZeroI8`] forbids the second. `BYSETPOS` is empty unless another `BYxxx`
-//! part is present, because [`RecurrenceRuleBuilder::build`] refuses the pair. An expansion
-//! engine that had to re-check any of those would be a second opinion about the same
-//! question, and the two would eventually disagree.
+//! Every invariant this file can establish is established once, at construction, and never revisited by anything downstream.
+//! `INTERVAL` is non-zero because [`NonZeroU32`] is the type.
+//! A `BYDAY` ordinal is within ±53 and never zero, because [`WeekdayNum::new`] refuses the first and [`NonZeroI8`] forbids the second.
+//! `BYSETPOS` is empty unless another `BYxxx` part is present, because [`RecurrenceRuleBuilder::build`] refuses the pair.
+//! An expansion engine that had to re-check any of those would be a second opinion about the same question, and the two would eventually disagree.
 //!
-//! What is *not* established here is anything a period would answer. `BYMONTHDAY=31` is a
-//! legal rule that names no day of February, and RFC 5545 section 3.3.10 says such an
-//! instance is ignored rather than moved; that is the expansion's answer per candidate, not a
-//! construction error, and `docs/adr/0011` makes the distinction binding. Values that are out
-//! of range outright — `BYMONTHDAY=32`, which names no day of any month — are dropped by the
-//! decoder with a diagnostic and never reach a builder at all, because `docs/adr/0001` forbids
-//! discarding a component over one bad part.
+//! What is *not* established here is anything a period would answer.
+//! `BYMONTHDAY=31` is legal even when the period is February.
+//! Expansion omits missing dates under RFC 5545 section 3.3.10 or corrects them under an explicit RFC 7529 `SKIP` policy.
+//! Values that are out of range outright — `BYMONTHDAY=32`, which names no day of any month — are dropped by the decoder with a diagnostic and never reach a builder at all, because `docs/adr/0001` forbids discarding a component over one bad part.
 
 use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::num::{NonZeroI8, NonZeroU32};
 
-use crate::internal::core::{Instant, Weekday};
+use crate::internal::core::{CalendarMonth, CalendarScale, Instant, Weekday};
 
 use crate::internal::recur::table::PartsPresent;
 
 /// How often the base cadence repeats, from RFC 5545 section 3.3.10's `freq` production.
 ///
-/// Not `#[non_exhaustive]`: section 3.3.10 closes the set at seven, and marking it open would
-/// tax every downstream `match` forever for a variant that cannot arrive.
+/// Not `#[non_exhaustive]`: section 3.3.10 closes the set at seven, and marking it open would tax every downstream `match` forever for a variant that cannot arrive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Freq {
     /// `SECONDLY`.
@@ -97,10 +91,8 @@ impl Freq {
 
 /// One `BYxxx` rule part, named so the expand/limit table can be indexed by it.
 ///
-/// `BYSETPOS` is a row of that table and is nonetheless not a `BYxxx` part in the sense the
-/// other eight are: it selects from the candidate set the others produced, after every one of
-/// them has run. It is listed here because the RFC lists it, and the engine that applies the
-/// other eight must not apply this one in the same pass.
+/// `BYSETPOS` is a row of that table and is nonetheless not a `BYxxx` part in the sense the other eight are: it selects from the candidate set the others produced, after every one of them has run.
+/// It is listed here because the RFC lists it, and the engine that applies the other eight must not apply this one in the same pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RulePart {
     /// `BYMONTH`.
@@ -158,9 +150,7 @@ impl RulePart {
 
     /// This part's bit in a [`PartsPresent`] set.
     ///
-    /// Written as literals rather than as `1 << index()`: a shift is arithmetic, this
-    /// workspace denies arithmetic that can overflow, and a checked shift in a `const fn`
-    /// buys nothing a nine-arm match does not already give.
+    /// Written as literals rather than as `1 << index()`: a shift is arithmetic, this workspace denies arithmetic that can overflow, and a checked shift in a `const fn` buys nothing a nine-arm match does not already give.
     #[must_use]
     pub const fn bit(self) -> u16 {
         match self {
@@ -195,10 +185,8 @@ impl RulePart {
 
 /// Whether an instant is written as a `DATE` or as a `DATE-TIME`.
 ///
-/// Deliberately narrower than `crate::internal::core::ValueType`, which has fourteen variants. Only these
-/// two can be the value type of a `DTSTART` or an `UNTIL`, and a two-variant enum makes the
-/// other twelve unrepresentable at the one place RFC 5545 section 3.3.10 requires the two to
-/// agree.
+/// Deliberately narrower than `crate::internal::core::ValueType`, which has fourteen variants.
+/// Only these two can be the value type of a `DTSTART` or an `UNTIL`, and a two-variant enum makes the other twelve unrepresentable at the one place RFC 5545 section 3.3.10 requires the two to agree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ValueKind {
     /// RFC 5545 section 3.3.4, a date with no clock.
@@ -209,12 +197,11 @@ pub enum ValueKind {
 
 /// One entry of `BYDAY`: a weekday, optionally counted from one end of a scope.
 ///
-/// `-1MO` is the last Monday, `2MO` is the second. Which scope it counts within is not a
-/// property of this value — RFC 5545 section 3.3.10's Note 1 and Note 2 decide that from the
-/// frequency and from which other parts are present, and `crate::internal::recur::table` resolves it.
+/// `-1MO` is the last Monday, `2MO` is the second.
+/// Which scope it counts within is not a property of this value — RFC 5545 section 3.3.10's Note 1 and Note 2 decide that from the frequency and from which other parts are present, and `crate::internal::recur::table` resolves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WeekdayNum {
-    /// The ordinal, within ±53 and never zero.
+    /// The calendar-valid ordinal, never zero.
     ordinal: Option<NonZeroI8>,
     /// The weekday itself.
     weekday: Weekday,
@@ -223,16 +210,22 @@ pub struct WeekdayNum {
 impl WeekdayNum {
     /// The largest ordinal RFC 5545 section 3.3.10 admits, in either direction.
     ///
-    /// A year has at most 53 occurrences of a weekday, so 53 is the ceiling the widest scope
-    /// can justify; the narrower scopes justify less and are checked per candidate rather than
-    /// here, because the scope is not known at construction.
+    /// A year has at most 53 occurrences of a weekday, so 53 is the ceiling the widest scope can justify; the narrower scopes justify less and are checked per candidate rather than here, because the scope is not known at construction.
     pub const MAX_ORDINAL: i8 = 53;
 
     /// A `BYDAY` entry, or `None` when the ordinal is outside ±53.
     #[must_use]
     pub fn new(ordinal: Option<NonZeroI8>, weekday: Weekday) -> Option<Self> {
-        let too_far = ordinal
-            .is_some_and(|count| count.get().unsigned_abs() > Self::MAX_ORDINAL.unsigned_abs());
+        Self::for_calendar(ordinal, weekday, CalendarScale::Gregorian)
+    }
+
+    pub(super) fn for_calendar(
+        ordinal: Option<NonZeroI8>,
+        weekday: Weekday,
+        scale: CalendarScale,
+    ) -> Option<Self> {
+        let maximum = scale.ranges().year_days.div_ceil(7);
+        let too_far = ordinal.is_some_and(|count| u16::from(count.get().unsigned_abs()) > maximum);
         if too_far {
             return None;
         }
@@ -254,19 +247,16 @@ impl WeekdayNum {
 
 /// The values one `BYxxx` part carries, in the order the file wrote them.
 ///
-/// Order is preserved rather than sorted. RFC 5545 section 3.3.10 does not require a sorted
-/// list and `docs/adr/0001` requires the original text to survive a round trip, so sorting
-/// here would be an opinion this crate is not entitled to have; the expansion sorts the
-/// candidates it produces, which is a different question.
+/// Order is preserved rather than sorted.
+/// RFC 5545 section 3.3.10 does not require a sorted list and `docs/adr/0001` requires the original text to survive a round trip, so sorting here would be an opinion this crate is not entitled to have; the expansion sorts the candidates it produces, which is a different question.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByList<T>(Vec<T>);
 
 impl<T> ByList<T> {
     /// An empty list, which is what "the part is absent" means everywhere in this crate.
     ///
-    /// Absent and empty are deliberately the same state. RFC 5545 section 3.3.10's grammar
-    /// gives no way to write a present-but-empty part, so a second state would be one nothing
-    /// can produce and everything would have to match on.
+    /// Absent and empty are deliberately the same state.
+    /// RFC 5545 section 3.3.10's grammar gives no way to write a present-but-empty part, so a second state would be one nothing can produce and everything would have to match on.
     #[must_use]
     pub const fn empty() -> Self {
         Self(Vec::new())
@@ -307,30 +297,21 @@ impl<T> From<Vec<T>> for ByList<T> {
 
 /// Which clock an `UNTIL` was written on, and therefore which clock it compares in.
 ///
-/// RFC 5545 section 3.3.10 requires `UNTIL` to be a UTC date-time whenever `DTSTART` is a
-/// date-time with a `TZID`, and a date whenever `DTSTART` is a date. Real files violate that
-/// constantly — Google has emitted a floating `UNTIL` against a zoned `DTSTART` — so the
-/// violation cannot be refused and the comparison still has to happen somewhere.
+/// RFC 5545 section 3.3.10 requires `UNTIL` to be a UTC date-time whenever `DTSTART` is a date-time with a `TZID`, and a date whenever `DTSTART` is a date.
+/// Real files violate that constantly — Google has emitted a floating `UNTIL` against a zoned `DTSTART` — so the violation cannot be refused and the comparison still has to happen somewhere.
 ///
-/// This field is what stops that comparison from happening in an unnamed clock, which is where
-/// every off-by-one-day bug in this area lives. [`UntilClock::Utc`] means the file wrote a
-/// trailing `Z` and the instant beside it is that UTC instant. [`UntilClock::Floating`] means
-/// it did not, and the instant beside it is the wall-clock reading *interpreted at UTC* —
-/// correct only if the caller resolved `DTSTART` the same way, which is exactly the
-/// normalization `docs/adr/0003` makes the caller's step.
+/// This field is what stops that comparison from happening in an unnamed clock, which is where every off-by-one-day bug in this area lives.
+/// [`UntilClock::Utc`] means the file wrote a trailing `Z` and the instant beside it is that UTC instant.
+/// [`UntilClock::Floating`] means it did not, and the instant beside it is the wall-clock reading *interpreted at UTC* —
+/// correct only if the caller resolved `DTSTART` the same way, which is exactly the normalization `docs/adr/0003` makes the caller's step.
 ///
 /// M2 settled what that normalization is, and one sentence above is narrower than the answer.
-/// The timeline this crate walks for a **zoned** series is the series' own wall clock projected
-/// onto UTC, not the UTC timeline: `ical-tz` projects `DTSTART`, `UNTIL`, every `RDATE`,
-/// `EXDATE` and `RECURRENCE-ID` onto it before the search, and reads each cadence key back
-/// through the zone afterwards, which is what keeps a daily 09:00 series at 09:00 across a
-/// daylight saving transition. For a floating series and for a UTC series that projection is
-/// the identity and [`UntilClock::Utc`]'s reading above holds verbatim. For a zoned one it is
-/// not: the instant beside the variant is the projection, and the variant records that the
-/// *file* wrote `Z`. A `Z`-terminated `UNTIL` handed over unprojected cuts a zoned series off
-/// an hour early or late for half the year. `crate::internal::tz::seam` states the contract in full, and a
-/// floating `UNTIL` against a zoned `DTSTART` now travels on
-/// `DiagnosticCode::RecurrenceUntilNotUtc` rather than only being named by this type.
+/// The timeline this crate walks for a **zoned** series is the series' own wall clock projected onto UTC, not the UTC timeline: `ical-tz` projects `DTSTART`, `UNTIL`, every `RDATE`,
+/// `EXDATE` and `RECURRENCE-ID` onto it before the search, and reads each cadence key back through the zone afterwards, which is what keeps a daily 09:00 series at 09:00 across a daylight saving transition.
+/// For a floating series and for a UTC series that projection is the identity and [`UntilClock::Utc`]'s reading above holds verbatim.
+/// For a zoned one it is not: the instant beside the variant is the projection, and the variant records that the *file* wrote `Z`.
+/// A `Z`-terminated `UNTIL` handed over unprojected cuts a zoned series off an hour early or late for half the year.
+/// `crate::internal::tz::seam` states the contract in full, and a floating `UNTIL` against a zoned `DTSTART` now travels on `DiagnosticCode::RecurrenceUntilNotUtc` rather than only being named by this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UntilClock {
     /// The value carried a trailing `Z`, so it names a UTC instant outright.
@@ -341,9 +322,7 @@ pub enum UntilClock {
 
 /// Where the series stops, from RFC 5545 section 3.3.10's `COUNT` and `UNTIL`.
 ///
-/// Three states rather than two `Option`s, because `COUNT` and `UNTIL` are mutually exclusive
-/// in the grammar and a pair of options would make the illegal fourth combination
-/// representable.
+/// Three states rather than two `Option`s, because `COUNT` and `UNTIL` are mutually exclusive in the grammar and a pair of options would make the illegal fourth combination representable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuleLimit {
     /// Neither `COUNT` nor `UNTIL`: the series has no end.
@@ -356,20 +335,17 @@ pub enum RuleLimit {
         at: Instant,
         /// Whether the file wrote it as a `DATE` or as a `DATE-TIME`.
         ///
-        /// Kept beside the instant because RFC 5545 section 3.3.10 requires it to agree with
-        /// `DTSTART`'s and real files disagree constantly.
+        /// Kept beside the instant because RFC 5545 section 3.3.10 requires it to agree with `DTSTART`'s and real files disagree constantly.
         value_kind: ValueKind,
         /// Which clock `at` was read on.
         clock: UntilClock,
     },
 }
 
-/// Why no rule could be built at all.
+/// Why a usable native rule couldn't be built.
 ///
-/// This is the error channel of `docs/adr/0009`, and it is narrow on purpose: it names only
-/// the conditions under which no rule exists. Everything survivable — a part out of range, a
-/// part repeated, a part nothing defines — is a diagnostic on the property and the component
-/// still parses.
+/// Recoverable part faults remain diagnostics under `docs/adr/0009`.
+/// Calendar controls require a supported interpretation before construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum RuleError {
@@ -377,8 +353,16 @@ pub enum RuleError {
     MissingFrequency,
     /// The value's `FREQ` named none of the seven frequencies.
     UnknownFrequency,
+    /// `RSCALE` or `SKIP` was malformed, or `SKIP` lacked `RSCALE`.
+    MalformedCalendarControls,
+    /// A recurrence calendar control was written more than once.
+    DuplicateCalendarControls,
+    /// A recurrence rule requires calendar semantics the native engine can't represent.
+    UnsupportedCalendarSemantics,
     /// A `BYDAY` ordinal was outside ±53.
     OrdinalOutOfRange,
+    /// A numeric rule part was outside the selected calendar's range.
+    PartOutOfRange,
     /// `BYSETPOS` was given with no other `BYxxx` part for it to select from.
     BySetPosWithoutByRule,
 }
@@ -388,7 +372,17 @@ impl Display for RuleError {
         let reason = match *self {
             Self::MissingFrequency => "the recurrence rule carried no FREQ",
             Self::UnknownFrequency => "the recurrence rule's FREQ named no known frequency",
+            Self::MalformedCalendarControls => {
+                "the recurrence rule carried malformed calendar controls"
+            },
+            Self::DuplicateCalendarControls => {
+                "a recurrence calendar control was written more than once"
+            },
+            Self::UnsupportedCalendarSemantics => {
+                "the recurrence rule needs unsupported calendar semantics"
+            },
             Self::OrdinalOutOfRange => "a BYDAY ordinal was outside the range +/-53",
+            Self::PartOutOfRange => "a recurrence part was outside the calendar's range",
             Self::BySetPosWithoutByRule => "BYSETPOS was given with no other BYxxx part",
         };
         formatter.write_str(reason)
@@ -397,9 +391,23 @@ impl Display for RuleError {
 
 impl Error for RuleError {}
 
+/// Policy for missing calendar dates under RFC 7529 section 4.1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Skip {
+    /// Discard missing dates, including rules without `RSCALE`.
+    #[default]
+    Omit,
+    /// Choose the previous valid date.
+    Backward,
+    /// Choose the next valid date.
+    Forward,
+}
+
 /// One recurrence rule, with every invariant its construction can settle already settled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecurrenceRule {
+    /// The recurrence calendar algorithm.
+    calendar: CalendarScale,
     /// The base cadence.
     freq: Freq,
     /// How many periods one step of the cadence covers.
@@ -408,6 +416,8 @@ pub struct RecurrenceRule {
     limit: RuleLimit,
     /// The day a week starts on, which `BYWEEKNO` and `FREQ=WEEKLY` count from.
     wkst: Weekday,
+    /// Missing date policy, separate from local time admission.
+    skip: Skip,
     /// `BYSECOND`, each within 0..=60.
     by_second: ByList<u8>,
     /// `BYMINUTE`, each within 0..=59.
@@ -416,19 +426,25 @@ pub struct RecurrenceRule {
     by_hour: ByList<u8>,
     /// `BYDAY`.
     by_day: ByList<WeekdayNum>,
-    /// `BYMONTHDAY`, each within ±1..=31.
+    /// `BYMONTHDAY`, within the selected calendar's month range.
     by_month_day: ByList<i8>,
-    /// `BYYEARDAY`, each within ±1..=366.
+    /// `BYYEARDAY`, within the selected calendar's year range.
     by_year_day: ByList<i16>,
-    /// `BYWEEKNO`, each within ±1..=53.
+    /// `BYWEEKNO`, within the selected calendar's week range.
     by_week_no: ByList<i8>,
-    /// `BYMONTH`, each within 1..=12.
-    by_month: ByList<u8>,
-    /// `BYSETPOS`, each within ±1..=366, and never present alone.
+    /// `BYMONTH`, with regular and leap month identities.
+    by_month: ByList<CalendarMonth>,
+    /// `BYSETPOS`, within the calendar's year range and never present alone.
     by_set_pos: ByList<i16>,
 }
 
 impl RecurrenceRule {
+    /// The selected recurrence calendar.
+    #[must_use]
+    pub const fn calendar_scale(&self) -> CalendarScale {
+        self.calendar
+    }
+
     /// The `INTERVAL` a rule that states none has, which RFC 5545 section 3.3.10 fixes at 1.
     pub const DEFAULT_INTERVAL: NonZeroU32 = NonZeroU32::MIN;
 
@@ -457,6 +473,12 @@ impl RecurrenceRule {
     #[must_use]
     pub const fn wkst(&self) -> Weekday {
         self.wkst
+    }
+
+    /// Missing calendar date policy.
+    #[must_use]
+    pub const fn skip(&self) -> Skip {
+        self.skip
     }
 
     /// `BYSECOND`.
@@ -503,7 +525,7 @@ impl RecurrenceRule {
 
     /// `BYMONTH`.
     #[must_use]
-    pub const fn by_month(&self) -> &ByList<u8> {
+    pub const fn by_month(&self) -> &ByList<CalendarMonth> {
         &self.by_month
     }
 
@@ -516,15 +538,10 @@ impl RecurrenceRule {
     /// The same rule, ending where `limit` says instead of where this one does.
     ///
     /// The one edit a parsed rule needs and the one the seam with `ical-tz` cannot do without.
-    /// `parse_recur` reads `UNTIL=20260310T120000Z` as the real UTC instant the file wrote, and
-    /// a zoned series is walked on the timeline `crate::internal::tz::seam` describes, so the bound has to
-    /// be projected onto that timeline before it is compared against a cadence key. Until this
-    /// existed the only way to substitute the projection was to rebuild the rule through
-    /// [`RecurrenceRuleBuilder`] and copy every `BYxxx` list across by hand, which is a
-    /// correction no caller performs by accident and several perform wrongly.
+    /// `parse_recur` reads `UNTIL=20260310T120000Z` as the real UTC instant the file wrote, and a zoned series is walked on the timeline `crate::internal::tz::seam` describes, so the bound has to be projected onto that timeline before it is compared against a cadence key.
+    /// Until this existed the only way to substitute the projection was to rebuild the rule through [`RecurrenceRuleBuilder`] and copy every `BYxxx` list across by hand, which is a correction no caller performs by accident and several perform wrongly.
     ///
-    /// Clones the lists rather than mutating in place, because a `RecurrenceRule` read from a
-    /// file is what the file said and a caller may want to keep both readings.
+    /// Clones the lists rather than mutating in place, because a `RecurrenceRule` read from a file is what the file said and a caller may want to keep both readings.
     #[must_use]
     pub fn with_limit(&self, limit: RuleLimit) -> Self {
         Self {
@@ -560,8 +577,7 @@ impl RecurrenceRule {
 
     /// Whether any `BYxxx` part other than `BYSETPOS` carries a value.
     ///
-    /// The predicate `BYSETPOS` is legal under, and the reason it is stated once here rather
-    /// than open-coded: "another part is present" is a claim about eight rows of the table,
+    /// The predicate `BYSETPOS` is legal under, and the reason it is stated once here rather than open-coded: "another part is present" is a claim about eight rows of the table,
     /// and eight is enough for a hand-written condition to lose one.
     #[must_use]
     pub fn has_selectable_part(&self) -> bool {
@@ -574,13 +590,13 @@ impl RecurrenceRule {
 
 /// Assembles a [`RecurrenceRule`], defaulting everything RFC 5545 section 3.3.10 defaults.
 ///
-/// A builder rather than a constructor because a rule has thirteen fields of which twelve have
-/// a specified default, and a twelve-argument constructor would exceed this workspace's own
-/// argument bound while telling a reader nothing.
+/// A builder supplies defaults while validating the selected calendar's rule parts.
 #[derive(Clone, Debug)]
 pub struct RecurrenceRuleBuilder {
-    /// The rule as assembled so far, complete at every point except for its checks.
+    /// Parts assembled before calendar and month validation completes.
     rule: RecurrenceRule,
+    calendar: Option<CalendarScale>,
+    months: Result<ByList<CalendarMonth>, RuleError>,
 }
 
 impl RecurrenceRuleBuilder {
@@ -589,6 +605,8 @@ impl RecurrenceRuleBuilder {
     pub fn new(freq: Freq) -> Self {
         Self {
             rule: RecurrenceRule {
+                calendar: CalendarScale::Gregorian,
+                skip: Skip::Omit,
                 freq,
                 interval: RecurrenceRule::DEFAULT_INTERVAL,
                 limit: RuleLimit::Infinite,
@@ -603,7 +621,29 @@ impl RecurrenceRuleBuilder {
                 by_month: ByList::empty(),
                 by_set_pos: ByList::empty(),
             },
+            calendar: None,
+            months: Ok(ByList::empty()),
         }
+    }
+
+    /// Set the explicit recurrence calendar.
+    #[must_use]
+    pub fn rscale(mut self, calendar: CalendarScale) -> Self {
+        self.calendar = Some(calendar);
+        self
+    }
+
+    pub(super) fn calendar_scale(&self) -> CalendarScale {
+        self.calendar.unwrap_or(CalendarScale::Gregorian)
+    }
+
+    pub(super) const fn has_rscale(&self) -> bool {
+        self.calendar.is_some()
+    }
+
+    pub(super) fn calendar_months(mut self, months: ByList<CalendarMonth>) -> Self {
+        self.months = Ok(months);
+        self
     }
 
     /// Set `INTERVAL`.
@@ -624,6 +664,13 @@ impl RecurrenceRuleBuilder {
     #[must_use]
     pub fn wkst(mut self, wkst: Weekday) -> Self {
         self.rule.wkst = wkst;
+        self
+    }
+
+    /// Set the missing calendar date policy.
+    #[must_use]
+    pub fn skip(mut self, skip: Skip) -> Self {
+        self.rule.skip = skip;
         self
     }
 
@@ -679,7 +726,12 @@ impl RecurrenceRuleBuilder {
     /// Set `BYMONTH`.
     #[must_use]
     pub fn by_month(mut self, values: ByList<u8>) -> Self {
-        self.rule.by_month = values;
+        self.months = values
+            .0
+            .into_iter()
+            .map(|number| CalendarMonth::from_parts(number, false).ok_or(RuleError::PartOutOfRange))
+            .collect::<Result<Vec<_>, _>>()
+            .map(ByList::from);
         self
     }
 
@@ -692,12 +744,55 @@ impl RecurrenceRuleBuilder {
 
     /// Check what a whole rule can be checked for, and hand back the rule.
     ///
-    /// One condition, because one is all that is not already a type invariant: RFC 5545
-    /// section 3.3.10 forbids `BYSETPOS` unless another `BYxxx` part is present, and no field
-    /// type can express a relation between two fields.
-    pub fn build(self) -> Result<RecurrenceRule, RuleError> {
+    /// Refuse unsupported calendar combinations and `BYSETPOS` without another `BYxxx` part.
+    pub fn build(mut self) -> Result<RecurrenceRule, RuleError> {
+        self.rule.calendar = self.calendar_scale();
+        self.rule.by_month = self.months?;
+        if self.rule.skip != Skip::Omit && !self.rule.by_week_no.is_empty() {
+            return Err(RuleError::UnsupportedCalendarSemantics);
+        }
         if !self.rule.by_set_pos.is_empty() && !self.rule.has_selectable_part() {
             return Err(RuleError::BySetPosWithoutByRule);
+        }
+        let limits = self.rule.calendar.ranges();
+        let weeks = limits.year_days.div_ceil(7);
+        let outside = self
+            .rule
+            .by_month
+            .as_slice()
+            .iter()
+            .any(|month| month.number() > limits.regular_months)
+            || self
+                .rule
+                .by_month_day
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || value.unsigned_abs() > limits.month_days)
+            || self
+                .rule
+                .by_year_day
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || value.unsigned_abs() > limits.year_days)
+            || self
+                .rule
+                .by_week_no
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || u16::from(value.unsigned_abs()) > weeks)
+            || self
+                .rule
+                .by_set_pos
+                .as_slice()
+                .iter()
+                .any(|value| *value == 0 || value.unsigned_abs() > limits.year_days)
+            || self.rule.by_day.as_slice().iter().any(|value| {
+                value
+                    .ordinal()
+                    .is_some_and(|value| u16::from(value.get().unsigned_abs()) > weeks)
+            });
+        if outside {
+            return Err(RuleError::PartOutOfRange);
         }
         Ok(self.rule)
     }

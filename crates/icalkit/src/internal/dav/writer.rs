@@ -4,57 +4,40 @@
 
 //! The element writer, which is strictly conformant XML where the reader beside it is not.
 //!
-//! [`crate::internal::dav::text`] states the one place this crate's *reader* departs from XML 1.0: inside
-//! `CALDAV:calendar-data` it hands back the octets as they arrived rather than applying section
-//! 2.11 line-break normalization. Writing needs no such departure and takes none. A carriage
-//! return leaves here as the character reference `&#13;`, which section 2.11 never reaches
-//! because a reference is markup resolved *after* normalization, so any conformant processor —
-//! this crate's, `libxml2`'s, a peer's — recovers the octet. Everything this file emits is
-//! readable by a parser that has never heard of the carve-out.
+//! [`crate::internal::dav::text`] states the one place this crate's *reader* departs from XML 1.0: inside `CALDAV:calendar-data` it hands back the octets as they arrived rather than applying section 2.11 line-break normalization.
+//! Writing needs no such departure and takes none.
+//! A carriage return leaves here as the character reference `&#13;`, which section 2.11 never reaches because a reference is markup resolved *after* normalization, so any conformant processor —
+//! this crate's, `libxml2`'s, a peer's — recovers the octet.
+//! Everything this file emits is readable by a parser that has never heard of the carve-out.
 //!
 //! # What the type makes impossible
 //!
-//! **A foreign element.** [`XmlWriter::open`] takes an [`ElementName`], and the prefix comes
-//! from [`Namespace::write_prefix`] rather than from anything a caller supplies. A name outside
-//! the closed vocabulary has exactly one door, [`XmlWriter::open_extension`], which declares the
-//! namespace on the element that uses it and refuses a local name it cannot verify.
+//! **A foreign element.** [`XmlWriter::open`] takes an [`ElementName`], and the prefix comes from [`Namespace::write_prefix`] rather than from anything a caller supplies.
+//! A name outside the closed vocabulary has exactly one door, [`XmlWriter::open_extension`], which declares the namespace on the element that uses it and refuses a local name it cannot verify.
 //!
-//! **An unbalanced document.** Every open element is on a stack. [`XmlWriter::close`] pops it
-//! and writes the end tag the stack says, so an end tag naming the wrong element is not a
-//! mistake that can be made; [`XmlWriter::finish`] closes whatever is still open, so a document
-//! cannot end inside an element; and closing more than was opened is refused rather than
-//! written. A start tag whose `>` is still unwritten becomes `/>` if it is closed with nothing
-//! inside it, which is what `<D:displayname/>` in every real server's body is.
+//! **An unbalanced document.** Every open element is on a stack.
+//! [`XmlWriter::close`] pops it and writes the end tag the stack says, so an end tag naming the wrong element is not a mistake that can be made; [`XmlWriter::finish`] closes whatever is still open, so a document cannot end inside an element; and closing more than was opened is refused rather than written.
+//! A start tag whose `>` is still unwritten becomes `/>` if it is closed with nothing inside it, which is what `<D:displayname/>` in every real server's body is.
 //!
-//! **Two attributes of one name on one element,** which XML forbids and which a peer refuses
-//! the whole body over. The names written on the tag still pending are held in a buffer this
-//! writer reuses, so the check costs one allocation for the life of the writer and none per
-//! element.
+//! **Two attributes of one name on one element,** which XML forbids and which a peer refuses the whole body over.
+//! The names written on the tag still pending are held in a buffer this writer reuses, so the check costs one allocation for the life of the writer and none per element.
 //!
-//! **A namespace declaration a caller wrote.** [`XmlWriter::attribute`] refuses `xmlns` and
-//! `xmlns:`-prefixed names. The prefixes this crate writes are its own fixed output choice, and
-//! a caller able to rebind `D:` could make every element under it mean something else.
+//! **A namespace declaration a caller wrote.** [`XmlWriter::attribute`] refuses `xmlns` and `xmlns:`-prefixed names.
+//! The prefixes this crate writes are its own fixed output choice, and a caller able to rebind `D:` could make every element under it mean something else.
 //!
-//! **A `CDATA` section**, because there is no door that emits one. It cannot carry a `CR` past
-//! a conformant reader, and it would turn a literal `]]>` inside a `DESCRIPTION` into an
-//! escaping bug; `>` is escaped unconditionally by [`write_escaped_text`], so that sequence is
-//! unwritable by accident.
+//! **A `CDATA` section**, because there is no door that emits one.
+//! It cannot carry a `CR` past a conformant reader, and it would turn a literal `]]>` inside a `DESCRIPTION` into an escaping bug; `>` is escaped unconditionally by [`write_escaped_text`], so that sequence is unwritable by accident.
 //!
 //! # What it does not check
 //!
-//! Whether an element is permitted where it was written. `<D:href>` inside `<D:prop>` is
-//! well-formed XML and a nonsense `PROPFIND`, and the grammar of each body belongs to the unit
-//! that encodes that body. This file guarantees well-formedness, escaping and bounding, and
-//! makes no claim about RFC 4918's or RFC 4791's content models.
+//! Whether an element is permitted where it was written.
+//! `<D:href>` inside `<D:prop>` is well-formed XML and a nonsense `PROPFIND`, and the grammar of each body belongs to the unit that encodes that body.
+//! This file guarantees well-formedness, escaping and bounding, and makes no claim about RFC 4918's or RFC 4791's content models.
 //!
 //! # What it charges
 //!
-//! Every octet is charged against the caller's [`Meter`] before it reaches the sink, escaped
-//! length rather than input length — charging what was handed in would undercount by exactly
-//! the amount an attacker chooses to escape. Each element charges one element and one level of
-//! depth as well, so a body this crate writes is bounded by the same `Limits` value that bounds
-//! the one it reads, and many bodies under one ledger are bounded in aggregate
-//! (`docs/adr/0010`).
+//! Every octet is charged against the caller's [`Meter`] before it reaches the sink, escaped length rather than input length — charging what was handed in would undercount by exactly the amount an attacker chooses to escape.
+//! Each element charges one element and one level of depth as well, so a body this crate writes is bounded by the same `Limits` value that bounds the one it reads, and many bodies under one ledger are bounded in aggregate (`docs/adr/0010`).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -62,43 +45,73 @@ use core::fmt::{self, Debug, Formatter};
 
 use crate::internal::core::{LimitExceeded, Meter};
 
-use crate::internal::dav::element::{ElementName, Namespace};
+use crate::internal::dav::element::{ElementName, Namespace, NamespaceUri};
 use crate::internal::dav::failure::{DavError, SinkFull, SyntaxError};
 use crate::internal::dav::sink::ByteSink;
-use crate::internal::dav::text::{write_escaped_attribute, write_escaped_text};
+use crate::internal::dav::text::{check_chars, write_escaped_attribute, write_escaped_text};
 use crate::internal::dav::value::{ExtensionName, copy};
+use crate::internal::dav::xml::scan::{XML_URI, XMLNS_URI};
 
 /// The declaration every document this crate writes begins with.
 ///
-/// `UTF-8` is the only encoding this crate's reader accepts, and stating it is what lets a peer
-/// that guessed otherwise be wrong loudly rather than quietly.
+/// `UTF-8` is the only encoding this crate's reader accepts, and stating it is what lets a peer that guessed otherwise be wrong loudly rather than quietly.
 const DECLARATION: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 
 /// The namespaces every root element declares, in the order it declares them.
 ///
-/// All three unconditionally, so the root of a `PROPFIND` and the root of a multistatus carry
-/// the same preamble and no encoder has to work out which of them a body will end up needing.
-const DECLARED: [Namespace<'static>; 3] =
+/// All three unconditionally, so the root of a `PROPFIND` and the root of a multistatus carry the same preamble and no encoder has to work out which of them a body will end up needing.
+pub(super) const DECLARED: [Namespace<'static>; 3] =
     [Namespace::Dav, Namespace::CalDav, Namespace::CalendarServer];
 
-/// The prefix a namespace outside the closed vocabulary is bound to.
+/// The generated prefix for extension names that need a declaration.
 ///
-/// Declared on the element that uses it rather than once on the root, because two extension
-/// properties in one body routinely come from two different namespaces and a single root
-/// declaration could serve only the first. A redeclaration is scoped to its own element, so the
-/// binding a foreign element is read under is always the one written on it.
+/// Declared on the element that uses it rather than once on the root, because two extension properties in one body routinely come from two different namespaces and a single root declaration could serve only the first.
+/// A redeclaration is scoped to its own element, so the binding a foreign element is read under is always the one written on it.
 const EXTENSION_PREFIX: &[u8] = b"X";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExtensionPrefix {
+    Unqualified,
+    Declared,
+    Xml,
+}
+
+impl ExtensionPrefix {
+    fn of(namespace: &[u8]) -> Result<Self, DavError> {
+        check_chars(namespace)?;
+        if namespace == XMLNS_URI {
+            return Err(SyntaxError::Malformed.into());
+        }
+        Ok(if namespace.is_empty() {
+            Self::Unqualified
+        } else if namespace == XML_URI {
+            Self::Xml
+        } else {
+            Self::Declared
+        })
+    }
+
+    const fn spelling(self) -> &'static [u8] {
+        match self {
+            Self::Unqualified => b"",
+            Self::Declared => EXTENSION_PREFIX,
+            Self::Xml => b"xml",
+        }
+    }
+}
 
 /// One element opened and not yet closed.
 ///
-/// A row of the table costs nothing to remember; a name outside it has to be copied, because
-/// the end tag is written after the caller's own borrow of the name is long gone.
+/// A row of the table costs nothing to remember; a name outside it has to be copied, because the end tag is written after the caller's own borrow of the name is long gone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum OpenTag {
     /// A row of the closed vocabulary, whose prefix and local name are both `'static`.
     Known(ElementName),
     /// A name outside it, kept as octets so its end tag can be written.
-    Foreign { local: Box<[u8]>, qualified: bool },
+    Foreign {
+        local: Box<[u8]>,
+        prefix: ExtensionPrefix,
+    },
 }
 
 impl OpenTag {
@@ -106,12 +119,7 @@ impl OpenTag {
     fn prefix(&self) -> &[u8] {
         match *self {
             Self::Known(name) => name.namespace().write_prefix(),
-            Self::Foreign {
-                qualified: true, ..
-            } => EXTENSION_PREFIX,
-            Self::Foreign {
-                qualified: false, ..
-            } => b"",
+            Self::Foreign { prefix, .. } => prefix.spelling(),
         }
     }
 
@@ -126,9 +134,8 @@ impl OpenTag {
 
 /// A writer over one document, holding the caller's sink and element stack.
 ///
-/// Built once per body and driven by the unit that encodes that body. The ledger is passed to
-/// each operation rather than borrowed for this type's lifetime, so an incremental response
-/// writer can retain the stack while its caller retains ownership of the aggregate meter.
+/// Built once per body and driven by the unit that encodes that body.
+/// The ledger is passed to each operation rather than borrowed for this type's lifetime, so an incremental response writer can retain the stack while its caller retains ownership of the aggregate meter.
 pub struct XmlWriter<'a> {
     /// Where the octets go.
     out: &'a mut dyn ByteSink,
@@ -160,8 +167,7 @@ impl<'a> XmlWriter<'a> {
 
     /// A writer for an XML content fragment below a root that already declared the prefixes.
     ///
-    /// Unlike a document, a content fragment may contain sibling elements or character data
-    /// without an enclosing element.
+    /// Unlike a document, a content fragment may contain sibling elements or character data without an enclosing element.
     #[must_use]
     pub fn fragment(out: &'a mut dyn ByteSink) -> Self {
         Self {
@@ -180,15 +186,31 @@ impl<'a> XmlWriter<'a> {
         u16::try_from(self.open.len()).unwrap_or(u16::MAX)
     }
 
+    pub(super) fn enclosing_prefix_bindings(&self) -> usize {
+        DECLARED.len().saturating_add(
+            self.open
+                .iter()
+                .filter(|tag| {
+                    matches!(
+                        tag,
+                        OpenTag::Foreign {
+                            prefix: ExtensionPrefix::Declared,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+        )
+    }
+
     /// Open one element of the closed vocabulary.
     ///
-    /// The first call also writes the XML declaration and the fixed namespace declarations, so
-    /// a document without them is not a thing an encoder can forget to produce. Attributes may
-    /// be added until anything else is written.
+    /// The first call also writes the XML declaration and the fixed namespace declarations, so a document without them is not a thing an encoder can forget to produce.
+    /// Attributes may be added until anything else is written.
     pub fn open(&mut self, name: ElementName, meter: &mut Meter) -> Result<(), DavError> {
         if !name.is_supported() {
-            // The table is unconditional and the build is not. Writing an element this build
-            // cannot honor would produce a request it could not then read back.
+            // The table is unconditional and the build is not.
+            // Writing an element this build cannot honor would produce a request it could not then read back.
             return Err(DavError::Unsupported(name));
         }
         let root = self.begin_element(meter)?;
@@ -205,67 +227,67 @@ impl<'a> XmlWriter<'a> {
 
     /// Open one element whose name is outside the closed vocabulary.
     ///
-    /// The one door that writes a name this crate has no row for, and it exists because the
-    /// crate is symmetric: a client that read a vendor property out of a `PROPFIND` response
-    /// must be able to ask for it again, and an `ErrorBody` carries the names a server refused
-    /// whatever namespace they came from. The namespace is declared on the element itself, so
-    /// no binding of this crate's own is touched.
+    /// The one door that writes a name this crate has no row for, and it exists because the crate is symmetric: a client that read a vendor property out of a `PROPFIND` response must be able to ask for it again, and an `ErrorBody` carries the names a server refused whatever namespace they came from.
+    /// XML namespace names use the predefined `xml` prefix.
+    /// Other nonempty namespaces declare their generated prefix on the element itself.
     ///
-    /// The local name is refused unless it is an ASCII XML `Name`. XML admits far more than
-    /// that, and every name this crate writes is ASCII, so a name it cannot verify is refused
-    /// rather than emitted unchecked — at the stated cost that a server's non-ASCII property
-    /// name is one this crate can read and not write back.
+    /// The local name is refused unless it is an ASCII XML `Name`.
+    /// XML admits far more than that, and every name this crate writes is ASCII, so a name it cannot verify is refused rather than emitted unchecked — at the stated cost that a server's non-ASCII property name is one this crate can read and not write back.
     pub fn open_extension(
         &mut self,
         name: &ExtensionName,
         meter: &mut Meter,
     ) -> Result<(), DavError> {
+        meter.admit(|| Ok(()))?;
         let local = name.local_name();
         check_name(local)?;
+        let prefix = ExtensionPrefix::of(name.namespace())?;
         let root = self.begin_element(meter)?;
-        let kept = copy(local)?;
-        let qualified = !name.namespace().is_empty();
+        let kept = meter.admit(|| copy(local))?;
         self.emit(b"<", meter)?;
-        if qualified {
-            self.emit(EXTENSION_PREFIX, meter)?;
+        if !prefix.spelling().is_empty() {
+            self.emit(prefix.spelling(), meter)?;
             self.emit(b":", meter)?;
         }
         self.emit(local, meter)?;
         if root && self.document {
             self.declare_fixed(meter)?;
         }
-        if qualified {
-            self.declare(EXTENSION_PREFIX, name.namespace(), meter)?;
+        match prefix {
+            ExtensionPrefix::Declared => self.declare(
+                prefix.spelling(),
+                NamespaceUri::literal(name.namespace()),
+                meter,
+            )?,
+            ExtensionPrefix::Unqualified | ExtensionPrefix::Xml => {},
         }
         self.open.push(OpenTag::Foreign {
             local: kept,
-            qualified,
+            prefix,
         });
         Ok(())
     }
 
     /// Add one attribute to the element that has just been opened.
     ///
-    /// The value is escaped for the rules that apply inside quotes, so a literal tab, newline
-    /// or carriage return survives attribute-value normalization as a character reference
-    /// rather than being replaced by a space.
+    /// The value is escaped for the rules that apply inside quotes, so a literal tab, newline or carriage return survives attribute-value normalization as a character reference rather than being replaced by a space.
     pub fn attribute(
         &mut self,
         name: &[u8],
         value: &[u8],
         meter: &mut Meter,
     ) -> Result<(), DavError> {
+        meter.admit(|| Ok(()))?;
         if !self.pending {
             // An attribute belongs to a start tag, and there is no start tag still open.
             return Err(SyntaxError::Malformed.into());
         }
         if name == b"xmlns".as_slice() || name.starts_with(b"xmlns:".as_slice()) {
-            // The prefixes this crate writes are its own; a caller that could rebind one could
-            // change what every element under it means.
+            // The prefixes this crate writes are its own; a caller that could rebind one could change what every element under it means.
             return Err(SyntaxError::Malformed.into());
         }
         check_name(name)?;
-        self.note_attribute(name)?;
+        self.note_attribute(name, meter)?;
         self.emit(b" ", meter)?;
         self.emit(name, meter)?;
         self.emit(b"=\"", meter)?;
@@ -275,17 +297,17 @@ impl<'a> XmlWriter<'a> {
 
     /// Write character data inside the element that is open.
     ///
-    /// Escaped so that a conformant reader recovers every octet handed in, which is what makes
-    /// the write half of the line-ending resolution cost nothing: `CR` leaves as `&#13;`.
+    /// Escaped so that a conformant reader recovers every octet handed in, which is what makes the write half of the line-ending resolution cost nothing: `CR` leaves as `&#13;`.
     pub fn text(&mut self, bytes: &[u8], meter: &mut Meter) -> Result<(), DavError> {
         if self.open.is_empty() && self.document {
             // Character data outside the root element is not a document.
             return Err(SyntaxError::Malformed.into());
         }
-        let length = u32::try_from(bytes.len()).map_err(|_| LimitExceeded::Text)?;
-        if length > meter.limits().max_xml_text_bytes() {
-            return Err(DavError::Limit(LimitExceeded::Text));
-        }
+        meter.check_width(
+            bytes.len(),
+            meter.limits().max_xml_text_bytes(),
+            LimitExceeded::Text,
+        )?;
         self.seal(meter)?;
         self.emit_escaped(bytes, false, meter)
     }
@@ -308,8 +330,7 @@ impl<'a> XmlWriter<'a> {
 
     /// End the pending start tag without adding content yet.
     ///
-    /// Body encoders use this before writing a child so an explicitly non-empty grammar keeps
-    /// its paired start/end spelling even when a later optional child is absent.
+    /// Body encoders use this before writing a child so an explicitly non-empty grammar keeps its paired start/end spelling even when a later optional child is absent.
     pub(crate) fn begin_content(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         if self.open.is_empty() {
             return Err(SyntaxError::Malformed.into());
@@ -319,8 +340,7 @@ impl<'a> XmlWriter<'a> {
 
     /// Close the innermost open element.
     ///
-    /// An element closed with nothing written inside it becomes `<D:displayname/>` rather than
-    /// a pair of tags, which is the same infoset and the shape every deployed server writes.
+    /// An element closed with nothing written inside it becomes `<D:displayname/>` rather than a pair of tags, which is the same infoset and the shape every deployed server writes.
     pub fn close(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         let tag = self.open.pop().ok_or(SyntaxError::Malformed)?;
         meter.leave_element();
@@ -346,8 +366,7 @@ impl<'a> XmlWriter<'a> {
 
     /// Write one element outside the closed vocabulary with nothing inside it.
     ///
-    /// The shape a property *name* takes: a `DAV:prop` request and a `DAV:error` body both
-    /// carry names without values.
+    /// The shape a property *name* takes: a `DAV:prop` request and a `DAV:error` body both carry names without values.
     pub fn empty_extension(
         &mut self,
         name: &ExtensionName,
@@ -359,9 +378,7 @@ impl<'a> XmlWriter<'a> {
 
     /// Write one element carrying `bytes` as its character data.
     ///
-    /// Empty content writes `<D:displayname/>`, because an element with no character data and
-    /// one with an empty run are the same element and the shorter spelling is what servers
-    /// send.
+    /// Empty content writes `<D:displayname/>`, because an element with no character data and one with an empty run are the same element and the shorter spelling is what servers send.
     pub fn element_text(
         &mut self,
         name: ElementName,
@@ -377,9 +394,8 @@ impl<'a> XmlWriter<'a> {
 
     /// Close every element still open, ending the document.
     ///
-    /// Idempotent: a second call has nothing left to close. Calling it is what makes a
-    /// truncated document unrepresentable rather than merely unlikely — a caller that forgot a
-    /// [`XmlWriter::close`] still hands its peer well-formed XML.
+    /// Idempotent: a second call has nothing left to close.
+    /// Calling it is what makes a truncated document unrepresentable rather than merely unlikely — a caller that forgot a [`XmlWriter::close`] still hands its peer well-formed XML.
     pub fn finish(&mut self, meter: &mut Meter) -> Result<(), DavError> {
         while !self.open.is_empty() {
             self.close(meter)?;
@@ -389,23 +405,18 @@ impl<'a> XmlWriter<'a> {
 
     /// Everything an element does before its own name is written.
     ///
-    /// Answers whether this element is the document's root, which is the one that carries the
-    /// fixed namespace declarations.
+    /// Answers whether this element is the document's root, which is the one that carries the fixed namespace declarations.
     fn begin_element(&mut self, meter: &mut Meter) -> Result<bool, DavError> {
         self.seal(meter)?;
         let root = self.open.is_empty();
         if root && self.document && self.started {
-            // An XML document has exactly one root element, and a second would be octets no
-            // parser accepts.
+            // An XML document has exactly one root element, and a second would be octets no parser accepts.
             return Err(SyntaxError::Malformed.into());
         }
         meter.try_charge_element()?;
         meter.try_enter_element()?;
-        // Reserved here so the push at the end of an element cannot be the step that fails
-        // after the start tag is already on the wire.
-        self.open
-            .try_reserve(1)
-            .map_err(|_| DavError::Limit(LimitExceeded::Budget))?;
+        // Reserved here so the push at the end of an element cannot be the step that fails after the start tag is already on the wire.
+        meter.admit(|| self.open.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
         if root && self.document {
             self.emit(DECLARATION, meter)?;
         }
@@ -435,23 +446,36 @@ impl<'a> XmlWriter<'a> {
     }
 
     /// Declare one prefix on the element currently pending.
-    fn declare(&mut self, prefix: &[u8], uri: &[u8], meter: &mut Meter) -> Result<(), DavError> {
+    fn declare(
+        &mut self,
+        prefix: &[u8],
+        uri: NamespaceUri<'_>,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
         self.emit(b" xmlns:", meter)?;
         self.emit(prefix, meter)?;
         self.emit(b"=\"", meter)?;
-        self.emit_escaped(uri, true, meter)?;
+        if let Some(bytes) = uri.contiguous() {
+            self.emit_escaped(bytes, true, meter)?;
+        } else {
+            for byte in uri.octets() {
+                self.emit_escaped(&[byte?], true, meter)?;
+            }
+        }
         self.emit(b"\"", meter)
     }
 
     /// Record an attribute name, refusing one this element already carries.
-    fn note_attribute(&mut self, name: &[u8]) -> Result<(), DavError> {
+    fn note_attribute(&mut self, name: &[u8], meter: &mut Meter) -> Result<(), DavError> {
         let length = u8::try_from(name.len()).map_err(|_| SyntaxError::Malformed)?;
         if holds_attribute(&self.attributes, name) {
             return Err(SyntaxError::DuplicateAttribute.into());
         }
-        self.attributes
-            .try_reserve(name.len().saturating_add(1))
-            .map_err(|_| DavError::Limit(LimitExceeded::Budget))?;
+        meter.admit(|| {
+            self.attributes
+                .try_reserve(name.len().saturating_add(1))
+                .map_err(|_| LimitExceeded::Budget)
+        })?;
         self.attributes.push(length);
         self.attributes.extend_from_slice(name);
         Ok(())
@@ -459,8 +483,7 @@ impl<'a> XmlWriter<'a> {
 
     /// Charge `bytes` and hand them to the sink, in that order.
     ///
-    /// Charging first is what makes the bound bind: a body past the caller's budget is refused
-    /// before its octets reach a sink that may already have written them somewhere.
+    /// Charging first is what makes the bound bind: a body past the caller's budget is refused before its octets reach a sink that may already have written them somewhere.
     fn emit(&mut self, bytes: &[u8], meter: &mut Meter) -> Result<(), DavError> {
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         meter.try_charge_bytes(length)?;
@@ -485,8 +508,7 @@ impl<'a> XmlWriter<'a> {
         } else {
             write_escaped_text(&mut charged, bytes)
         };
-        // A refused charge is a bound the caller stated, not a sink with no room, and the two
-        // are different things for a caller deciding whether to retry with a larger buffer.
+        // A refused charge is a bound the caller stated, not a sink with no room, and the two are different things for a caller deciding whether to retry with a larger buffer.
         match charged.refused {
             Some(exceeded) => Err(DavError::Limit(exceeded)),
             None => outcome,
@@ -496,8 +518,7 @@ impl<'a> XmlWriter<'a> {
 
 impl Debug for XmlWriter<'_> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        // Neither the sink nor the ledger's borrow is something a caller debugging an encoder
-        // wants printed; how deep the writer sits and whether a tag is still open is.
+        // Neither the sink nor the ledger's borrow is something a caller debugging an encoder wants printed; how deep the writer sits and whether a tag is still open is.
         formatter
             .debug_struct("XmlWriter")
             .field("depth", &self.depth())
@@ -509,11 +530,8 @@ impl Debug for XmlWriter<'_> {
 
 /// A sink that charges the caller's ledger for every octet passing through it.
 ///
-/// [`write_escaped_text`] writes into a [`ByteSink`] directly, and an escaped run is longer
-/// than the octets handed in — charging the input's length would undercount by exactly what an
-/// attacker chooses to escape. The dimension a refusal named is kept here rather than reported
-/// as [`SinkFull`], because a caller told its buffer was full would enlarge a buffer that was
-/// never the problem.
+/// [`write_escaped_text`] writes into a [`ByteSink`] directly, and an escaped run is longer than the octets handed in — charging the input's length would undercount by exactly what an attacker chooses to escape.
+/// The dimension a refusal named is kept here rather than reported as [`SinkFull`], because a caller told its buffer was full would enlarge a buffer that was never the problem.
 struct Charged<'a> {
     /// Where the octets go once they are paid for.
     out: &'a mut dyn ByteSink,
@@ -550,9 +568,9 @@ fn holds_attribute(buffer: &[u8], name: &[u8]) -> bool {
 
 /// Refuse a name this writer will not emit.
 ///
-/// An XML `Name` admits most of Unicode. This accepts the ASCII subset every name in RFC 4918,
-/// RFC 4791 and RFC 6578 is drawn from, and refuses everything else rather than emitting octets
-/// it has not checked into a position where a stray `<`, space or quote would end the tag.
+/// An XML `Name` admits most of Unicode.
+/// This accepts the ASCII subset every name in RFC 4918,
+/// RFC 4791 and RFC 6578 is drawn from, and refuses everything else rather than emitting octets it has not checked into a position where a stray `<`, space or quote would end the tag.
 fn check_name(name: &[u8]) -> Result<(), DavError> {
     let first = *name.first().ok_or(SyntaxError::Malformed)?;
     if !(first.is_ascii_alphabetic() || first == b'_') {
@@ -597,8 +615,7 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
 <D:href>/calendars/ann/work/gone.ics</D:href>\
 </C:calendar-multiget>";
 
-    /// One resource whose two properties disagree about their status, as RFC 4918 section 9.1
-    /// writes one and as the `SabreDAV` fixture beside this crate carries one.
+    /// One resource whose two properties disagree about their status, as RFC 4918 section 9.1 writes one and as the `SabreDAV` fixture beside this crate carries one.
     const MULTISTATUS: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 <D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" \
 xmlns:CS=\"http://calendarserver.org/ns/\">\
@@ -609,17 +626,13 @@ xmlns:CS=\"http://calendarserver.org/ns/\">\
 <D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>\
 </D:response></D:multistatus>";
 
-    /// An `.ics` with the `CRLF` terminators RFC 5545 section 3.1 requires, a content line
-    /// folded at octet 75, and the sequence that would end a `CDATA` section this crate must
-    /// therefore never open.
+    /// An `.ics` with the `CRLF` terminators RFC 5545 section 3.1 requires, a content line folded at octet 75, and the sequence that would end a `CDATA` section this crate must therefore never open.
     const PAYLOAD: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
 UID:20260105T090000Z-1@example.invalid\r\nDESCRIPTION:a literal ]]> & a < inside a note\r\n\
 SUMMARY:Weekly sync with a summary long enough that the exporter folded i\r\n t here\r\n\
 END:VEVENT\r\nEND:VCALENDAR\r\n";
 
-    /// One recorded spelling of a name: the prefix the named server writes, the namespace URI
-    /// it resolves to, the local name, and the tag this writer emits — `None` where the URI
-    /// makes it a different element entirely.
+    /// One recorded spelling of a name: the prefix the named server writes, the namespace URI it resolves to, the local name, and the tag this writer emits — `None` where the URI makes it a different element entirely.
     type Spelling = (
         &'static [u8],
         &'static [u8],
@@ -651,9 +664,8 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
 
     /// A prefix is decided by the namespace and never by the local name.
     ///
-    /// `DAV:prop` and `CALDAV:prop` are the row this test exists for: one local name, two
-    /// elements, two prefixes. A writer keyed on local names would emit the same tag for both
-    /// and a server would answer the wrong question.
+    /// `DAV:prop` and `CALDAV:prop` are the row this test exists for: one local name, two elements, two prefixes.
+    /// A writer keyed on local names would emit the same tag for both and a server would answer the wrong question.
     #[test]
     fn the_namespace_decides_the_prefix_and_the_local_name_never_does() {
         let cases: [(ElementName, &[u8]); 6] = [
@@ -674,13 +686,11 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         }
     }
 
-    /// A name is resolved before it is written, so every prefix the deployed world sends
-    /// converges on the one this crate emits.
+    /// A name is resolved before it is written, so every prefix the deployed world sends converges on the one this crate emits.
     #[test]
     fn any_servers_spelling_of_a_name_writes_back_as_this_crates_own() {
-        // The first column is the prefix the named server actually writes and is read by
-        // nothing: the lookup takes the resolved URI and the local name. The last row is the
-        // one a table keyed on prefix strings gets wrong, and it is a different element.
+        // The first column is the prefix the named server actually writes and is read by nothing: the lookup takes the resolved URI and the local name.
+        // The last row is the one a table keyed on prefix strings gets wrong, and it is a different element.
         let cases: [Spelling; 6] = [
             (b"d:", Namespace::DAV_URI, b"href", Some(b"<D:href/>")),
             (b"", Namespace::DAV_URI, b"href", Some(b"<D:href/>")),
@@ -727,7 +737,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             composed.extend_from_slice(b" xmlns:");
             composed.extend_from_slice(namespace.write_prefix());
             composed.extend_from_slice(b"=\"");
-            composed.extend_from_slice(namespace.uri());
+            composed.extend(namespace.uri().octets().map(Result::unwrap));
             composed.extend_from_slice(b"\"");
         }
         assert_eq!(
@@ -744,8 +754,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(body, wanted);
     }
 
-    /// The client direction: a `calendar-multiget` built the way RFC 4791 section 7.9 writes
-    /// one, out of the same writer the server direction below uses.
+    /// The client direction: a `calendar-multiget` built the way RFC 4791 section 7.9 writes one, out of the same writer the server direction below uses.
     #[test]
     fn a_client_builds_a_multiget_and_the_octets_are_the_ones_a_server_reads() {
         let body = write_document(|writer, meter| {
@@ -768,10 +777,8 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
     /// The server direction: one `href` reporting `getetag` at 200 beside `displayname` at 404,
     /// which is what makes a per-property status structural rather than decorative.
     ///
-    /// `SabreDAV` writes the `ETag` as `&quot;5f2b8c1e9a04&quot;`; this writer leaves the quote
-    /// alone, because a quote in character data needs no escaping and both spellings are the
-    /// same three-and-a-bit characters. That difference is exactly why a reader must compare
-    /// infosets and not wire strings.
+    /// `SabreDAV` writes the `ETag` as `&quot;5f2b8c1e9a04&quot;`; this writer leaves the quote alone, because a quote in character data needs no escaping and both spellings are the same three-and-a-bit characters.
+    /// That difference is exactly why a reader must compare infosets and not wire strings.
     #[test]
     fn a_server_builds_one_response_whose_properties_disagree_about_their_status() {
         let body = write_document(|writer, meter| {
@@ -793,15 +800,13 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
             writer.empty(ElementName::Displayname, meter)?;
             writer.close(meter)?;
             writer.element_text(ElementName::Status, b"HTTP/1.1 404 Not Found", meter)
-            // The propstat, the response and the multistatus are left open on purpose: what
-            // closes them is `finish`, which is what makes a truncated body unrepresentable.
+            // The propstat, the response and the multistatus are left open on purpose: what closes them is `finish`, which is what makes a truncated body unrepresentable.
         })
         .unwrap();
         assert_eq!(body, MULTISTATUS);
     }
 
-    /// Both `time-range` bounds are independently optional, and an absent one is absent from
-    /// the wire rather than written as a placeholder.
+    /// Both `time-range` bounds are independently optional, and an absent one is absent from the wire rather than written as a placeholder.
     #[test]
     fn a_time_range_writes_the_bounds_it_has_and_no_others() {
         let cases: [Window; 3] = [
@@ -848,8 +853,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         }
     }
 
-    /// The write half of the line-ending resolution: conformant octets that this crate's own
-    /// reader hands back unchanged.
+    /// The write half of the line-ending resolution: conformant octets that this crate's own reader hands back unchanged.
     #[test]
     fn a_payload_written_here_is_the_payload_read_back_out_of_it() {
         let body = write_document(|writer, meter| {
@@ -858,9 +862,8 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         })
         .unwrap();
 
-        // No departure from XML 1.0 is needed on this side. Nothing carries a raw `CR`, no
-        // `CDATA` section is opened, and the `]]>` a `DESCRIPTION` may hold is escaped where it
-        // stands rather than being an escaping bug waiting for one.
+        // No departure from XML 1.0 is needed on this side.
+        // Nothing carries a raw `CR`, no `CDATA` section is opened, and the `]]>` a `DESCRIPTION` may hold is escaped where it stands rather than being an escaping bug waiting for one.
         assert!(!body.contains(&b'\r'));
         assert!(!carries(&body, b"<![CDATA["));
         assert!(carries(&body, b"&#13;\n"));
@@ -879,8 +882,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(read.run.as_bytes(), PAYLOAD);
     }
 
-    /// A property name outside the vocabulary is written with its own declaration, so no
-    /// prefix of this crate's is bent to carry it.
+    /// A property name outside the vocabulary is written with its own declaration, so no prefix of this crate's is bent to carry it.
     #[test]
     fn a_name_outside_the_vocabulary_declares_its_own_namespace_on_itself() {
         let mut meter = Meter::new(Limits::DEFAULT);
@@ -981,8 +983,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         {
             let mut writer = XmlWriter::new(&mut body);
             writer.open(ElementName::Multistatus, &mut meter).unwrap();
-            // Escaped content costs more octets than it was handed, which is the amount a
-            // charge over the input's length would have missed.
+            // Escaped content costs more octets than it was handed, which is the amount a charge over the input's length would have missed.
             writer
                 .element_text(ElementName::Displayname, b"Ann & <Work>\r\n", &mut meter)
                 .unwrap();
@@ -1044,8 +1045,7 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(refused, Err(DavError::Limit(LimitExceeded::Text)));
     }
 
-    /// An element this build cannot honor is refused rather than written into a request that
-    /// could not then be read back.
+    /// An element this build cannot honor is refused rather than written into a request that could not then be read back.
     #[test]
     fn a_build_without_the_feature_will_not_write_the_report_it_cannot_read() {
         if crate::internal::dav::SYNC_COLLECTION_ENABLED {

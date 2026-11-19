@@ -4,43 +4,111 @@
 
 //! The closed element vocabulary, keyed on a resolved namespace and a local name.
 //!
-//! A prefix is a per-document choice its author made and nothing else. `DAV:` may be bound to
-//! `D:`, to `d:`, to no prefix at all through a default declaration, or to a different prefix
-//! on every element of one body, and the servers people actually run disagree about which.
+//! A prefix is a per-document choice its author made and nothing else.
+//! `DAV:` may be bound to `D:`, to `d:`, to no prefix at all through a default declaration, or to a different prefix on every element of one body, and the servers people actually run disagree about which.
 //! `<d:multistatus xmlns:d="DAV:">` and `<multistatus xmlns="DAV:">` are the same element;
-//! `<D:multistatus xmlns:D="http://evil.example/not-dav">` is a different one and must never
-//! be read as the first. A table keyed on the literal string `D:multistatus` gets all three
-//! wrong, silently, against the most widely deployed CalDAV software there is.
+//! `<D:multistatus xmlns:D="http://evil.example/not-dav">` is a different one and must never be read as the first.
+//! A table keyed on the literal string `D:multistatus` gets all three wrong, silently, against the most widely deployed CalDAV software there is.
 //!
-//! So nothing here matches a prefix. [`Namespace::from_uri`] classifies a *resolved* URI,
-//! [`ElementName::resolve`] takes that classification and a local name, and no public
-//! function in this crate accepts a prefix at all. The prefixes this crate writes — `D:`,
+//! So nothing here matches a prefix.
+//! [`Namespace::from_uri`] classifies a *resolved* URI,
+//! [`ElementName::resolve`] takes that classification and a local name, and no public function in this crate accepts a prefix at all.
+//! The prefixes this crate writes — `D:`,
 //! `C:`, `CS:` — are an output choice, declared on the root element of everything it emits,
 //! and never an input assumption.
 //!
-//! The table is unconditional. A row exists for every element of RFC 4918, RFC 4791, RFC 6578
-//! and RFC 6638 this crate names, whatever features are compiled, so a build that cannot
-//! honor a `REPORT` answers [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) instead of
-//! skipping the request as though the server had made it up.
+//! The table is unconditional.
+//! A row exists for every element of RFC 4918, RFC 4791, RFC 6578 and RFC 6638 this crate names, whatever features are compiled, so a build that cannot honor a `REPORT` answers [`DavError::Unsupported`](crate::internal::dav::DavError::Unsupported) instead of skipping the request as though the server had made it up.
+
+use core::cmp::Ordering;
+use core::hash::{Hash, Hasher};
+
+use crate::internal::dav::failure::DavError;
+use crate::internal::dav::xml::chars::AttributeValue;
+use crate::internal::dav::xml::fault::XmlFault;
+
+/// A borrowed namespace name with normalized octet identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NamespaceUri<'a>(AttributeValue<'a>);
+
+impl<'a> NamespaceUri<'a> {
+    pub(crate) const fn literal(bytes: &'a [u8]) -> Self {
+        Self(AttributeValue::literal(bytes))
+    }
+
+    /// The normalized width in octets.
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the normalized name is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) const fn contiguous(self) -> Option<&'a [u8]> {
+        self.0.contiguous()
+    }
+
+    pub(crate) const fn source_len(self) -> usize {
+        self.0.source_len()
+    }
+
+    /// Read normalized octets without allocating a temporary namespace string.
+    pub fn octets(self) -> impl Iterator<Item = Result<u8, DavError>> + 'a {
+        self.0
+            .bytes()
+            .map(|byte| byte.map_err(|error| DavError::from(XmlFault::from(error))))
+    }
+}
+
+impl PartialEq<&[u8]> for NamespaceUri<'_> {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.0.is(other)
+    }
+}
 
 /// A resolved namespace URI, classified.
 ///
-/// `Other` keeps the URI's octets rather than discarding them, because a foreign element is
-/// reported to the caller's sink and "some namespace" is not something a caller can act on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// `Other` keeps the URI's octets rather than discarding them, because a foreign element is reported to the caller's sink and "some namespace" is not something a caller can act on.
+#[derive(Clone, Copy, Debug)]
 pub enum Namespace<'a> {
-    /// `DAV:`, RFC 4918. Not a URL; the trailing colon is part of it.
+    /// `DAV:`, RFC 4918.
+    /// Not a URL; the trailing colon is part of it.
     Dav,
     /// `urn:ietf:params:xml:ns:caldav`, RFC 4791.
     CalDav,
     /// `http://calendarserver.org/ns/`, the vendor namespace `getctag` lives in.
     ///
-    /// Not an IETF namespace and modeled anyway, because the property every widely deployed
-    /// client polls a collection with lives in it. Recognizing it is what keeps a real
-    /// server's `PROPFIND` response readable rather than two thirds skipped.
+    /// Not an IETF namespace and modeled anyway, because the property every widely deployed client polls a collection with lives in it.
+    /// Recognizing it is what keeps a real server's `PROPFIND` response readable rather than two thirds skipped.
     CalendarServer,
+    /// The reserved XML namespace.
+    Xml,
     /// Anything else, with the URI kept.
-    Other(&'a [u8]),
+    Other(UnrecognizedNamespaceUri<'a>),
+}
+
+/// A namespace name outside the vocabularies classified by the factories.
+#[derive(Clone, Copy, Debug)]
+pub struct UnrecognizedNamespaceUri<'a>(NamespaceUri<'a>);
+
+impl<'a> From<AttributeValue<'a>> for Namespace<'a> {
+    fn from(uri: AttributeValue<'a>) -> Self {
+        if uri.is(Self::DAV_URI) {
+            Self::Dav
+        } else if uri.is(Self::CALDAV_URI) {
+            Self::CalDav
+        } else if uri.is(Self::CALENDARSERVER_URI) {
+            Self::CalendarServer
+        } else if uri.is(Self::XML_URI) {
+            Self::Xml
+        } else {
+            Self::Other(UnrecognizedNamespaceUri(NamespaceUri(uri)))
+        }
+    }
 }
 
 impl<'a> Namespace<'a> {
@@ -50,12 +118,13 @@ impl<'a> Namespace<'a> {
     pub const CALDAV_URI: &'static [u8] = b"urn:ietf:params:xml:ns:caldav";
     /// The URI of the `CalendarServer` vendor namespace.
     pub const CALENDARSERVER_URI: &'static [u8] = b"http://calendarserver.org/ns/";
+    /// The reserved XML namespace URI.
+    pub const XML_URI: &'static [u8] = crate::internal::dav::xml::scan::XML_URI;
 
     /// Classify a resolved namespace URI.
     ///
-    /// Compared octet for octet. A namespace URI is not a URL to be normalized: XML
-    /// Namespaces 1.0 section 2.3 makes identity string comparison, so `DAV:` and `dav:` are
-    /// different namespaces and this function says so.
+    /// Compared octet for octet.
+    /// A namespace URI is not a URL to be normalized: XML Namespaces 1.0 section 2.3 makes identity string comparison, so `DAV:` and `dav:` are different namespaces and this function says so.
     #[must_use]
     pub const fn from_uri(uri: &'a [u8]) -> Self {
         if equal(uri, Self::DAV_URI) {
@@ -64,44 +133,79 @@ impl<'a> Namespace<'a> {
             Self::CalDav
         } else if equal(uri, Self::CALENDARSERVER_URI) {
             Self::CalendarServer
+        } else if equal(uri, Self::XML_URI) {
+            Self::Xml
         } else {
-            Self::Other(uri)
+            Self::Other(UnrecognizedNamespaceUri(NamespaceUri::literal(uri)))
         }
     }
 
     /// The URI this namespace resolves to.
     #[must_use]
-    pub const fn uri(self) -> &'a [u8] {
+    pub const fn uri(self) -> NamespaceUri<'a> {
         match self {
-            Self::Dav => Self::DAV_URI,
-            Self::CalDav => Self::CALDAV_URI,
-            Self::CalendarServer => Self::CALENDARSERVER_URI,
-            Self::Other(uri) => uri,
+            Self::Dav => NamespaceUri::literal(Self::DAV_URI),
+            Self::CalDav => NamespaceUri::literal(Self::CALDAV_URI),
+            Self::CalendarServer => NamespaceUri::literal(Self::CALENDARSERVER_URI),
+            Self::Xml => NamespaceUri::literal(Self::XML_URI),
+            Self::Other(uri) => uri.0,
         }
     }
 
     /// Whether two namespaces are the same namespace.
     ///
-    /// Written over the URIs rather than derived, so that a `Namespace<'static>` from the
-    /// table and a `Namespace<'_>` borrowed from a body compare without either lifetime
-    /// having to become the other.
+    /// Compare canonical classifications and normalized foreign names across borrowed lifetimes.
     #[must_use]
-    pub const fn is(self, other: Namespace<'_>) -> bool {
-        equal(self.uri(), other.uri())
+    pub fn is(self, other: Namespace<'_>) -> bool {
+        match (self, other) {
+            (Self::Dav, Namespace::Dav)
+            | (Self::CalDav, Namespace::CalDav)
+            | (Self::CalendarServer, Namespace::CalendarServer)
+            | (Self::Xml, Namespace::Xml) => true,
+            (Self::Other(left), Namespace::Other(right)) => left.0 == right.0,
+            _ => false,
+        }
     }
 
     /// The prefix this crate writes for the namespace.
     ///
     /// An output choice and never an input assumption; see this module's own documentation.
-    /// A foreign namespace has none, because this crate writes no element it has no row for.
+    /// Foreign names use the extension writer's prefix selection.
     #[must_use]
     pub const fn write_prefix(self) -> &'static [u8] {
         match self {
             Self::Dav => b"D",
             Self::CalDav => b"C",
             Self::CalendarServer => b"CS",
+            Self::Xml => b"xml",
             Self::Other(_) => b"",
         }
+    }
+}
+
+impl PartialEq for Namespace<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.is(*other)
+    }
+}
+
+impl Eq for Namespace<'_> {}
+
+impl PartialOrd for Namespace<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Namespace<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.uri().cmp(&other.uri())
+    }
+}
+
+impl Hash for Namespace<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uri().hash(state);
     }
 }
 
@@ -158,9 +262,7 @@ pub struct ElementSpec {
 /// Every element of the closed vocabulary.
 ///
 /// Rows whose local names collide across namespaces carry both facts in the variant name:
-/// `DAV:prop` is [`ElementName::Prop`] and the `prop` inside a `calendar-data` request is
-/// [`ElementName::CalendarDataProp`], because they are different elements that a table keyed
-/// on local names alone would merge.
+/// `DAV:prop` is [`ElementName::Prop`] and the `prop` inside a `calendar-data` request is [`ElementName::CalendarDataProp`], because they are different elements that a table keyed on local names alone would merge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ElementName {
@@ -210,8 +312,7 @@ pub enum ElementName {
     Owner,
     /// `DAV:current-user-principal`, RFC 5397 section 3.
     ///
-    /// The one property that answers "who does this server think I am", which RFC 6638 makes
-    /// the actor a scheduling decision is judged against.
+    /// The one property that answers "who does this server think I am", which RFC 6638 makes the actor a scheduling decision is judged against.
     CurrentUserPrincipal,
     /// `DAV:principal-URL`, RFC 3744 section 4.2.
     PrincipalUrl,
@@ -241,8 +342,8 @@ pub enum ElementName {
     CalendarMultiget,
     /// `CALDAV:free-busy-query`, RFC 4791 section 9.11.
     FreeBusyQuery,
-    /// `CALDAV:calendar-data`, RFC 4791 section 9.6. The one element whose line endings are
-    /// its content rather than its layout.
+    /// `CALDAV:calendar-data`, RFC 4791 section 9.6.
+    /// The one element whose line endings are its content rather than its layout.
     CalendarData,
     /// `CALDAV:filter`, RFC 4791 section 9.7.
     Filter,
@@ -260,9 +361,8 @@ pub enum ElementName {
     TimeRange,
     /// `CALDAV:timezone`, RFC 4791 section 9.5.
     ///
-    /// The zone a floating `time-range` inside a `calendar-query` is resolved in (section
-    /// 9.9). Its value is an iCalendar object, so its line endings are its content in exactly
-    /// the way `calendar-data`'s are.
+    /// The zone a floating `time-range` inside a `calendar-query` is resolved in (section 9.9).
+    /// Its value is an iCalendar object, so its line endings are its content in exactly the way `calendar-data`'s are.
     Timezone,
     /// `CALDAV:comp` inside a `calendar-data` request, RFC 4791 section 9.6.1.
     CalendarDataComp,
@@ -290,6 +390,10 @@ pub enum ElementName {
     SupportedCalendarComponentSet,
     /// `CALDAV:supported-calendar-data`, RFC 4791 section 5.2.4.
     SupportedCalendarData,
+    /// `CALDAV:supported-rscale-set`, RFC 7529 section 10.1.
+    SupportedRscaleSet,
+    /// `CALDAV:supported-rscale`, RFC 7529 sections 10 and 10.1.
+    SupportedRscale,
     /// `CALDAV:max-resource-size`, RFC 4791 section 5.2.5.
     MaxResourceSize,
     /// `CALDAV:min-date-time`, RFC 4791 section 5.2.6.
@@ -310,9 +414,8 @@ pub enum ElementName {
     NoUidConflict,
     /// `CALDAV:calendar-user-address-set`, RFC 6638 section 2.4.1.
     ///
-    /// The mapping from the principal the server authenticated to the `CAL-ADDRESS` an
-    /// `ORGANIZER` or `ATTENDEE` line is written with. Without it a principal `href` and a
-    /// `mailto:` are two identifiers nothing joins.
+    /// The mapping from the principal the server authenticated to the `CAL-ADDRESS` an `ORGANIZER` or `ATTENDEE` line is written with.
+    /// Without it a principal `href` and a `mailto:` are two identifiers nothing joins.
     CalendarUserAddressSet,
     /// `CALDAV:schedule-inbox-URL`, RFC 6638 section 2.2.
     ScheduleInboxUrl,
@@ -320,16 +423,13 @@ pub enum ElementName {
     ScheduleOutboxUrl,
     /// `CALDAV:schedule-tag`, RFC 6638 section 3.2.10.
     ///
-    /// The `ETag`'s sibling for scheduling: it changes only when the scheduling-relevant part
-    /// of an object changes, so an attendee's reply does not invalidate the organizer's copy.
+    /// The `ETag`'s sibling for scheduling: it changes only when the scheduling-relevant part of an object changes, so an attendee's reply does not invalidate the organizer's copy.
     ScheduleTag,
     /// `CALDAV:schedule-calendar-transp`, RFC 6638 section 9.1.
     ScheduleCalendarTransp,
     /// `CALDAV:allowed-organizer-scheduling-object-change`, RFC 6638 section 3.2.1.
     ///
-    /// The refusal a server writes when a stored copy's `ORGANIZER` moved: the one defense a
-    /// file-level scheduling gate cannot supply, because it needs the copy that was there
-    /// before the write.
+    /// The refusal a server writes when a stored copy's `ORGANIZER` moved: the one defense a file-level scheduling gate cannot supply, because it needs the copy that was there before the write.
     AllowedOrganizerSchedulingObjectChange,
     /// `CALDAV:allowed-attendee-scheduling-object-change`, RFC 6638 section 3.2.1.
     AllowedAttendeeSchedulingObjectChange,
@@ -343,10 +443,8 @@ pub enum ElementName {
 
 /// Every row of the table, in declaration order.
 ///
-/// A const array rather than a derived iterator, because [`ElementName::resolve`] scans it and
-/// a test asserts that no two rows share a namespace and a local name — which is the property
-/// that makes the scan's first hit the only hit.
-const ALL: [ElementName; 78] = [
+/// A const array rather than a derived iterator, because [`ElementName::resolve`] scans it and a test asserts that no two rows share a namespace and a local name — which is the property that makes the scan's first hit the only hit.
+const ALL: [ElementName; 80] = [
     ElementName::Multistatus,
     ElementName::Response,
     ElementName::Propstat,
@@ -406,6 +504,8 @@ const ALL: [ElementName; 78] = [
     ElementName::CalendarTimezone,
     ElementName::SupportedCalendarComponentSet,
     ElementName::SupportedCalendarData,
+    ElementName::SupportedRscaleSet,
+    ElementName::SupportedRscale,
     ElementName::MaxResourceSize,
     ElementName::MinDateTime,
     ElementName::MaxDateTime,
@@ -430,10 +530,9 @@ const ALL: [ElementName; 78] = [
 impl ElementName {
     /// The row of the table a resolved name lands on, if any.
     ///
-    /// `None` is a foreign element, which RFC 4918 section 17 requires a reader to tolerate
-    /// and which [`crate::internal::dav::UnknownPolicy`] decides the fate of. It is never an error here,
-    /// because whether a server's extension is skipped or refused is the caller's call and
-    /// not this table's.
+    /// `None` is a foreign element, which RFC 4918 section 17 requires a reader to tolerate and which [`crate::internal::dav::UnknownPolicy`] decides the fate of.
+    /// It is never an error here,
+    /// because whether a server's extension is skipped or refused is the caller's call and not this table's.
     #[must_use]
     pub fn resolve(namespace: Namespace<'_>, local_name: &[u8]) -> Option<Self> {
         ALL.into_iter().find(|candidate| {
@@ -452,22 +551,14 @@ impl ElementName {
 
     /// Whether this element's character data carries line endings that are its content.
     ///
-    /// True for every element whose value RFC 4791 defines as an iCalendar object, and for
-    /// nothing else. An iCalendar object's `CRLF` terminators are RFC 5545 section 3.1 syntax
-    /// rather than the file's layout, and XML 1.0 section 2.11 would fold them away before any
-    /// of this crate saw them. What this predicate scopes — a deliberate, stated departure
-    /// from that rule — is [`crate::internal::dav::TextMode`]'s subject, and the reasoning is in
-    /// `docs/adr/0004`.
+    /// True for every element whose value RFC 4791 defines as an iCalendar object, and for nothing else.
+    /// An iCalendar object's `CRLF` terminators are RFC 5545 section 3.1 syntax rather than the file's layout, and XML 1.0 section 2.11 would fold them away before any of this crate saw them.
+    /// What this predicate scopes — a deliberate, stated departure from that rule — is [`crate::internal::dav::TextMode`]'s subject, and the reasoning is in `docs/adr/0004`.
     ///
-    /// The set is three elements rather than one because RFC 4791 defines three places an
-    /// iCalendar object travels through the envelope, and the argument for the carve-out does
-    /// not weaken for the other two. `CALDAV:calendar-data` is section 9.6.
-    /// `CALDAV:calendar-timezone` is section 5.2.2 — "a valid iCalendar object containing
-    /// exactly one VTIMEZONE component" — and a client that reads a collection's timezone
-    /// under a folding read and `PROPPATCH`es it back rewrites the stored object, which is the
-    /// exact harm the carve-out exists to prevent, one property over. `CALDAV:timezone` is
-    /// section 9.5's copy of the same value inside a `calendar-query`, and a server that
-    /// resolved a floating window against a folded zone would answer a different question.
+    /// The set is three elements rather than one because RFC 4791 defines three places an iCalendar object travels through the envelope, and the argument for the carve-out does not weaken for the other two.
+    /// `CALDAV:calendar-data` is section 9.6.
+    /// `CALDAV:calendar-timezone` is section 5.2.2 — "a valid iCalendar object containing exactly one VTIMEZONE component" — and a client that reads a collection's timezone under a folding read and `PROPPATCH`es it back rewrites the stored object, which is the exact harm the carve-out exists to prevent, one property over.
+    /// `CALDAV:timezone` is section 9.5's copy of the same value inside a `calendar-query`, and a server that resolved a floating window against a folded zone would answer a different question.
     #[must_use]
     pub const fn preserves_line_endings(self) -> bool {
         matches!(
@@ -478,10 +569,8 @@ impl ElementName {
 
     /// Whether this build can honor the element.
     ///
-    /// The table is unconditional and this is not: an RFC 6578 request in a build without
-    /// `sync-collection` is refused as [`crate::internal::dav::DavError::Unsupported`], which is a different
-    /// answer from skipping it as foreign. A server that skipped a `sync-collection` REPORT
-    /// would answer it with a full enumeration and let the client believe it had synchronized.
+    /// The table is unconditional and this is not: an RFC 6578 request in a build without `sync-collection` is refused as [`crate::internal::dav::DavError::Unsupported`], which is a different answer from skipping it as foreign.
+    /// A server that skipped a `sync-collection` REPORT would answer it with a full enumeration and let the client believe it had synchronized.
     #[must_use]
     pub const fn is_supported(self) -> bool {
         if crate::internal::dav::SYNC_COLLECTION_ENABLED {
@@ -558,6 +647,8 @@ impl ElementName {
             | Self::CalendarTimezone
             | Self::SupportedCalendarComponentSet
             | Self::SupportedCalendarData
+            | Self::SupportedRscaleSet
+            | Self::SupportedRscale
             | Self::MaxResourceSize
             | Self::MinDateTime
             | Self::MaxDateTime
@@ -581,9 +672,7 @@ impl ElementName {
 
     /// The element's local name, exactly as its specification spells it.
     ///
-    /// Case included: RFC 3744 writes `principal-URL` and RFC 6638 writes `schedule-inbox-URL`
-    /// with those capitals, and an XML local name is case-sensitive, so lowercasing them here
-    /// would name elements no server sends.
+    /// Case included: RFC 3744 writes `principal-URL` and RFC 6638 writes `schedule-inbox-URL` with those capitals, and an XML local name is case-sensitive, so lowercasing them here would name elements no server sends.
     #[must_use]
     pub const fn local_name(self) -> &'static str {
         match self {
@@ -644,6 +733,8 @@ impl ElementName {
             Self::CalendarTimezone => "calendar-timezone",
             Self::SupportedCalendarComponentSet => "supported-calendar-component-set",
             Self::SupportedCalendarData => "supported-calendar-data",
+            Self::SupportedRscaleSet => "supported-rscale-set",
+            Self::SupportedRscale => "supported-rscale",
             Self::MaxResourceSize => "max-resource-size",
             Self::MinDateTime => "min-date-time",
             Self::MaxDateTime => "max-date-time",
@@ -678,8 +769,38 @@ mod tests {
     use super::{ALL, ElementName, Namespace, QName};
 
     #[test]
+    fn accepted_namespace_bindings_do_not_repeat_normalization_for_name_lookups() {
+        use crate::internal::dav::xml::chars::{AttributeValue, observe_normalization};
+
+        for suffix in [b"AV:".as_slice(), b"ttp://www.w3.org/XML/1998/namespace"] {
+            for padding in [32, 2048] {
+                let mut raw = Vec::from(b"&#".as_slice());
+                raw.extend(core::iter::repeat_n(b'0', padding));
+                raw.extend_from_slice(b"120;");
+                raw.extend_from_slice(suffix);
+                for lookups in [1, 128] {
+                    let ((), work) = observe_normalization(|| {
+                        let namespace = Namespace::from(AttributeValue::parse(&raw).unwrap());
+                        for _ in 0..lookups {
+                            assert_eq!(ElementName::resolve(namespace, b"owner"), None);
+                            assert!(!namespace.is(Namespace::from_uri(Namespace::XML_URI)));
+                            assert!(namespace.is(namespace));
+                        }
+                    });
+                    let bound = u64::try_from(raw.len()).unwrap().saturating_mul(8);
+                    assert!(
+                        work <= bound,
+                        "normalized {work} octets with a bound of {bound}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_prefix_is_never_what_a_name_resolves_on() {
-        // The three spellings the deployed world actually sends. All of them are one element,
+        // The three spellings the deployed world actually sends.
+        // All of them are one element,
         // and the fourth is a different one however familiar its prefix looks.
         let lower = QName::new(Namespace::from_uri(b"DAV:"), b"multistatus");
         let upper = QName::new(Namespace::from_uri(b"DAV:"), b"multistatus");
@@ -727,10 +848,8 @@ mod tests {
 
     #[test]
     fn the_elements_that_keep_their_line_endings_are_the_icalendar_ones() {
-        // Three rows, and every one of them is an element RFC 4791 defines as carrying an
-        // iCalendar object: section 9.6's `calendar-data`, section 5.2.2's `calendar-timezone`
-        // and section 9.5's `timezone`. The carve-out is scoped by that fact rather than by a
-        // count, so this asserts the set and not its size.
+        // Three rows, and every one of them is an element RFC 4791 defines as carrying an iCalendar object: section 9.6's `calendar-data`, section 5.2.2's `calendar-timezone` and section 9.5's `timezone`.
+        // The carve-out is scoped by that fact rather than by a count, so this asserts the set and not its size.
         let preserving: Vec<ElementName> = ALL
             .into_iter()
             .filter(|row| row.preserves_line_endings())
@@ -748,6 +867,6 @@ mod tests {
     #[test]
     fn a_namespace_uri_is_compared_octet_for_octet() {
         assert_eq!(Namespace::from_uri(b"DAV:"), Namespace::Dav);
-        assert_eq!(Namespace::from_uri(b"dav:"), Namespace::Other(b"dav:"));
+        assert_eq!(Namespace::from_uri(b"dav:").uri(), b"dav:".as_slice());
     }
 }

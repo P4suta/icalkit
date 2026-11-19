@@ -2,106 +2,37 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Unit 5 — expansion and window composition. RFC 4791 sections 9.6.5 and 9.9.
+//! CalDAV recurrence expansion and time-range matching under RFC 4791 sections 9.6.5 and 9.9.
 //!
-//! # What this unit owns
-//!
-//! The bridge from a `time-range` to `ical-recur`, and it is the only file in this crate that
-//! names `RecurrenceInput`, `Window` or `SearchStep`. Everything above it asks "does this
-//! component occupy a period overlapping that range" and gets an answer; everything about how
-//! that answer is obtained is here.
-//!
-//! - Compose the search window from the filter's `time-range` and the component's own bounds.
-//!   Both of the range's bounds are independently optional; a search window is not, so an open
-//!   bound has to be closed against something the calendar can express, and the choice has to be
-//!   the same one `overlap` assumes. `crate::internal::recur::generation_window` and `max_absolute_shift`
-//!   exist because an override may move an instance into a window it would never have been
-//!   generated in, and a window composed without them silently drops moved occurrences.
-//! - Run the search under the caller's `Meter`. A search that stops at its budget is
-//!   [`crate::internal::query::Undecided::SearchExhausted`] through [`crate::internal::query::Undecided::of_search`] — never an
-//!   empty result, and never a resource reported as not matching.
-//! - Stop at the first occurrence that overlaps. A filter asks whether *any* instance is in the
-//!   window, so expanding the rest of a decade after the answer is known is work an attacker
-//!   sizes.
-//! - Honor `docs/adr/0002`'s ordering warning: occurrences are emitted by cadence key and not by
-//!   effective start, so an override that moved an instance earlier arrives after instances that
-//!   start later than it does. A walk that stopped at the first key past the window would miss
-//!   it.
-//!
-//! # The seam with `ical-tz`, which is not optional
-//!
-//! `crate::internal::tz::seam` states it in full and it is stated again here because getting it wrong puts
-//! every zoned series an hour out for half the year: `ical-recur` works on the series' own wall
-//! clock projected onto UTC, not on the UTC timeline. Every instant going in — `DTSTART`,
-//! `UNTIL`, each `RDATE`, `EXDATE` and `RECURRENCE-ID` — goes through `crate::internal::tz::nominal`, every
-//! cadence key coming back through `crate::internal::tz::wall_clock`, and each key is resolved against the
-//! zone one at a time. Do that through [`crate::internal::query::Zones`], which is the only door in this crate
-//! that reaches a `ZoneSource`.
-//!
-//! [`Series`] therefore takes its instants **already nominal**, which is where the caller's own
-//! projection ends, and every instant this unit hands back is **real UTC**, which is where the
-//! comparison RFC 4791 section 9.9 states has to be made. [`SeriesClock`] is what says which of
-//! RFC 5545 section 3.3.5's three forms the file wrote, because the way back is the identity for
-//! one of them, the query's own `CALDAV:timezone` for another and the series' own `TZID` for the
-//! third — and reading any of the three as another is the hour this seam exists to keep.
-//!
-//! ## Why the search window carries a day of slack
-//!
-//! The two timelines are not the same one, so a window stated on the real timeline cannot bound
-//! nominal cadence keys exactly. It can bound them *safely*: a nominal instant and the real
-//! instant it stands for differ by the zone's offset, and RFC 5545 section 3.3.14 writes an
-//! offset as at most `+hhmmss`, which `crate::internal::core::UtcOffset` refuses to hold a whole day of. So
-//! every cadence key whose occurrence starts inside the caller's window lies inside that window
-//! widened by [`ZONE_SLACK_SECONDS`], generation over the widened window is a superset, and the
-//! exact comparison then filters it back down. A series written in UTC needs no slack at all,
-//! because there the projection is the identity, and that case is the common one.
-//!
-//! # `CALDAV:expand`
-//!
-//! Section 9.6.5 asks for the instances instead of the rule: the returned components carry a
-//! `RECURRENCE-ID`, carry no `RRULE`, `RDATE` or `EXDATE`, and have their `DTSTART` and `DTEND`
-//! rewritten to UTC. That is a calendar the server did not store, so whatever this unit produces
-//! for `subset` carries `crate::internal::query::Reduction::expanded`.
-//!
-//! [`Instance`] is that shape as a value: three real UTC instants and nothing else, so the unit
-//! that builds the calendar has nothing left to decide about the clock and no way to leave an
-//! `RRULE` on a component by forgetting to remove it.
-//!
-//! # What this unit does not decide
-//!
-//! - Which period a component occupies is RFC 4791 section 9.9's table, and transcribing that
-//!   table is `overlap`'s work. What arrives here is [`InstanceSpan`], the length of the period
-//!   it selected.
-//! - Whether a component type has an overlap rule at all. That is
-//!   [`crate::internal::query::Undecided::OverlapUndefined`], and it is decided before a window is composed.
-//! - What a reduced calendar looks like as octets. This unit answers instants; `subset` writes
-//!   components.
+//! Recurrence keys preserve the series' local clock fields on a nominal timeline.
+//! Each occurrence uses the zone offset in effect on its date to map its local time to UTC.
+//! The search widens its window for moved occurrences, then compares their UTC bounds with the requested range.
+//! A filter stops at the first overlap.
+//! An expansion returns overlapping instances in recurrence order and records any interruption.
 
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 use crate::internal::core::{
     CivilDate, CivilDateTime, CivilTime, Component, ComponentKind, DateTimeValue, DecodeValue,
     Diagnostic, DiagnosticSink, Duration, Instant, Item, LimitExceeded, Meter, Period, Property,
-    PropertyId, Severity, Subject, UtcOffset, View, report_diagnostic,
+    PropertyId, Severity, Subject, UtcOffset, ValueType, View, report_diagnostic,
 };
 use crate::internal::dav::TimeRange;
 use crate::internal::recur::{
-    InputError, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
-    RecurrenceRule, RuleLimit, UntilClock, ValueKind, Window, generation_window,
-    max_absolute_shift,
+    InputError, Occurrence, Override, OverrideRange, OverrideSet, PropertyDiff, RecurrenceInput,
+    RecurrenceRule, RuleLimit, SearchOutcome, SearchStep, UntilClock, ValueKind, Window,
+    generation_window, max_absolute_shift,
 };
 use crate::internal::tz::{nominal, wall_clock};
 
 use crate::internal::query::overlap::Occupancy;
+use crate::internal::query::series_index::{Member, SeriesIndex};
 use crate::internal::query::vocabulary::{
     Budget, BusyPeriod, BusyType, Match, QueryError, Reduction, Undecided, Zones,
 };
 
-/// Property identities used while turning a stored component into one recurrence series.
-///
-/// These are statics because `Component::properties_named` ties the identity borrow to the
-/// iterator. Keeping the identities here also makes the component-to-series bridge the only
-/// place in this unit that knows how the stored RFC 5545 names map onto [`Series`].
+/// Property iterators borrow the identifiers during each scan.
 mod ids {
     use crate::internal::core::PropertyId;
 
@@ -109,18 +40,12 @@ mod ids {
     pub(super) static RDATE: PropertyId = PropertyId::RDATE;
     pub(super) static EXDATE: PropertyId = PropertyId::EXDATE;
     pub(super) static RECURRENCE_ID: PropertyId = PropertyId::RECURRENCE_ID;
-    pub(super) static UID: PropertyId = PropertyId::UID;
+
     pub(super) static COMPLETED: PropertyId = PropertyId::from_static(b"COMPLETED");
     pub(super) static CREATED: PropertyId = PropertyId::from_static(b"CREATED");
 }
 
-/// What expansion and window composition is reviewed against, one row per passage.
-///
-/// The transcription manifest for this unit. Every rule in this file comes from one of these
-/// passages, and a reviewer checks the file by reading them in this order rather than by
-/// reconstructing which specification a branch came from. A rule with no row here is a rule
-/// somebody invented, which is the failure this crate is most exposed to: an evaluator that
-/// disagrees with a conformant server returns a different set of resources and says nothing.
+/// Specification passages for recurrence expansion and time-range matching.
 pub const EXPANSION_SECTIONS: &[&str] = &[
     "RFC 4791 section 9.6.5, CALDAV:expand",
     "RFC 4791 section 9.9, the window a time-range states",
@@ -133,68 +58,63 @@ pub const EXPANSION_SECTIONS: &[&str] = &[
     "RFC 5545 section 3.3.14, the bound on a UTC offset that sizes the search window's slack",
 ];
 
-/// How far a nominal instant and the real instant it stands for can lie apart, in seconds.
-///
-/// RFC 5545 section 3.3.14 writes a UTC offset as `+hhmmss` at most, and
-/// `crate::internal::core::UtcOffset::from_seconds` refuses a magnitude of a whole day or more, so no zone
-/// this workspace can hold moves a wall clock further than this from the instant it names. That
-/// makes this an exact bound rather than a margin somebody guessed, which is what lets a window
-/// composed on the real timeline bound the nominal keys of every occurrence inside it.
+/// Largest absolute UTC offset in seconds for a supported time zone.
+/// RFC 5545 section 3.3.14 defines the offset format, and `UtcOffset` accepts offsets smaller than one day in either direction.
 pub const ZONE_SLACK_SECONDS: i64 = 86_399;
 
-/// The seconds in a nominal day, which is what RFC 4791 section 9.9's `+P1D` measures.
-///
-/// Nominal: the projection `crate::internal::tz::seam` describes preserves civil fields, so one day on the
-/// series' own wall clock is 86,400 seconds on that timeline whatever the zone did inside it.
-/// Placing both ends of the span through the zone separately is what turns that back into the
-/// 23 or 25 real hours the day actually had.
+/// A nominal day has 86,400 seconds even across a change of UTC offset.
 const NOMINAL_DAY_SECONDS: i64 = 86_400;
 
-/// How long one instance of a component occupies, on the series' own clock.
-///
-/// The length of the period RFC 4791 section 9.9's table gives the component, handed in already
-/// computed: this unit composes windows and expands series, and the table that decides which row
-/// a component is on belongs to `overlap`.
-///
-/// Measured on the series' own wall clock rather than in elapsed seconds, because that is the
-/// timeline every other instant crossing this seam is on and because it is what makes `+P1D` a
-/// day. Both ends of the span are placed through the zone independently, so an instance that
-/// spans a transition is as long in real seconds as the zone made it.
+/// An occurrence length with calendar days distinct from elapsed time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InstanceSpan {
-    /// Seconds on the series' own wall clock, never negative.
     seconds: i64,
+    nominal_days: i64,
 }
 
 impl InstanceSpan {
-    /// No length at all: the instant itself.
-    ///
-    /// RFC 4791 section 9.9 gives this to a `VEVENT` whose `DTSTART` is a `DATE-TIME` with
-    /// neither `DTEND` nor `DURATION`, and to a `DURATION` of zero seconds. It is the one length
-    /// that changes the comparison rather than only its operand, which is why
-    /// [`InstanceSpan::is_instantaneous`] is asked at both sites the two rows differ.
-    pub const INSTANT: Self = Self { seconds: 0 };
-
-    /// `+P1D`, which section 9.9 gives a component whose `DTSTART` is a `DATE`.
-    pub const WHOLE_DAY: Self = Self {
-        seconds: NOMINAL_DAY_SECONDS,
+    /// An instant occupies no time and can match the start of a query range.
+    pub const INSTANT: Self = Self {
+        seconds: 0,
+        nominal_days: 0,
     };
 
-    /// A span of `seconds`, or `None` for a negative one.
-    ///
-    /// `None` rather than an absolute value. RFC 4791 section 9.9 requires `DTEND` to be later
-    /// than `DTSTART`, so a negative span is a component the table cannot be evaluated for, and
-    /// reading it as its own magnitude would answer for a period the file never described.
+    /// One calendar day for a date-only event with no stated end.
+    pub const WHOLE_DAY: Self = Self {
+        seconds: NOMINAL_DAY_SECONDS,
+        nominal_days: 1,
+    };
+
+    /// Returns a span of elapsed seconds, or `None` for a negative length.
     #[must_use]
     pub const fn of_seconds(seconds: i64) -> Option<Self> {
         if seconds < 0 {
             None
         } else {
-            Some(Self { seconds })
+            Some(Self {
+                seconds,
+                nominal_days: 0,
+            })
         }
     }
 
-    /// The length, in seconds on the series' own clock.
+    /// Returns `None` for negative values or a nominal length that exceeds the integer range.
+    #[must_use]
+    pub fn of_duration(duration: Duration) -> Option<Self> {
+        if duration.days() < 0 || duration.seconds() < 0 {
+            return None;
+        }
+        let seconds = duration
+            .days()
+            .checked_mul(NOMINAL_DAY_SECONDS)?
+            .checked_add(duration.seconds())?;
+        Some(Self {
+            seconds,
+            nominal_days: duration.days(),
+        })
+    }
+
+    /// Returns the nominal duration in seconds for bounding a search.
     #[must_use]
     pub const fn seconds(self) -> i64 {
         self.seconds
@@ -205,28 +125,49 @@ impl InstanceSpan {
     pub const fn is_instantaneous(self) -> bool {
         self.seconds == 0
     }
+
+    fn finish<'a>(
+        self,
+        nominal_start: Instant,
+        start: Instant,
+        clock: SeriesClock<'a>,
+        zones: Zones<'a>,
+    ) -> Result<Instant, Undecided> {
+        let day_seconds = self
+            .nominal_days
+            .checked_mul(NOMINAL_DAY_SECONDS)
+            .ok_or(Undecided::ValueUnreadable)?;
+        let after_days = if day_seconds == 0 {
+            start
+        } else {
+            let local_end = nominal_start
+                .checked_add_seconds(day_seconds)
+                .ok_or(Undecided::ValueUnreadable)?;
+            clock.place(local_end, zones)?
+        };
+        let elapsed = self
+            .seconds
+            .checked_sub(day_seconds)
+            .ok_or(Undecided::ValueUnreadable)?;
+        after_days
+            .checked_add_seconds(elapsed)
+            .ok_or(Undecided::ValueUnreadable)
+    }
 }
 
-/// Which clock a series' own values are written on, RFC 5545 section 3.3.5's three forms.
-///
-/// Closed rather than `#[non_exhaustive]`, because section 3.3.5 defines three forms and a
-/// fourth would be a new value type rather than a new variant.
+/// The three date-time forms in RFC 5545 section 3.3.5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SeriesClock<'a> {
-    /// Form 2, a `Z`-terminated value: the nominal timeline and the real one coincide.
+    /// A UTC date-time with a `Z` suffix.
     Utc,
-    /// Form 1, a floating value: read in the zone the query's `CALDAV:timezone` stated.
-    ///
-    /// RFC 4791 section 9.9 makes that zone the one a floating comparison is made in and section
-    /// 9.5 permits a query to state none, which is `docs/adr/0003`'s refusal to invent one and
-    /// [`Undecided::ZoneUnstated`] here.
+    /// A floating date-time uses the query's time zone.
+    /// A missing zone leaves placement undecided.
     Floating,
-    /// Form 3, a value written with a `TZID`.
+    /// A local date-time with a `TZID` parameter.
     Zoned(&'a str),
 }
 
 impl<'a> SeriesClock<'a> {
-    /// The identifier this clock names, absent for the two forms that name none.
     const fn tzid(self) -> Option<&'a str> {
         match self {
             Self::Zoned(tzid) => Some(tzid),
@@ -234,23 +175,11 @@ impl<'a> SeriesClock<'a> {
         }
     }
 
-    /// The real instant that a nominal instant of this series stands for.
-    ///
-    /// The outgoing half of the seam, in one place: the nominal instant is read back into the
-    /// wall clock it spells, and that wall clock is resolved against the zone in force on that
-    /// particular day. Resolving one key at a time is what keeps a daily 09:00 series at 09:00
-    /// across a transition; applying one offset to an anchor would move half the year by an hour.
-    ///
-    /// A UTC series skips the door entirely, and that is not an optimization: a `Z`-terminated
-    /// value names a real instant already, so asking a zone about it would be putting a question
-    /// the file never posed.
+    /// Use the offset at each occurrence to preserve local time across zone transitions.
     fn place(self, at: Instant, zones: Zones<'a>) -> Result<Instant, Undecided> {
         if matches!(self, Self::Utc) {
             return Ok(at);
         }
-        // Unreachable for a key inside the years RFC 5545 section 3.3.4 writes, and checked
-        // anyway: a generation window widened past them would otherwise be resolved into an
-        // instant no calendar can name.
         let local = wall_clock(at).ok_or(Undecided::ValueUnreadable)?;
         let answer = zones.resolve(self.tzid(), local)?;
         answer
@@ -259,97 +188,300 @@ impl<'a> SeriesClock<'a> {
             .ok_or(Undecided::ZoneAmbiguous)
     }
 
-    /// Whether the caller's zone and policy admit an occurrence at cadence key `key`.
-    ///
-    /// `docs/adr/0011`'s second gate, in the shape `crate::internal::recur::RecurrenceInput::admitting`
-    /// takes. This crate holds the zone and `ical-recur` holds `COUNT`, so an instance dropped
-    /// after the count is an instance the count already spent: a `COUNT=5` series with one
-    /// occurrence in an hour its zone never showed delivers four without it.
-    ///
-    /// A key the zone could not be asked about at all — no query zone, an identifier nothing
-    /// recognizes — is admitted. Nothing there established that the local time does not exist,
-    /// and a gate that dropped it would be answering a question nobody asked; the undecidability
-    /// is reported when the occurrence is placed, where the caller sees it.
+    /// Apply the zone policy before charging a recurrence toward `COUNT`.
+    /// An unknown zone defers the decision until placement.
     fn admits(self, key: Instant, zones: Zones<'a>) -> bool {
         !matches!(self.place(key, zones), Err(Undecided::ZoneAmbiguous))
     }
 }
 
-/// One component's recurrence set, as the values RFC 5545 section 3.8.5 describes it with.
-///
-/// Every instant here is **nominal** — the series' own wall clock projected onto UTC, which is
-/// the timeline `crate::internal::tz::seam` puts `ical-recur` on. A caller holding a parsed component gets
-/// them from `crate::internal::tz::nominal` and from `crate::internal::tz::ZonedSeries`; handing in real UTC instants for
-/// a zoned series is the mistake the seam exists to name, and it moves the whole series by the
-/// zone's offset.
+/// A recurrence set in the nominal time of its series.
+/// The input instants encode the series' local clock fields as UTC.
 #[derive(Clone, Copy, Debug)]
 pub struct Series<'a> {
-    /// `DTSTART`, nominal.
+    /// The nominal start of the series.
     pub dtstart: Instant,
-    /// Whether `DTSTART` was written as a `DATE` or a `DATE-TIME`.
+    /// The `DTSTART` value type.
     pub dtstart_kind: ValueKind,
-    /// Which of RFC 5545 section 3.3.5's forms this series' values are written on.
+    /// The clock for interpreting nominal recurrence keys.
     pub clock: SeriesClock<'a>,
-    /// How long one instance occupies, from RFC 4791 section 9.9's table.
+    /// The base occurrence duration under RFC 4791 section 9.9.
     pub occupies: InstanceSpan,
-    /// The `RRULE`, absent for a component that carries none.
+    kind: ComponentKind,
+    end_kind: EndKind,
+    durations: InstanceDurations<'a>,
+    /// The recurrence rule, if present.
     pub rule: Option<&'a RecurrenceRule>,
-    /// The `RDATE` instants, nominal and ascending.
+    /// Nominal inclusion dates in ascending order.
     pub rdates: &'a [Instant],
-    /// The `EXDATE` instants, nominal and ascending.
+    /// Nominal exclusion dates in ascending order.
     pub exdates: &'a [Instant],
-    /// The `RECURRENCE-ID` overrides, nominal.
+    /// Overrides by nominal recurrence identifier.
     pub overrides: OverrideSet<'a>,
+    explicit: &'a [Instance],
+    explicit_moves: &'a [ExplicitMove],
 }
 
-/// One expanded recurrence instance, on the UTC timeline RFC 4791 section 9.6.5 requires.
-///
-/// Three instants and nothing else. Section 9.6.5 requires the returned components to carry a
-/// `RECURRENCE-ID`, to carry no `RRULE`, `RDATE` or `EXDATE`, and to state their `DTSTART` and
-/// `DTEND` as dates with UTC time; a value holding only what survives that leaves the unit
-/// building the calendar nothing to decide about the clock and no recurrence property it can
-/// forget to remove.
+#[derive(Clone, Copy, Debug)]
+struct ContextSpan<'a> {
+    span: InstanceSpan,
+    clock: SeriesClock<'a>,
+    end_kind: EndKind,
+}
+
+impl<'a> ContextSpan<'a> {
+    fn finish(
+        self,
+        nominal_start: Instant,
+        start: Instant,
+        series_clock: SeriesClock<'a>,
+        zones: Zones<'a>,
+    ) -> Result<Instant, Undecided> {
+        if self.span.nominal_days == 0 || self.clock == series_clock {
+            self.span.finish(nominal_start, start, series_clock, zones)
+        } else {
+            let opening = nominal_instant(start, self.clock, zones)?;
+            self.span.finish(opening, start, self.clock, zones)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PeriodSpan {
+    key: Instant,
+    span: InstanceSpan,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ComponentSpan<'a> {
+    key: Instant,
+    range: OverrideRange,
+    stated: Option<ContextSpan<'a>>,
+    source_position: usize,
+    /// Index of the last range override through this key that specifies a duration.
+    latest_range: Option<usize>,
+}
+
+impl ComponentSpan<'_> {
+    fn index(components: &mut Vec<Self>, meter: &mut Meter) -> Result<(), LimitExceeded> {
+        let count = u64::try_from(components.len()).unwrap_or(u64::MAX);
+        if count == 0 {
+            return Ok(());
+        }
+        let sort_work = u64::from(count.ilog2()).saturating_add(1);
+        meter.try_charge(count.saturating_mul(sort_work.saturating_add(2)))?;
+        components.sort_unstable_by_key(|component| (component.key, component.source_position));
+        components.dedup_by_key(|component| component.key);
+        let mut latest = None;
+        for (index, component) in components.iter_mut().enumerate() {
+            if component.range == OverrideRange::ThisAndFuture && component.stated.is_some() {
+                latest = Some(index);
+            }
+            component.latest_range = latest;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InstanceDurations<'a> {
+    periods: &'a [PeriodSpan],
+    components: &'a [ComponentSpan<'a>],
+}
+
+impl<'a> InstanceDurations<'a> {
+    const EMPTY: Self = Self {
+        periods: &[],
+        components: &[],
+    };
+
+    fn value_kind_at(self, key: Instant, default: ValueKind) -> ValueKind {
+        if self
+            .periods
+            .binary_search_by_key(&key, |period| period.key)
+            .is_ok()
+        {
+            ValueKind::DateTime
+        } else {
+            default
+        }
+    }
+
+    fn at(
+        self,
+        key: Instant,
+        base: InstanceSpan,
+        end_kind: EndKind,
+        clock: SeriesClock<'a>,
+        mut charge_probe: impl FnMut() -> Result<(), LimitExceeded>,
+    ) -> Result<ContextSpan<'a>, LimitExceeded> {
+        let period = self
+            .periods
+            .binary_search_by_key(&key, |period| period.key)
+            .ok()
+            .and_then(|at| self.periods.get(at));
+        let base = ContextSpan {
+            span: period.map_or(base, |period| period.span),
+            clock,
+            end_kind: if period.is_some() && end_kind == EndKind::Implied {
+                EndKind::Explicit
+            } else {
+                end_kind
+            },
+        };
+        let mut lower = 0usize;
+        let mut upper = self.components.len();
+        while lower < upper {
+            charge_probe()?;
+            let middle = lower.midpoint(upper);
+            let probe = &self.components[middle];
+            match probe.key.cmp(&key) {
+                core::cmp::Ordering::Equal => return Ok(probe.stated.unwrap_or(base)),
+                core::cmp::Ordering::Less => lower = middle.saturating_add(1),
+                core::cmp::Ordering::Greater => upper = middle,
+            }
+        }
+        let inherited = lower
+            .checked_sub(1)
+            .and_then(|last| self.components[last].latest_range)
+            .and_then(|anchor| self.components[anchor].stated);
+        Ok(inherited.unwrap_or(base))
+    }
+
+    fn maximum(self, base: InstanceSpan, clock: SeriesClock<'a>) -> InstanceSpan {
+        let periods = self.periods.iter().map(|period| period.span.seconds());
+        let components = self
+            .components
+            .iter()
+            .filter_map(|component| component.stated)
+            .map(|context| {
+                let extra = if context.span.nominal_days > 0 && context.clock != clock {
+                    ZONE_SLACK_SECONDS.saturating_mul(2)
+                } else {
+                    0
+                };
+                context.span.seconds().saturating_add(extra)
+            });
+        InstanceSpan {
+            seconds: periods.chain(components).fold(base.seconds(), i64::max),
+            nominal_days: 0,
+        }
+    }
+
+    fn uses_duration(self, base: EndKind) -> bool {
+        base == EndKind::Duration
+            || self
+                .components
+                .iter()
+                .filter_map(|component| component.stated)
+                .any(|context| context.end_kind == EndKind::Duration)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum EndKind {
+    Implied,
+    Explicit,
+    Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum InstanceShape {
+    Event {
+        is_date: bool,
+        end: EndKind,
+    },
+    Todo {
+        end: EndKind,
+    },
+    Journal {
+        dates: Option<(CivilDate, CivilDate)>,
+    },
+}
+
+/// An occurrence with UTC bounds and the original component form for CalDAV projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instance {
-    /// The `RECURRENCE-ID` this instance answers to: its cadence key, in UTC.
     recurrence_id: Instant,
-    /// `DTSTART`, in UTC — where the instance happens, after any override moved it.
     start: Instant,
-    /// `DTEND`, in UTC. Equal to `start` for a component RFC 4791 section 9.9 gives no length.
     end: Instant,
+    shape: InstanceShape,
 }
 
 impl Instance {
-    /// An instance addressed by `recurrence_id`, running from `start` up to `end`.
+    /// Constructs an event with a UTC recurrence identifier, start, and end.
     #[must_use]
     pub const fn new(recurrence_id: Instant, start: Instant, end: Instant) -> Self {
         Self {
             recurrence_id,
             start,
             end,
+            shape: InstanceShape::Event {
+                is_date: false,
+                end: if start.unix_seconds() == end.unix_seconds() {
+                    EndKind::Implied
+                } else {
+                    EndKind::Explicit
+                },
+            },
         }
     }
 
-    /// The cadence key this instance answers to, in UTC.
-    ///
-    /// Carried for every instance including the first. RFC 4791 section 9.6.5 requires it of
-    /// every recurring component "other than the initial instance", which is a statement about
-    /// what a server must write rather than about what an expansion knows.
+    /// Returns the original UTC start that identifies the occurrence, including the first instance.
     #[must_use]
     pub const fn recurrence_id(self) -> Instant {
         self.recurrence_id
     }
 
-    /// `DTSTART`, in UTC.
+    /// Returns the effective start in UTC after any rescheduling.
     #[must_use]
     pub const fn start(self) -> Instant {
         self.start
     }
 
-    /// `DTEND`, in UTC.
+    /// Returns the end in UTC, equal to the start for an instantaneous occurrence.
     #[must_use]
     pub const fn end(self) -> Instant {
         self.end
+    }
+
+    #[must_use]
+    pub(super) const fn shape(self) -> InstanceShape {
+        self.shape
+    }
+
+    fn with_shape(
+        mut self,
+        kind: ComponentKind,
+        value_kind: ValueKind,
+        end: EndKind,
+        key: Instant,
+        start: Instant,
+    ) -> Result<Self, Undecided> {
+        self.shape = match kind {
+            ComponentKind::Event => InstanceShape::Event {
+                is_date: value_kind == ValueKind::Date,
+                end,
+            },
+            ComponentKind::Todo => InstanceShape::Todo { end },
+            ComponentKind::Journal => InstanceShape::Journal {
+                dates: if value_kind == ValueKind::Date {
+                    Some((
+                        wall_clock(key).ok_or(Undecided::ValueUnreadable)?.date(),
+                        wall_clock(start).ok_or(Undecided::ValueUnreadable)?.date(),
+                    ))
+                } else {
+                    None
+                },
+            },
+            ComponentKind::Calendar
+            | ComponentKind::FreeBusy
+            | ComponentKind::TimeZone
+            | ComponentKind::Standard
+            | ComponentKind::Daylight
+            | ComponentKind::Alarm => return Err(Undecided::OverlapUndefined),
+        };
+        Ok(self)
     }
 
     /// Whether an override moved this instance away from its cadence key.
@@ -359,38 +491,27 @@ impl Instance {
     }
 }
 
-/// The window a search runs over, and how far an override set widened it.
-///
-/// Two windows rather than one, because they answer different questions and a caller that saw
-/// only the second could not tell a widening from a wider query. [`SearchBounds::window`] is what
-/// an occurrence is admitted against; [`SearchBounds::generation`] is what cadence keys are
-/// generated over, and it reaches further precisely so that an override which moved an instance
-/// into the window from a key outside it is still generated.
+/// Nominal windows for testing starts and generating keys that an override could move into range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchBounds {
-    /// The window over instance starts the filter asked about.
     window: Window,
-    /// That window widened by the largest shift the override set implies.
     generation: Window,
-    /// The widening itself, in seconds.
     widening: i64,
 }
 
 impl SearchBounds {
-    /// The bounds a `time-range` and a series imply, or `None` when nothing can fall inside.
-    ///
-    /// `None` is a fact rather than a refusal: an open bound is closed against the years RFC 5545
-    /// section 3.3.4 can write, so a range lying entirely outside them holds no instant any
-    /// calendar can express and no instance can overlap it.
+    /// Builds the search windows for a series and query range.
+    /// Open bounds use the four-digit calendar years in RFC 5545 section 3.3.4.
+    /// An empty window yields `None`.
     pub fn compose(series: Series<'_>, range: TimeRange) -> Result<Option<Self>, QueryError> {
-        let Some(window) = start_window(range, series.occupies, series.clock)? else {
+        let mut span = series.durations.maximum(series.occupies, series.clock);
+        if series.kind == ComponentKind::Todo && series.durations.uses_duration(series.end_kind) {
+            span.seconds = span.seconds.saturating_add(1);
+        }
+        let Some(window) = start_window(range, span, series.clock)? else {
             return Ok(None);
         };
         let widening = max_absolute_shift(series.overrides);
-        // `None` where the widening leaves the timeline. The window asked about is then used
-        // unchanged, which is what `ical-recur`'s own search does with it, and `widening` still
-        // reports the shift — so a caller can see that some occurrence's start lies outside
-        // anything a search could generate rather than being told the question narrowed.
         let generation = generation_window(window, series.overrides).unwrap_or(window);
         Ok(Some(Self {
             window,
@@ -399,81 +520,72 @@ impl SearchBounds {
         }))
     }
 
-    /// The window over instance starts, as the first instant inside it and the first past it.
-    ///
-    /// Instants rather than an `crate::internal::recur::Window`, so that the type stays inside this file.
+    /// Returns the inclusive lower and exclusive upper bounds for instance starts.
     #[must_use]
     pub const fn window(self) -> (Instant, Instant) {
         (self.window.start(), self.window.end())
     }
 
-    /// The window cadence keys are generated over.
-    ///
-    /// Equal to [`SearchBounds::window`] when no override moves anything, and equal to it again
-    /// when the widening would leave the timeline — in which case [`SearchBounds::widening`] is
-    /// the number that says so.
+    /// Returns the generation window for recurrence keys.
+    /// If widening exceeds the timeline, generation uses the start window and [`Self::widening`] still reports the shift.
     #[must_use]
     pub const fn generation(self) -> (Instant, Instant) {
         (self.generation.start(), self.generation.end())
     }
 
-    /// The largest absolute shift the override set implies, in seconds.
+    /// Returns the largest absolute override shift in seconds.
     #[must_use]
     pub const fn widening(self) -> i64 {
         self.widening
     }
 }
 
-/// Every instance of a series that a `CALDAV:expand` request asks to be returned.
-///
-/// The instances, the witness that they are not what the server stored, and the reason the set is
-/// incomplete when it is. The third is not an error: an instance whose wall clock no zone could
-/// place is one this expansion could not write in UTC, and a report that dropped it silently
-/// would be a shorter answer that looked complete.
+/// Overlapping instances of a series and the reason for any incomplete result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expansion {
-    /// The instances that overlap the range, in cadence order.
     instances: Vec<Instance>,
-    /// What this expansion left out of the resource it came from.
     reduction: Reduction,
-    /// Why the set is incomplete, absent when it is not.
     incomplete: Option<Undecided>,
+    /// Last publishable pair of effective start and recurrence identifier after budget exhaustion.
+    ordered_through: Option<(Instant, Instant)>,
 }
 
 impl Expansion {
-    /// The instances that overlap the range, in the order the search produced them.
-    ///
-    /// Cadence order, which is not the order they start in: `docs/adr/0002` emits by cadence key,
-    /// so an override that moved an instance earlier arrives after ones that start later than it
-    /// does. A caller rendering a list sorts by [`Instance::start`] and knows why.
+    /// Returns overlapping instances in recurrence order.
+    /// Sort by [`Instance::start`] for chronological order after rescheduling.
     #[must_use]
     pub fn instances(&self) -> &[Instance] {
         &self.instances
     }
 
-    /// What this expansion left out, which is always at least the recurrence rule itself.
+    /// Instances whose order a calendar cursor can preserve across retries.
+    pub(crate) fn resumable_instances(&self) -> impl Iterator<Item = &Instance> {
+        self.instances.iter().filter(|instance| {
+            self.incomplete.is_none()
+                || self
+                    .ordered_through
+                    .is_some_and(|bound| (instance.start(), instance.recurrence_id()) <= bound)
+        })
+    }
+
+    /// Describes the changes from the stored recurrence set to its expanded representation.
     #[must_use]
     pub const fn reduction(&self) -> Reduction {
         self.reduction
     }
 
-    /// Why the set is incomplete, absent when every instance in the range is in it.
+    /// Returns the reason for an incomplete expansion, or `None` after a complete search.
     #[must_use]
     pub const fn incomplete(&self) -> Option<Undecided> {
         self.incomplete
     }
 }
 
-/// Whether the recurrence set represented by one stored component overlaps `range`.
-///
-/// This is the storage-to-engine bridge used by the filter tree. A master component is read
-/// together with its sibling `RECURRENCE-ID` components; an override component is never tested
-/// as a second independent series. Non-recurring components go through RFC 4791 section 9.9's
-/// complete table, while recurring event, to-do and journal components are reduced to the
-/// single-instance span that the recurrence engine can move and repeat.
-pub(crate) fn component_overlaps<S>(
+/// A master accounts for its sibling overrides.
+/// An override without a master uses its own component bounds.
+pub(super) fn component_overlaps<S>(
     component: &Component,
-    siblings: &[Item],
+    index: &SeriesIndex<'_>,
     range: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
@@ -483,18 +595,20 @@ where
     S: DiagnosticSink + ?Sized,
 {
     if carries(component, &ids::RECURRENCE_ID) {
-        return Ok(Match::Unmatched);
+        match index.master(component, budget.meter)? {
+            Ok(Some(_)) => return Ok(Match::Unmatched),
+            Ok(None) => {},
+            Err(reason) => return Ok(Match::Undecided(reason)),
+        }
     }
     let Some(kind) = component.kind() else {
         return Ok(Match::Undecided(Undecided::OverlapUndefined));
     };
-    let related: Vec<&Component> = siblings
-        .iter()
-        .filter_map(Item::as_component)
-        .filter(|candidate| is_override_of(candidate, component))
-        .collect();
-    let recurring =
-        carries(component, &ids::RRULE) || carries(component, &ids::RDATE) || !related.is_empty();
+    let related = match index.related(component, budget.meter)? {
+        Ok(related) => related,
+        Err(reason) => return Ok(Match::Undecided(reason)),
+    };
+    let recurring = has_recurrence(component) || !related.is_empty();
     if !recurring {
         let periods = if matches!(kind, ComponentKind::FreeBusy) {
             freebusy_periods(component)?
@@ -516,16 +630,14 @@ where
         return Ok(Match::Undecided(Undecided::OverlapUndefined));
     }
 
-    recurring_component_overlaps(component, related, kind, range, zones, budget, sink)
+    recurring_component_overlaps(component, related, range, zones, budget, sink)
 }
 
-/// Whether one overridden component impacts `range` through either its current or original span.
-///
-/// RFC 4791 section 9.6.6 names both. `RANGE=THISANDFUTURE` propagation is composed by the
-/// calendar-level limiting helper after these two direct tests.
+/// RFC 4791 section 9.6.6 checks the current and original times of an override.
 pub(crate) fn override_impacts(
     master: &Component,
     candidate: &Component,
+    related: &[Member<'_>],
     range: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
@@ -541,122 +653,123 @@ pub(crate) fn override_impacts(
         return Ok(current);
     }
 
-    let original = (|| {
-        let kind = master.kind().ok_or(Undecided::OverlapUndefined)?;
-        let opening = required(master.dtstart())?;
-        let clock = clock_of(opening)?;
-        let occupies = instance_span(master, kind, opening, clock, zones)?;
-        let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
-        let key = nominal_value(addressed, clock, zones)?;
-        let start = clock.place(key, zones)?;
-        let end = if occupies.is_instantaneous() {
-            start
-        } else {
-            let nominal_end = key
-                .checked_add_seconds(occupies.seconds())
-                .ok_or(Undecided::ValueUnreadable)?;
-            clock.place(nominal_end, zones)?
-        };
-        Ok::<_, Undecided>((Instance::new(start, start, end), occupies))
-    })();
-    let original = match original {
-        Ok((instance, occupies)) => Match::of(overlaps_range(instance, range, occupies)),
-        Err(reason) => Match::Undecided(reason),
+    let anchor = match override_recurrence_id(master, candidate, zones) {
+        Ok(key) => key,
+        Err(reason) => return Ok(current.or(Match::Undecided(reason))),
     };
-    let direct = current.or(original);
-    if direct.is_matched() || !is_this_and_future(candidate) {
+    let propagates = is_this_and_future(candidate);
+    let mut prior_range = false;
+    let mut shadowed = Vec::new();
+    for member in related {
+        if core::ptr::eq(member.component, candidate) {
+            continue;
+        }
+        budget.meter.try_charge(1)?;
+        let key = match override_recurrence_id(master, member.component, zones) {
+            Ok(key) => key,
+            Err(reason) => return Ok(current.or(Match::Undecided(reason))),
+        };
+        prior_range |= key < anchor && is_this_and_future(member.component);
+        if propagates && key > anchor {
+            retain(&mut shadowed, key, budget.meter)?;
+        }
+    }
+    let direct = if prior_range {
+        current
+    } else {
+        current.or(original_override_span(
+            master, candidate, range, zones, budget,
+        )?)
+    };
+    if direct != Match::Unmatched {
         return Ok(direct);
     }
-    Ok(direct.or(this_and_future_impacts(
-        master, candidate, range, zones, budget,
-    )?))
+
+    shadowed.sort_unstable();
+    let impact = |expanded: Expansion| {
+        if expanded.instances().iter().any(|instance| {
+            let key = instance.recurrence_id();
+            key == anchor || (propagates && key > anchor && shadowed.binary_search(&key).is_err())
+        }) {
+            Match::Matched
+        } else {
+            expanded
+                .incomplete()
+                .map_or(Match::Unmatched, Match::Undecided)
+        }
+    };
+    let present = direct.or(impact(expand_related(
+        master, related, range, zones, budget,
+    )?));
+    if present.is_matched() || (!propagates && !prior_range) {
+        return Ok(present);
+    }
+    let original = expand_members(master, related, Some(candidate), range, zones, budget)?;
+    Ok(present.or(impact(original)))
 }
 
-/// Whether a `RANGE=THISANDFUTURE` override governs a generated occurrence in `range`.
-fn this_and_future_impacts(
+fn original_override_span(
     master: &Component,
     candidate: &Component,
     range: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Match, QueryError> {
-    macro_rules! decided {
-        ($answer:expr) => {
-            match $answer {
-                Ok(value) => value,
-                Err(reason) => return Ok(Match::Undecided(reason)),
-            }
+    let original = (|| {
+        let kind = master.kind().ok_or(Undecided::OverlapUndefined)?;
+        let opening = required(master.dtstart())?;
+        let clock = clock_of(opening)?;
+        let occupies = instance_span(master, kind, opening, clock, zones)?;
+        let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
+        let key = RecurrenceKey::read(addressed, clock, zones)?;
+        if master.properties_named(&ids::RDATE).any(|property| {
+            property
+                .declared_value_type()
+                .is_some_and(|value_type| value_type.is_err())
+        }) {
+            return Err(Unassembled::Undecidable(Undecided::ValueUnreadable));
+        }
+        let periods = period_spans(master, clock, zones, budget.meter)?;
+        let (duration_key, periods) = match key.explicit {
+            Some(actual) => (actual, periods.explicit.as_slice()),
+            None => (key.civil, periods.civil.as_slice()),
         };
-    }
-
-    let kind = master.kind().ok_or(QueryError::Unrepresentable)?;
-    let opening = decided!(required(master.dtstart()));
-    let clock = decided!(clock_of(opening));
-    let dtstart = decided!(nominal_value(opening, clock, zones));
-    let dtstart_kind = if matches!(opening, DateTimeValue::Date(_)) {
-        ValueKind::Date
-    } else {
-        ValueKind::DateTime
+        let durations = InstanceDurations {
+            periods,
+            components: &[],
+        };
+        let span = durations
+            .at(duration_key, occupies, end_kind_of(master), clock, || {
+                budget.meter.try_charge(1)
+            })
+            .map_err(QueryError::from)?;
+        let start = key.actual(clock, zones)?;
+        let end = span.finish(key.civil, start, clock, zones)?;
+        Instance::new(start, start, end)
+            .with_shape(
+                kind,
+                durations.value_kind_at(
+                    duration_key,
+                    if matches!(opening, DateTimeValue::Date(_)) {
+                        ValueKind::Date
+                    } else {
+                        ValueKind::DateTime
+                    },
+                ),
+                span.end_kind,
+                key.civil,
+                key.civil,
+            )
+            .map_err(Unassembled::from)
+    })();
+    let original = match original {
+        Ok(instance) => Match::of(overlaps_range(instance, range)),
+        Err(Unassembled::Undecidable(reason)) => Match::Undecided(reason),
+        Err(Unassembled::Refused(error)) => return Err(error),
     };
-    let occupies = decided!(instance_span(master, kind, opening, clock, zones));
-    let mut rule = decided!(recurrence_rule(master));
-    if let Some(parsed) = rule.as_mut() {
-        decided!(project_rule_limit(parsed, clock, zones));
-    }
-    let mut rdates = instant_list(master, &ids::RDATE, clock, zones)?;
-    let mut exdates = instant_list(master, &ids::EXDATE, clock, zones)?;
-    rdates.sort_unstable();
-    rdates.dedup();
-    exdates.sort_unstable();
-    exdates.dedup();
-
-    let addressed = decided!(required(
-        candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
-    ));
-    let anchor = decided!(nominal_value(addressed, clock, zones));
-    let moved_to = match decided!(optional(candidate.dtstart())) {
-        Some(value) => Some(decided!(nominal_value(value, clock, zones))),
-        None => None,
-    };
-    let entries = [Override::new(
-        anchor,
-        OverrideRange::ThisAndFuture,
-        moved_to,
-        PropertyDiff::empty(),
-    )];
-    let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
-    let expanded = expand(
-        Series {
-            dtstart,
-            dtstart_kind,
-            clock,
-            occupies,
-            rule: rule.as_ref(),
-            rdates: &rdates,
-            exdates: &exdates,
-            overrides,
-        },
-        range,
-        zones,
-        budget,
-        &mut diagnostics,
-    )?;
-    let anchor = decided!(clock.place(anchor, zones));
-    if expanded
-        .instances()
-        .iter()
-        .any(|instance| instance.recurrence_id() >= anchor)
-    {
-        Ok(Match::Matched)
-    } else if let Some(reason) = expanded.incomplete() {
-        Ok(Match::Undecided(reason))
-    } else {
-        Ok(Match::Unmatched)
-    }
+    Ok(original)
 }
 
-/// Whether a recurrence identifier propagates its override through the rest of the series.
 fn is_this_and_future(component: &Component) -> bool {
     component
         .properties_named(&ids::RECURRENCE_ID)
@@ -676,29 +789,273 @@ pub(crate) fn expand_component(
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
 ) -> Result<Expansion, QueryError> {
-    macro_rules! decided {
-        ($answer:expr) => {
-            match $answer {
-                Ok(value) => value,
-                Err(reason) => return Ok(incomplete_expansion(reason)),
-            }
+    let index = SeriesIndex::new(siblings, budget.meter)?;
+    match index.related(component, budget.meter)? {
+        Ok(related) => expand_related(component, related, range, zones, budget),
+        Err(reason) => Ok(incomplete_expansion(reason)),
+    }
+}
+
+pub(super) fn expand_related(
+    component: &Component,
+    related: &[Member<'_>],
+    range: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Expansion, QueryError> {
+    expand_members(component, related, None, range, zones, budget)
+}
+
+fn expand_members(
+    component: &Component,
+    related: &[Member<'_>],
+    omitted: Option<&Component>,
+    range: TimeRange,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+) -> Result<Expansion, QueryError> {
+    match with_related_series(
+        component,
+        related,
+        omitted,
+        zones,
+        budget,
+        |series, budget| {
+            expand(
+                series,
+                range,
+                zones,
+                budget,
+                &mut crate::internal::core::IgnoreDiagnostics,
+            )
+        },
+    )? {
+        Ok(expansion) => Ok(expansion),
+        Err(reason) => Ok(incomplete_expansion(reason)),
+    }
+}
+
+pub(super) fn unique_reply_key(
+    value: DateTimeValue<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, QueryError> {
+    if let DateTimeValue::Zoned { stamp, tzid } = value {
+        let name = core::str::from_utf8(tzid).map_err(|_| QueryError::Unrepresentable)?;
+        return match zones
+            .resolve(Some(name), stamp)
+            .map_err(|_| QueryError::Unrepresentable)?
+            .resolution
+        {
+            crate::internal::tz::LocalResolution::Unique { reading } => Ok(reading.instant),
+            _ => Err(QueryError::Unrepresentable),
         };
     }
+    placed_value(value, zones).map_err(|_| QueryError::Unrepresentable)
+}
 
+pub(super) fn event_instance_at_key<S: DiagnosticSink + ?Sized>(
+    master: &Component,
+    related: &[Member<'_>],
+    addressed: DateTimeValue<'_>,
+    target: Instant,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    sink: &mut S,
+) -> Result<Instance, QueryError> {
+    with_related_series(master, related, None, zones, budget, |series, budget| {
+        let kind = if matches!(addressed, DateTimeValue::Date(_)) {
+            ValueKind::Date
+        } else {
+            ValueKind::DateTime
+        };
+        let floating = matches!(addressed, DateTimeValue::Date(_) | DateTimeValue::Local(_));
+        if kind != series.dtstart_kind || floating != matches!(series.clock, SeriesClock::Floating)
+        {
+            return Err(QueryError::Unrepresentable);
+        }
+        if !series.explicit.is_empty() {
+            charge_lookup(series.explicit.len(), budget.meter)?;
+            if let Ok(index) = series
+                .explicit
+                .binary_search_by_key(&target, |item| item.recurrence_id())
+            {
+                charge_date_lists(series.rdates, series.exdates, budget.meter)?;
+                budget.meter.try_charge_occurrence()?;
+                return Ok(series.explicit[index]);
+            }
+        }
+        let key = nominal_instant(target, series.clock, zones)
+            .map_err(|_| QueryError::Unrepresentable)?;
+        let start = occurrence_start_at(series, key, zones, budget, sink)?
+            .map_err(|_| QueryError::Unrepresentable)?
+            .ok_or(QueryError::Unrepresentable)?;
+        let instance = placed(series, key, start, zones, || budget.meter.try_charge(1))?
+            .map_err(|_| QueryError::Unrepresentable)?;
+        (target == instance.recurrence_id())
+            .then_some(instance)
+            .ok_or(QueryError::Unrepresentable)
+    })?
+    .map_err(|_| QueryError::Unrepresentable)
+}
+
+macro_rules! decided {
+    ($answer:expr) => {
+        match $answer {
+            Ok(value) => value,
+            Err(reason) => return Ok(Err(reason)),
+        }
+    };
+}
+
+#[derive(Default)]
+struct SeriesOverrides<'a> {
+    entries: Vec<Override<'a>>,
+    spans: Vec<ComponentSpan<'a>>,
+    moves: Vec<ExplicitMove>,
+    explicit: Vec<ExplicitOverride<'a>>,
+}
+
+impl<'a> SeriesOverrides<'a> {
+    fn read(
+        related: &[Member<'a>],
+        omitted: Option<&Component>,
+        clock: SeriesClock<'a>,
+        zones: Zones<'a>,
+        explicit_dates: &[Instant],
+        meter: &mut Meter,
+    ) -> Result<Result<Self, Undecided>, QueryError> {
+        let mut table = Self::default();
+        for member in related {
+            if omitted.is_some_and(|component| core::ptr::eq(component, member.component)) {
+                continue;
+            }
+            decided!(table.add(member, clock, zones, explicit_dates, meter)?);
+        }
+        ComponentSpan::index(&mut table.spans, meter)?;
+        if !table.moves.is_empty() {
+            admit_sort(table.moves.len(), meter)?;
+            meter.try_charge(u64::try_from(table.spans.len()).unwrap_or(u64::MAX))?;
+            table
+                .moves
+                .sort_unstable_by_key(|entry| (entry.key, entry.position));
+            let mut selected = table.spans.iter().peekable();
+            table.moves.retain(|entry| {
+                while selected.next_if(|row| row.key < entry.key).is_some() {}
+                selected
+                    .peek()
+                    .is_some_and(|row| row.source_position == entry.position)
+            });
+        }
+        table.entries.sort_by_key(|entry| entry.recurrence_id());
+
+        Ok(Ok(table))
+    }
+
+    fn add(
+        &mut self,
+        member: &Member<'a>,
+        clock: SeriesClock<'a>,
+        zones: Zones<'a>,
+        explicit_dates: &[Instant],
+        meter: &mut Meter,
+    ) -> Result<Result<(), Undecided>, QueryError> {
+        let candidate = member.component;
+        let addressed = decided!(required(
+            candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
+        ));
+        let key = decided!(RecurrenceKey::read(addressed, clock, zones));
+        let moved = match decided!(optional(candidate.dtstart())) {
+            Some(value) => Some(decided!(RecurrenceKey::read(value, clock, zones))),
+            None => None,
+        };
+        let span = component_span(candidate, addressed, key.civil, member.position, zones)?;
+        if span.range == OverrideRange::ThisAndFuture && key.explicit.is_some() {
+            return Err(QueryError::Unrepresentable);
+        }
+        let moved_to = match (span.range, moved.and_then(|start| start.explicit)) {
+            (OverrideRange::ThisAndFuture, Some(start)) => {
+                let old = decided!(key.actual(clock, zones));
+                let shift = old
+                    .checked_seconds_until(start)
+                    .ok_or(QueryError::Unrepresentable)?;
+                Some(
+                    key.civil
+                        .checked_add_seconds(shift)
+                        .ok_or(QueryError::Unrepresentable)?,
+                )
+            },
+            _ => moved.map(|start| start.civil),
+        };
+        if !explicit_dates.is_empty() {
+            meter.try_charge(1)?;
+            let actual = decided!(key.actual(clock, zones));
+            let moved = match moved {
+                Some(value) => Some(decided!(value.actual(clock, zones))),
+                None => None,
+            };
+            retain(
+                &mut self.explicit,
+                ExplicitOverride {
+                    span: ComponentSpan {
+                        key: actual,
+                        ..span
+                    },
+                    moved,
+                    shift: match (span.range, moved_to) {
+                        (OverrideRange::ThisAndFuture, Some(start)) => Some(
+                            key.civil
+                                .checked_seconds_until(start)
+                                .ok_or(QueryError::Unrepresentable)?,
+                        ),
+                        _ => None,
+                    },
+                },
+                meter,
+            )?;
+        }
+        if key.explicit.is_some() {
+            meter.try_charge_override_entries(1)?;
+            return Ok(Ok(()));
+        }
+        if let Some(actual) = moved.and_then(|start| start.explicit) {
+            retain(
+                &mut self.moves,
+                ExplicitMove {
+                    key: key.civil,
+                    position: member.position,
+                    start: actual,
+                },
+                meter,
+            )?;
+        }
+        retain(&mut self.spans, span, meter)?;
+        retain(
+            &mut self.entries,
+            Override::new(key.civil, span.range, moved_to, PropertyDiff::empty()),
+            meter,
+        )?;
+        Ok(Ok(()))
+    }
+}
+
+fn with_related_series<T>(
+    component: &Component,
+    related: &[Member<'_>],
+    omitted: Option<&Component>,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    project: impl FnOnce(Series<'_>, &mut Budget<'_>) -> Result<T, QueryError>,
+) -> Result<Result<T, Undecided>, QueryError> {
     let Some(kind) = component.kind() else {
-        return Ok(incomplete_expansion(Undecided::OverlapUndefined));
+        return Ok(Err(Undecided::OverlapUndefined));
     };
     if !matches!(
         kind,
         ComponentKind::Event | ComponentKind::Todo | ComponentKind::Journal
     ) {
-        return Ok(incomplete_expansion(Undecided::OverlapUndefined));
+        return Ok(Err(Undecided::OverlapUndefined));
     }
-    let related: Vec<&Component> = siblings
-        .iter()
-        .filter_map(Item::as_component)
-        .filter(|candidate| is_override_of(candidate, component))
-        .collect();
+
     let opening = decided!(required(component.dtstart()));
     let clock = decided!(clock_of(opening));
     let dtstart = decided!(nominal_value(opening, clock, zones));
@@ -712,59 +1069,55 @@ pub(crate) fn expand_component(
     if let Some(parsed) = rule.as_mut() {
         decided!(project_rule_limit(parsed, clock, zones));
     }
-    let mut rdates = instant_list(component, &ids::RDATE, clock, zones)?;
-    let mut exdates = instant_list(component, &ids::EXDATE, clock, zones)?;
-    rdates.sort_unstable();
-    rdates.dedup();
-    exdates.sort_unstable();
-    exdates.dedup();
-
-    let mut entries = Vec::new();
-    entries
-        .try_reserve(related.len())
-        .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
-    for candidate in related {
-        let addressed = decided!(required(
-            candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
-        ));
-        let recurrence_id = decided!(nominal_value(addressed, clock, zones));
-        let moved_to = match decided!(optional(candidate.dtstart())) {
-            Some(value) => Some(decided!(nominal_value(value, clock, zones))),
-            None => None,
-        };
-        entries.push(Override::new(
-            recurrence_id,
-            if is_this_and_future(candidate) {
-                OverrideRange::ThisAndFuture
-            } else {
-                OverrideRange::ThisOnly
-            },
-            moved_to,
-            PropertyDiff::empty(),
-        ));
-    }
-    entries.sort_by_key(|entry| entry.recurrence_id());
-    let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    let mut diagnostics = crate::internal::core::IgnoreDiagnostics;
-    expand(
-        Series {
-            dtstart,
-            dtstart_kind,
-            clock,
-            occupies,
-            rule: rule.as_ref(),
-            rdates: &rdates,
-            exdates: &exdates,
-            overrides,
-        },
-        range,
+    let periods = period_spans(component, clock, zones, budget.meter)?;
+    let rdates = instant_list(component, &ids::RDATE, clock, zones, budget.meter)?;
+    let exdates = instant_list(component, &ids::EXDATE, clock, zones, budget.meter)?;
+    charge_date_lists(&rdates.explicit, &exdates.explicit, budget.meter)?;
+    let mut controls = decided!(SeriesOverrides::read(
+        related,
+        omitted,
+        clock,
         zones,
+        &rdates.explicit,
+        budget.meter
+    )?);
+    let overrides = OverrideSet::new(&controls.entries, budget.meter).map_err(input_error)?;
+    let series = Series {
+        dtstart,
+        dtstart_kind,
+        clock,
+        occupies,
+        kind,
+        end_kind: end_kind_of(component),
+        durations: InstanceDurations {
+            periods: &periods.civil,
+            components: &controls.spans,
+        },
+        rule: rule.as_ref(),
+        rdates: &rdates.civil,
+        exdates: &exdates.civil,
+        overrides,
+        explicit: &[],
+        explicit_moves: &controls.moves,
+    };
+    let explicit = explicit_instances(
+        series,
+        &rdates.explicit,
+        &exdates.explicit,
+        &periods.explicit,
+        &mut controls.explicit,
+        zones,
+        budget.meter,
+    )?;
+    Ok(Ok(project(
+        Series {
+            explicit: &explicit,
+            ..series
+        },
         budget,
-        &mut diagnostics,
-    )
+    )?))
 }
 
-/// An expansion that could not establish all of its instances.
 const fn incomplete_expansion(reason: Undecided) -> Expansion {
     Expansion {
         instances: Vec::new(),
@@ -773,6 +1126,7 @@ const fn incomplete_expansion(reason: Undecided) -> Expansion {
             ..Reduction::FAITHFUL
         },
         incomplete: Some(reason),
+        ordered_through: None,
     }
 }
 
@@ -785,16 +1139,11 @@ pub(crate) fn override_recurrence_id(
     let opening = required(master.dtstart())?;
     let clock = clock_of(opening)?;
     let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))?;
-    let nominal = nominal_value(addressed, clock, zones)?;
-    clock.place(nominal, zones)
+    RecurrenceKey::read(addressed, clock, zones)?.actual(clock, zones)
 }
 
-/// Whether a detached component's RECURRENCE-ID belongs to its master's recurrence set.
-///
-/// This is deliberately a cadence-key test, not an overlap test: an event spanning a whole day
-/// must not make an unrelated key inside that day a valid override. The same nominal recurrence
-/// assembly used by CalDAV expansion supplies the answer, while the zone seam only decides
-/// whether a zoned wall clock is one the series admits.
+/// Check whether the master's recurrence set contains the detached component's identifier.
+/// An instant inside an occurrence can still fall between recurrence keys.
 pub(crate) fn recurrence_set_contains<S>(
     master: &Component,
     candidate: &Component,
@@ -817,32 +1166,69 @@ where
         ValueKind::DateTime
     };
     let mut rule = recurrence_rule(master).map_err(|_| QueryError::Unrepresentable)?;
-    if let Some(parsed) = rule.as_mut() {
-        if let Err(reason) = project_rule_limit(parsed, clock, zones) {
-            return Ok(Match::Undecided(reason));
-        }
+    if let Some(parsed) = rule.as_mut()
+        && let Err(reason) = project_rule_limit(parsed, clock, zones)
+    {
+        return Ok(Match::Undecided(reason));
     }
-    let mut rdates = instant_list(master, &ids::RDATE, clock, zones)?;
-    let mut exdates = instant_list(master, &ids::EXDATE, clock, zones)?;
-    rdates.sort_unstable();
-    rdates.dedup();
-    exdates.sort_unstable();
-    exdates.dedup();
+    let rdates = instant_list(master, &ids::RDATE, clock, zones, budget.meter)?;
+    let exdates = instant_list(master, &ids::EXDATE, clock, zones, budget.meter)?;
+    charge_date_lists(&rdates.explicit, &exdates.explicit, budget.meter)?;
     let addressed = required(candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID))
         .map_err(|_| QueryError::Unrepresentable)?;
-    let anchor = nominal_value(addressed, clock, zones).map_err(|_| QueryError::Unrepresentable)?;
+    let key =
+        RecurrenceKey::read(addressed, clock, zones).map_err(|_| QueryError::Unrepresentable)?;
+    if let Some(actual) = key.explicit {
+        charge_date_lists(&rdates.civil, &exdates.civil, budget.meter)?;
+        return Ok(Match::of(
+            contains_instant(&rdates.explicit, actual, budget.meter)?
+                && !contains_instant(&exdates.explicit, actual, budget.meter)?,
+        ));
+    }
+    let anchor = key.civil;
     let series = Series {
         dtstart,
         dtstart_kind,
         clock,
         occupies: InstanceSpan::INSTANT,
+        kind: master.kind().ok_or(QueryError::Unrepresentable)?,
+        end_kind: EndKind::Implied,
+        durations: InstanceDurations::EMPTY,
         rule: rule.as_ref(),
-        rdates: &rdates,
-        exdates: &exdates,
+        rdates: &rdates.civil,
+        exdates: &exdates.civil,
         overrides: OverrideSet::empty(),
+        explicit: &[],
+        explicit_moves: &[],
     };
-    if lone_instance(series).is_some_and(|(key, _)| key == anchor) {
-        return Ok(Match::Matched);
+    Ok(
+        match occurrence_start_at(series, anchor, zones, budget, sink)? {
+            Ok(Some(_)) => Match::Matched,
+            Ok(None) => Match::Unmatched,
+            Err(reason) => Match::Undecided(reason),
+        },
+    )
+}
+
+fn occurrence_start_at<S: DiagnosticSink + ?Sized>(
+    series: Series<'_>,
+    anchor: Instant,
+    zones: Zones<'_>,
+    budget: &mut Budget<'_>,
+    sink: &mut S,
+) -> Result<Result<Option<Instant>, Undecided>, QueryError> {
+    if budget.is_exhausted() {
+        return Ok(Err(Undecided::SearchExhausted));
+    }
+    if let Some((key, start)) = lone_instance(series, budget.meter)?
+        && key == anchor
+    {
+        charge_date_lists(series.rdates, series.exdates, budget.meter)?;
+        return Ok(budget
+            .meter
+            .try_charge_occurrence()
+            .map(|()| Some(start))
+            .map_err(|_| Undecided::SearchExhausted));
     }
     let end = anchor
         .checked_add_seconds(1)
@@ -851,20 +1237,22 @@ where
     let input = match assemble(series, &mut *budget.meter) {
         Ok(input) => input,
         Err(Unassembled::Refused(error)) => return Err(error),
-        Err(Unassembled::Undecidable(reason)) => return Ok(Match::Undecided(reason)),
+        Err(Unassembled::Undecidable(reason)) => return Ok(Err(reason)),
     };
-    let admitted = move |key: Instant| clock.admits(key, zones);
+    let admitted = move |key: Instant| series.clock.admits(key, zones);
     let gated = input.admitting(&admitted);
     let mut search = gated.search(window, &mut *budget.meter, sink);
-    for step in search.by_ref() {
-        let Some(occurrence) = step.occurrence() else {
-            return Ok(Match::Undecided(Undecided::SearchExhausted));
-        };
-        if occurrence.key() == anchor {
-            return Ok(Match::Matched);
+    loop {
+        match query_step(search.next(), search.outcome()) {
+            ControlFlow::Break(reason) => {
+                return Ok(reason.map_or(Ok(None), Err));
+            },
+            ControlFlow::Continue(occurrence) if occurrence.key() == anchor => {
+                return Ok(Ok(Some(occurrence.start())));
+            },
+            ControlFlow::Continue(_) => {},
         }
     }
-    Ok(Undecided::of_search(search.outcome()).map_or(Match::Unmatched, Match::Undecided))
 }
 
 /// The first instance's UTC recurrence identifier.
@@ -876,130 +1264,38 @@ pub(crate) fn component_start(
     placed_value(opening, zones)
 }
 
-/// Assemble and search one component known to carry a recurrence set.
-fn recurring_component_overlaps<S>(
+fn recurring_component_overlaps<S: DiagnosticSink + ?Sized>(
     component: &Component,
-    related: Vec<&Component>,
-    kind: ComponentKind,
+    related: &[Member<'_>],
     range: TimeRange,
     zones: Zones<'_>,
     budget: &mut Budget<'_>,
     sink: &mut S,
-) -> Result<Match, QueryError>
-where
-    S: DiagnosticSink + ?Sized,
-{
-    macro_rules! decided {
-        ($answer:expr) => {
-            match $answer {
-                Ok(value) => value,
-                Err(reason) => return Ok(Match::Undecided(reason)),
-            }
-        };
-    }
-
-    let opening = decided!(required(component.dtstart()));
-    let clock = decided!(clock_of(opening));
-    let dtstart = decided!(nominal_value(opening, clock, zones));
-    let dtstart_kind = if matches!(opening, DateTimeValue::Date(_)) {
-        ValueKind::Date
-    } else {
-        ValueKind::DateTime
-    };
-    let occupies = decided!(instance_span(component, kind, opening, clock, zones));
-    let mut rule = decided!(recurrence_rule(component));
-    if let Some(parsed) = rule.as_mut() {
-        decided!(project_rule_limit(parsed, clock, zones));
-    }
-    let mut rdates = instant_list(component, &ids::RDATE, clock, zones)?;
-    let mut exdates = instant_list(component, &ids::EXDATE, clock, zones)?;
-    rdates.sort_unstable();
-    rdates.dedup();
-    exdates.sort_unstable();
-    exdates.dedup();
-
-    let mut entries = Vec::new();
-    entries
-        .try_reserve(related.len())
-        .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
-    for candidate in related {
-        let addressed = decided!(required(
-            candidate.get::<DateTimeValue<'_>>(&ids::RECURRENCE_ID)
-        ));
-        let recurrence_id = decided!(nominal_value(addressed, clock, zones));
-        let moved_to = match decided!(optional(candidate.dtstart())) {
-            Some(value) => Some(decided!(nominal_value(value, clock, zones))),
-            None => None,
-        };
-        let range = candidate
-            .properties_named(&ids::RECURRENCE_ID)
-            .next()
-            .is_some_and(|property| {
-                property
-                    .parameters_named(b"RANGE")
-                    .any(|parameter| parameter.unquoted().eq_ignore_ascii_case(b"THISANDFUTURE"))
-            });
-        entries.push(Override::new(
-            recurrence_id,
-            if range {
-                OverrideRange::ThisAndFuture
-            } else {
-                OverrideRange::ThisOnly
-            },
-            moved_to,
-            PropertyDiff::empty(),
-        ));
-    }
-    entries.sort_by_key(|entry| entry.recurrence_id());
-    let overrides = OverrideSet::new(&entries, budget.meter).map_err(input_error)?;
-    overlaps(
-        Series {
-            dtstart,
-            dtstart_kind,
-            clock,
-            occupies,
-            rule: rule.as_ref(),
-            rdates: &rdates,
-            exdates: &exdates,
-            overrides,
-        },
-        range,
-        zones,
-        budget,
-        sink,
+) -> Result<Match, QueryError> {
+    Ok(
+        with_related_series(component, related, None, zones, budget, |series, budget| {
+            overlaps(series, range, zones, budget, sink)
+        })?
+        .unwrap_or_else(Match::Undecided),
     )
 }
 
-/// Map the only caller-policy failure in a prepared recurrence list onto the query channel.
 fn input_error(error: InputError) -> QueryError {
-    match error {
-        InputError::TooMany(_, exceeded) => QueryError::Limit(exceeded),
-        _ => QueryError::Unrepresentable,
-    }
+    error
+        .limit()
+        .map_or(QueryError::Unrepresentable, QueryError::Limit)
 }
 
-/// Whether `component` carries at least one property named by `id`.
 fn carries(component: &Component, id: &'static PropertyId) -> bool {
     component.properties_named(id).next().is_some()
 }
 
-/// Whether `candidate` is an override belonging to `master`.
-fn is_override_of(candidate: &Component, master: &Component) -> bool {
-    if candidate.kind() != master.kind() || !carries(candidate, &ids::RECURRENCE_ID) {
-        return false;
-    }
-    let master_uid = master
-        .properties_named(&ids::UID)
-        .next()
-        .map(|property| property.value_text().as_bytes());
-    let candidate_uid = candidate
-        .properties_named(&ids::UID)
-        .next()
-        .map(|property| property.value_text().as_bytes());
-    master_uid.is_some() && master_uid == candidate_uid
+pub(super) fn has_recurrence(component: &Component) -> bool {
+    [&ids::RRULE, &ids::RDATE, &ids::EXDATE]
+        .iter()
+        .any(|id| carries(component, id))
 }
 
-/// Turn a singular typed view into an optional value without flattening malformed into absent.
 fn optional<T>(view: View<'_, T>) -> Result<Option<T>, Undecided> {
     match view {
         View::Absent => Ok(None),
@@ -1008,12 +1304,10 @@ fn optional<T>(view: View<'_, T>) -> Result<Option<T>, Undecided> {
     }
 }
 
-/// Turn a required typed view into its value.
 fn required<T>(view: View<'_, T>) -> Result<T, Undecided> {
     optional(view)?.ok_or(Undecided::ValueUnreadable)
 }
 
-/// The clock a component's recurrence values are written on.
 fn clock_of(value: DateTimeValue<'_>) -> Result<SeriesClock<'_>, Undecided> {
     match value {
         DateTimeValue::Utc(_) => Ok(SeriesClock::Utc),
@@ -1032,25 +1326,43 @@ fn nominal_value(
 ) -> Result<Instant, Undecided> {
     let local = match value {
         DateTimeValue::Date(date) => CivilDateTime::new(date, CivilTime::MIDNIGHT),
-        DateTimeValue::Local(stamp) | DateTimeValue::Zoned { stamp, .. } => stamp,
-        DateTimeValue::Utc(stamp) if matches!(clock, SeriesClock::Utc) => {
-            return stamp
-                .at_offset(UtcOffset::UTC)
-                .ok_or(Undecided::ValueUnreadable);
+        DateTimeValue::Local(stamp) => stamp,
+        DateTimeValue::Zoned { stamp, tzid }
+            if clock.tzid().is_some_and(|zone| zone.as_bytes() == tzid) =>
+        {
+            stamp
+        },
+        DateTimeValue::Zoned { .. } => {
+            return nominal_instant(placed_value(value, zones)?, clock, zones);
         },
         DateTimeValue::Utc(stamp) => {
             let real = stamp
                 .at_offset(UtcOffset::UTC)
                 .ok_or(Undecided::ValueUnreadable)?;
-            let answer = zones.offset_at(clock.tzid(), real)?;
-            CivilDateTime::from_instant(real, answer.offset).ok_or(Undecided::ValueUnreadable)?
+            return nominal_instant(real, clock, zones);
         },
     };
     nominal(local).ok_or(Undecided::ValueUnreadable)
 }
 
+fn nominal_instant(
+    at: Instant,
+    clock: SeriesClock<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
+    if matches!(clock, SeriesClock::Utc) {
+        return Ok(at);
+    }
+    let offset = zones.offset_at(clock.tzid(), at)?.offset;
+    let local = CivilDateTime::from_instant(at, offset).ok_or(Undecided::ValueUnreadable)?;
+    nominal(local).ok_or(Undecided::ValueUnreadable)
+}
+
 /// Place a stored date or date-time on the UTC timeline.
-fn placed_value(value: DateTimeValue<'_>, zones: Zones<'_>) -> Result<Instant, Undecided> {
+pub(super) fn placed_value(
+    value: DateTimeValue<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
     match value {
         DateTimeValue::Utc(stamp) => stamp
             .at_offset(UtcOffset::UTC)
@@ -1066,7 +1378,6 @@ fn placed_value(value: DateTimeValue<'_>, zones: Zones<'_>) -> Result<Instant, U
     }
 }
 
-/// Place one wall clock according to the query's explicit zone policy.
 fn place_local(
     local: CivilDateTime,
     tzid: Option<&str>,
@@ -1079,7 +1390,6 @@ fn place_local(
         .ok_or(Undecided::ZoneAmbiguous)
 }
 
-/// Read the one recurrence rule a component carries.
 fn recurrence_rule(component: &Component) -> Result<Option<RecurrenceRule>, Undecided> {
     optional(component.get::<RecurrenceRule>(&ids::RRULE))
 }
@@ -1112,47 +1422,401 @@ fn project_rule_limit(
     Ok(())
 }
 
-/// Every comma-separated date or date-time in properties named by `id`.
+#[derive(Clone, Copy)]
+struct RecurrenceKey {
+    civil: Instant,
+    explicit: Option<Instant>,
+}
+
+impl RecurrenceKey {
+    fn read(
+        value: DateTimeValue<'_>,
+        clock: SeriesClock<'_>,
+        zones: Zones<'_>,
+    ) -> Result<Self, Undecided> {
+        let foreign = !matches!(clock, SeriesClock::Utc)
+            && match value {
+                DateTimeValue::Utc(_) => true,
+                DateTimeValue::Zoned { tzid, .. } => {
+                    clock.tzid().is_none_or(|name| name.as_bytes() != tzid)
+                },
+                _ => false,
+            };
+        if !foreign {
+            return Ok(Self {
+                civil: nominal_value(value, clock, zones)?,
+                explicit: None,
+            });
+        }
+        let actual = placed_value(value, zones)?;
+        let civil = nominal_instant(actual, clock, zones)?;
+        let explicit = match clock.place(civil, zones) {
+            Ok(reading) => (actual != reading).then_some(actual),
+            Err(Undecided::ZoneAmbiguous) => Some(actual),
+            Err(reason) => return Err(reason),
+        };
+        Ok(Self { civil, explicit })
+    }
+
+    fn actual(self, clock: SeriesClock<'_>, zones: Zones<'_>) -> Result<Instant, Undecided> {
+        self.explicit
+            .map_or_else(|| clock.place(self.civil, zones), Ok)
+    }
+}
+
+struct DateLists<T> {
+    civil: Vec<T>,
+    explicit: Vec<T>,
+}
+
+impl<T> DateLists<T> {
+    const fn new() -> Self {
+        Self {
+            civil: Vec::new(),
+            explicit: Vec::new(),
+        }
+    }
+
+    fn push(
+        &mut self,
+        key: RecurrenceKey,
+        build: impl FnOnce(Instant) -> T,
+        meter: &mut Meter,
+    ) -> Result<(), QueryError> {
+        match key.explicit {
+            Some(actual) => retain(&mut self.explicit, build(actual), meter),
+            None => retain(&mut self.civil, build(key.civil), meter),
+        }
+    }
+}
+
 fn instant_list(
     component: &Component,
     id: &'static PropertyId,
     clock: SeriesClock<'_>,
     zones: Zones<'_>,
-) -> Result<Vec<Instant>, QueryError> {
-    let mut values = Vec::new();
+    meter: &mut Meter,
+) -> Result<DateLists<Instant>, QueryError> {
+    let mut values = DateLists::new();
     for property in component.properties_named(id) {
         for field in property
             .value_text()
             .as_bytes()
             .split(|octet| *octet == b',')
         {
-            let value = list_value(property, field).map_err(|_| QueryError::Unrepresentable)?;
-            values
-                .try_reserve(1)
-                .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
-            values
-                .push(nominal_value(value, clock, zones).map_err(|_| QueryError::Unrepresentable)?);
+            let value = if property.is_named(b"RDATE")
+                && property.declared_value_type() == Some(Ok(ValueType::Period))
+            {
+                Period::decode_property_field(property, field)
+                    .map_err(|_| QueryError::Unrepresentable)?
+                    .start()
+            } else {
+                list_value(property, field).map_err(|_| QueryError::Unrepresentable)?
+            };
+            let key = RecurrenceKey::read(value, clock, zones)
+                .map_err(|_| QueryError::Unrepresentable)?;
+            values.push(key, core::convert::identity, meter)?;
         }
+    }
+    for list in [&mut values.civil, &mut values.explicit] {
+        admit_sort(list.len(), meter)?;
+        list.sort_unstable();
+        list.dedup();
     }
     Ok(values)
 }
 
 /// Decode one field of a list property, retaining the property's `TZID` parameter.
 fn list_value<'a>(property: &'a Property, field: &'a [u8]) -> Result<DateTimeValue<'a>, Undecided> {
-    let value = DateTimeValue::decode_value(field).map_err(|_| Undecided::ValueUnreadable)?;
-    let Some(parameter) = property.parameters_named(b"TZID").next() else {
-        return Ok(value);
-    };
-    match value {
-        DateTimeValue::Local(stamp) => Ok(DateTimeValue::Zoned {
-            stamp,
-            tzid: parameter.unquoted(),
-        }),
-        DateTimeValue::Date(_) | DateTimeValue::Utc(_) | DateTimeValue::Zoned { .. } => Ok(value),
+    DateTimeValue::decode_property_field(property, field).map_err(|_| Undecided::ValueUnreadable)
+}
+
+fn charge_date_lists(
+    inclusions: &[Instant],
+    exclusions: &[Instant],
+    meter: &mut Meter,
+) -> Result<(), LimitExceeded> {
+    if !inclusions.is_empty() {
+        meter.try_charge_rdate_entries(u32::try_from(inclusions.len()).unwrap_or(u32::MAX))?;
+    }
+    if !exclusions.is_empty() {
+        meter.try_charge_exdate_entries(u32::try_from(exclusions.len()).unwrap_or(u32::MAX))?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExplicitMove {
+    key: Instant,
+    position: usize,
+    start: Instant,
+}
+
+struct ExplicitOverride<'a> {
+    span: ComponentSpan<'a>,
+    moved: Option<Instant>,
+    shift: Option<i64>,
+}
+
+fn shift_explicit(
+    key: Instant,
+    shift: i64,
+    clock: SeriesClock<'_>,
+    zones: Zones<'_>,
+) -> Result<Instant, Undecided> {
+    if shift == 0 {
+        return Ok(key);
+    }
+    let elapsed = key
+        .checked_add_seconds(shift)
+        .ok_or(Undecided::ValueUnreadable)?;
+    let civil = nominal_instant(key, clock, zones)?
+        .checked_add_seconds(shift)
+        .ok_or(Undecided::ValueUnreadable)?;
+    if nominal_instant(elapsed, clock, zones)? == civil {
+        Ok(elapsed)
+    } else {
+        clock.place(civil, zones)
     }
 }
 
-/// The wall-clock length of one recurring component instance.
+fn explicit_instances(
+    series: Series<'_>,
+    inclusions: &[Instant],
+    exclusions: &[Instant],
+    periods: &[PeriodSpan],
+    overrides: &mut Vec<ExplicitOverride<'_>>,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<Vec<Instance>, QueryError> {
+    let mut instances = Vec::new();
+    if inclusions.is_empty() {
+        return Ok(instances);
+    }
+    admit_sort(overrides.len(), meter)?;
+    overrides.sort_unstable_by_key(|entry| (entry.span.key, entry.span.source_position));
+    overrides.dedup_by_key(|entry| entry.span.key);
+    for count in [overrides.len(), exclusions.len(), periods.len()] {
+        meter.try_charge(u64::try_from(count).unwrap_or(u64::MAX))?;
+    }
+    let mut controls = overrides.iter().peekable();
+    let mut excluded = exclusions.iter().copied().peekable();
+    let mut lengths = periods.iter().peekable();
+    let mut shift = 0;
+    let mut duration = None;
+    for &key in inclusions {
+        meter.try_charge(1)?;
+        let mut exact = None;
+        while let Some(entry) = controls.next_if(|entry| entry.span.key <= key) {
+            if entry.span.range == OverrideRange::ThisAndFuture {
+                if let Some(change) = entry.shift {
+                    shift = change;
+                }
+                if let Some(stated) = entry.span.stated {
+                    duration = Some(stated);
+                }
+            }
+            if entry.span.key == key {
+                exact = Some(entry);
+            }
+        }
+        while excluded.next_if(|entry| *entry < key).is_some() {}
+        if excluded.next_if(|entry| *entry == key).is_some() {
+            continue;
+        }
+        while lengths.next_if(|period| period.key < key).is_some() {}
+        let period = lengths.next_if(|period| period.key == key);
+        let base = ContextSpan {
+            span: period.map_or(series.occupies, |period| period.span),
+            clock: series.clock,
+            end_kind: if period.is_some() && series.end_kind == EndKind::Implied {
+                EndKind::Explicit
+            } else {
+                series.end_kind
+            },
+        };
+        let (start, span) = match exact {
+            Some(entry) => (
+                entry.moved.unwrap_or(key),
+                entry.span.stated.unwrap_or(base),
+            ),
+            None => (
+                shift_explicit(key, shift, series.clock, zones)
+                    .map_err(|_| QueryError::Unrepresentable)?,
+                duration.unwrap_or(base),
+            ),
+        };
+        let nominal =
+            nominal_instant(start, series.clock, zones).map_err(|_| QueryError::Unrepresentable)?;
+        let (end, end_kind) = if series.kind == ComponentKind::Journal {
+            (start, EndKind::Implied)
+        } else {
+            (
+                span.finish(nominal, start, series.clock, zones)
+                    .map_err(|_| QueryError::Unrepresentable)?,
+                span.end_kind,
+            )
+        };
+        let instance = Instance::new(key, start, end)
+            .with_shape(series.kind, ValueKind::DateTime, end_kind, key, nominal)
+            .map_err(|_| QueryError::Unrepresentable)?;
+        retain(&mut instances, instance, meter)?;
+    }
+    Ok(instances)
+}
+
+fn charge_lookup(len: usize, meter: &mut Meter) -> Result<(), LimitExceeded> {
+    if let Some(power) = len.checked_ilog2() {
+        meter.try_charge(u64::from(power).saturating_add(2))?;
+    }
+    Ok(())
+}
+
+fn contains_instant(
+    values: &[Instant],
+    key: Instant,
+    meter: &mut Meter,
+) -> Result<bool, LimitExceeded> {
+    charge_lookup(values.len(), meter)?;
+    Ok(values.binary_search(&key).is_ok())
+}
+
+fn admit_sort(len: usize, meter: &mut Meter) -> Result<(), LimitExceeded> {
+    if len > 1 {
+        let len = u64::try_from(len).unwrap_or(u64::MAX);
+        meter.try_charge(len.saturating_mul(u64::from(len.ilog2()).saturating_add(1)))?;
+    }
+    Ok(())
+}
+
+fn retain<T>(values: &mut Vec<T>, value: T, meter: &mut Meter) -> Result<(), QueryError> {
+    let bytes = u64::try_from(core::mem::size_of::<T>())
+        .map_err(|_| QueryError::Limit(LimitExceeded::Budget))?;
+    meter.try_charge_bytes(bytes).map_err(QueryError::Limit)?;
+    values
+        .try_reserve(1)
+        .map_err(|_| QueryError::Limit(LimitExceeded::Occurrences))?;
+    values.push(value);
+    Ok(())
+}
+
+fn period_spans(
+    component: &Component,
+    clock: SeriesClock<'_>,
+    zones: Zones<'_>,
+    meter: &mut Meter,
+) -> Result<DateLists<PeriodSpan>, QueryError> {
+    let mut spans = DateLists::new();
+    for property in component
+        .properties_named(&ids::RDATE)
+        .filter(|property| property.declared_value_type() == Some(Ok(ValueType::Period)))
+    {
+        for field in property
+            .value_text()
+            .as_bytes()
+            .split(|octet| *octet == b',')
+        {
+            let period = Period::decode_property_field(property, field)
+                .map_err(|_| QueryError::Unrepresentable)?;
+            let opening = period.start();
+            let start = placed_value(opening, zones).map_err(|_| QueryError::Unrepresentable)?;
+            let end = match period {
+                Period::Explicit { end, .. } => placed_value(end, zones),
+                Period::Starting { duration, .. } => {
+                    let own_clock = clock_of(opening).map_err(|_| QueryError::Unrepresentable)?;
+                    let nominal = nominal_value(opening, own_clock, zones)
+                        .map_err(|_| QueryError::Unrepresentable)?;
+                    duration_span(duration)
+                        .and_then(|span| span.finish(nominal, start, own_clock, zones))
+                },
+            }
+            .map_err(|_| QueryError::Unrepresentable)?;
+            if end <= start {
+                return Err(QueryError::Unrepresentable);
+            }
+            let length = start
+                .checked_seconds_until(end)
+                .ok_or(QueryError::Unrepresentable)?;
+            let span = InstanceSpan::of_seconds(length).ok_or(QueryError::Unrepresentable)?;
+            let key = RecurrenceKey::read(opening, clock, zones)
+                .map_err(|_| QueryError::Unrepresentable)?;
+            spans.push(key, |key| PeriodSpan { key, span }, meter)?;
+        }
+    }
+    for list in [&mut spans.civil, &mut spans.explicit] {
+        admit_sort(list.len(), meter)?;
+        list.sort_unstable_by_key(|period| period.key);
+        if list
+            .windows(2)
+            .any(|pair| pair[0].key == pair[1].key && pair[0].span != pair[1].span)
+        {
+            return Err(QueryError::Unrepresentable);
+        }
+        list.dedup_by_key(|period| period.key);
+    }
+    Ok(spans)
+}
+
+fn component_span<'a>(
+    component: &'a Component,
+    addressed: DateTimeValue<'a>,
+    key: Instant,
+    source_position: usize,
+    zones: Zones<'a>,
+) -> Result<ComponentSpan<'a>, QueryError> {
+    let states_length = [b"DTEND".as_slice(), b"DUE", b"DURATION"]
+        .iter()
+        .any(|name| {
+            component
+                .properties()
+                .any(|property| property.is_named(name))
+        });
+    let stated = if states_length {
+        let opening = optional(component.dtstart())
+            .map_err(|_| QueryError::Unrepresentable)?
+            .unwrap_or(addressed);
+        let clock = clock_of(opening).map_err(|_| QueryError::Unrepresentable)?;
+        let kind = component.kind().ok_or(QueryError::Unrepresentable)?;
+        Some(ContextSpan {
+            span: instance_span(component, kind, opening, clock, zones)
+                .map_err(|_| QueryError::Unrepresentable)?,
+            clock,
+            end_kind: end_kind_of(component),
+        })
+    } else {
+        None
+    };
+    Ok(ComponentSpan {
+        key,
+        source_position,
+        latest_range: None,
+        range: if is_this_and_future(component) {
+            OverrideRange::ThisAndFuture
+        } else {
+            OverrideRange::ThisOnly
+        },
+        stated,
+    })
+}
+
+fn end_kind_of(component: &Component) -> EndKind {
+    if component
+        .properties()
+        .any(|property| property.is_named(b"DURATION"))
+    {
+        EndKind::Duration
+    } else if component
+        .properties()
+        .any(|property| property.is_named(b"DTEND") || property.is_named(b"DUE"))
+    {
+        EndKind::Explicit
+    } else {
+        EndKind::Implied
+    }
+}
+
+/// Date-only endpoints span calendar days.
+/// Date-time endpoints span elapsed seconds after zone resolution.
 fn instance_span(
     component: &Component,
     kind: ComponentKind,
@@ -1160,7 +1824,6 @@ fn instance_span(
     clock: SeriesClock<'_>,
     zones: Zones<'_>,
 ) -> Result<InstanceSpan, Undecided> {
-    let start = nominal_value(opening, clock, zones)?;
     let stated_end = match kind {
         ComponentKind::Event => optional(component.dtend())?,
         ComponentKind::Todo => optional(component.due())?,
@@ -1168,16 +1831,32 @@ fn instance_span(
         _ => return Err(Undecided::OverlapUndefined),
     };
     if let Some(end) = stated_end {
-        let end = nominal_value(end, clock, zones)?;
+        if matches!(
+            (opening, end),
+            (DateTimeValue::Date(_), DateTimeValue::Date(_))
+        ) {
+            let start = nominal_value(opening, clock, zones)?;
+            let end = nominal_value(end, clock, zones)?;
+            let seconds = start
+                .checked_seconds_until(end)
+                .ok_or(Undecided::ValueUnreadable)?;
+            return InstanceSpan::of_duration(Duration::new(
+                seconds.div_euclid(NOMINAL_DAY_SECONDS),
+                0,
+            ))
+            .ok_or(Undecided::ValueUnreadable);
+        }
+        let start = placed_value(opening, zones)?;
+        let end = placed_value(end, zones)?;
         let seconds = start
             .checked_seconds_until(end)
             .ok_or(Undecided::ValueUnreadable)?;
         return InstanceSpan::of_seconds(seconds).ok_or(Undecided::ValueUnreadable);
     }
-    if !matches!(kind, ComponentKind::Journal) {
-        if let Some(duration) = optional(component.duration())? {
-            return duration_span(duration);
-        }
+    if !matches!(kind, ComponentKind::Journal)
+        && let Some(duration) = optional(component.duration())?
+    {
+        return duration_span(duration);
     }
     Ok(if matches!(opening, DateTimeValue::Date(_)) {
         InstanceSpan::WHOLE_DAY
@@ -1186,18 +1865,12 @@ fn instance_span(
     })
 }
 
-/// A non-negative RFC 5545 duration as an instance span.
 fn duration_span(duration: Duration) -> Result<InstanceSpan, Undecided> {
-    let seconds = duration
-        .days()
-        .checked_mul(NOMINAL_DAY_SECONDS)
-        .and_then(|days| days.checked_add(duration.seconds()))
-        .ok_or(Undecided::ValueUnreadable)?;
-    InstanceSpan::of_seconds(seconds).ok_or(Undecided::ValueUnreadable)
+    InstanceSpan::of_duration(duration).ok_or(Undecided::ValueUnreadable)
 }
 
-/// Read the values section 9.9's non-recurring overlap table names.
-fn occupancy_of<'a>(
+/// Read the component fields for the occupancy table in RFC 4791 section 9.9.
+pub(super) fn occupancy_of<'a>(
     component: &Component,
     zones: Zones<'_>,
     periods: &'a [BusyPeriod],
@@ -1223,11 +1896,12 @@ fn occupancy_of<'a>(
         (Some(value), Some(span)) => {
             let clock = clock_of(value)?;
             let nominal_start = nominal_value(value, clock, zones)?;
-            let seconds = duration_span(span)?.seconds();
-            let nominal_end = nominal_start
-                .checked_add_seconds(seconds)
-                .ok_or(Undecided::ValueUnreadable)?;
-            Some(clock.place(nominal_end, zones)?)
+            Some(duration_span(span)?.finish(
+                nominal_start,
+                start.ok_or(Undecided::ValueUnreadable)?,
+                clock,
+                zones,
+            )?)
         },
         (None, _) | (_, None) => None,
     };
@@ -1257,7 +1931,6 @@ fn occupancy_of<'a>(
     })
 }
 
-/// Read a `VFREEBUSY` component's absolute UTC periods.
 fn freebusy_periods(component: &Component) -> Result<Vec<BusyPeriod>, QueryError> {
     let mut periods = Vec::new();
     for property in component.freebusy() {
@@ -1266,7 +1939,8 @@ fn freebusy_periods(component: &Component) -> Result<Vec<BusyPeriod>, QueryError
             .as_bytes()
             .split(|octet| *octet == b',')
         {
-            let written = Period::decode_value(field).map_err(|_| QueryError::Unrepresentable)?;
+            let written = Period::decode_property_field(property, field)
+                .map_err(|_| QueryError::Unrepresentable)?;
             let start = utc_value(written.start())?;
             let end = match written {
                 Period::Explicit { end, .. } => utc_value(end)?,
@@ -1283,7 +1957,7 @@ fn freebusy_periods(component: &Component) -> Result<Vec<BusyPeriod>, QueryError
     Ok(periods)
 }
 
-/// One FREEBUSY bound, which RFC 5545 requires to be UTC.
+/// Free/busy periods require UTC endpoints under RFC 5545 section 3.8.2.6.
 fn utc_value(value: DateTimeValue<'_>) -> Result<Instant, QueryError> {
     match value {
         DateTimeValue::Utc(stamp) => stamp
@@ -1295,17 +1969,8 @@ fn utc_value(value: DateTimeValue<'_>) -> Result<Instant, QueryError> {
     }
 }
 
-/// Whether any instance of `series` overlaps `range`, RFC 4791 section 9.9.
-///
-/// Section 9.9 makes the test a disjunction over the recurrence set — "if any one instance
-/// matches, then the test returns true" — so the answer is [`Match::or`] folded over the
-/// instances, which is also what makes stopping at the first overlap safe: Kleene's disjunction
-/// is decided by a matched operand whatever the rest of them would have been.
-///
-/// The two answers that are not a fold are the ones a budget produces. A search that stopped at
-/// its own limit did not establish that nothing matches, so it is [`Undecided::SearchExhausted`]
-/// and never an empty result; and a ledger that had already latched before this call is the same
-/// fact one layer earlier, so no search is started at all.
+/// Tests whether any occurrence overlaps the range under RFC 4791 section 9.9.
+/// Budget exhaustion before a match yields [`Undecided::SearchExhausted`].
 pub fn overlaps<'a, S>(
     series: Series<'a>,
     range: TimeRange,
@@ -1322,16 +1987,31 @@ where
     let Some(bounds) = SearchBounds::compose(series, range)? else {
         return Ok(Match::Unmatched);
     };
-    let mut answer = lone_instance(series).map_or(Match::Unmatched, |(key, start)| {
-        decide(placed(series, key, start, zones), range, series.occupies)
-    });
-    if !answer.is_matched() {
+    let mut answer =
+        lone_instance(series, budget.meter)?.map_or(Match::Unmatched, |(key, start)| {
+            let found = placed(series, key, start, zones, || budget.meter.try_charge(1))
+                .unwrap_or(Err(Undecided::SearchExhausted));
+            decide(found, range)
+        });
+    if answer.is_matched() {
+        charge_date_lists(series.rdates, series.exdates, budget.meter)?;
+        if budget.meter.try_charge_occurrence().is_err() {
+            answer = Match::Undecided(Undecided::SearchExhausted);
+        }
+    } else {
         let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
-            answer = answer.or(decide(found, range, series.occupies));
+            answer = answer.or(decide(found, range));
             !answer.is_matched()
         })?;
         if let Some(reason) = incomplete {
             answer = answer.or(Match::Undecided(reason));
+        }
+    }
+    if !answer.is_matched() && !series.explicit.is_empty() {
+        match visit_explicit(series.explicit, range, budget.meter, |_, _| Ok(false)) {
+            Ok(false) => return Ok(Match::Matched),
+            Err(_) => answer = answer.or(Match::Undecided(Undecided::SearchExhausted)),
+            Ok(true) => {},
         }
     }
     if let Some(reason) = answer.undecided() {
@@ -1340,15 +2020,8 @@ where
     Ok(answer)
 }
 
-/// The instances of `series` that overlap `range`, RFC 4791 section 9.6.5.
-///
-/// Every instance rather than the first, because section 9.6.5 asks a server to return them and
-/// not to decide anything with them. What comes back carries [`Reduction::expanded`]: the octets
-/// a caller writes from it are well-formed iCalendar the server never stored, and writing them
-/// back replaces a rule with the handful of instances one query asked about.
-///
-/// The range bounds the answer twice over, exactly as section 9.6.5 says it does: it is the
-/// window the search runs over, and it is the overlap test each instance is then put to.
+/// Expands overlapping occurrences under RFC 4791 section 9.6.5.
+/// The result marks the projected calendar with [`Reduction::expanded`].
 pub fn expand<'a, S>(
     series: Series<'a>,
     range: TimeRange,
@@ -1360,22 +2033,65 @@ where
     S: DiagnosticSink + ?Sized,
 {
     let mut collected = Collector::new();
+    let mut ordered_through = None;
     if budget.is_exhausted() {
         collected.undecided = Some(Undecided::SearchExhausted);
     } else if let Some(bounds) = SearchBounds::compose(series, range)? {
-        if let Some((key, start)) = lone_instance(series) {
-            let found = placed(series, key, start, zones);
-            if let Ok(established) = found {
-                collected.offer(found, range, series.occupies);
-                collected.lone = Some(established.recurrence_id());
+        if let Some((key, start)) = lone_instance(series, budget.meter)? {
+            let found = placed(series, key, start, zones, || budget.meter.try_charge(1))
+                .unwrap_or(Err(Undecided::SearchExhausted));
+            let found = found.and_then(|instance| {
+                if overlaps_range(instance, range) {
+                    budget
+                        .meter
+                        .try_charge_occurrence()
+                        .map_err(|_| Undecided::SearchExhausted)?;
+                }
+                Ok(instance)
+            });
+            collected.offer(found, range);
+        }
+        let mut last_walked = None;
+        let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
+            if let Ok(instance) = found {
+                last_walked = Some(instance.recurrence_id());
+            }
+            collected.offer(found, range)
+        })?;
+        if series.clock == SeriesClock::Utc
+            && collected.undecided.is_none()
+            && incomplete == Some(Undecided::SearchExhausted)
+        {
+            ordered_through = last_walked.and_then(|key| {
+                let earliest = key.checked_add_seconds(bounds.widening().checked_neg()?)?;
+                Some((earliest, key))
+            });
+        }
+        collected.undecided = collected.undecided.or(incomplete);
+        if !series.explicit.is_empty() {
+            ordered_through = None;
+            let count = collected
+                .instances
+                .len()
+                .saturating_add(series.explicit.len());
+            if admit_sort(count, budget.meter).is_ok() {
+                if visit_explicit(series.explicit, range, budget.meter, |instance, meter| {
+                    meter.try_charge_bytes(
+                        u64::try_from(core::mem::size_of::<Instance>()).unwrap_or(u64::MAX),
+                    )?;
+                    Ok(collected.keep(instance, range))
+                })
+                .is_err()
+                {
+                    collected.undecided = Some(Undecided::SearchExhausted);
+                }
+                collected
+                    .instances
+                    .sort_unstable_by_key(|instance| instance.recurrence_id());
             } else {
-                collected.offer(found, range, series.occupies);
+                collected.undecided = Some(Undecided::SearchExhausted);
             }
         }
-        let incomplete = walk(series, bounds, zones, budget, &mut *sink, |found| {
-            collected.offer(found, range, series.occupies)
-        })?;
-        collected.undecided = collected.undecided.or(incomplete);
         if let Some(refusal) = collected.refused {
             return Err(refusal);
         }
@@ -1390,66 +2106,57 @@ where
             ..Reduction::FAITHFUL
         },
         incomplete: collected.undecided,
+        ordered_through,
     })
 }
 
-/// The instances an expansion has collected, and the two ways it stops early.
-///
-/// A named state rather than four captured bindings, because the closure that fills it is handed
-/// to [`walk`], and a closure borrowing four locals mutably reads as four independent facts when
-/// it is one.
+fn visit_explicit(
+    instances: &[Instance],
+    range: TimeRange,
+    meter: &mut Meter,
+    mut visit: impl FnMut(Instance, &mut Meter) -> Result<bool, LimitExceeded>,
+) -> Result<bool, LimitExceeded> {
+    for &instance in instances {
+        meter.try_charge(1)?;
+        if overlaps_range(instance, range) {
+            meter.try_charge_occurrence()?;
+            if !visit(instance, meter)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 #[derive(Debug)]
 struct Collector {
-    /// The instances kept so far.
     instances: Vec<Instance>,
-    /// The `RECURRENCE-ID` of the instance established outside the search, if there was one.
-    lone: Option<Instant>,
-    /// Why the set is incomplete, absent when it is not.
     undecided: Option<Undecided>,
-    /// The refusal that ended the collection, absent when none did.
     refused: Option<QueryError>,
 }
 
 impl Collector {
-    /// An empty collection.
     const fn new() -> Self {
         Self {
             instances: Vec::new(),
-            lone: None,
             undecided: None,
             refused: None,
         }
     }
 
-    /// Offer one instance, answering whether the walk should carry on.
-    ///
-    /// An instance the zone could not place keeps the walk going and is recorded: the rest of the
-    /// range is still expandable, and one occurrence in an hour a zone never showed does not make
-    /// the others unknown.
-    fn offer(
-        &mut self,
-        found: Result<Instance, Undecided>,
-        range: TimeRange,
-        span: InstanceSpan,
-    ) -> bool {
+    /// An occurrence with an unresolved time leaves the result incomplete while later occurrences remain eligible.
+    fn offer(&mut self, found: Result<Instance, Undecided>, range: TimeRange) -> bool {
         match found {
             Err(reason) => {
                 self.undecided = self.undecided.or(Some(reason));
                 true
             },
-            Ok(instance) => self.keep(instance, range, span),
+            Ok(instance) => self.keep(instance, range),
         }
     }
 
-    /// Keep one placed instance if it overlaps, answering whether the walk should carry on.
-    fn keep(&mut self, instance: Instance, range: TimeRange, span: InstanceSpan) -> bool {
-        if !overlaps_range(instance, range, span) {
-            return true;
-        }
-        if self.lone == Some(instance.recurrence_id()) {
-            // The recurrence set is a set and `DTSTART` is in it once. A component with no rule
-            // whose `RDATE` list repeats its own `DTSTART` offers this key twice, and the one
-            // established before the search is the one carrying the override that addresses it.
+    fn keep(&mut self, instance: Instance, range: TimeRange) -> bool {
+        if !overlaps_range(instance, range) {
             return true;
         }
         if self.instances.try_reserve(1).is_err() {
@@ -1461,40 +2168,37 @@ impl Collector {
     }
 }
 
-/// Why a series could not be assembled into a search.
-///
-/// Two answers, because they reach the caller on different channels. A list longer than the
-/// caller's own policy admits is a refusal the caller stated itself. A list that does not ascend,
-/// or that names one instant twice, is a series whose instances cannot be established at all,
-/// which is an undecided filter rather than an error: nothing about it says the resource does not
-/// match.
+/// Policy limits produce a query error.
+/// Invalid recurrence lists leave the match undecided.
 #[derive(Debug)]
 enum Unassembled {
-    /// A caller-stated bound refused one of the series' own lists.
     Refused(QueryError),
-    /// The lists are not the shape expansion requires, so no instance can be established.
     Undecidable(Undecided),
 }
 
-impl From<InputError> for Unassembled {
-    fn from(error: InputError) -> Self {
+impl From<Undecided> for Unassembled {
+    fn from(reason: Undecided) -> Self {
+        Self::Undecidable(reason)
+    }
+}
+
+impl From<QueryError> for Unassembled {
+    fn from(error: QueryError) -> Self {
         match error {
-            InputError::TooMany(_, breach) => Self::Refused(QueryError::Limit(breach)),
-            // `InputError` is `#[non_exhaustive]`, so this arm is required rather than chosen.
-            // Undecidable is the conservative reading of a shape this unit cannot expand: it
-            // neither claims the resource matches nor claims that it does not.
-            _ => Self::Undecidable(Undecided::ValueUnreadable),
+            QueryError::Unrepresentable => Self::Undecidable(Undecided::ValueUnreadable),
+            error => Self::Refused(error),
         }
     }
 }
 
-/// The window over instance starts that `range` asks about, or `None` when it holds none.
-///
-/// The whole of RFC 4791 section 9.9's start-edge distinction is the middle arm. An instance
-/// occupying a positive span is inside when `start < DTSTART+DURATION`, so a start as early as
-/// `range.start - span + 1` still reaches into the range; an instance occupying no time at all is
-/// inside when `start <= DTSTART`, and shifting that bound by a second would drop every
-/// zero-length component out of every query.
+impl From<InputError> for Unassembled {
+    fn from(error: InputError) -> Self {
+        Self::from(input_error(error))
+    }
+}
+
+/// At second precision, an occurrence of positive length can overlap from `range.start - span + 1`.
+/// The caller adds one second for a component whose duration includes its end.
 fn start_window(
     range: TimeRange,
     span: InstanceSpan,
@@ -1503,14 +2207,12 @@ fn start_window(
     let first = calendar_start().ok_or(QueryError::Unrepresentable)?;
     let last = calendar_end().ok_or(QueryError::Unrepresentable)?;
     let lower = match range.start() {
-        // "assume -infinity", section 9.9, closed against the years section 3.3.4 can write.
         None => first,
         Some(from) if span.is_instantaneous() => from,
         Some(from) => earlier(from, span.seconds().saturating_sub(1), first),
     };
     let upper = range.end().unwrap_or(last);
     let slack = match clock {
-        // The projection is the identity, so the window needs no room for an offset.
         SeriesClock::Utc => 0,
         SeriesClock::Floating | SeriesClock::Zoned(_) => ZONE_SLACK_SECONDS,
     };
@@ -1520,100 +2222,126 @@ fn start_window(
     ))
 }
 
-/// Whether `instance` overlaps `range`, RFC 4791 section 9.9's condition for its own row.
-///
-/// Two comparisons, each of which an absent bound satisfies: section 9.9 reads a missing `start`
-/// as minus infinity and a missing `end` as plus infinity, and a range with neither is one
-/// `crate::internal::dav::TimeRange` refuses to hold.
-fn overlaps_range(instance: Instance, range: TimeRange, span: InstanceSpan) -> bool {
-    let reaches_start = match range.start() {
-        None => true,
-        // `(start <= DTSTART)`, the rows for a component that occupies no time.
-        Some(from) if span.is_instantaneous() => from <= instance.start(),
-        // `(start < DTEND)` and `(start < DTSTART+DURATION)`, which are one condition once the
-        // effective end has been computed.
-        Some(from) => from < instance.end(),
+fn overlaps_range(instance: Instance, range: TimeRange) -> bool {
+    let (kind, is_date, end_kind) = match instance.shape {
+        InstanceShape::Event { is_date, end } => (ComponentKind::Event, is_date, end),
+        InstanceShape::Todo { end } => (ComponentKind::Todo, false, end),
+        InstanceShape::Journal { dates } => {
+            (ComponentKind::Journal, dates.is_some(), EndKind::Implied)
+        },
     };
-    // `(end > DTSTART)`, which every row of every table states the same way.
-    reaches_start && range.end().is_none_or(|until| until > instance.start())
+    let occupancy = Occupancy {
+        start: Some(instance.start()),
+        start_is_date_time: Some(!is_date),
+        end: (kind == ComponentKind::Event && end_kind == EndKind::Explicit)
+            .then_some(instance.end()),
+        due: (kind == ComponentKind::Todo && end_kind == EndKind::Explicit)
+            .then_some(instance.end()),
+        has_duration: end_kind == EndKind::Duration,
+        duration_end: (end_kind == EndKind::Duration).then_some(instance.end()),
+        one_day_end: is_date.then_some(instance.end()),
+        ..Occupancy::default()
+    };
+    crate::internal::query::overlap::overlaps(kind, &occupancy, range).is_matched()
 }
 
-/// The answer one instance gives: a fact where the zone placed it, and not where it did not.
-fn decide(found: Result<Instance, Undecided>, range: TimeRange, span: InstanceSpan) -> Match {
+fn decide(found: Result<Instance, Undecided>, range: TimeRange) -> Match {
     match found {
-        Ok(instance) => Match::of(overlaps_range(instance, range, span)),
+        Ok(instance) => Match::of(overlaps_range(instance, range)),
         Err(reason) => Match::Undecided(reason),
     }
 }
 
-/// The real UTC instants an occurrence at nominal `key`, starting at nominal `start`, occupies.
-///
-/// Three placements at most and one at least. The cadence key and the effective start are the
-/// same instant for every occurrence no override moved, and the end is the start again for a
-/// component RFC 4791 section 9.9 gives no length, so the ordinary case asks the zone once.
+/// Resolve the original recurrence key and effective start independently when an override moves an occurrence.
 fn placed<'a>(
     series: Series<'a>,
     key: Instant,
     start: Instant,
     zones: Zones<'a>,
-) -> Result<Instance, Undecided> {
+    mut charge_probe: impl FnMut() -> Result<(), LimitExceeded>,
+) -> Result<Result<Instance, Undecided>, LimitExceeded> {
     let clock = series.clock;
-    let happens_at = clock.place(start, zones)?;
-    let addressed = if key == start {
-        happens_at
+    let value_kind = series.durations.value_kind_at(key, series.dtstart_kind);
+    let span = if series.kind == ComponentKind::Journal {
+        ContextSpan {
+            span: if value_kind == ValueKind::Date {
+                InstanceSpan::WHOLE_DAY
+            } else {
+                InstanceSpan::INSTANT
+            },
+            clock,
+            end_kind: EndKind::Implied,
+        }
     } else {
-        clock.place(key, zones)?
+        series.durations.at(
+            key,
+            series.occupies,
+            series.end_kind,
+            clock,
+            &mut charge_probe,
+        )?
     };
-    let finishes_at = if series.occupies.is_instantaneous() {
-        happens_at
+    let explicit = if let Some(power) = series.explicit_moves.len().checked_ilog2() {
+        for _ in 0..power.saturating_add(2) {
+            charge_probe()?;
+        }
+        let index = series
+            .explicit_moves
+            .partition_point(|entry| entry.key < key);
+        series
+            .explicit_moves
+            .get(index)
+            .filter(|entry| entry.key == key)
+            .map(|entry| entry.start)
     } else {
-        // Both ends go through the zone, so the span is as long in real seconds as the zone made
-        // that wall-clock day. The sum is checked because the span is a number a file supplies:
-        // `DURATION:P100000000W` is a value RFC 5545 section 3.3.6 can write.
-        let ends = start
-            .checked_add_seconds(series.occupies.seconds())
-            .ok_or(Undecided::ValueUnreadable)?;
-        clock.place(ends, zones)?
+        None
     };
-    Ok(Instance::new(addressed, happens_at, finishes_at))
+    let instance = explicit
+        .map_or_else(|| clock.place(start, zones), Ok)
+        .and_then(|happens_at| {
+            let addressed = if key == start && explicit.is_none() {
+                happens_at
+            } else {
+                clock.place(key, zones)?
+            };
+            let nominal_start = if explicit.is_some() {
+                nominal_instant(happens_at, clock, zones)?
+            } else {
+                start
+            };
+            let finishes_at = span.finish(nominal_start, happens_at, clock, zones)?;
+            Instance::new(addressed, happens_at, finishes_at).with_shape(
+                series.kind,
+                value_kind,
+                span.end_kind,
+                key,
+                nominal_start,
+            )
+        });
+    Ok(instance)
 }
 
-/// The one instance a component with no `RRULE` has, which no search produces.
-///
-/// RFC 5545 section 3.8.5 puts `DTSTART` in every recurrence set, and `ical-recur` produces it
-/// from the rule rather than adding it: a component with no rule yields its `RDATE` instants and
-/// nothing else, and one with neither yields nothing at all. Most resources in a collection have
-/// no rule, so a filter reading that silence as "no instance" would answer "no match" for nearly
-/// every calendar object there is.
-///
-/// The exclusion list and any override addressing the key are applied here for the reason the
-/// search applies them: an `EXDATE` naming `DTSTART` removes the only instance there is, and an
-/// override that moved it moved the only start there is.
-///
-/// `None` where the component has a rule. There the recurrence set is what the rule generates,
-/// including whether an unsynchronized `DTSTART` belongs to it — a question RFC 5545 section
-/// 3.8.5.3 calls undefined and `ical-recur` answers once, on its own terms.
-fn lone_instance(series: Series<'_>) -> Option<(Instant, Instant)> {
-    if series.rule.is_some() || series.exdates.binary_search(&series.dtstart).is_ok() {
-        return None;
+/// RFC 5545 section 3.8.5.3 includes `DTSTART` in the recurrence set unless an exclusion removes it.
+/// Without a rule, the search emits inclusion dates and the caller supplies the initial occurrence.
+fn lone_instance(
+    series: Series<'_>,
+    meter: &mut Meter,
+) -> Result<Option<(Instant, Instant)>, LimitExceeded> {
+    if series.rule.is_some()
+        || contains_instant(series.rdates, series.dtstart, meter)?
+        || contains_instant(series.exdates, series.dtstart, meter)?
+    {
+        return Ok(None);
     }
     let moved = series
         .overrides
         .exact_match(series.dtstart)
         .and_then(|entry| entry.moved_to());
-    Some((series.dtstart, moved.unwrap_or(series.dtstart)))
+    Ok(Some((series.dtstart, moved.unwrap_or(series.dtstart))))
 }
 
-/// Walk the occurrences of `series` inside `bounds`, offering each to `visit`.
-///
-/// `visit` answers whether to carry on, which is how "stop at the first overlapping occurrence"
-/// is stated once rather than at each caller. The reason the walk is incomplete comes back, and
-/// it is `None` for a walk that reached the end of the search.
-///
-/// The window the search is given is the one the caller asked about and never the widened one:
-/// `ical-recur` widens generation itself, from the same override set, and admits an occurrence
-/// whose cadence key falls in the asked window **or** whose effective start does. Handing it the
-/// widened window instead would admit occurrences by a key nobody asked about.
+/// Pass the start window to the search, which widens generation for overrides.
+/// Returning `false` from the visitor stops the walk once the caller has its answer.
 fn walk<'a, S, V>(
     series: Series<'a>,
     bounds: SearchBounds,
@@ -1626,6 +2354,9 @@ where
     S: DiagnosticSink + ?Sized,
     V: FnMut(Result<Instance, Undecided>) -> bool,
 {
+    if budget.is_exhausted() {
+        return Ok(Some(Undecided::SearchExhausted));
+    }
     let input = match assemble(series, &mut *budget.meter) {
         Ok(assembled) => assembled,
         Err(Unassembled::Refused(refusal)) => return Err(refusal),
@@ -1635,32 +2366,35 @@ where
     let admitted = move |key: Instant| clock.admits(key, zones);
     let gated = input.admitting(&admitted);
     let mut search = gated.search(bounds.window, &mut *budget.meter, sink);
-    let mut incomplete = None;
-    let mut stopped_by_caller = false;
-    for step in &mut search {
-        // `SearchStep::occurrence` answers `None` for the terminal step, and for any terminal
-        // state a later `ical-recur` adds. Recording it rather than dropping it is the whole
-        // difference between the discard that type documents and this: a search stopped short
-        // never established that the range holds no instance.
-        let Some(occurrence) = step.occurrence() else {
-            incomplete = Some(Undecided::SearchExhausted);
-            break;
-        };
-        if !visit(placed(series, occurrence.key(), occurrence.start(), zones)) {
-            stopped_by_caller = true;
-            break;
+    loop {
+        match query_step(search.next(), search.outcome()) {
+            ControlFlow::Break(reason) => return Ok(reason),
+            ControlFlow::Continue(occurrence) => {
+                let Ok(instance) =
+                    placed(series, occurrence.key(), occurrence.start(), zones, || {
+                        search.charge_work(1)
+                    })
+                else {
+                    return Ok(Some(Undecided::SearchExhausted));
+                };
+                if !visit(instance) {
+                    return Ok(None);
+                }
+            },
         }
     }
-    if incomplete.is_none() && !stopped_by_caller {
-        // Only for a walk the caller let run out. A search stopped early leaves its outcome
-        // `SearchOutcome::Pending`, which `Undecided::of_search` reads as incomplete — true of
-        // the search and false of the question, which was answered.
-        incomplete = Undecided::of_search(search.outcome());
-    }
-    Ok(incomplete)
 }
 
-/// Assemble the search input `series` describes, charging its lists to `meter`.
+fn query_step(
+    step: Option<SearchStep<'_>>,
+    outcome: SearchOutcome,
+) -> ControlFlow<Option<Undecided>, Occurrence<'_>> {
+    match step.and_then(SearchStep::occurrence) {
+        Some(occurrence) => ControlFlow::Continue(occurrence),
+        None => ControlFlow::Break(Undecided::of_search(outcome)),
+    }
+}
+
 fn assemble<'a>(series: Series<'a>, meter: &mut Meter) -> Result<RecurrenceInput<'a>, Unassembled> {
     RecurrenceInput::new(
         series.dtstart,
@@ -1674,11 +2408,6 @@ fn assemble<'a>(series: Series<'a>, meter: &mut Meter) -> Result<RecurrenceInput
     .map_err(Unassembled::from)
 }
 
-/// The answer a call gets when the caller's ledger had already latched.
-///
-/// Exhaustion latches, so a search started here would walk a rule against a meter refusing every
-/// charge and come back empty. That is the truncated-but-plausible answer a budget exists to
-/// prevent, one layer up from where `docs/adr/0002` prevents it.
 fn exhausted_before_starting<S>(series: Series<'_>, budget: &mut Budget<'_>, sink: &mut S) -> Match
 where
     S: DiagnosticSink + ?Sized,
@@ -1692,20 +2421,7 @@ where
     Match::Undecided(Undecided::SearchExhausted)
 }
 
-/// Report that a filter could not be decided, and why.
-///
-/// One code for all six reasons, which is what `crate::internal::query::Undecided::CODE` fixes, and the reason
-/// itself as the diagnostic's subject. A subject is what tells two reports of one code apart, and
-/// six undecidable filters arriving as six equal values would tell a caller that something could
-/// not be answered without saying what.
-///
-/// The instant is the series' own `DTSTART`, nominal: it is the one instant identifying the
-/// component whatever went wrong, and an occurrence that could not be placed has no instant of
-/// its own to name.
-///
-/// Nothing about the zone is reported here. `ical-tz` emits `ambiguous-local-time` and its
-/// siblings from the answers themselves, and a second emission would make one awkward hour look
-/// like two.
+/// Use nominal `DTSTART` to identify the series even when the zone can't resolve an occurrence.
 fn note_undecided<S>(reason: Undecided, at: Instant, meter: &mut Meter, sink: &mut S)
 where
     S: DiagnosticSink + ?Sized,
@@ -1718,11 +2434,6 @@ where
     );
 }
 
-/// `at` moved `seconds` earlier, stopping at `floor`.
-///
-/// Saturating at the calendar's own edge rather than refusing: an instance long enough to reach
-/// back past the year RFC 5545 section 3.3.4 begins at has a window that starts at that year, and
-/// no instant before it exists to be missed.
 fn earlier(at: Instant, seconds: i64, floor: Instant) -> Instant {
     seconds
         .checked_neg()
@@ -1731,18 +2442,13 @@ fn earlier(at: Instant, seconds: i64, floor: Instant) -> Instant {
         .max(floor)
 }
 
-/// `at` moved `seconds` later, stopping at `ceiling`.
 fn later(at: Instant, seconds: i64, ceiling: Instant) -> Instant {
     at.checked_add_seconds(seconds)
         .unwrap_or(ceiling)
         .min(ceiling)
 }
 
-/// The first instant RFC 5545 section 3.3.4 can write, on the nominal timeline.
-///
-/// Computed rather than written as a number, so that the bound and the calendar it comes from
-/// cannot drift apart. `None` is unreachable — year zero, January, the first — and is checked
-/// because a bound that holds today is not a bound the compiler checks.
+/// The lower bound for the four-digit years in RFC 5545 section 3.3.4.
 fn calendar_start() -> Option<Instant> {
     nominal(CivilDateTime::new(
         CivilDate::from_ymd(0, 1, 1)?,
@@ -1750,10 +2456,7 @@ fn calendar_start() -> Option<Instant> {
     ))
 }
 
-/// The first instant past the last one RFC 5545 section 3.3.4 can write.
-///
-/// One second past 9999-12-31T23:59:59, because every window in this workspace is half-open and a
-/// closed upper bound would exclude the last second a calendar can name.
+/// The exclusive upper bound includes the last second of year 9999.
 fn calendar_end() -> Option<Instant> {
     nominal(CivilDateTime::new(
         CivilDate::from_ymd(9999, 12, 31)?,
@@ -1784,55 +2487,32 @@ mod tests {
     };
     use crate::internal::query::vocabulary::{Budget, Match, Undecided, Zones};
 
-    /// The zone RFC 4791 section 7.8.2's calendar data is written in.
     const EASTERN: &str = "US/Eastern";
 
-    /// `-05:00`, the offset `US/Eastern` runs at in January.
     const EST_SECONDS: i32 = -18_000;
 
-    /// One hour, which is the `DURATION:PT1H` every event in the example carries.
     const ONE_HOUR: i64 = 3_600;
 
-    // The instants of RFC 4791 section 7.8.3's worked example, transcribed by hand. The nominal
-    // ones are the wall clocks the file writes -- `DTSTART;TZID=US/Eastern:20060102T120000` and
-    // the daily keys after it -- projected by `crate::internal::tz::seam`; the UTC ones are what those wall
-    // clocks name under EST, and what the example's own `>> Response <<` states. Every one of
-    // them is checked against `ical-core`'s calendar arithmetic by the first test below, so a
-    // transcription slip fails a test rather than quietly moving the example.
+    // RFC 4791 section 7.8.3 supplies the query range and the January 3 and 4 results.
+    // January 8 supplies a separate case for an override outside the range.
 
-    /// `20060102T120000` local, nominal: the example's `DTSTART`.
     const NOMINAL_JAN2: i64 = 1_136_203_200;
-    /// `20060103T120000` local, nominal.
     const NOMINAL_JAN3: i64 = 1_136_289_600;
-    /// `20060104T120000` local, nominal: the `RECURRENCE-ID` the example overrides.
     const NOMINAL_JAN4: i64 = 1_136_376_000;
-    /// `20060104T140000` local, nominal: where that override moved the instance to.
     const NOMINAL_JAN4_MOVED: i64 = 1_136_383_200;
-    /// `20060108T120000` local, nominal: a key five days past the window a case moves back.
     const NOMINAL_JAN8: i64 = 1_136_721_600;
-    /// `20060103T000000Z`: the example's `start` attribute.
     const UTC_RANGE_START: i64 = 1_136_246_400;
-    /// `20060105T000000Z`: the example's `end` attribute.
     const UTC_RANGE_END: i64 = 1_136_419_200;
-    /// `20060102T170000Z`: where the instance before the range happens.
     const UTC_JAN2_1700: i64 = 1_136_221_200;
-    /// `20060102T180000Z`: where it ends.
     const UTC_JAN2_1800: i64 = 1_136_224_800;
-    /// `20060103T170000Z`: the `DTSTART` of the first instance the example returns.
     const UTC_JAN3_1700: i64 = 1_136_307_600;
-    /// `20060103T180000Z`: its `DTEND`.
     const UTC_JAN3_1800: i64 = 1_136_311_200;
-    /// `20060104T170000Z`: the `RECURRENCE-ID` the second returned instance carries.
     const UTC_JAN4_1700: i64 = 1_136_394_000;
-    /// `20060104T190000Z`: the `DTSTART` it carries instead.
     const UTC_JAN4_1900: i64 = 1_136_401_200;
-    /// `20060104T200000Z`: its `DTEND`.
     const UTC_JAN4_2000: i64 = 1_136_404_800;
 
-    // The composed window for the example's range over an hour-long zoned event, by hand:
-    // `20060103T000000Z` less the 3,599 seconds a positive span reaches back by, less the
-    // 86,399 of zone slack; and `20060105T000000Z` plus that same slack. The generation window
-    // is those two moved out by the 7,200 seconds the example's own override shifts.
+    // The reference window accounts for the event length and the largest supported UTC offset.
+    // The generation window covers the two-hour shift of the January 4 occurrence.
 
     /// `1_136_246_400 - 3_599 - 86_399`.
     const WINDOW_LOWER: i64 = 1_136_156_402;
@@ -1842,19 +2522,13 @@ mod tests {
     const GENERATION_LOWER: i64 = 1_136_149_202;
     /// `WINDOW_UPPER + 7_200`.
     const GENERATION_UPPER: i64 = 1_136_512_799;
-    /// The shift `20060104T120000` to `20060104T140000` implies, in seconds.
     const TWO_HOURS: i64 = 7_200;
 
     fn at(seconds: i64) -> Instant {
         Instant::from_unix_seconds(seconds)
     }
 
-    /// The example's zone, as the one offset January has in it.
-    ///
-    /// A fixed offset is not a zone and this source says so by construction. It is the right
-    /// stand-in here and nowhere else: the `VTIMEZONE` the example carries puts `US/Eastern` on
-    /// EST from the last Sunday in October to the first in April, so every instant under test is
-    /// on `-05:00` and no transition falls inside any window here.
+    /// All January dates in the RFC example use the same `-05:00` offset.
     fn eastern() -> FixedOffsetSource {
         FixedOffsetSource::new(
             EASTERN,
@@ -1863,7 +2537,6 @@ mod tests {
         )
     }
 
-    /// The instant a UTC wall clock names, which is how every expected value is spelled.
     fn stamp(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> Instant {
         let date = CivilDate::from_ymd(year, month, day).unwrap();
         let time = CivilTime::from_hms(hour, minute, 0).unwrap();
@@ -1872,7 +2545,6 @@ mod tests {
             .unwrap()
     }
 
-    /// `FREQ=DAILY;COUNT=count`, the rule the example's `abcd2.ics` carries.
     fn daily(count: u32) -> RecurrenceRule {
         RecurrenceRuleBuilder::new(Freq::Daily)
             .limit(RuleLimit::Count(NonZeroU32::new(count).unwrap()))
@@ -1880,7 +2552,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The example's override: the January 4th instance moved two hours later.
     fn moved_jan4() -> Override<'static> {
         Override::new(
             at(NOMINAL_JAN4),
@@ -1890,17 +2561,21 @@ mod tests {
         )
     }
 
-    /// The example's event, over whichever rule and override table a case supplies.
     fn event<'a>(rule: Option<&'a RecurrenceRule>, overrides: OverrideSet<'a>) -> Series<'a> {
         Series {
             dtstart: at(NOMINAL_JAN2),
             dtstart_kind: ValueKind::DateTime,
             clock: SeriesClock::Zoned(EASTERN),
             occupies: InstanceSpan::of_seconds(ONE_HOUR).unwrap(),
+            kind: crate::internal::core::ComponentKind::Event,
+            end_kind: super::EndKind::Explicit,
+            durations: super::InstanceDurations::EMPTY,
             rule,
             rdates: &[],
             exdates: &[],
             overrides,
+            explicit: &[],
+            explicit_moves: &[],
         }
     }
 
@@ -1908,11 +2583,127 @@ mod tests {
         TimeRange::new(Some(from), Some(until)).unwrap()
     }
 
+    #[test]
+    fn duration_lookups_charge_logarithmic_work_and_stop_on_refusal() {
+        let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+        let rule = daily(32);
+        let start = stamp(2024, 1, 1, 0, 0);
+        let range = spanning(start, stamp(2024, 2, 3, 0, 0));
+        let future = stamp(2025, 1, 1, 0, 0).unix_seconds();
+        let components: Vec<_> = (0..4096)
+            .map(|offset| super::ComponentSpan {
+                key: at(future + offset),
+                source_position: usize::try_from(offset).unwrap(),
+                latest_range: None,
+                range: OverrideRange::ThisOnly,
+                stated: None,
+            })
+            .collect();
+        let measure = |rows: &[super::ComponentSpan<'_>], units| {
+            let mut meter = Meter::with_budget(Limits::DEFAULT, units);
+            let mut series = event(Some(&rule), OverrideSet::empty());
+            series.dtstart = start;
+            series.clock = SeriesClock::Utc;
+            series.durations.components = rows;
+            let result = expand(
+                series,
+                range,
+                Zones::new(&utc),
+                &mut spend(&mut meter),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            (result, meter.spent())
+        };
+        let (ordinary, baseline) = measure(&[], 1_000_000);
+        let (indexed, spent) = measure(&components, 1_000_000);
+        assert_eq!(ordinary.instances().len(), 32);
+        assert_eq!(indexed, ordinary);
+        let comparisons = spent.checked_sub(baseline).unwrap();
+        assert!(
+            (32..=32 * 14).contains(&comparisons),
+            "{comparisons} duration comparisons"
+        );
+        let mut first = event(Some(&rule), OverrideSet::empty());
+        first.dtstart = start;
+        first.clock = SeriesClock::Utc;
+        let mut meter = Meter::new(Limits::DEFAULT);
+        assert_eq!(
+            overlaps(
+                first,
+                range,
+                Zones::new(&utc),
+                &mut spend(&mut meter),
+                &mut Vec::new()
+            )
+            .unwrap(),
+            Match::Matched
+        );
+        let first_probe = meter.spent().checked_add(1).unwrap();
+        let (incomplete, refused_at) = measure(&components, first_probe);
+        assert_eq!(refused_at, first_probe.checked_add(1).unwrap());
+        assert_eq!(incomplete.incomplete(), Some(Undecided::SearchExhausted));
+        assert_eq!(incomplete.instances(), []);
+    }
+
+    #[test]
+    fn a_match_at_dtstart_charges_inclusions_from_both_timelines() {
+        let limits = Limits::DEFAULT.with_rdate_entries(1);
+        let mut meter = Meter::new(limits);
+        meter.try_charge_rdate_entries(1).unwrap();
+        let utc = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+        let civil_dates = [at(2)];
+        let explicit = [Instance::new(at(3), at(3), at(3))];
+        let series = Series {
+            dtstart: at(1),
+            clock: SeriesClock::Utc,
+            rdates: &civil_dates,
+            explicit: &explicit,
+            ..event(None, OverrideSet::empty())
+        };
+        assert_eq!(
+            overlaps(
+                series,
+                spanning(at(0), at(4)),
+                Zones::new(&utc),
+                &mut Budget::new(limits, &mut meter),
+                &mut Vec::new()
+            ),
+            Err(super::QueryError::Limit(
+                crate::internal::core::LimitExceeded::RdateEntries
+            ))
+        );
+        assert!(meter.is_exhausted());
+    }
+
+    #[test]
+    fn duration_index_admits_sorting_and_keeps_the_first_duplicate() {
+        let row = |key, source_position| super::ComponentSpan {
+            key: at(key),
+            range: OverrideRange::ThisOnly,
+            stated: None,
+            source_position,
+            latest_range: None,
+        };
+        let mut rows = alloc::vec![row(2, 1), row(1, 2), row(1, 0)];
+        let mut refused = Meter::with_budget(Limits::DEFAULT, 0);
+        assert_eq!(
+            super::ComponentSpan::index(&mut rows, &mut refused),
+            Err(crate::internal::core::LimitExceeded::Budget)
+        );
+        assert!(refused.is_exhausted());
+        assert_eq!(rows[0].key, at(2));
+        let mut meter = Meter::new(Limits::DEFAULT);
+        super::ComponentSpan::index(&mut rows, &mut meter).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].source_position, 0);
+        assert_eq!(rows[1].key, at(2));
+    }
+
     fn instance(recurrence_id: i64, start: i64, end: i64) -> Instance {
         Instance::new(at(recurrence_id), at(start), at(end))
     }
 
-    /// What an expansion produced, as the three UTC instants each instance carries.
     fn triples(instances: &[Instance]) -> Vec<(i64, i64, i64)> {
         instances
             .iter()
@@ -1926,24 +2717,17 @@ mod tests {
             .collect()
     }
 
-    /// A budget over a fresh ledger, for a case that does not inspect the ledger afterwards.
     fn spend(meter: &mut Meter) -> Budget<'_> {
         Budget::new(Limits::DEFAULT, meter)
     }
 
-    /// Every constant transcribed from RFC 4791 section 7.8.3 is the instant its text names.
-    ///
-    /// The transcription is what every other expectation in this module rests on, so it is
-    /// checked against `ical-core`'s calendar arithmetic rather than against itself.
     #[test]
     fn the_worked_examples_instants_are_the_ones_the_rfc_writes() {
-        // Nominal: the wall clock the file writes, read at UTC, which is the projection.
         assert_eq!(at(NOMINAL_JAN2), stamp(2006, 1, 2, 12, 0));
         assert_eq!(at(NOMINAL_JAN3), stamp(2006, 1, 3, 12, 0));
         assert_eq!(at(NOMINAL_JAN4), stamp(2006, 1, 4, 12, 0));
         assert_eq!(at(NOMINAL_JAN4_MOVED), stamp(2006, 1, 4, 14, 0));
         assert_eq!(at(NOMINAL_JAN8), stamp(2006, 1, 8, 12, 0));
-        // Real: `20060103T000000Z` and the rest, as the example writes them.
         assert_eq!(at(UTC_RANGE_START), stamp(2006, 1, 3, 0, 0));
         assert_eq!(at(UTC_RANGE_END), stamp(2006, 1, 5, 0, 0));
         assert_eq!(at(UTC_JAN2_1700), stamp(2006, 1, 2, 17, 0));
@@ -1955,76 +2739,57 @@ mod tests {
         assert_eq!(at(UTC_JAN4_2000), stamp(2006, 1, 4, 20, 0));
     }
 
-    /// RFC 4791 section 9.9's VEVENT table, at every boundary the two rows distinguish.
-    ///
-    /// The expected column is the RFC's own condition evaluated by hand over a range of
-    /// `[10_000, 20_000)`: `(start <= DTSTART AND end > DTSTART)` for a component that occupies
-    /// no time, and `(start < DTSTART+DURATION AND end > DTSTART)` for one that does.
+    /// RFC 4791 section 9.9 includes a point at the start of a range and excludes an event ending there.
     #[test]
     fn the_overlap_condition_is_the_one_section_9_9_writes_for_each_row() {
         let window = spanning(at(10_000), at(20_000));
-        let point = InstanceSpan::INSTANT;
-        let hour = InstanceSpan::of_seconds(ONE_HOUR).unwrap();
-        let cases: [(&str, Instance, InstanceSpan, bool); 8] = [
-            // `(start <= DTSTART)`: the first instant of the range is inside it.
+        let cases: [(&str, Instance, bool); 8] = [
             (
                 "no length, at the range start",
                 instance(10_000, 10_000, 10_000),
-                point,
                 true,
             ),
             (
                 "no length, a second before it",
                 instance(9_999, 9_999, 9_999),
-                point,
                 false,
             ),
-            // `(end > DTSTART)`: the range's own end is not inside it.
             (
                 "no length, at the range end",
                 instance(20_000, 20_000, 20_000),
-                point,
                 false,
             ),
             (
                 "no length, a second before that",
                 instance(19_999, 19_999, 19_999),
-                point,
                 true,
             ),
-            // `(start < DTSTART+DURATION)`: an hour ending where the range opens is outside.
             (
                 "an hour ending at the range start",
                 instance(6_400, 6_400, 10_000),
-                hour,
                 false,
             ),
             (
                 "an hour ending a second later",
                 instance(6_401, 6_401, 10_001),
-                hour,
                 true,
             ),
-            // `(end > DTSTART)`: an hour starting where the range closes is outside.
             (
                 "an hour starting at the range end",
                 instance(20_000, 20_000, 23_600),
-                hour,
                 false,
             ),
             (
                 "an hour starting a second earlier",
                 instance(19_999, 19_999, 23_599),
-                hour,
                 true,
             ),
         ];
-        for (shape, found, span, expected) in cases {
-            assert_eq!(overlaps_range(found, window, span), expected, "{shape}");
+        for (shape, found, expected) in cases {
+            assert_eq!(overlaps_range(found, window), expected, "{shape}");
         }
     }
 
-    /// An open bound is closed against the years RFC 5545 section 3.3.4 can write.
     #[test]
     fn an_open_bound_is_closed_against_the_calendar_and_not_against_infinity() {
         let first = calendar_start().unwrap();
@@ -2046,10 +2811,6 @@ mod tests {
         assert_eq!(open_start.window().0, first);
     }
 
-    /// The composed window is the range reaching back by the span, and by nothing else.
-    ///
-    /// A UTC series is the case with no slack in it, so the arithmetic RFC 4791 section 9.9
-    /// states stands on its own here.
     #[test]
     fn the_window_reaches_back_by_the_span_and_stops_at_the_range_end() {
         let utc = Series {
@@ -2077,7 +2838,6 @@ mod tests {
         );
     }
 
-    /// A zoned window carries the slack; the generation window carries the override's shift.
     #[test]
     fn a_zoned_window_carries_the_slack_and_the_override_set_widens_generation() {
         let window = spanning(at(UTC_RANGE_START), at(UTC_RANGE_END));
@@ -2106,12 +2866,7 @@ mod tests {
         );
     }
 
-    /// RFC 4791 section 7.8.3's expansion, instance for instance.
-    ///
-    /// The expected column is that example's `>> Response <<` for `abcd2.ics`: two components,
-    /// the first at `20060103T170000` and the second at `20060104T190000` with
-    /// `RECURRENCE-ID:20060104T170000`. The January 2nd instance ends before the range opens and
-    /// the January 5th one starts after it closes, and neither is in the response.
+    /// RFC 4791 section 7.8.3 returns two occurrences of `abcd2.ics` within the range.
     #[test]
     fn the_worked_example_expands_to_the_two_instances_the_rfc_returns() {
         let rule = daily(5);
@@ -2139,7 +2894,6 @@ mod tests {
         assert!(expansion.instances().last().unwrap().is_moved());
     }
 
-    /// An expansion is never what the server stored, and says so.
     #[test]
     fn an_expansion_carries_the_witness_that_it_replaced_the_rule() {
         let rule = daily(5);
@@ -2165,7 +2919,6 @@ mod tests {
         assert!(!reduction.instances_dropped);
     }
 
-    /// The two answers a filter over a whole recurrence set gives at its extremes.
     #[test]
     fn a_range_beside_the_series_matches_nothing_and_one_around_it_matches_everything() {
         let rule = daily(5);
@@ -2202,12 +2955,6 @@ mod tests {
         }
     }
 
-    /// An instance an override moved into the window is found by its moved start.
-    ///
-    /// RFC 4791 section 9.6.6 states the same fact from the other side: an overridden component
-    /// impacts a range if its *current* start and end overlap it. The unmoved January 4th
-    /// instance runs 17:00Z to 18:00Z and does not reach a range opening at 18:00Z; the moved one
-    /// runs 19:00Z to 20:00Z and does.
     #[test]
     fn an_instance_an_override_moved_into_the_window_is_not_lost() {
         let rule = daily(5);
@@ -2245,11 +2992,7 @@ mod tests {
         );
     }
 
-    /// An override reaching further than the slack is why generation is widened at all.
-    ///
-    /// The moved instance's cadence key is five days past the window, so only the widening
-    /// `crate::internal::recur::generation_window` applies reaches it, and an exclusion removes the ordinary
-    /// instance of that day so that the answer can only have come from the moved one.
+    /// The excluded ordinary occurrence makes the moved override the only possible match.
     #[test]
     fn an_override_moved_from_beyond_the_slack_is_still_generated() {
         let rule = daily(10);
@@ -2286,7 +3029,6 @@ mod tests {
         assert!(bounds.widening() > super::ZONE_SLACK_SECONDS);
     }
 
-    /// A component with no rule still has the one instance RFC 5545 section 3.8.5 gives it.
     #[test]
     fn a_component_with_no_rule_is_its_own_single_instance() {
         let source = eastern();
@@ -2319,7 +3061,6 @@ mod tests {
         );
     }
 
-    /// An `EXDATE` on the only instance a ruleless component has removes it.
     #[test]
     fn an_exclusion_on_a_lone_dtstart_leaves_no_instance_at_all() {
         let source = eastern();
@@ -2341,11 +3082,6 @@ mod tests {
         assert_eq!(answer, Match::Unmatched);
     }
 
-    /// The answer this crate exists for: a floating value with no zone is not "no match".
-    ///
-    /// RFC 4791 section 9.9 compares a floating value in the zone the query's `CALDAV:timezone`
-    /// stated and section 9.5 permits a query to state none, so there is no timeline to make the
-    /// comparison on. `docs/adr/0003` forbids inventing one.
     #[test]
     fn a_floating_series_with_no_query_zone_is_undecidable_and_not_unmatched() {
         let rule = daily(5);
@@ -2397,7 +3133,6 @@ mod tests {
         );
     }
 
-    /// A `TZID` no supplied source recognizes is the other half of the same refusal.
     #[test]
     fn a_zone_no_source_recognizes_is_undecidable_rather_than_unmatched() {
         let rule = daily(5);
@@ -2419,13 +3154,10 @@ mod tests {
         assert_eq!(answer, Match::Undecided(Undecided::ZoneUnknown));
     }
 
-    /// A search that ran out of budget is undecided, and never a resource that does not match.
     #[test]
     fn a_search_stopped_at_its_budget_is_undecidable() {
         let rule = daily(10_000);
         let source = eastern();
-        // Two octets of budget: the third candidate the walk generates is refused, long before
-        // the walk reaches a window four years past `DTSTART`.
         let mut meter = Meter::with_budget(Limits::DEFAULT, 2);
         let mut budget = Budget::new(Limits::DEFAULT, &mut meter);
         let answer = overlaps(
@@ -2440,7 +3172,6 @@ mod tests {
         assert!(budget.is_exhausted());
     }
 
-    /// A ledger that had already latched answers before starting a search it cannot finish.
     #[test]
     fn an_exhausted_ledger_is_undecidable_without_a_search() {
         let rule = daily(5);
@@ -2465,7 +3196,6 @@ mod tests {
         );
     }
 
-    /// A range naming no instant a calendar can express matches nothing, and refuses nothing.
     #[test]
     fn a_range_outside_the_years_a_calendar_can_write_matches_nothing() {
         let series = Series {
@@ -2480,7 +3210,6 @@ mod tests {
         assert_eq!(SearchBounds::compose(series, beyond).unwrap(), None);
     }
 
-    /// Every reason fits the subject a diagnostic carries, so none of them arrives cut in half.
     #[test]
     fn every_undecidable_reason_fits_the_subject_it_travels_in() {
         for reason in [
@@ -2497,7 +3226,44 @@ mod tests {
         }
     }
 
-    /// The manifest names the passages this file transcribes, and names each of them once.
+    #[test]
+    fn terminal_steps_and_drained_searches_keep_the_same_query_reason() {
+        use crate::internal::recur::{BudgetExhausted, SearchOutcome, SearchStep};
+        let exhausted = BudgetExhausted::new(at(0), 1);
+        for (step, outcome, reason) in [
+            (
+                Some(SearchStep::CalendarArithmeticFailed),
+                SearchOutcome::CalendarArithmeticFailed,
+                Some(Undecided::ValueUnreadable),
+            ),
+            (
+                None,
+                SearchOutcome::CalendarArithmeticFailed,
+                Some(Undecided::ValueUnreadable),
+            ),
+            (
+                Some(SearchStep::BudgetExhausted(exhausted)),
+                SearchOutcome::BudgetExhausted(exhausted),
+                Some(Undecided::SearchExhausted),
+            ),
+            (
+                None,
+                SearchOutcome::BudgetExhausted(exhausted),
+                Some(Undecided::SearchExhausted),
+            ),
+            (None, SearchOutcome::RuleEnded, None),
+            (None, SearchOutcome::WindowEnded, None),
+            (None, SearchOutcome::CalendarEnded, None),
+            (
+                None,
+                SearchOutcome::Pending,
+                Some(Undecided::SearchExhausted),
+            ),
+        ] {
+            assert_eq!(super::query_step(step, outcome).break_value(), Some(reason));
+        }
+    }
+
     #[test]
     fn the_transcription_manifest_has_no_repeated_row() {
         let mut rows: Vec<&str> = EXPANSION_SECTIONS.to_vec();

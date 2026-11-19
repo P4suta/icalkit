@@ -4,11 +4,8 @@
 
 //! The fixed 5,000-resource measurement from ADR 0012.
 //!
-//! This is a workload gate rather than a wall-clock benchmark: it records the evaluator's own
-//! stable work counters, so a faster or slower CI host cannot change the verdict. Each resource
-//! gets a fresh default-policy meter with the explicitly stated 16 MiB budget for sweep A.
-//! Sweep B repeats the identical population under one aggregate meter and reports where that
-//! meter stops, but ADR 0012 deliberately makes that observation non-gating.
+//! Sweep A checks how many resources exhaust a fresh 16 MiB meter and records each resource's work counters.
+//! Sweep B reports how far a shared 16 MiB meter gets through the same population.
 
 use std::fmt::Write as _;
 
@@ -68,9 +65,7 @@ fn generated_resource(index: usize) -> Result<Document, ParseError> {
     line!(text, "DTSTAMP:20260101T000000Z\r");
 
     match index % 10 {
-        // The rare-match, multi-decade family ADR 0012 names explicitly. Keeping exactly five
-        // hundred of these makes the prefilter ordering do real work without inventing an
-        // external fixture provenance.
+        // Every tenth resource exercises the rare-match, multi-decade rule from ADR 0012.
         0 => {
             line!(text, "DTSTART:19000101T090000Z\r");
             line!(text, "DURATION:PT1H\r");
@@ -130,22 +125,24 @@ fn exhausted(outcome: Result<Match, QueryError>, meter: &Meter) -> bool {
         )
 }
 
+fn resources() -> impl Iterator<Item = Result<Document, ParseError>> {
+    (0..RESOURCES).map(generated_resource)
+}
+
 #[test]
 fn five_thousand_resource_query_stays_below_the_fixed_exhaustion_threshold()
 -> Result<(), Box<dyn std::error::Error>> {
     let filter = query_filter()?;
-    let resources: Vec<_> = (0..RESOURCES)
-        .map(generated_resource)
-        .collect::<Result<_, _>>()?;
     let utc_source = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
     let zones = Zones::new(&utc_source);
 
     let mut measurements = Vec::with_capacity(RESOURCES);
-    for (resource, calendar) in resources.iter().enumerate() {
+    for (resource, calendar) in resources().enumerate() {
+        let calendar = calendar?;
         let mut meter = Meter::with_budget(Limits::DEFAULT, DEFAULT_BUDGET);
         let outcome = {
             let mut budget = Budget::new(Limits::DEFAULT, &mut meter);
-            query::matches(&filter, calendar, zones, &mut budget)
+            query::matches(&filter, &calendar, zones, &mut budget)
         };
         measurements.push(Measurement {
             resource,
@@ -180,12 +177,26 @@ fn five_thousand_resource_query_stays_below_the_fixed_exhaustion_threshold()
             .collect::<Vec<_>>()
     );
 
+    assert_eq!(measurements.len(), RESOURCES);
+    assert_eq!(
+        measurements.last().map(|row| row.resource),
+        Some(RESOURCES - 1)
+    );
+    Ok(())
+}
+
+#[test]
+fn aggregate_query_budget_reports_its_stopping_point() -> Result<(), Box<dyn std::error::Error>> {
+    let filter = query_filter()?;
+    let utc_source = FixedOffsetSource::new("UTC", UtcOffset::UTC, false);
+    let zones = Zones::new(&utc_source);
     let mut aggregate = Meter::with_budget(Limits::DEFAULT, DEFAULT_BUDGET);
     let mut aggregate_stop = None;
-    for (resource, calendar) in resources.iter().enumerate() {
+    for (resource, calendar) in resources().enumerate() {
+        let calendar = calendar?;
         let outcome = {
             let mut budget = Budget::new(Limits::DEFAULT, &mut aggregate);
-            query::matches(&filter, calendar, zones, &mut budget)
+            query::matches(&filter, &calendar, zones, &mut budget)
         };
         if exhausted(outcome, &aggregate) {
             aggregate_stop = Some((resource, outcome));
@@ -198,11 +209,5 @@ fn five_thousand_resource_query_stays_below_the_fixed_exhaustion_threshold()
         aggregate.candidates_charged()
     );
 
-    // Keep the per-resource identity observable even when all rows pass. It also prevents a
-    // future rewrite from replacing the recorded distribution with only an aggregate count.
-    assert_eq!(
-        measurements.last().map(|row| row.resource),
-        Some(RESOURCES - 1)
-    );
     Ok(())
 }

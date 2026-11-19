@@ -4,15 +4,11 @@
 
 //! The one collection type, whose growth is a charged door rather than a public field.
 //!
-//! Every list in this crate is a [`Bounded`]: the responses of a multistatus, the `href`s of a
-//! multiget, the properties of a `propstat`, the preconditions of an error body. A public
-//! `Vec` field would be a way around the charge that the whole limits story rests on, and the
-//! argument for that does not weaken below the top-level collection — a single response
-//! carrying a hundred thousand properties crosses no bound the body has.
+//! Every list in this crate is a [`Bounded`]: the responses of a multistatus, the `href`s of a multiget, the properties of a `propstat`, the preconditions of an error body.
+//! A public `Vec` field would be a way around the charge that the whole limits story rests on, and the argument for that does not weaken below the top-level collection — a single response carrying a hundred thousand properties crosses no bound the body has.
 //!
 //! The cap comes from the caller's `Limits` at construction and the dimension travels with it,
-//! so a refusal names the number the caller can raise rather than saying that some bound
-//! somewhere was crossed.
+//! so a refusal names the number the caller can raise rather than saying that some bound somewhere was crossed.
 
 use alloc::vec::Vec;
 
@@ -23,7 +19,8 @@ use crate::internal::dav::failure::DavError;
 /// A list with a cap it was built with and a charge on every push.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Bounded<T> {
-    /// The items. Private: a handed-out `Vec` is a door with no check in front of it.
+    /// The items.
+    /// Private: a handed-out `Vec` is a door with no check in front of it.
     items: Vec<T>,
     /// The most items this list may hold.
     cap: usize,
@@ -44,26 +41,33 @@ impl<T> Bounded<T> {
 
     /// Append `item`, charging the caller's ledger for what the list now retains.
     ///
-    /// Two bounds cross here, which is the shape `docs/adr/0010` argues for everywhere: the
-    /// cap bounds this one collection and the ledger bounds the run, so five thousand
-    /// individually bounded bodies are bounded in aggregate too.
+    /// Two bounds cross here, which is the shape `docs/adr/0010` argues for everywhere: the cap bounds this one collection and the ledger bounds the run, so five thousand individually bounded bodies are bounded in aggregate too.
     ///
-    /// The charge is what the collection itself retains — one item's own footprint. The octets
-    /// an item points at are charged where they are read or built, which is the only place
-    /// their length is known.
+    /// The charge is what the collection itself retains — one item's own footprint.
+    /// The octets an item points at are charged where they are read or built, which is the only place their length is known.
     pub fn push(&mut self, item: T, meter: &mut Meter) -> Result<(), DavError> {
-        if self.items.len() >= self.cap {
-            return Err(DavError::Limit(self.dimension));
-        }
+        meter.check_bound(self.items.len() < self.cap, self.dimension)?;
+        self.append(item, meter)
+    }
+
+    pub(super) fn push_reserved_last(
+        &mut self,
+        item: T,
+        meter: &mut Meter,
+    ) -> Result<(), DavError> {
+        meter.check_bound(self.items.len() == self.cap, self.dimension)?;
+        self.append(item, meter)
+    }
+
+    fn append(&mut self, item: T, meter: &mut Meter) -> Result<(), DavError> {
         meter.try_charge_bytes(u64::try_from(size_of::<T>()).unwrap_or(u64::MAX))?;
-        self.items
-            .try_reserve(1)
-            .map_err(|_| DavError::Limit(LimitExceeded::Budget))?;
+        meter.admit(|| self.items.try_reserve(1).map_err(|_| LimitExceeded::Budget))?;
         self.items.push(item);
         Ok(())
     }
 
-    /// The items, as a slice. Nothing hands out the `Vec`.
+    /// The items, as a slice.
+    /// Nothing hands out the `Vec`.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.items
@@ -137,8 +141,8 @@ mod tests {
 
     #[test]
     fn a_push_charges_the_shared_ledger_so_many_lists_are_bounded_together() {
-        // The budget admits three `u32`s across every list this ledger serves, and the caps
-        // would admit sixteen. Aggregate is what binds, which is the point of one meter.
+        // The budget admits three `u32`s across every list this ledger serves, and the caps would admit sixteen.
+        // Aggregate is what binds, which is the point of one meter.
         let mut meter = Meter::with_budget(Limits::DEFAULT, 12);
         let mut first: Bounded<u32> = Bounded::with_cap(8, LimitExceeded::Responses);
         let mut second: Bounded<u32> = Bounded::with_cap(8, LimitExceeded::Responses);
