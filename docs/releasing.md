@@ -1,14 +1,14 @@
 # Releasing icalkit
 
-The workspace starts at `0.0.0`.
 The release process publishes `icalkit` alone.
 Version changes, registry publication, and GitHub publication require a separate release decision.
 
 ## Select the first version
 
-Start a release pull request with the approved version and update the workspace version with `mise x -- release-plz set-version "$VERSION"`.
-Review the root changelog, the workspace manifest, and the lockfile.
-Summarize the supported API and behavior in the first changelog entry.
+Add a section with the approved version to the root changelog before running release-plz.
+Summarize the supported API and behavior in the first entry.
+Update the workspace with `mise x -- release-plz set-version "$VERSION"`.
+Review the workspace manifest, local dependency requirements, and lockfile.
 Run the normal pull request checks.
 
 ## Prepare later versions

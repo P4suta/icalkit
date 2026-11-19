@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "icalkit"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "icu_calendar",
  "jiff",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "icalkit-conformance"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "icalkit",
  "icu_calendar",
@@ -466,7 +466,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "yoke"
