@@ -23,11 +23,6 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-# The gate path-includes icalkit's private XML layer, where this dependency is imported.
-# cargo-shear cannot associate an import in a file outside this package directory.
-[package.metadata.cargo-shear]
-ignored = ["xmlparser"]
-
 [dependencies]
 xmlparser = { version = "0.13.6", default-features = false }
 
