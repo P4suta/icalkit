@@ -314,7 +314,7 @@ impl ZoneDatabase for SystemZoneDatabase {
         use jiff::tz::{AmbiguousOffset, TimeZone};
 
         let zone = TimeZone::get(tzid).ok()?;
-        let ambiguous = zone.to_ambiguous_zoned(local);
+        let ambiguous = zone.to_ambiguous_zoned_datetime(local);
         let (kind, earlier, later) = match ambiguous.offset() {
             AmbiguousOffset::Unambiguous { offset } => {
                 (LocalKind::Exact, offset.to_timestamp(local).ok(), None)
